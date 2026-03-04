@@ -47,6 +47,9 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum AuthCommands {
+    /// Log in to HotData via browser
+    Login,
+
     /// Remove authentication for a profile
     Logout {
         /// Configuration profile name

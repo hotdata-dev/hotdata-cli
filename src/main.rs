@@ -33,6 +33,7 @@ fn main() {
             Commands::Init => init::run(),
             Commands::Info => eprintln!("not yet implemented"),
             Commands::Auth { command } => match command {
+                AuthCommands::Login => auth::login(),
                 AuthCommands::Status { profile } => auth::status(&profile),
                 _ => eprintln!("not yet implemented"),
             },

@@ -1,6 +1,11 @@
 use crate::config::{self, ApiKeySource};
-use crossterm::style::{Color, Print, ResetColor, SetForegroundColor, Stylize};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use crossterm::ExecutableCommand;
+use crossterm::style::{Color, Print, ResetColor, SetForegroundColor, Stylize};
+use rand::Rng;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::stdout;
 
 pub fn status(profile: &str) {
@@ -48,7 +53,10 @@ pub fn status(profile: &str) {
             print_row("Authenticated", &"No".red().to_string());
             print_row(
                 "API Key",
-                &format!("{}{source_label}", format!("Invalid (HTTP {})", resp.status()).red()),
+                &format!(
+                    "{}{source_label}",
+                    format!("Invalid (HTTP {})", resp.status()).red()
+                ),
             );
         }
         Err(e) => {
@@ -56,6 +64,193 @@ pub fn status(profile: &str) {
             std::process::exit(1);
         }
     }
+}
+
+pub fn login() {
+    let profile_config = config::load("default").unwrap_or_default();
+    let api_url = profile_config.api_url.to_string();
+    let app_url = profile_config.app_url.to_string();
+
+    let code_verifier = generate_code_verifier();
+    let code_challenge = generate_code_challenge(&code_verifier);
+    let state = generate_random_string(32);
+
+    // Bind to port 0 so the OS picks an available port
+    let server =
+        tiny_http::Server::http("127.0.0.1:0").expect("failed to start local callback server");
+    let port = server.server_addr().to_ip().unwrap().port();
+
+    let login_url = format!(
+        "{app_url}/auth/cli-login?code_challenge={code_challenge}&code_challenge_method=S256&state={state}&callback_port={port}"
+    );
+
+    println!("Opening browser to log in...");
+    stdout()
+        .execute(Print("If your browser does not open, visit:\n  ")).unwrap()
+        .execute(SetForegroundColor(Color::DarkGrey)).unwrap()
+        .execute(Print(format!("{login_url}\n"))).unwrap()
+        .execute(ResetColor).unwrap();
+
+    if let Err(e) = open::that(&login_url) {
+        eprintln!("failed to open browser: {e}");
+    }
+
+    println!("Waiting for login callback...");
+
+    let request = server.recv().expect("failed to receive callback request");
+    let raw_url = request.url().to_string();
+    let params = parse_query_params(&raw_url);
+
+    // Verify state to prevent CSRF
+    if params.get("state").map(String::as_str) != Some(state.as_str()) {
+        let _ = request.respond(tiny_http::Response::from_string(
+            "Login failed: state mismatch",
+        ));
+        eprintln!("error: state mismatch — possible CSRF attack");
+        std::process::exit(1);
+    }
+
+    let code = match params.get("code") {
+        Some(c) => c.clone(),
+        None => {
+            let _ = request.respond(tiny_http::Response::from_string("Login failed: no code"));
+            eprintln!("error: no authorization code received in callback");
+            std::process::exit(1);
+        }
+    };
+
+    // Respond to the browser before making the token exchange request
+    let html = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HotData — Login Successful</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      background: #111827;
+      color: #e5e7eb;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 0.5rem;
+      padding: 2.5rem;
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+    }
+    .icon {
+      width: 48px;
+      height: 48px;
+      background: #14532d;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 1.25rem;
+    }
+    .icon svg { width: 24px; height: 24px; stroke: #86efac; }
+    h1 { font-size: 1.25rem; font-weight: 600; color: #f3f4f6; margin-bottom: 0.5rem; }
+    p { font-size: 0.875rem; color: #9ca3af; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">
+      <svg fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+      </svg>
+    </div>
+    <h1>Login successful</h1>
+    <p>You're now authenticated with HotData.<br/>You can close this tab and return to the terminal.</p>
+  </div>
+</body>
+</html>"#;
+    let response = tiny_http::Response::from_string(html).with_header(
+        "Content-Type: text/html"
+            .parse::<tiny_http::Header>()
+            .unwrap(),
+    );
+    let _ = request.respond(response);
+
+    // Exchange the authorization code + verifier for the real API token
+    #[derive(Deserialize)]
+    struct TokenResponse {
+        token: String,
+    }
+
+    let token_url = format!("{api_url}/auth/token");
+    let client = reqwest::blocking::Client::new();
+
+    let resp: Result<reqwest::blocking::Response, _> = client
+        .post(&token_url)
+        .json(&serde_json::json!({ "code": code, "code_verifier": code_verifier }))
+        .send();
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: TokenResponse = match r.json() {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("error parsing token response: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(e) = config::save_api_key("default", &body.token) {
+                eprintln!("error saving token: {e}");
+                std::process::exit(1);
+            }
+
+            stdout()
+                .execute(SetForegroundColor(Color::Green)).unwrap()
+                .execute(Print("Logged in successfully.\n")).unwrap()
+                .execute(ResetColor).unwrap();
+        }
+        Ok(r) => {
+            eprintln!("token exchange failed: HTTP {}", r.status());
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error connecting to API: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn generate_code_verifier() -> String {
+    generate_random_string(64)
+}
+
+fn generate_random_string(len: usize) -> String {
+    let charset = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..len)
+        .map(|_| charset[rng.gen_range(0..charset.len())] as char)
+        .collect()
+}
+
+fn generate_code_challenge(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+fn parse_query_params(url: &str) -> HashMap<String, String> {
+    url.splitn(2, '?')
+        .nth(1)
+        .unwrap_or("")
+        .split('&')
+        .filter_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            Some((parts.next()?.to_string(), parts.next()?.to_string()))
+        })
+        .collect()
 }
 
 fn print_row(label: &str, value: &str) {
