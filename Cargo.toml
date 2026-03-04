@@ -8,4 +8,11 @@ name = "hotdata"
 path = "src/main.rs"
 
 [dependencies]
+anstyle = "1.0.13"
 clap = { version = "4", features = ["derive"] }
+directories = "6"
+reqwest = { version = "0.12", features = ["blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+crossterm = "0.28"
+dotenvy = "0.15"
