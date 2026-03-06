@@ -26,6 +26,10 @@ rand = "0.8"
 sha2 = "0.10"
 tiny_http = "0.12"
 
+[package.metadata.release]
+pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}" ]
+publish = false
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
