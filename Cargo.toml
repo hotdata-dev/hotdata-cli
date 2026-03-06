@@ -5,6 +5,7 @@ edition = "2024"
 repository = "https://github.com/hotdata-dev/hotdata-cli"
 description = "CLI tool for Hotdata.dev"
 homepage = "https://www.hotdata.dev"
+publish = false
 
 [[bin]]
 name = "hotdata"
