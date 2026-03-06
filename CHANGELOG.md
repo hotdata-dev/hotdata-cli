@@ -10,3 +10,4 @@
 - Add to dist release plan (Linux arch, Homebrew tap)
 - Release v0.1.0 with git-cliff changelog setup
 - Adds cargo release ability
+- Remove publish status from package definition
