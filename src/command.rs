@@ -348,8 +348,11 @@ pub enum WorkspaceCommands {
 
 #[derive(Subcommand)]
 pub enum ConnectionsCommands {
-    /// List all connections for all workspaces
+    /// List all connections for a workspace
     List {
+        /// Workspace ID
+        workspace_id: String,
+
         /// Output format
         #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
         format: String,
