@@ -20,10 +20,22 @@ pub enum Commands {
         command: DatasetsCommands,
     },
 
-    /// Execute SQL queries
+    /// Execute a SQL query
     Query {
-        #[command(subcommand)]
-        command: QueryCommands,
+        /// SQL query string
+        sql: String,
+
+        /// Workspace ID
+        #[arg(long)]
+        workspace_id: String,
+
+        /// Scope query to a specific connection
+        #[arg(long)]
+        connection: Option<String>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
+        format: String,
     },
 
     /// Manage configuration profiles
@@ -221,52 +233,6 @@ pub enum DatasetsCommands {
     },
 }
 
-#[derive(Subcommand)]
-pub enum QueryCommands {
-    /// Execute a SQL query
-    Execute {
-        /// SQL query string
-        query: String,
-
-        /// Workspace ID
-        #[arg(long)]
-        workspace_id: String,
-
-        /// Connection ID
-        #[arg(long)]
-        connection_id: String,
-
-        /// Time to live in minutes (1-10080)
-        #[arg(long, default_value_t = 60)]
-        ttl_minutes: u32,
-
-        /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
-    },
-
-    /// Execute a SQL query from a file
-    ExecuteFile {
-        /// Path to SQL file
-        file_path: String,
-
-        /// Workspace ID
-        #[arg(long)]
-        workspace_id: String,
-
-        /// Connection ID
-        #[arg(long)]
-        connection_id: String,
-
-        /// Time to live in minutes (1-10080)
-        #[arg(long, default_value_t = 60)]
-        ttl_minutes: u32,
-
-        /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
-    },
-}
 
 #[derive(Subcommand)]
 pub enum ProfileCommands {

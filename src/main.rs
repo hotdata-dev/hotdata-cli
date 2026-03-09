@@ -3,6 +3,7 @@ mod command;
 mod config;
 mod connections;
 mod init;
+mod query;
 mod workspace;
 
 use anstyle::AnsiColor;
@@ -40,7 +41,9 @@ fn main() {
                 _ => eprintln!("not yet implemented"),
             },
             Commands::Datasets { .. } => eprintln!("not yet implemented"),
-            Commands::Query { .. } => eprintln!("not yet implemented"),
+            Commands::Query { sql, workspace_id, connection, format } => {
+                query::execute(&sql, &workspace_id, connection.as_deref(), &format)
+            }
             Commands::Profile { .. } => eprintln!("not yet implemented"),
             Commands::Workspace { command } => match command {
                 WorkspaceCommands::List { format } => workspace::list(&format),
