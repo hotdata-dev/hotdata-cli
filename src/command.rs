@@ -61,6 +61,20 @@ pub enum Commands {
         #[command(subcommand)]
         command: TablesCommands,
     },
+
+    /// Retrieve a stored query result by ID
+    Results {
+        /// Result ID
+        result_id: String,
+
+        /// Workspace ID
+        #[arg(long)]
+        workspace_id: String,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]

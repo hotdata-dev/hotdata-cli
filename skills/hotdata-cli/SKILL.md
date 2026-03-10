@@ -52,6 +52,14 @@ hotdata query "<sql>" --workspace-id <workspace_public_id> [--connection <connec
 - Use `--connection` to scope the query to a specific connection.
 - Use `hotdata tables list` to discover tables and columns — do not query `information_schema` directly.
 
+### Get Query Result
+```
+hotdata results <result_id> --workspace-id <workspace_id> [--format table|json|csv]
+```
+- Retrieves a previously executed query result by its result ID.
+- Query results include a `result-id` in the footer (e.g. `[result-id: rslt...]`).
+- **Always use this command to retrieve past query results rather than re-running the same query.** Re-running queries wastes resources and may return different results.
+
 ### Auth
 ```
 hotdata auth login          # Browser-based login

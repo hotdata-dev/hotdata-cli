@@ -3,13 +3,17 @@ use serde::Deserialize;
 use serde_json::Value;
 
 #[derive(Deserialize)]
-struct QueryResponse {
-    result_id: Option<String>,
+#[allow(dead_code)]
+struct ResultResponse {
+    result_id: String,
+    status: Option<String>,
     columns: Vec<String>,
+    #[serde(default)]
+    nullable: Vec<bool>,
     rows: Vec<Vec<Value>>,
     row_count: u64,
+    #[serde(default)]
     execution_time_ms: u64,
-    warning: Option<String>,
 }
 
 fn value_to_string(v: &Value) -> String {
@@ -22,7 +26,7 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
-pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: &str) {
+pub fn get(result_id: &str, workspace_id: &str, format: &str) {
     let profile_config = match config::load("default") {
         Ok(c) => c,
         Err(e) => {
@@ -39,19 +43,13 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
         }
     };
 
-    let url = format!("{}/query", profile_config.api_url);
+    let url = format!("{}/results/{result_id}", profile_config.api_url);
     let client = reqwest::blocking::Client::new();
 
-    let mut body = serde_json::json!({ "sql": sql });
-    if let Some(conn) = connection {
-        body["connection_id"] = Value::String(conn.to_string());
-    }
-
     let resp = match client
-        .post(&url)
+        .get(&url)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("X-Workspace-Id", workspace_id)
-        .json(&body)
         .send()
     {
         Ok(r) => r,
@@ -62,7 +60,6 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
     };
 
     if !resp.status().is_success() {
-        let _status = resp.status();
         let body = resp.text().unwrap_or_default();
         let message = serde_json::from_str::<Value>(&body)
             .ok()
@@ -73,17 +70,13 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
         std::process::exit(1);
     }
 
-    let result: QueryResponse = match resp.json() {
+    let result: ResultResponse = match resp.json() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error parsing response: {e}");
             std::process::exit(1);
         }
     };
-
-    if let Some(ref warning) = result.warning {
-        eprintln!("warning: {warning}");
-    }
 
     match format {
         "json" => {
@@ -119,8 +112,7 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
             }
             println!("{table}");
             use crossterm::style::Stylize;
-            let id_part = result.result_id.as_deref().map(|id| format!(" [result-id: {id}]")).unwrap_or_default();
-            eprintln!("{}", format!("\n{} row{} ({} ms){}", result.row_count, if result.row_count == 1 { "" } else { "s" }, result.execution_time_ms, id_part).dark_grey());
+            eprintln!("{}", format!("\n{} row{} ({} ms) [result-id: {}]", result.row_count, if result.row_count == 1 { "" } else { "s" }, result.execution_time_ms, result.result_id).dark_grey());
         }
         _ => unreachable!(),
     }

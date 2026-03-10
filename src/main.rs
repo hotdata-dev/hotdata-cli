@@ -4,6 +4,7 @@ mod config;
 mod connections;
 mod init;
 mod query;
+mod results;
 mod tables;
 mod util;
 mod workspace;
@@ -62,6 +63,7 @@ fn main() {
                     tables::list(&workspace_id, connection_id.as_deref(), &format)
                 }
             },
+            Commands::Results { result_id, workspace_id, format } => results::get(&result_id, &workspace_id, &format),
         },
     }
 }
