@@ -40,8 +40,9 @@ hotdata tables list <workspace_id> [--connection-id <connection_id>] [--format t
 ```
 - Default format is `table`.
 - **Always use this command to inspect available tables and columns.** Do NOT use the `query` command to query `information_schema` for this purpose.
-- Without `--connection-id`: lists all tables with `table`, `synced`, `last_sync`.
-- With `--connection-id`: lists each column as its own row with `table`, `column`, `data_type`, `nullable`. Use this to inspect the schema before writing queries.
+- Without `--connection-id`: lists all tables with `table`, `synced`, `last_sync`. The `table` column is formatted as `<connection>.<schema>.<table>`.
+- With `--connection-id`: lists each column as its own row with `table`, `column`, `data_type`, `nullable`. The `table` column is formatted as `<connection>.<schema>.<table>`. Use this to inspect the schema before writing queries.
+- **Always use the full `<connection>.<schema>.<table>` name when referencing tables in SQL queries.**
 
 ### Execute SQL Query
 ```

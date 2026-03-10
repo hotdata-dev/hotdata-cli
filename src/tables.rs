@@ -8,20 +8,40 @@ struct Column {
     nullable: bool,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 struct Table {
     connection: String,
     schema: String,
     table: String,
     synced: bool,
     last_sync: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     columns: Vec<Column>,
+}
+
+impl Table {
+    fn full_name(&self) -> String {
+        format!("{}.{}.{}", self.connection, self.schema, self.table)
+    }
 }
 
 #[derive(Deserialize)]
 struct ListResponse {
     tables: Vec<Table>,
+}
+
+#[derive(Serialize)]
+struct TableRow {
+    table: String,
+    synced: bool,
+    last_sync: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TableWithColumns {
+    table: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    columns: Vec<Column>,
 }
 
 pub fn list(workspace_id: &str, connection_id: Option<&str>, format: &str) {
@@ -66,7 +86,7 @@ pub fn list(workspace_id: &str, connection_id: Option<&str>, format: &str) {
         std::process::exit(1);
     }
 
-    let mut body: ListResponse = match resp.json() {
+    let body: ListResponse = match resp.json() {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error parsing response: {e}");
@@ -74,45 +94,42 @@ pub fn list(workspace_id: &str, connection_id: Option<&str>, format: &str) {
         }
     };
 
-    if connection_id.is_none() {
-        for t in &mut body.tables {
-            t.columns.clear();
-        }
-    }
-
-    match format {
-        "json" => {
-            println!("{}", serde_json::to_string_pretty(&body.tables).unwrap());
-        }
-        "yaml" => {
-            print!("{}", serde_yaml::to_string(&body.tables).unwrap());
-        }
-        "table" => {
-            let mut table = crate::util::make_table();
-            if connection_id.is_some() {
+    if connection_id.is_some() {
+        let out: Vec<TableWithColumns> = body.tables.into_iter()
+            .map(|t| TableWithColumns { table: t.full_name(), columns: t.columns })
+            .collect();
+        match format {
+            "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
+            "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
+            "table" => {
+                let mut table = crate::util::make_table();
                 table.set_header(["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"]);
-                for t in &body.tables {
+                for t in &out {
                     for col in &t.columns {
-                        table.add_row([
-                            &t.table,
-                            &col.name,
-                            &col.data_type,
-                            &col.nullable.to_string(),
-                        ]);
+                        table.add_row([&t.table, &col.name, &col.data_type, &col.nullable.to_string()]);
                     }
                 }
-            } else {
-                table.set_header(["TABLE", "SYNCED", "LAST_SYNC"]);
-                for t in &body.tables {
-                    table.add_row([
-                        &t.table,
-                        &t.synced.to_string(),
-                        t.last_sync.as_deref().unwrap_or("-"),
-                    ]);
-                }
+                println!("{table}");
             }
-            println!("{table}");
+            _ => unreachable!(),
         }
-        _ => unreachable!(),
+    } else {
+        let mut out: Vec<TableRow> = body.tables.iter()
+            .map(|t| TableRow { table: t.full_name(), synced: t.synced, last_sync: t.last_sync.clone() })
+            .collect();
+        out.sort_by(|a, b| a.table.cmp(&b.table));
+        match format {
+            "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
+            "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
+            "table" => {
+                let mut table = crate::util::make_table();
+                table.set_header(["TABLE", "SYNCED", "LAST_SYNC"]);
+                for r in &out {
+                    table.add_row([&r.table, &r.synced.to_string(), r.last_sync.as_deref().unwrap_or("-")]);
+                }
+                println!("{table}");
+            }
+            _ => unreachable!(),
+        }
     }
 }
