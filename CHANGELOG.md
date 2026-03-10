@@ -10,5 +10,3 @@
 ### ⚙️ Miscellaneous Tasks
 
 - Release hotdata-cli version 0.1.0
-- Release hotdata-cli version 0.1.0
-- Release hotdata-cli version 0.1.0
