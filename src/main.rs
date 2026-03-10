@@ -4,11 +4,13 @@ mod config;
 mod connections;
 mod init;
 mod query;
+mod tables;
+mod util;
 mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("HotData CLI - Command line interface for HotData (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -54,6 +56,11 @@ fn main() {
                     connections::list(&workspace_id, &format)
                 }
                 _ => eprintln!("not yet implemented"),
+            },
+            Commands::Tables { command } => match command {
+                TablesCommands::List { workspace_id, connection_id, format } => {
+                    tables::list(&workspace_id, connection_id.as_deref(), &format)
+                }
             },
         },
     }

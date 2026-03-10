@@ -67,11 +67,12 @@ pub fn list(workspace_id: &str, format: &str) {
             print!("{}", serde_yaml::to_string(&body.connections).unwrap());
         }
         "table" => {
-            println!("{:<20}  {:<30}  {}", "ID", "NAME", "SOURCE_TYPE");
-            println!("{}", "-".repeat(70));
+            let mut table = crate::util::make_table();
+            table.set_header(["ID", "NAME", "SOURCE_TYPE"]);
             for c in &body.connections {
-                println!("{:<20}  {:<30}  {}", c.id, c.name, c.source_type);
+                table.add_row([&c.id, &c.name, &c.source_type]);
             }
+            println!("{table}");
         }
         _ => unreachable!(),
     }

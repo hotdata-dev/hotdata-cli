@@ -68,17 +68,12 @@ pub fn list(format: &str) {
             print!("{}", serde_yaml::to_string(&body.workspaces).unwrap());
         }
         "table" => {
-            println!(
-                "{:<30}  {:<30}  {:<8}  {:<10}  {}",
-                "PUBLIC_ID", "NAME", "ACTIVE", "FAVORITE", "PROVISION_STATUS"
-            );
-            println!("{}", "-".repeat(90));
+            let mut table = crate::util::make_table();
+            table.set_header(["PUBLIC_ID", "NAME", "ACTIVE", "FAVORITE", "PROVISION_STATUS"]);
             for w in &body.workspaces {
-                println!(
-                    "{:<30}  {:<30}  {:<8}  {:<10}  {}",
-                    w.public_id, w.name, w.active, w.favorite, w.provision_status
-                );
+                table.add_row([&w.public_id, &w.name, &w.active.to_string(), &w.favorite.to_string(), &w.provision_status]);
             }
+            println!("{table}");
         }
         _ => unreachable!(),
     }

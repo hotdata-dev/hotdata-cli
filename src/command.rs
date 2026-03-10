@@ -55,6 +55,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: ConnectionsCommands,
     },
+
+    /// Manage tables in a workspace
+    Tables {
+        #[command(subcommand)]
+        command: TablesCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -320,7 +326,7 @@ pub enum ConnectionsCommands {
         workspace_id: String,
 
         /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
         format: String,
     },
 
@@ -391,5 +397,22 @@ pub enum ConnectionsCommands {
 
         /// Connection ID
         connection_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TablesCommands {
+    /// List all tables in a workspace
+    List {
+        /// Workspace ID
+        workspace_id: String,
+
+        /// Filter by connection ID
+        #[arg(long)]
+        connection_id: Option<String>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
     },
 }

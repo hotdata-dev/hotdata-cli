@@ -111,35 +111,13 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
             }
         }
         "table" => {
-            // Compute column widths
-            let mut widths: Vec<usize> = result.columns.iter().map(|c| c.len()).collect();
+            let mut table = crate::util::make_table();
+            table.set_header(&result.columns);
             for row in &result.rows {
-                for (i, cell) in row.iter().enumerate() {
-                    if let Some(w) = widths.get_mut(i) {
-                        *w = (*w).max(value_to_string(cell).len());
-                    }
-                }
+                let cells: Vec<String> = row.iter().map(value_to_string).collect();
+                table.add_row(cells);
             }
-
-            // Header
-            let header: Vec<String> = result.columns.iter().enumerate()
-                .map(|(i, c)| format!("{:<width$}", c, width = widths[i]))
-                .collect();
-            println!("{}", header.join("  "));
-
-            // Separator
-            let sep: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
-            println!("{}", sep.join("  "));
-
-            // Rows
-            for row in &result.rows {
-                let cells: Vec<String> = row.iter().enumerate()
-                    .map(|(i, v)| format!("{:<width$}", value_to_string(v), width = widths.get(i).copied().unwrap_or(0)))
-                    .collect();
-                println!("{}", cells.join("  "));
-            }
-
-            // Footer
+            println!("{table}");
             eprintln!("\n{} row{} ({} ms)", result.row_count, if result.row_count == 1 { "" } else { "s" }, result.execution_time_ms);
         }
         _ => unreachable!(),

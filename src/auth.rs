@@ -86,10 +86,14 @@ pub fn login() {
 
     println!("Opening browser to log in...");
     stdout()
-        .execute(Print("If your browser does not open, visit:\n  ")).unwrap()
-        .execute(SetForegroundColor(Color::DarkGrey)).unwrap()
-        .execute(Print(format!("{login_url}\n"))).unwrap()
-        .execute(ResetColor).unwrap();
+        .execute(Print("If your browser does not open, visit:\n  "))
+        .unwrap()
+        .execute(SetForegroundColor(Color::DarkGrey))
+        .unwrap()
+        .execute(Print(format!("{login_url}\n")))
+        .unwrap()
+        .execute(ResetColor)
+        .unwrap();
 
     if let Err(e) = open::that(&login_url) {
         eprintln!("failed to open browser: {e}");
@@ -210,9 +214,12 @@ pub fn login() {
             }
 
             stdout()
-                .execute(SetForegroundColor(Color::Green)).unwrap()
-                .execute(Print("Logged in successfully.\n")).unwrap()
-                .execute(ResetColor).unwrap();
+                .execute(SetForegroundColor(Color::Green))
+                .unwrap()
+                .execute(Print("Logged in successfully.\n"))
+                .unwrap()
+                .execute(ResetColor)
+                .unwrap();
         }
         Ok(r) => {
             eprintln!("token exchange failed: HTTP {}", r.status());

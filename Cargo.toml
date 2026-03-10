@@ -26,6 +26,7 @@ open = "5"
 rand = "0.8"
 sha2 = "0.10"
 tiny_http = "0.12"
+comfy-table = "7"
 
 [package.metadata.release]
 pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}" ]
