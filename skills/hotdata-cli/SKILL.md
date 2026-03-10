@@ -20,23 +20,27 @@ Config is stored in `~/.hotdata/config.yml` keyed by profile (default: `default`
 API key can also be set via `HOTDATA_API_KEY` env var.
 API URL defaults to `https://api.hotdata.dev/v1` or overridden via `HOTDATA_API_URL`.
 
+## Workspace ID
+
+All commands that accept `--workspace-id` are optional. If omitted, the first workspace saved during `hotdata auth login` is used as the default. **Omit `--workspace-id` unless you need to target a specific workspace.**
+
 ## Available Commands
 
 ### List Workspaces
 ```
-hotdata workspace list [--format table|json|yaml]
+hotdata workspaces list [--format table|json|yaml]
 ```
 Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_status`.
 
 ### List Connections
 ```
-hotdata connections list <workspace_id> [--format table|json|yaml]
+hotdata connections list [--workspace-id <workspace_id>] [--format table|json|yaml]
 ```
-Requires a workspace `public_id`. Routes via API gateway using `X-Workspace-Id` header.
+Routes via API gateway using `X-Workspace-Id` header.
 
 ### List Tables and Columns
 ```
-hotdata tables list <workspace_id> [--connection-id <connection_id>] [--format table|json|yaml]
+hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection_id>] [--format table|json|yaml]
 ```
 - Default format is `table`.
 - **Always use this command to inspect available tables and columns.** Do NOT use the `query` command to query `information_schema` for this purpose.
@@ -46,15 +50,16 @@ hotdata tables list <workspace_id> [--connection-id <connection_id>] [--format t
 
 ### Execute SQL Query
 ```
-hotdata query "<sql>" --workspace-id <workspace_public_id> [--connection <connection_id>] [--format table|json|csv]
+hotdata query "<sql>" [--workspace-id <workspace_id>] [--connection <connection_id>] [--format table|json|csv]
 ```
 - Default format is `table`, which prints results with row count and execution time.
 - Use `--connection` to scope the query to a specific connection.
 - Use `hotdata tables list` to discover tables and columns — do not query `information_schema` directly.
+- **Always use PostgreSQL dialect SQL.**
 
 ### Get Query Result
 ```
-hotdata results <result_id> --workspace-id <workspace_id> [--format table|json|csv]
+hotdata results <result_id> [--workspace-id <workspace_id>] [--format table|json|csv]
 ```
 - Retrieves a previously executed query result by its result ID.
 - Query results include a `result-id` in the footer (e.g. `[result-id: rslt...]`).
@@ -73,23 +78,19 @@ hotdata init                # Create ~/.hotdata/config.yml
 
 ## Workflow: Running a Query
 
-1. First get the workspace ID:
+1. List connections:
    ```
-   hotdata workspace list
+   hotdata connections list
    ```
-2. List connections:
+2. Inspect available tables:
    ```
-   hotdata connections list <workspace_id>
+   hotdata tables list
    ```
-3. Inspect available tables:
+3. Inspect columns for a specific connection:
    ```
-   hotdata tables list <workspace_id>
+   hotdata tables list --connection-id <connection_id>
    ```
-4. Inspect columns for a specific connection:
+4. Run SQL:
    ```
-   hotdata tables list <workspace_id> --connection-id <connection_id>
-   ```
-5. Run SQL:
-   ```
-   hotdata query "SELECT 1" --workspace-id <workspace_id>
+   hotdata query "SELECT 1"
    ```

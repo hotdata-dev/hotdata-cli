@@ -25,6 +25,22 @@ struct Cli {
     command: Option<Commands>,
 }
 
+fn resolve_workspace(provided: Option<String>) -> String {
+    match config::load("default") {
+        Ok(profile) => match config::resolve_workspace_id(provided, &profile) {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
@@ -45,25 +61,31 @@ fn main() {
             },
             Commands::Datasets { .. } => eprintln!("not yet implemented"),
             Commands::Query { sql, workspace_id, connection, format } => {
+                let workspace_id = resolve_workspace(workspace_id);
                 query::execute(&sql, &workspace_id, connection.as_deref(), &format)
             }
             Commands::Profile { .. } => eprintln!("not yet implemented"),
-            Commands::Workspace { command } => match command {
+            Commands::Workspaces { command } => match command {
                 WorkspaceCommands::List { format } => workspace::list(&format),
                 _ => eprintln!("not yet implemented"),
             },
             Commands::Connections { command } => match command {
                 ConnectionsCommands::List { workspace_id, format } => {
+                    let workspace_id = resolve_workspace(workspace_id);
                     connections::list(&workspace_id, &format)
                 }
                 _ => eprintln!("not yet implemented"),
             },
             Commands::Tables { command } => match command {
                 TablesCommands::List { workspace_id, connection_id, format } => {
+                    let workspace_id = resolve_workspace(workspace_id);
                     tables::list(&workspace_id, connection_id.as_deref(), &format)
                 }
             },
-            Commands::Results { result_id, workspace_id, format } => results::get(&result_id, &workspace_id, &format),
+            Commands::Results { result_id, workspace_id, format } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                results::get(&result_id, &workspace_id, &format)
+            }
         },
     }
 }

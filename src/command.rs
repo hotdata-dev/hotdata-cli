@@ -25,9 +25,9 @@ pub enum Commands {
         /// SQL query string
         sql: String,
 
-        /// Workspace ID
+        /// Workspace ID (defaults to first workspace from login)
         #[arg(long)]
-        workspace_id: String,
+        workspace_id: Option<String>,
 
         /// Scope query to a specific connection
         #[arg(long)]
@@ -45,7 +45,7 @@ pub enum Commands {
     },
 
     /// Manage workspaces
-    Workspace {
+    Workspaces {
         #[command(subcommand)]
         command: WorkspaceCommands,
     },
@@ -67,9 +67,9 @@ pub enum Commands {
         /// Result ID
         result_id: String,
 
-        /// Workspace ID
+        /// Workspace ID (defaults to first workspace from login)
         #[arg(long)]
-        workspace_id: String,
+        workspace_id: Option<String>,
 
         /// Output format
         #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
@@ -149,8 +149,9 @@ pub enum AuthKeysCommands {
 pub enum DatasetsCommands {
     /// List all datasets in a workspace
     List {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Output format
         #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
@@ -159,8 +160,9 @@ pub enum DatasetsCommands {
 
     /// Get details for a specific dataset
     Get {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Dataset ID
         dataset_id: String,
@@ -172,8 +174,9 @@ pub enum DatasetsCommands {
 
     /// Create a new dataset in a workspace
     Create {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Dataset name
         #[arg(long)]
@@ -194,8 +197,9 @@ pub enum DatasetsCommands {
 
     /// Update a dataset in a workspace
     Update {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Dataset ID
         dataset_id: String,
@@ -215,8 +219,9 @@ pub enum DatasetsCommands {
 
     /// Delete a dataset from a workspace
     Delete {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Dataset ID
         dataset_id: String,
@@ -224,8 +229,9 @@ pub enum DatasetsCommands {
 
     /// Update the SQL query for a dataset
     UpdateSql {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Dataset ID
         dataset_id: String,
@@ -241,8 +247,9 @@ pub enum DatasetsCommands {
 
     /// Execute a dataset
     Execute {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Dataset ID
         dataset_id: String,
@@ -286,8 +293,9 @@ pub enum WorkspaceCommands {
 
     /// Get details for a workspace
     Get {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Output format
         #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
@@ -315,8 +323,9 @@ pub enum WorkspaceCommands {
 
     /// Update an existing workspace
     Update {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// New workspace name
         #[arg(long)]
@@ -336,8 +345,9 @@ pub enum WorkspaceCommands {
 pub enum ConnectionsCommands {
     /// List all connections for a workspace
     List {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Output format
         #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
@@ -346,8 +356,9 @@ pub enum ConnectionsCommands {
 
     /// Get details for a specific connection
     Get {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Connection ID
         connection_id: String,
@@ -359,8 +370,9 @@ pub enum ConnectionsCommands {
 
     /// Create a new connection in a workspace
     Create {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Connection name
         #[arg(long)]
@@ -381,8 +393,9 @@ pub enum ConnectionsCommands {
 
     /// Update a connection in a workspace
     Update {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Connection ID
         connection_id: String,
@@ -406,8 +419,9 @@ pub enum ConnectionsCommands {
 
     /// Delete a connection from a workspace
     Delete {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Connection ID
         connection_id: String,
@@ -418,8 +432,9 @@ pub enum ConnectionsCommands {
 pub enum TablesCommands {
     /// List all tables in a workspace
     List {
-        /// Workspace ID
-        workspace_id: String,
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
 
         /// Filter by connection ID
         #[arg(long)]

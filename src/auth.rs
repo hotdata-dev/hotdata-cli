@@ -46,6 +46,10 @@ pub fn status(profile: &str) {
             print_row("API URL", &profile_config.api_url.cyan().to_string());
             print_row("Authenticated", &"Yes".green().to_string());
             print_row("API Key", &format!("{}{source_label}", "Valid".green()));
+            match profile_config.workspaces.first() {
+                Some(w) => print_row("Default Workspace", &format!("{} ({})", w.public_id, w.name).cyan().to_string()),
+                None => print_row("Default Workspace", &"None".dark_grey().to_string()),
+            }
         }
         Ok(resp) => {
             print_row("Profile", &profile.white().to_string());
@@ -213,6 +217,26 @@ pub fn login() {
                 std::process::exit(1);
             }
 
+            // Fetch and cache workspace IDs for use as default
+            #[derive(Deserialize)]
+            struct WsListResponse { workspaces: Vec<WsItem> }
+            #[derive(Deserialize)]
+            struct WsItem { public_id: String, name: String }
+
+            let ws_url = format!("{api_url}/workspaces");
+            let default_workspace = if let Ok(r) = client.get(&ws_url).header("Authorization", format!("Bearer {}", body.token)).send() {
+                if r.status().is_success() {
+                    if let Ok(ws) = r.json::<WsListResponse>() {
+                        let entries: Vec<config::WorkspaceEntry> = ws.workspaces.into_iter()
+                            .map(|w| config::WorkspaceEntry { public_id: w.public_id, name: w.name })
+                            .collect();
+                        let first = entries.first().map(|w| format!("{} ({})", w.public_id, w.name));
+                        let _ = config::save_workspaces("default", entries);
+                        first
+                    } else { None }
+                } else { None }
+            } else { None };
+
             stdout()
                 .execute(SetForegroundColor(Color::Green))
                 .unwrap()
@@ -220,6 +244,27 @@ pub fn login() {
                 .unwrap()
                 .execute(ResetColor)
                 .unwrap();
+
+            match default_workspace {
+                Some(id) => {
+                    stdout()
+                        .execute(SetForegroundColor(Color::DarkGrey))
+                        .unwrap()
+                        .execute(Print(format!("Default workspace: {id}\n")))
+                        .unwrap()
+                        .execute(ResetColor)
+                        .unwrap();
+                }
+                None => {
+                    stdout()
+                        .execute(SetForegroundColor(Color::DarkGrey))
+                        .unwrap()
+                        .execute(Print("No default workspace configured.\n"))
+                        .unwrap()
+                        .execute(ResetColor)
+                        .unwrap();
+                }
+            }
         }
         Ok(r) => {
             eprintln!("token exchange failed: HTTP {}", r.status());
@@ -264,7 +309,7 @@ fn print_row(label: &str, value: &str) {
     stdout()
         .execute(SetForegroundColor(Color::DarkGrey))
         .unwrap()
-        .execute(Print(format!("{:<15}", format!("{label}:"))))
+        .execute(Print(format!("{:<20}", format!("{label}:"))))
         .unwrap()
         .execute(ResetColor)
         .unwrap()

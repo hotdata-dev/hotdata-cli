@@ -1,3 +1,4 @@
+use crossterm::style::Stylize;
 use directories::UserDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -7,6 +8,12 @@ use std::ops::Deref;
 
 pub const DEFAULT_API_URL: &str = "https://api.hotdata.dev/v1";
 pub const DEFAULT_APP_URL: &str = "https://app.hotdata.dev";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WorkspaceEntry {
+    pub public_id: String,
+    pub name: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AppUrl(Option<String>);
@@ -82,6 +89,8 @@ pub struct ProfileConfig {
     pub app_url: AppUrl,
     #[serde(skip)]
     pub api_key_source: ApiKeySource,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspaces: Vec<WorkspaceEntry>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -115,6 +124,43 @@ pub fn save_api_key(profile: &str, api_key: &str) -> Result<(), String> {
     fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
 }
 
+pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result<(), String> {
+    let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
+    let config_path = user_dirs.home_dir().join(".hotdata").join("config.yml");
+
+    let mut config_file: ConfigFile = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("error reading config file: {e}"))?;
+        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
+    } else {
+        ConfigFile {
+            profiles: HashMap::new(),
+        }
+    };
+
+    config_file
+        .profiles
+        .entry(profile.to_string())
+        .or_default()
+        .workspaces = workspaces;
+
+    let content = serde_yaml::to_string(&config_file)
+        .map_err(|e| format!("error serializing config: {e}"))?;
+
+    fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
+}
+
+pub fn resolve_workspace_id(provided: Option<String>, profile_config: &ProfileConfig) -> Result<String, String> {
+    if let Some(id) = provided {
+        return Ok(id);
+    }
+    profile_config
+        .workspaces
+        .first()
+        .map(|w| w.public_id.clone())
+        .ok_or_else(|| "no workspace-id provided and no default workspace found. Run 'hotdata auth login' or specify --workspace-id.".to_string())
+}
+
 pub fn load(profile: &str) -> Result<ProfileConfig, String> {
     let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
     let config_file = user_dirs.home_dir().join(".hotdata").join("config.yml");
@@ -129,8 +175,11 @@ pub fn load(profile: &str) -> Result<ProfileConfig, String> {
     let content =
         fs::read_to_string(&config_file).map_err(|e| format!("error reading config file: {e}"))?;
 
-    let config_file: ConfigFile =
-        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
+    let config_file: ConfigFile = serde_yaml::from_str(&content).unwrap_or_else(|_| {
+        eprintln!("{}", "error parsing config file.".red());
+        eprintln!("Run 'hotdata auth login' to generate a new config file.");
+        std::process::exit(1);
+    });
 
     let mut profile_config = config_file
         .profiles
