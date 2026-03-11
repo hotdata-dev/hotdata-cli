@@ -62,6 +62,12 @@ pub enum Commands {
         command: TablesCommands,
     },
 
+    /// Manage the hotdata-cli agent skill
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommands,
+    },
+
     /// Retrieve a stored query result by ID
     Results {
         /// Result ID
@@ -426,6 +432,18 @@ pub enum ConnectionsCommands {
         /// Connection ID
         connection_id: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum SkillCommands {
+    /// Install or update the hotdata-cli skill into agent directories
+    Install {
+        /// Install into the current project directory instead of globally
+        #[arg(long)]
+        project: bool,
+    },
+    /// Show the installation status of the hotdata-cli skill
+    Status,
 }
 
 #[derive(Subcommand)]
