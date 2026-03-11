@@ -83,7 +83,7 @@ fn is_managed_by_skills_agent() -> bool {
 
 fn download_and_extract() -> Result<(), String> {
     let url = download_url();
-    println!("Downloading from {url}...");
+    println!("Downloading skill...");
 
     let client = reqwest::blocking::Client::new();
     let resp = client
