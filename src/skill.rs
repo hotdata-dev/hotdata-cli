@@ -108,7 +108,6 @@ fn download_and_extract() -> Result<(), String> {
         let mut entry = entry.map_err(|e| format!("error reading archive entry: {e}"))?;
         let path = entry.path().map_err(|e| format!("error reading entry path: {e}"))?.into_owned();
 
-        // Strip leading "skills/" prefix so we extract into store_dir
         let rel = match path.strip_prefix("skills/") {
             Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
             _ => continue,
@@ -145,14 +144,15 @@ fn ensure_symlink_or_copy(src: &PathBuf, link_path: &PathBuf) -> Result<bool, St
             .map_err(|e| format!("error creating {}: {e}", parent.display()))?;
     }
 
-    // Remove existing symlink (handles updates); leave real directories alone
-    if link_path.symlink_metadata().is_ok() && link_path.is_symlink() {
-        fs::remove_file(link_path)
-            .map_err(|e| format!("error removing old symlink: {e}"))?;
-    }
-
-    if link_path.exists() {
-        return Ok(false); // real directory, leave it
+    // Remove any existing symlink or directory so we can (re)create it
+    if link_path.symlink_metadata().is_ok() {
+        if link_path.is_symlink() {
+            fs::remove_file(link_path)
+                .map_err(|e| format!("error removing old symlink: {e}"))?;
+        } else {
+            fs::remove_dir_all(link_path)
+                .map_err(|e| format!("error removing old directory: {e}"))?;
+        }
     }
 
     // Try symlink first, fall back to copy
