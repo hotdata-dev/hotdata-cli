@@ -28,6 +28,8 @@ impl Table {
 #[derive(Deserialize)]
 struct ListResponse {
     tables: Vec<Table>,
+    has_more: bool,
+    next_cursor: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -44,7 +46,15 @@ struct TableWithColumns {
     columns: Vec<Column>,
 }
 
-pub fn list(workspace_id: &str, connection_id: Option<&str>, format: &str) {
+pub fn list(
+    workspace_id: &str,
+    connection_id: Option<&str>,
+    schema: Option<&str>,
+    table_filter: Option<&str>,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+    format: &str,
+) {
     let profile_config = match config::load("default") {
         Ok(c) => c,
         Err(e) => {
@@ -61,9 +71,27 @@ pub fn list(workspace_id: &str, connection_id: Option<&str>, format: &str) {
         }
     };
 
+    let mut params: Vec<String> = Vec::new();
+    if let Some(id) = connection_id {
+        params.push(format!("connection_id={id}"));
+        params.push("include_columns=true".to_string());
+    }
+    if let Some(s) = schema {
+        params.push(format!("schema={s}"));
+    }
+    if let Some(t) = table_filter {
+        params.push(format!("table={t}"));
+    }
+    if let Some(l) = limit {
+        params.push(format!("limit={l}"));
+    }
+    if let Some(c) = cursor {
+        params.push(format!("cursor={c}"));
+    }
+
     let mut url = format!("{}/information_schema", profile_config.api_url);
-    if let Some(conn_id) = connection_id {
-        url.push_str(&format!("?connection_id={conn_id}"));
+    if !params.is_empty() {
+        url.push_str(&format!("?{}", params.join("&")));
     }
 
     let client = reqwest::blocking::Client::new();
@@ -93,6 +121,9 @@ pub fn list(workspace_id: &str, connection_id: Option<&str>, format: &str) {
             std::process::exit(1);
         }
     };
+
+    let has_more = body.has_more;
+    let next_cursor = body.next_cursor.clone();
 
     if connection_id.is_some() {
         let out: Vec<TableWithColumns> = body.tables.into_iter()
@@ -131,5 +162,10 @@ pub fn list(workspace_id: &str, connection_id: Option<&str>, format: &str) {
             }
             _ => unreachable!(),
         }
+    }
+
+    if has_more {
+        use crossterm::style::Stylize;
+        eprintln!("{}", format!("More results available. Use --cursor {} to fetch the next page.", next_cursor.as_deref().unwrap_or("")).dark_grey());
     }
 }

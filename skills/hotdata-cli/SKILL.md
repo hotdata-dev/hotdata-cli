@@ -40,13 +40,15 @@ Routes via API gateway using `X-Workspace-Id` header.
 
 ### List Tables and Columns
 ```
-hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection_id>] [--format table|json|yaml]
+hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection_id>] [--schema <pattern>] [--table <pattern>] [--limit <int>] [--cursor <cursor>] [--format table|json|yaml]
 ```
 - Default format is `table`.
 - **Always use this command to inspect available tables and columns.** Do NOT use the `query` command to query `information_schema` for this purpose.
 - Without `--connection-id`: lists all tables with `table`, `synced`, `last_sync`. The `table` column is formatted as `<connection>.<schema>.<table>`.
-- With `--connection-id`: lists each column as its own row with `table`, `column`, `data_type`, `nullable`. The `table` column is formatted as `<connection>.<schema>.<table>`. Use this to inspect the schema before writing queries.
+- With `--connection-id`: includes column definitions. Lists each column as its own row with `table`, `column`, `data_type`, `nullable`. Use this to inspect the schema before writing queries.
 - **Always use the full `<connection>.<schema>.<table>` name when referencing tables in SQL queries.**
+- `--schema` and `--table` support SQL `%` wildcard patterns (e.g. `--table order%` matches `orders`, `order_items`, etc.).
+- Results are paginated (default 100 per page). If more results are available, a `--cursor` token is printed — pass it to fetch the next page.
 
 ### Execute SQL Query
 ```

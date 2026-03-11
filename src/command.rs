@@ -436,9 +436,25 @@ pub enum TablesCommands {
         #[arg(long)]
         workspace_id: Option<String>,
 
-        /// Filter by connection ID
+        /// Filter by connection ID (also enables column output)
         #[arg(long)]
         connection_id: Option<String>,
+
+        /// Filter by schema name (supports % wildcards)
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Filter by table name (supports % wildcards)
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Maximum number of results to return
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination cursor from a previous response
+        #[arg(long)]
+        cursor: Option<String>,
 
         /// Output format
         #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]

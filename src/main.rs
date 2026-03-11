@@ -77,9 +77,9 @@ fn main() {
                 _ => eprintln!("not yet implemented"),
             },
             Commands::Tables { command } => match command {
-                TablesCommands::List { workspace_id, connection_id, format } => {
+                TablesCommands::List { workspace_id, connection_id, schema, table, limit, cursor, format } => {
                     let workspace_id = resolve_workspace(workspace_id);
-                    tables::list(&workspace_id, connection_id.as_deref(), &format)
+                    tables::list(&workspace_id, connection_id.as_deref(), schema.as_deref(), table.as_deref(), limit, cursor.as_deref(), &format)
                 }
             },
             Commands::Results { result_id, workspace_id, format } => {
