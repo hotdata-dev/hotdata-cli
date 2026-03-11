@@ -27,10 +27,16 @@ rand = "0.8"
 sha2 = "0.10"
 tiny_http = "0.12"
 comfy-table = "7"
+flate2 = "1"
+tar = "0.4"
+semver = "1"
 
 [package.metadata.release]
 pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}" ]
 publish = false
+pre-release-replacements = [
+  { file = "skills/hotdata-cli/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
+]
 
 # The profile that 'dist' will build with
 [profile.dist]

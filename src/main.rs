@@ -5,13 +5,14 @@ mod connections;
 mod init;
 mod query;
 mod results;
+mod skill;
 mod tables;
 mod util;
 mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("HotData CLI - Command line interface for HotData (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -81,6 +82,12 @@ fn main() {
                     let workspace_id = resolve_workspace(workspace_id);
                     tables::list(&workspace_id, connection_id.as_deref(), schema.as_deref(), table.as_deref(), limit, cursor.as_deref(), &format)
                 }
+            },
+            Commands::Skill { command } => match command {
+                SkillCommands::Install { project } => {
+                    if project { skill::install_project() } else { skill::install() }
+                }
+                SkillCommands::Status => skill::status(),
             },
             Commands::Results { result_id, workspace_id, format } => {
                 let workspace_id = resolve_workspace(workspace_id);

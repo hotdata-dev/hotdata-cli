@@ -20,3 +20,7 @@ install-path = "~/.hotdata/cli"
 publish-jobs = ["homebrew"]
 # Whether to install an updater program
 install-updater = false
+
+[[dist.extra-artifacts]]
+artifacts = ["skills.tar.gz"]
+build = ["tar", "-czf", "skills.tar.gz", "skills/"]
