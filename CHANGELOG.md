@@ -1,3 +1,14 @@
+## [0.1.3] - 2026-03-11
+
+### 🚀 Features
+
+- *(results)* Add query result retrieval via results command
+- *(workspaces)* Default workspace support for CLI commands
+- *(tables)* Add search and pagination to tables list command
+
+### 🎨 Styling
+
+- Format table list output with full table path <connection>.<schema>.<name>
 ## [0.1.2] - 2026-03-10
 
 ### 🚀 Features
