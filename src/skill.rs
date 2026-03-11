@@ -95,7 +95,9 @@ fn download_and_extract() -> Result<(), String> {
         return Err(format!("error downloading skill: HTTP {}", resp.status()));
     }
 
-    let bytes = resp.bytes().map_err(|e| format!("error reading response: {e}"))?;
+    let bytes = resp
+        .bytes()
+        .map_err(|e| format!("error reading response: {e}"))?;
 
     // Extract into ~/.hotdata/skills/
     let store_dir = home_dir().join(".hotdata").join("skills");
@@ -104,9 +106,15 @@ fn download_and_extract() -> Result<(), String> {
     let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
     let mut archive = tar::Archive::new(gz);
 
-    for entry in archive.entries().map_err(|e| format!("error reading archive: {e}"))? {
+    for entry in archive
+        .entries()
+        .map_err(|e| format!("error reading archive: {e}"))?
+    {
         let mut entry = entry.map_err(|e| format!("error reading archive entry: {e}"))?;
-        let path = entry.path().map_err(|e| format!("error reading entry path: {e}"))?.into_owned();
+        let path = entry
+            .path()
+            .map_err(|e| format!("error reading entry path: {e}"))?
+            .into_owned();
 
         let rel = match path.strip_prefix("skills/") {
             Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
@@ -117,12 +125,13 @@ fn download_and_extract() -> Result<(), String> {
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("error creating directory: {e}"))?;
         }
-        entry.unpack(&dest).map_err(|e| format!("error extracting {}: {e}", rel.display()))?;
+        entry
+            .unpack(&dest)
+            .map_err(|e| format!("error extracting {}: {e}", rel.display()))?;
     }
 
     Ok(())
 }
-
 
 fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| format!("error creating directory: {e}"))?;
@@ -147,8 +156,7 @@ fn ensure_symlink_or_copy(src: &PathBuf, link_path: &PathBuf) -> Result<bool, St
     // Remove any existing symlink or directory so we can (re)create it
     if link_path.symlink_metadata().is_ok() {
         if link_path.is_symlink() {
-            fs::remove_file(link_path)
-                .map_err(|e| format!("error removing old symlink: {e}"))?;
+            fs::remove_file(link_path).map_err(|e| format!("error removing old symlink: {e}"))?;
         } else {
             fs::remove_dir_all(link_path)
                 .map_err(|e| format!("error removing old directory: {e}"))?;
@@ -198,7 +206,11 @@ pub fn install_project() {
     match read_installed_version() {
         Some(ref v) if *v >= current => {}
         Some(ref v) => {
-            println!("{}", format!("Global skill is outdated (v{v}), downloading v{current} first...").yellow());
+            println!(
+                "{}",
+                format!("Global skill is outdated (v{v}), downloading v{current} first...")
+                    .yellow()
+            );
             if let Err(e) = download_and_extract() {
                 eprintln!("{}", e.red());
                 std::process::exit(1);
@@ -218,26 +230,43 @@ pub fn install_project() {
 
     // Always copy (not symlink) from store to .agents/skills/hotdata-cli
     if project_agents.exists() {
-        fs::remove_dir_all(&project_agents)
-            .unwrap_or_else(|e| { eprintln!("{}", format!("error removing existing directory: {e}").red()); std::process::exit(1); });
+        fs::remove_dir_all(&project_agents).unwrap_or_else(|e| {
+            eprintln!(
+                "{}",
+                format!("error removing existing directory: {e}").red()
+            );
+            std::process::exit(1);
+        });
     }
     if let Some(parent) = project_agents.parent() {
-        fs::create_dir_all(parent).unwrap_or_else(|e| { eprintln!("{}", format!("error creating directory: {e}").red()); std::process::exit(1); });
+        fs::create_dir_all(parent).unwrap_or_else(|e| {
+            eprintln!("{}", format!("error creating directory: {e}").red());
+            std::process::exit(1);
+        });
     }
-    copy_dir_recursive(&store_path, &project_agents).unwrap_or_else(|e| { eprintln!("{}", e.red()); std::process::exit(1); });
+    copy_dir_recursive(&store_path, &project_agents).unwrap_or_else(|e| {
+        eprintln!("{}", e.red());
+        std::process::exit(1);
+    });
 
-    println!("{}", format!("Skill installed to project (v{current}).").green());
-    println!("{:<20}{}", "Location:", project_agents.display().to_string().cyan());
+    let rel_agents = project_agents.strip_prefix(&cwd).unwrap_or(&project_agents);
+
+    println!(
+        "{}",
+        format!("Skill installed to project (v{current}).").green()
+    );
+    println!("{:<20}{}", "Location:", rel_agents.display().to_string().cyan());
 
     // For .claude and .pi in cwd: symlink (fallback copy) from .agents/skills/hotdata-cli
     for root in AGENT_ROOTS {
         let root_path = cwd.join(root);
         if root_path.exists() {
             let link_path = root_path.join("skills").join(SKILL_NAME);
+            let rel_link = link_path.strip_prefix(&cwd).unwrap_or(&link_path);
             match ensure_symlink_or_copy(&project_agents, &link_path) {
-                Ok(true) => println!("{:<20}{}", format!("~/{root}:"), link_path.display().to_string().cyan()),
-                Ok(false) => println!("{:<20}{} (copied)", format!("~/{root}:"), link_path.display().to_string().cyan()),
-                Err(e) => eprintln!("{}", format!("~/{root}: failed: {e}").red()),
+                Ok(true) => println!("{:<20}{}", format!("./{root}:"), rel_link.display().to_string().cyan()),
+                Ok(false) => println!("{:<20}{} (copied)", format!("./{root}:"), rel_link.display().to_string().cyan()),
+                Err(e) => eprintln!("{}", format!("./{root}: failed: {e}").red()),
             }
         }
     }
@@ -253,7 +282,11 @@ pub fn install() {
                 return;
             }
             Some(ref v) => {
-                println!("{}", format!("Managed by skills agent — updating from v{v} to v{current}...").yellow());
+                println!(
+                    "{}",
+                    format!("Managed by skills agent — updating from v{v} to v{current}...")
+                        .yellow()
+                );
             }
             None => {
                 println!("Managed by skills agent — skipping.");
@@ -278,7 +311,10 @@ pub fn install() {
 
     let symlinks = ensure_symlinks();
 
-    println!("{}", format!("Skill installed successfully (v{current}).").green());
+    println!(
+        "{}",
+        format!("Skill installed successfully (v{current}).").green()
+    );
     println!("{:<20}{}", "Location:", skill_store_path().display());
 
     for (label, path, result) in &symlinks {
@@ -295,7 +331,6 @@ pub fn status() {
     let store_path = skill_store_path();
     let current = Version::parse(CURRENT_VERSION).expect("invalid package version");
 
-    let managed = is_managed_by_skills_agent();
     let installed_version = read_installed_version();
     let exists = store_path.exists();
 
@@ -313,31 +348,41 @@ pub fn status() {
 
     match &installed_version {
         Some(v) if *v < current => {
-            row("Version", &format!("{} (outdated, current is v{current})", v.to_string().yellow()));
+            row(
+                "Version",
+                &format!(
+                    "{} (outdated, current is v{current})",
+                    v.to_string().yellow()
+                ),
+            );
         }
         Some(v) => row("Version", &v.to_string().green().to_string()),
         None => row("Version", &"unknown".dark_grey().to_string()),
     }
 
-    row("Location", &store_path.display().to_string().cyan().to_string());
-    row("Managed by", &if managed { "skills agent".to_string() } else { "direct".dark_grey().to_string() });
-
-    // Show symlink status for each agent root
     let home = home_dir();
-    for root in AGENT_ROOTS {
-        let root_path = home.join(root);
-        let link_path = root_path.join("skills").join(SKILL_NAME);
-        let label = format!("~/{root}");
 
-        if !root_path.exists() {
-            row(&label, &"not installed".dark_grey().to_string());
-        } else if link_path.is_symlink() {
-            row(&label, &link_path.display().to_string().cyan().to_string());
-        } else if link_path.exists() {
-            row(&label, &"installed (not symlinked)".yellow().to_string());
-        } else {
-            row(&label, &"agent detected, not symlinked".yellow().to_string());
+    // Collect installed agent skill paths
+    let agents_path = agents_skill_path();
+    let mut installed_agents: Vec<String> = Vec::new();
+
+    if agents_path.exists() {
+        installed_agents.push("~/.agents".to_string());
+    }
+    for root in AGENT_ROOTS {
+        let link_path = home.join(root).join("skills").join(SKILL_NAME);
+        if link_path.exists() {
+            installed_agents.push(format!("~/{root}"));
         }
+    }
+
+    if installed_agents.is_empty() {
+        row("Agent Skills", &"none".dark_grey().to_string());
+    } else {
+        row(
+            "Agent Skills Added",
+            &installed_agents.join(", ").cyan().to_string(),
+        );
     }
 
     if installed_version.map_or(false, |v| v < current) {
