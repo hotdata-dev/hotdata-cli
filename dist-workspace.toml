@@ -24,3 +24,7 @@ install-updater = false
 [[dist.extra-artifacts]]
 artifacts = ["skills.tar.gz"]
 build = ["tar", "-czf", "skills.tar.gz", "skills/"]
+
+[[dist.extra-artifacts]]
+artifacts = ["SKILL.md"]
+build = ["cp", "skills/hotdata-cli/SKILL.md", "SKILL.md"]
