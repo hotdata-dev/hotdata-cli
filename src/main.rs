@@ -2,6 +2,7 @@ mod auth;
 mod command;
 mod config;
 mod connections;
+mod datasets;
 mod init;
 mod query;
 mod results;
@@ -12,7 +13,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, DatasetsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("HotData CLI - Command line interface for HotData (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -60,7 +61,13 @@ fn main() {
                 AuthCommands::Status { profile } => auth::status(&profile),
                 _ => eprintln!("not yet implemented"),
             },
-            Commands::Datasets { .. } => eprintln!("not yet implemented"),
+            Commands::Datasets { command } => match command {
+                DatasetsCommands::Create { workspace_id, label, table_name, file } => {
+                    let workspace_id = resolve_workspace(workspace_id);
+                    datasets::create(&workspace_id, label.as_deref(), table_name.as_deref(), file.as_deref())
+                }
+                _ => eprintln!("not yet implemented"),
+            },
             Commands::Query { sql, workspace_id, connection, format } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 query::execute(&sql, &workspace_id, connection.as_deref(), &format)

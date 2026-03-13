@@ -178,27 +178,23 @@ pub enum DatasetsCommands {
         format: String,
     },
 
-    /// Create a new dataset in a workspace
+    /// Create a new dataset from a file or piped stdin
     Create {
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long)]
         workspace_id: Option<String>,
 
-        /// Dataset name
+        /// Dataset label (derived from filename if omitted)
         #[arg(long)]
-        name: String,
+        label: Option<String>,
 
-        /// SQL query for the dataset
+        /// Table name (derived from label if omitted)
         #[arg(long)]
-        sql: Option<String>,
+        table_name: Option<String>,
 
-        /// Connection ID for the dataset
+        /// Path to a file to upload (omit to read from stdin)
         #[arg(long)]
-        connection_id: Option<String>,
-
-        /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        file: Option<String>,
     },
 
     /// Update a dataset in a workspace
@@ -264,6 +260,7 @@ pub enum DatasetsCommands {
         #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
         format: String,
     },
+
 }
 
 
