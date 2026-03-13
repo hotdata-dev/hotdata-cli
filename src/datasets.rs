@@ -180,7 +180,7 @@ fn upload_from_file(
     let ft = detect_from_path(path).unwrap_or_else(|| {
         use std::io::Read;
         let mut probe = [0u8; 512];
-        let n = match std::fs::File::open(path) {
+        let n = { use std::io::Read; f.read(&mut probe).unwrap_or(0) };
             Ok(mut f2) => f2.read(&mut probe).unwrap_or(0),
             Err(_) => 0,
         };
