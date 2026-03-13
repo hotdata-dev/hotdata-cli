@@ -166,10 +166,6 @@ pub enum AuthKeysCommands {
 pub enum DatasetsCommands {
     /// List all datasets in a workspace
     List {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
         /// Maximum number of results (default: 100, max: 1000)
         #[arg(long)]
         limit: Option<u32>,
@@ -185,10 +181,6 @@ pub enum DatasetsCommands {
 
     /// Create a new dataset from a file or piped stdin
     Create {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
         /// Dataset label (derived from filename if omitted)
         #[arg(long)]
         label: Option<String>,

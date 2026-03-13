@@ -67,12 +67,10 @@ fn main() {
                     datasets::get(&id, &workspace_id, &format)
                 } else {
                     match command {
-                        Some(DatasetsCommands::List { workspace_id: ws, limit, offset, format }) => {
-                            let workspace_id = resolve_workspace(ws);
+                        Some(DatasetsCommands::List { limit, offset, format }) => {
                             datasets::list(&workspace_id, limit, offset, &format)
                         }
-                        Some(DatasetsCommands::Create { workspace_id: ws, label, table_name, file }) => {
-                            let workspace_id = resolve_workspace(ws);
+                        Some(DatasetsCommands::Create { label, table_name, file }) => {
                             datasets::create(&workspace_id, label.as_deref(), table_name.as_deref(), file.as_deref())
                         }
                         None => {
