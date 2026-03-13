@@ -169,7 +169,7 @@ fn upload_from_file(
     api_url: &str,
     path: &str,
 ) -> (String, &'static str) {
-    let f = match std::fs::File::open(path) {
+    let mut f = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("error opening file '{path}': {e}");
@@ -180,10 +180,7 @@ fn upload_from_file(
     let ft = detect_from_path(path).unwrap_or_else(|| {
         use std::io::Read;
         let mut probe = [0u8; 512];
-        let n = { use std::io::Read; f.read(&mut probe).unwrap_or(0) };
-            Ok(mut f2) => f2.read(&mut probe).unwrap_or(0),
-            Err(_) => 0,
-        };
+        let n = f.read(&mut probe).unwrap_or(0);
         detect_from_bytes(&probe[..n])
     });
 
