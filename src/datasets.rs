@@ -14,6 +14,13 @@ struct Dataset {
 }
 
 #[derive(Deserialize)]
+struct CreateResponse {
+    id: String,
+    label: String,
+    table_name: String,
+}
+
+#[derive(Deserialize)]
 struct ListResponse {
     datasets: Vec<Dataset>,
     count: u64,
@@ -201,16 +208,19 @@ fn upload_from_stdin(
     api_url: &str,
 ) -> (String, &'static str) {
     use std::io::Read;
-    let mut buf = Vec::new();
-    if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
-        eprintln!("error reading stdin: {e}");
-        std::process::exit(1);
-    }
+    let mut probe = [0u8; 512];
+    let n = std::io::stdin().read(&mut probe).unwrap_or(0);
+    let ft = detect_from_bytes(&probe[..n]);
 
-    let ft = detect_from_bytes(&buf);
-    let total = buf.len() as u64;
-    let pb = make_progress_bar(total);
-    let reader = pb.wrap_read(std::io::Cursor::new(buf));
+    let reader = std::io::Cursor::new(probe[..n].to_vec()).chain(std::io::stdin());
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.green} {bytes} uploaded ({elapsed})")
+            .unwrap(),
+    );
+    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+    let reader = pb.wrap_read(reader);
 
     let id = do_upload(client, api_key, workspace_id, api_url, ft.content_type, reader, pb);
     (id, ft.format)
@@ -305,7 +315,7 @@ pub fn create(
         std::process::exit(1);
     }
 
-    let dataset: Dataset = match resp.json() {
+    let dataset: CreateResponse = match resp.json() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error parsing response: {e}");
