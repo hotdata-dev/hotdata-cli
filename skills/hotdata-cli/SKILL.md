@@ -1,6 +1,6 @@
 ---
 name: hotdata-cli
-description: Use this skill when the user wants to run hotdata CLI commands, query the HotData API, list workspaces, list connections, list tables, execute SQL queries, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "list tables", "execute a query", or asks you to use the hotdata CLI.
+description: Use this skill when the user wants to run hotdata CLI commands, query the HotData API, list workspaces, list connections, list tables, manage datasets, execute SQL queries, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", or asks you to use the hotdata CLI.
 version: 0.1.3
 ---
 
@@ -49,6 +49,46 @@ hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection
 - **Always use the full `<connection>.<schema>.<table>` name when referencing tables in SQL queries.**
 - `--schema` and `--table` support SQL `%` wildcard patterns (e.g. `--table order%` matches `orders`, `order_items`, etc.).
 - Results are paginated (default 100 per page). If more results are available, a `--cursor` token is printed — pass it to fetch the next page.
+
+### Datasets
+
+Datasets are managed files uploaded to HotData and queryable as tables.
+
+#### List datasets
+```
+hotdata datasets list [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--format table|json|yaml]
+```
+- Default format is `table`.
+- Returns `id`, `label`, `table_name`, `created_at`.
+- Results are paginated (default 100). Use `--offset` to fetch further pages.
+
+#### Get dataset details
+```
+hotdata datasets <dataset_id> [--workspace-id <workspace_id>] [--format table|json|yaml]
+```
+- Shows dataset metadata and a full column listing with `name`, `data_type`, `nullable`.
+- Use this to inspect schema before querying.
+
+#### Create a dataset
+```
+hotdata datasets create --label "My Dataset" --file data.csv [--table-name my_dataset] [--workspace-id <workspace_id>]
+```
+- `--file` uploads a local file. Omit to pipe data via stdin: `cat data.csv | hotdata datasets create --label "My Dataset"`
+- Format is auto-detected from file extension (`.csv`, `.json`, `.parquet`) or file content.
+- `--label` is optional when `--file` is provided — defaults to the filename without extension.
+- `--table-name` is optional — derived from the label if omitted.
+
+#### Querying datasets
+
+Datasets are queryable using the catalog `datasets` and schema `main`. Always reference dataset tables as:
+```
+datasets.main.<table_name>
+```
+For example:
+```
+hotdata query "SELECT * FROM datasets.main.my_dataset LIMIT 10"
+```
+Use `hotdata datasets <dataset_id>` to look up the `table_name` before writing queries.
 
 ### Execute SQL Query
 ```
