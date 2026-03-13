@@ -1,14 +1,42 @@
 use crate::config;
 use indicatif::{ProgressBar, ProgressStyle};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::Path;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct Dataset {
     id: String,
     label: String,
     table_name: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Deserialize)]
+struct ListResponse {
+    datasets: Vec<Dataset>,
+    count: u64,
+    has_more: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Column {
+    name: String,
+    data_type: String,
+    nullable: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DatasetDetail {
+    id: String,
+    label: String,
+    schema_name: String,
+    table_name: String,
+    source_type: String,
+    created_at: String,
+    updated_at: String,
+    columns: Vec<Column>,
 }
 
 struct FileType {
@@ -292,4 +320,153 @@ pub fn create(
     println!("id:         {}", dataset.id);
     println!("label:      {}", dataset.label);
     println!("table_name: {}", dataset.table_name);
+}
+
+pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
+    let profile_config = match config::load("default") {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let api_key = match &profile_config.api_key {
+        Some(key) if key != "PLACEHOLDER" => key.clone(),
+        _ => {
+            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            std::process::exit(1);
+        }
+    };
+
+    let mut url = format!("{}/datasets", profile_config.api_url);
+    let mut params = vec![];
+    if let Some(l) = limit { params.push(format!("limit={l}")); }
+    if let Some(o) = offset { params.push(format!("offset={o}")); }
+    if !params.is_empty() { url = format!("{url}?{}", params.join("&")); }
+
+    let client = reqwest::blocking::Client::new();
+    let resp = match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("X-Workspace-Id", workspace_id)
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error connecting to API: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !resp.status().is_success() {
+        use crossterm::style::Stylize;
+        eprintln!("{}", api_error(resp.text().unwrap_or_default()).red());
+        std::process::exit(1);
+    }
+
+    let body: ListResponse = match resp.json() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&body.datasets).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&body.datasets).unwrap()),
+        "table" => {
+            let mut table = crate::util::make_table();
+            table.set_header(["ID", "LABEL", "TABLE NAME", "CREATED AT"]);
+            table.column_mut(1).unwrap().set_constraint(
+                comfy_table::ColumnConstraint::UpperBoundary(comfy_table::Width::Fixed(30))
+            );
+            for d in &body.datasets {
+                let created_at = d.created_at.split('.').next().unwrap_or(&d.created_at).replace('T', " ");
+                table.add_row([&d.id, &d.label, &d.table_name, &created_at]);
+            }
+            println!("{table}");
+            if body.has_more {
+                let next = offset.unwrap_or(0) + body.count as u32;
+                use crossterm::style::Stylize;
+                eprintln!("{}", format!("showing {} results — use --offset {next} for more", body.count).dark_grey());
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
+    let profile_config = match config::load("default") {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let api_key = match &profile_config.api_key {
+        Some(key) if key != "PLACEHOLDER" => key.clone(),
+        _ => {
+            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            std::process::exit(1);
+        }
+    };
+
+    let url = format!("{}/datasets/{dataset_id}", profile_config.api_url);
+    let client = reqwest::blocking::Client::new();
+
+    let resp = match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("X-Workspace-Id", workspace_id)
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error connecting to API: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !resp.status().is_success() {
+        use crossterm::style::Stylize;
+        eprintln!("{}", api_error(resp.text().unwrap_or_default()).red());
+        std::process::exit(1);
+    }
+
+    let d: DatasetDetail = match resp.json() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&d).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&d).unwrap()),
+        "table" => {
+            let created_at = d.created_at.split('.').next().unwrap_or(&d.created_at).replace('T', " ");
+            let updated_at = d.updated_at.split('.').next().unwrap_or(&d.updated_at).replace('T', " ");
+            println!("id:          {}", d.id);
+            println!("label:       {}", d.label);
+            println!("schema:      {}", d.schema_name);
+            println!("table:       {}", d.table_name);
+            println!("source_type: {}", d.source_type);
+            println!("created_at:  {created_at}");
+            println!("updated_at:  {updated_at}");
+            if !d.columns.is_empty() {
+                println!();
+                let mut table = crate::util::make_table();
+                table.set_header(["COLUMN", "DATA TYPE", "NULLABLE"]);
+                for col in &d.columns {
+                    table.add_row([&col.name, &col.data_type, &col.nullable.to_string()]);
+                }
+                println!("{table}");
+            }
+        }
+        _ => unreachable!(),
+    }
 }

@@ -16,8 +16,19 @@ pub enum Commands {
 
     /// Manage datasets
     Datasets {
+        /// Dataset ID to show details
+        id: Option<String>,
+
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
+
+        /// Output format (used with dataset ID)
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+
         #[command(subcommand)]
-        command: DatasetsCommands,
+        command: Option<DatasetsCommands>,
     },
 
     /// Execute a SQL query
@@ -159,22 +170,16 @@ pub enum DatasetsCommands {
         #[arg(long)]
         workspace_id: Option<String>,
 
-        /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
-    },
-
-    /// Get details for a specific dataset
-    Get {
-        /// Workspace ID (defaults to first workspace from login)
+        /// Maximum number of results (default: 100, max: 1000)
         #[arg(long)]
-        workspace_id: Option<String>,
+        limit: Option<u32>,
 
-        /// Dataset ID
-        dataset_id: String,
+        /// Pagination offset
+        #[arg(long)]
+        offset: Option<u32>,
 
         /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
         format: String,
     },
 
@@ -195,70 +200,6 @@ pub enum DatasetsCommands {
         /// Path to a file to upload (omit to read from stdin)
         #[arg(long)]
         file: Option<String>,
-    },
-
-    /// Update a dataset in a workspace
-    Update {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
-        /// Dataset ID
-        dataset_id: String,
-
-        /// New dataset name
-        #[arg(long)]
-        name: Option<String>,
-
-        /// New SQL query for the dataset
-        #[arg(long)]
-        query: Option<String>,
-
-        /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
-    },
-
-    /// Delete a dataset from a workspace
-    Delete {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
-        /// Dataset ID
-        dataset_id: String,
-    },
-
-    /// Update the SQL query for a dataset
-    UpdateSql {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
-        /// Dataset ID
-        dataset_id: String,
-
-        /// New SQL query for the dataset
-        #[arg(long)]
-        sql: String,
-
-        /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
-    },
-
-    /// Execute a dataset
-    Execute {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
-        /// Dataset ID
-        dataset_id: String,
-
-        /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
     },
 
 }

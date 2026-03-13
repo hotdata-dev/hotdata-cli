@@ -61,13 +61,28 @@ fn main() {
                 AuthCommands::Status { profile } => auth::status(&profile),
                 _ => eprintln!("not yet implemented"),
             },
-            Commands::Datasets { command } => match command {
-                DatasetsCommands::Create { workspace_id, label, table_name, file } => {
-                    let workspace_id = resolve_workspace(workspace_id);
-                    datasets::create(&workspace_id, label.as_deref(), table_name.as_deref(), file.as_deref())
+            Commands::Datasets { id, workspace_id, format, command } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                if let Some(id) = id {
+                    datasets::get(&id, &workspace_id, &format)
+                } else {
+                    match command {
+                        Some(DatasetsCommands::List { workspace_id: ws, limit, offset, format }) => {
+                            let workspace_id = resolve_workspace(ws);
+                            datasets::list(&workspace_id, limit, offset, &format)
+                        }
+                        Some(DatasetsCommands::Create { workspace_id: ws, label, table_name, file }) => {
+                            let workspace_id = resolve_workspace(ws);
+                            datasets::create(&workspace_id, label.as_deref(), table_name.as_deref(), file.as_deref())
+                        }
+                        None => {
+                            use clap::CommandFactory;
+                            Cli::command().find_subcommand_mut("datasets").unwrap().print_help().unwrap();
+                            println!();
+                        }
+                    }
                 }
-                _ => eprintln!("not yet implemented"),
-            },
+            }
             Commands::Query { sql, workspace_id, connection, format } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 query::execute(&sql, &workspace_id, connection.as_deref(), &format)
