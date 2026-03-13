@@ -319,7 +319,7 @@ pub fn create(
     println!("{}", "Dataset created".green());
     println!("id:         {}", dataset.id);
     println!("label:      {}", dataset.label);
-    println!("table_name: {}", dataset.table_name);
+    println!("full_name:  datasets.main.{}", dataset.table_name);
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
@@ -378,13 +378,14 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
         "yaml" => print!("{}", serde_yaml::to_string(&body.datasets).unwrap()),
         "table" => {
             let mut table = crate::util::make_table();
-            table.set_header(["ID", "LABEL", "TABLE NAME", "CREATED AT"]);
+            table.set_header(["ID", "LABEL", "FULL NAME", "CREATED AT"]);
             table.column_mut(1).unwrap().set_constraint(
                 comfy_table::ColumnConstraint::UpperBoundary(comfy_table::Width::Fixed(30))
             );
             for d in &body.datasets {
                 let created_at = d.created_at.split('.').next().unwrap_or(&d.created_at).replace('T', " ");
-                table.add_row([&d.id, &d.label, &d.table_name, &created_at]);
+                let full_name = format!("datasets.main.{}", d.table_name);
+                table.add_row([&d.id, &d.label, &full_name, &created_at]);
             }
             println!("{table}");
             if body.has_more {
@@ -452,8 +453,7 @@ pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
             let updated_at = d.updated_at.split('.').next().unwrap_or(&d.updated_at).replace('T', " ");
             println!("id:          {}", d.id);
             println!("label:       {}", d.label);
-            println!("schema:      {}", d.schema_name);
-            println!("table:       {}", d.table_name);
+            println!("full_name:   datasets.main.{}", d.table_name);
             println!("source_type: {}", d.source_type);
             println!("created_at:  {created_at}");
             println!("updated_at:  {updated_at}");
