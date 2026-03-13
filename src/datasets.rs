@@ -178,9 +178,10 @@ fn upload_from_file(
     };
 
     let ft = detect_from_path(path).unwrap_or_else(|| {
-        use std::io::Read;
+        use std::io::{Read, Seek};
         let mut probe = [0u8; 512];
         let n = f.read(&mut probe).unwrap_or(0);
+        let _ = f.seek(std::io::SeekFrom::Start(0));
         detect_from_bytes(&probe[..n])
     });
 
