@@ -1,6 +1,6 @@
 # hotdata-cli
 
-Command line interface for [HotData](https://www.hotdata.dev).
+Command line interface for [Hotdata](https://www.hotdata.dev).
 
 ## Installation
 
