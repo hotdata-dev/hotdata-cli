@@ -92,9 +92,12 @@ fn main() {
             },
             Commands::Connections { command } => match command {
                 ConnectionsCommands::Create { command } => match command {
-                    ConnectionsCreateCommands::List { workspace_id, format } => {
+                    ConnectionsCreateCommands::List { name, workspace_id, format } => {
                         let workspace_id = resolve_workspace(workspace_id);
-                        connections::types_list(&workspace_id, &format)
+                        match name.as_deref() {
+                            Some(name) => connections::types_get(&workspace_id, name, &format),
+                            None => connections::types_list(&workspace_id, &format),
+                        }
                     },
                 },
                 ConnectionsCommands::List { workspace_id, format } => {

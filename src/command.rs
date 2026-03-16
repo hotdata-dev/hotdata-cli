@@ -287,8 +287,11 @@ pub enum WorkspaceCommands {
 
 #[derive(Subcommand)]
 pub enum ConnectionsCreateCommands {
-    /// List available connection types
+    /// List available connection types, or get details for a specific type
     List {
+        /// Connection type name (e.g. postgres, mysql); omit to list all
+        name: Option<String>,
+
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long)]
         workspace_id: Option<String>,
