@@ -231,6 +231,8 @@ pub fn create(
     label: Option<&str>,
     table_name: Option<&str>,
     file: Option<&str>,
+    upload_id: Option<&str>,
+    source_format: &str,
 ) {
     let profile_config = match config::load("default") {
         Ok(c) => c,
@@ -260,31 +262,42 @@ pub fn create(
                     .to_string();
                 &label_derived
             }
-            None => match stdin_redirect_filename() {
-                Some(name) => {
-                    label_derived = name;
-                    &label_derived
-                }
-                None => {
+            None => {
+                if upload_id.is_some() {
                     eprintln!("error: no label provided. Use --label to name the dataset.");
                     std::process::exit(1);
                 }
-            },
+                match stdin_redirect_filename() {
+                    Some(name) => {
+                        label_derived = name;
+                        &label_derived
+                    }
+                    None => {
+                        eprintln!("error: no label provided. Use --label to name the dataset.");
+                        std::process::exit(1);
+                    }
+                }
+            }
         },
     };
 
     let client = reqwest::blocking::Client::new();
 
-    let (upload_id, format) = match file {
-        Some(path) => upload_from_file(&client, &api_key, workspace_id, &profile_config.api_url, path),
-        None => {
-            use std::io::IsTerminal;
-            if std::io::stdin().is_terminal() {
-                eprintln!("error: no input data. Use --file <path> or pipe data via stdin.");
-                std::process::exit(1);
+    let (upload_id, format, upload_id_was_uploaded): (String, &str, bool) = if let Some(id) = upload_id {
+        (id.to_string(), source_format, false)
+    } else {
+        let (id, fmt) = match file {
+            Some(path) => upload_from_file(&client, &api_key, workspace_id, &profile_config.api_url, path),
+            None => {
+                use std::io::IsTerminal;
+                if std::io::stdin().is_terminal() {
+                    eprintln!("error: no input data. Use --file <path>, --upload-id <id>, or pipe data via stdin.");
+                    std::process::exit(1);
+                }
+                upload_from_stdin(&client, &api_key, workspace_id, &profile_config.api_url)
             }
-            upload_from_stdin(&client, &api_key, workspace_id, &profile_config.api_url)
-        }
+        };
+        (id, fmt, true)
     };
 
     let source = json!({ "upload_id": upload_id, "format": format });
@@ -312,6 +325,16 @@ pub fn create(
     if !resp.status().is_success() {
         use crossterm::style::Stylize;
         eprintln!("{}", api_error(resp.text().unwrap_or_default()).red());
+        // Only show the resume hint when the upload_id came from a fresh upload
+        if upload_id_was_uploaded {
+            eprintln!(
+                "{}",
+                format!(
+                    "Resume dataset creation without re-uploading by passing --upload-id {upload_id}"
+                )
+                .yellow()
+            );
+        }
         std::process::exit(1);
     }
 

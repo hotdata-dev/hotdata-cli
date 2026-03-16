@@ -70,8 +70,8 @@ fn main() {
                         Some(DatasetsCommands::List { limit, offset, format }) => {
                             datasets::list(&workspace_id, limit, offset, &format)
                         }
-                        Some(DatasetsCommands::Create { label, table_name, file }) => {
-                            datasets::create(&workspace_id, label.as_deref(), table_name.as_deref(), file.as_deref())
+                        Some(DatasetsCommands::Create { label, table_name, file, upload_id, format }) => {
+                            datasets::create(&workspace_id, label.as_deref(), table_name.as_deref(), file.as_deref(), upload_id.as_deref(), &format)
                         }
                         None => {
                             use clap::CommandFactory;
