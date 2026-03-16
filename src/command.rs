@@ -357,14 +357,6 @@ pub enum ConnectionsCommands {
         #[arg(long)]
         config: Option<String>,
 
-        /// Reference to a secret by ID for authentication
-        #[arg(long, conflicts_with = "secret_name")]
-        secret_id: Option<String>,
-
-        /// Reference to a secret by name for authentication
-        #[arg(long, conflicts_with = "secret_id")]
-        secret_name: Option<String>,
-
         /// Output format
         #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
         format: String,

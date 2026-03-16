@@ -96,7 +96,7 @@ fn main() {
                     let workspace_id = resolve_workspace(workspace_id);
                     connections_new::run(&workspace_id)
                 }
-                ConnectionsCommands::Create { command, workspace_id, name, source_type, config, secret_id, secret_name, format } => {
+                ConnectionsCommands::Create { command, workspace_id, name, source_type, config, format } => {
                     match command {
                         Some(ConnectionsCreateCommands::List { name, workspace_id, format }) => {
                             let workspace_id = resolve_workspace(workspace_id);
@@ -121,8 +121,6 @@ fn main() {
                                 &name.unwrap(),
                                 &source_type.unwrap(),
                                 &config.unwrap(),
-                                secret_id.as_deref(),
-                                secret_name.as_deref(),
                                 &format,
                             )
                         }

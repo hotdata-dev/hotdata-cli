@@ -163,8 +163,6 @@ pub fn create(
     name: &str,
     source_type: &str,
     config: &str,
-    secret_id: Option<&str>,
-    secret_name: Option<&str>,
     format: &str,
 ) {
     let profile_config = match crate::config::load("default") {
@@ -191,17 +189,11 @@ pub fn create(
         }
     };
 
-    let mut body = serde_json::json!({
+    let body = serde_json::json!({
         "name": name,
         "source_type": source_type,
         "config": config_value,
     });
-    if let Some(id) = secret_id {
-        body["secret_id"] = serde_json::json!(id);
-    }
-    if let Some(sn) = secret_name {
-        body["secret_name"] = serde_json::json!(sn);
-    }
 
     let url = format!("{}/connections", profile_config.api_url);
     let client = reqwest::blocking::Client::new();

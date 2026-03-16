@@ -10,7 +10,6 @@ struct ConnectionTypeSummary {
 }
 
 struct ConnectionTypeDetail {
-    name: String,
     config_schema: Option<Value>,
     auth: Option<Value>,
 }
@@ -75,7 +74,6 @@ fn fetch_detail(workspace_id: &str, name: &str) -> ConnectionTypeDetail {
     }
     let body: Value = resp.json().unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1) });
     ConnectionTypeDetail {
-        name: body["name"].as_str().unwrap_or(name).to_string(),
         config_schema: if body["config_schema"].is_null() { None } else { Some(body["config_schema"].clone()) },
         auth: if body["auth"].is_null() { None } else { Some(body["auth"].clone()) },
     }
