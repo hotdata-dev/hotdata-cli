@@ -13,7 +13,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, DatasetsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("HotData CLI - Command line interface for HotData (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -91,6 +91,12 @@ fn main() {
                 _ => eprintln!("not yet implemented"),
             },
             Commands::Connections { command } => match command {
+                ConnectionsCommands::Create { command } => match command {
+                    ConnectionsCreateCommands::List { workspace_id, format } => {
+                        let workspace_id = resolve_workspace(workspace_id);
+                        connections::types_list(&workspace_id, &format)
+                    },
+                },
                 ConnectionsCommands::List { workspace_id, format } => {
                     let workspace_id = resolve_workspace(workspace_id);
                     connections::list(&workspace_id, &format)

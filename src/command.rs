@@ -286,6 +286,20 @@ pub enum WorkspaceCommands {
 }
 
 #[derive(Subcommand)]
+pub enum ConnectionsCreateCommands {
+    /// List available connection types
+    List {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum ConnectionsCommands {
     /// List all connections for a workspace
     List {
@@ -312,27 +326,10 @@ pub enum ConnectionsCommands {
         format: String,
     },
 
-    /// Create a new connection in a workspace
+    /// Create a new connection
     Create {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
-        /// Connection name
-        #[arg(long)]
-        name: String,
-
-        /// Connection type
-        #[arg(long = "type")]
-        conn_type: String,
-
-        /// Connection config as JSON string
-        #[arg(long)]
-        config: String,
-
-        /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[command(subcommand)]
+        command: ConnectionsCreateCommands,
     },
 
     /// Update a connection in a workspace
