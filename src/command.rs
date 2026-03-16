@@ -329,10 +329,38 @@ pub enum ConnectionsCommands {
         format: String,
     },
 
-    /// Create a new connection
+    /// Create a new connection, or list/inspect available connection types
     Create {
         #[command(subcommand)]
-        command: ConnectionsCreateCommands,
+        command: Option<ConnectionsCreateCommands>,
+
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
+
+        /// Connection name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Connection source type (e.g. postgres, mysql, snowflake)
+        #[arg(long = "type")]
+        source_type: Option<String>,
+
+        /// Connection config as a JSON object
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Reference to a secret by ID for authentication
+        #[arg(long, conflicts_with = "secret_name")]
+        secret_id: Option<String>,
+
+        /// Reference to a secret by name for authentication
+        #[arg(long, conflicts_with = "secret_id")]
+        secret_name: Option<String>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
     },
 
     /// Update a connection in a workspace

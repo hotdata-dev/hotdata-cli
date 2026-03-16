@@ -158,6 +158,113 @@ struct ListResponse {
     connections: Vec<Connection>,
 }
 
+pub fn create(
+    workspace_id: &str,
+    name: &str,
+    source_type: &str,
+    config: &str,
+    secret_id: Option<&str>,
+    secret_name: Option<&str>,
+    format: &str,
+) {
+    let profile_config = match crate::config::load("default") {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let api_key = match &profile_config.api_key {
+        Some(key) if key != "PLACEHOLDER" => key.clone(),
+        _ => {
+            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            std::process::exit(1);
+        }
+    };
+
+    let config_value: serde_json::Value = match serde_json::from_str(config) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: --config must be a valid JSON object: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut body = serde_json::json!({
+        "name": name,
+        "source_type": source_type,
+        "config": config_value,
+    });
+    if let Some(id) = secret_id {
+        body["secret_id"] = serde_json::json!(id);
+    }
+    if let Some(sn) = secret_name {
+        body["secret_name"] = serde_json::json!(sn);
+    }
+
+    let url = format!("{}/connections", profile_config.api_url);
+    let client = reqwest::blocking::Client::new();
+
+    let resp = match client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("X-Workspace-Id", workspace_id)
+        .json(&body)
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error connecting to API: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !resp.status().is_success() {
+        use crossterm::style::Stylize;
+        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
+        std::process::exit(1);
+    }
+
+    #[derive(Deserialize, Serialize)]
+    struct CreateResponse {
+        id: String,
+        name: String,
+        source_type: String,
+        tables_discovered: u64,
+        discovery_status: String,
+        discovery_error: Option<String>,
+    }
+
+    let result: CreateResponse = match resp.json() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
+        "table" => {
+            use crossterm::style::Stylize;
+            println!("{}", "Connection created".green());
+            println!("id:                {}", result.id);
+            println!("name:              {}", result.name);
+            println!("source_type:       {}", result.source_type);
+            println!("tables_discovered: {}", result.tables_discovered);
+            let status_colored = match result.discovery_status.as_str() {
+                "success" => result.discovery_status.green().to_string(),
+                "failed"  => result.discovery_error.as_deref().unwrap_or("failed").red().to_string(),
+                _         => result.discovery_status.yellow().to_string(),
+            };
+            println!("discovery_status:  {status_colored}");
+        }
+        _ => unreachable!(),
+    }
+}
+
 pub fn list(workspace_id: &str, format: &str) {
     let profile_config = match config::load("default") {
         Ok(c) => c,

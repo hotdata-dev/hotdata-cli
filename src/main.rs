@@ -91,14 +91,37 @@ fn main() {
                 _ => eprintln!("not yet implemented"),
             },
             Commands::Connections { command } => match command {
-                ConnectionsCommands::Create { command } => match command {
-                    ConnectionsCreateCommands::List { name, workspace_id, format } => {
-                        let workspace_id = resolve_workspace(workspace_id);
-                        match name.as_deref() {
-                            Some(name) => connections::types_get(&workspace_id, name, &format),
-                            None => connections::types_list(&workspace_id, &format),
+                ConnectionsCommands::Create { command, workspace_id, name, source_type, config, secret_id, secret_name, format } => {
+                    match command {
+                        Some(ConnectionsCreateCommands::List { name, workspace_id, format }) => {
+                            let workspace_id = resolve_workspace(workspace_id);
+                            match name.as_deref() {
+                                Some(name) => connections::types_get(&workspace_id, name, &format),
+                                None => connections::types_list(&workspace_id, &format),
+                            }
                         }
-                    },
+                        None => {
+                            let missing: Vec<&str> = [
+                                name.is_none().then_some("--name"),
+                                source_type.is_none().then_some("--type"),
+                                config.is_none().then_some("--config"),
+                            ].into_iter().flatten().collect();
+                            if !missing.is_empty() {
+                                eprintln!("error: missing required arguments: {}", missing.join(", "));
+                                std::process::exit(1);
+                            }
+                            let workspace_id = resolve_workspace(workspace_id);
+                            connections::create(
+                                &workspace_id,
+                                &name.unwrap(),
+                                &source_type.unwrap(),
+                                &config.unwrap(),
+                                secret_id.as_deref(),
+                                secret_name.as_deref(),
+                                &format,
+                            )
+                        }
+                    }
                 },
                 ConnectionsCommands::List { workspace_id, format } => {
                     let workspace_id = resolve_workspace(workspace_id);
