@@ -2,6 +2,7 @@ mod auth;
 mod command;
 mod config;
 mod connections;
+mod connections_new;
 mod datasets;
 mod init;
 mod query;
@@ -91,6 +92,10 @@ fn main() {
                 _ => eprintln!("not yet implemented"),
             },
             Commands::Connections { command } => match command {
+                ConnectionsCommands::New { workspace_id } => {
+                    let workspace_id = resolve_workspace(workspace_id);
+                    connections_new::run(&workspace_id)
+                }
                 ConnectionsCommands::Create { command, workspace_id, name, source_type, config, secret_id, secret_name, format } => {
                     match command {
                         Some(ConnectionsCreateCommands::List { name, workspace_id, format }) => {

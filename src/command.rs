@@ -304,6 +304,13 @@ pub enum ConnectionsCreateCommands {
 
 #[derive(Subcommand)]
 pub enum ConnectionsCommands {
+    /// Interactively create a new connection
+    New {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
+    },
+
     /// List all connections for a workspace
     List {
         /// Workspace ID (defaults to first workspace from login)
