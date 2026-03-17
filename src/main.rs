@@ -2,6 +2,7 @@ mod auth;
 mod command;
 mod config;
 mod connections;
+mod connections_new;
 mod datasets;
 mod init;
 mod query;
@@ -13,7 +14,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, DatasetsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("HotData CLI - Command line interface for HotData (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -90,12 +91,43 @@ fn main() {
                 WorkspaceCommands::List { format } => workspace::list(&format),
                 _ => eprintln!("not yet implemented"),
             },
-            Commands::Connections { command } => match command {
-                ConnectionsCommands::List { workspace_id, format } => {
-                    let workspace_id = resolve_workspace(workspace_id);
-                    connections::list(&workspace_id, &format)
+            Commands::Connections { workspace_id, command } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                match command {
+                    ConnectionsCommands::New => connections_new::run(&workspace_id),
+                    ConnectionsCommands::List { format } => {
+                        connections::list(&workspace_id, &format)
+                    }
+                    ConnectionsCommands::Create { command, name, source_type, config, format } => {
+                        match command {
+                            Some(ConnectionsCreateCommands::List { name, format }) => {
+                                match name.as_deref() {
+                                    Some(name) => connections::types_get(&workspace_id, name, &format),
+                                    None => connections::types_list(&workspace_id, &format),
+                                }
+                            }
+                            None => {
+                                let missing: Vec<&str> = [
+                                    name.is_none().then_some("--name"),
+                                    source_type.is_none().then_some("--type"),
+                                    config.is_none().then_some("--config"),
+                                ].into_iter().flatten().collect();
+                                if !missing.is_empty() {
+                                    eprintln!("error: missing required arguments: {}", missing.join(", "));
+                                    std::process::exit(1);
+                                }
+                                connections::create(
+                                    &workspace_id,
+                                    &name.unwrap(),
+                                    &source_type.unwrap(),
+                                    &config.unwrap(),
+                                    &format,
+                                )
+                            }
+                        }
+                    }
+                    _ => eprintln!("not yet implemented"),
                 }
-                _ => eprintln!("not yet implemented"),
             },
             Commands::Tables { command } => match command {
                 TablesCommands::List { workspace_id, connection_id, schema, table, limit, cursor, format } => {

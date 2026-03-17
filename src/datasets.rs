@@ -97,12 +97,6 @@ fn stdin_redirect_filename() -> Option<String> {
     }
 }
 
-fn api_error(body: String) -> String {
-    serde_json::from_str::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-        .unwrap_or(body)
-}
 
 fn make_progress_bar(total: u64) -> ProgressBar {
     let pb = ProgressBar::new(total);
@@ -147,7 +141,7 @@ fn do_upload<R: std::io::Read + Send + 'static>(
 
     if !resp.status().is_success() {
         use crossterm::style::Stylize;
-        eprintln!("{}", api_error(resp.text().unwrap_or_default()).red());
+        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
         std::process::exit(1);
     }
 
@@ -324,7 +318,7 @@ pub fn create(
 
     if !resp.status().is_success() {
         use crossterm::style::Stylize;
-        eprintln!("{}", api_error(resp.text().unwrap_or_default()).red());
+        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
         // Only show the resume hint when the upload_id came from a fresh upload
         if upload_id_was_uploaded {
             eprintln!(
@@ -392,7 +386,7 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
 
     if !resp.status().is_success() {
         use crossterm::style::Stylize;
-        eprintln!("{}", api_error(resp.text().unwrap_or_default()).red());
+        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
         std::process::exit(1);
     }
 
@@ -464,7 +458,7 @@ pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
 
     if !resp.status().is_success() {
         use crossterm::style::Stylize;
-        eprintln!("{}", api_error(resp.text().unwrap_or_default()).red());
+        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
         std::process::exit(1);
     }
 

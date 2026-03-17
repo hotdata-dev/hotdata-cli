@@ -1,6 +1,6 @@
 ---
 name: hotdata-cli
-description: Use this skill when the user wants to run hotdata CLI commands, query the HotData API, list workspaces, list connections, list tables, manage datasets, execute SQL queries, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", or asks you to use the hotdata CLI.
+description: Use this skill when the user wants to run hotdata CLI commands, query the HotData API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", or asks you to use the hotdata CLI.
 version: 0.1.3
 ---
 
@@ -36,7 +36,66 @@ Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_st
 ```
 hotdata connections list [--workspace-id <workspace_id>] [--format table|json|yaml]
 ```
-Routes via API gateway using `X-Workspace-Id` header.
+Returns `id`, `name`, `source_type` for each connection in the workspace.
+
+### Create a Connection
+
+#### Step 1 — Discover available connection types
+```
+hotdata connections create list [--workspace-id <workspace_id>] [--format table|json|yaml]
+```
+Returns all available connection types with `name` and `label`.
+
+#### Step 2 — Inspect the schema for a specific type
+```
+hotdata connections create list <name> [--workspace-id <workspace_id>] [--format json]
+```
+Returns `config` and `auth` JSON Schema objects describing all required and optional fields for that connection type. Use `--format json` to get the full schema detail.
+
+- `config` — connection configuration fields (host, port, database, etc.). May be `null` for services that need no configuration.
+- `auth` — authentication fields (password, token, credentials, etc.). May be `null` for services that need no authentication. May be a `oneOf` with multiple authentication method options.
+
+#### Step 3 — Create the connection
+```
+hotdata connections create \
+  --name "my-connection" \
+  --type <source_type> \
+  --config '<json object>' \
+  [--workspace-id <workspace_id>]
+```
+
+The `--config` JSON object must contain all **required** fields from `config` plus the **auth fields** merged in at the top level. Auth fields are not nested — they sit alongside config fields in the same object.
+
+Example for PostgreSQL (required: `host`, `port`, `user`, `database` + auth field `password`):
+```
+hotdata connections create \
+  --name "my-postgres" \
+  --type postgres \
+  --config '{"host":"db.example.com","port":5432,"user":"myuser","database":"mydb","password":"..."}'
+```
+
+**Security: never expose credentials in plain text.** Passwords, tokens, API keys, and any field with `"format": "password"` in the schema must never be hardcoded as literal strings in CLI commands. Always use one of these safe approaches:
+
+- Read from an environment variable:
+  ```
+  --config "{\"host\":\"db.example.com\",\"port\":5432,\"user\":\"myuser\",\"database\":\"mydb\",\"password\":\"$DB_PASSWORD\"}"
+  ```
+- Read a credential from a file and inject it:
+  ```
+  --config "{\"token\":\"$(cat ~/.secrets/my-token)\"}"
+  ```
+
+**Field-building rules from the schema:**
+
+- Include all fields listed in `config.required` — these are mandatory.
+- Include optional config fields only if the user provides values for them.
+- For `auth` with a single method (no `oneOf`): include all `auth.required` fields in the config object.
+- For `auth` with `oneOf`: pick one authentication method and include only its required fields.
+- Fields with `"format": "password"` are credentials — apply the security rules above.
+- Fields with `"type": "integer"` must be JSON numbers, not strings (e.g. `"port": 5432` not `"port": "5432"`).
+- Fields with `"type": "boolean"` must be JSON booleans (e.g. `"use_tls": true`).
+- Fields with `"type": "array"` must be JSON arrays (e.g. `"spreadsheet_ids": ["abc", "def"]`).
+- Nested `oneOf` fields must be a JSON object including a `"type"` discriminator field matching the chosen variant's `const` value.
 
 ### List Tables and Columns
 ```
@@ -135,4 +194,20 @@ hotdata init                # Create ~/.hotdata/config.yml
 4. Run SQL:
    ```
    hotdata query "SELECT 1"
+   ```
+
+## Workflow: Creating a Connection
+
+1. List available connection types:
+   ```
+   hotdata connections create list
+   ```
+2. Inspect the schema for the desired type:
+   ```
+   hotdata connections create list <type_name> --format json
+   ```
+3. Collect required config and auth field values from the user or environment. **Never hardcode credentials — use env vars or files.**
+4. Create the connection:
+   ```
+   hotdata connections create --name "my-connection" --type <type_name> --config '<json>'
    ```

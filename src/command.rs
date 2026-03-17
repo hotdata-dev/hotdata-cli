@@ -20,7 +20,7 @@ pub enum Commands {
         id: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
+        #[arg(long, global = true)]
         workspace_id: Option<String>,
 
         /// Output format (used with dataset ID)
@@ -63,6 +63,10 @@ pub enum Commands {
 
     /// Manage workspace connections
     Connections {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, global = true)]
+        workspace_id: Option<String>,
+
         #[command(subcommand)]
         command: ConnectionsCommands,
     },
@@ -286,13 +290,25 @@ pub enum WorkspaceCommands {
 }
 
 #[derive(Subcommand)]
+pub enum ConnectionsCreateCommands {
+    /// List available connection types, or get details for a specific type
+    List {
+        /// Connection type name (e.g. postgres, mysql); omit to list all
+        name: Option<String>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum ConnectionsCommands {
+    /// Interactively create a new connection
+    New,
+
     /// List all connections for a workspace
     List {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
         /// Output format
         #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
         format: String,
@@ -300,10 +316,6 @@ pub enum ConnectionsCommands {
 
     /// Get details for a specific connection
     Get {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
         /// Connection ID
         connection_id: String,
 
@@ -312,35 +324,30 @@ pub enum ConnectionsCommands {
         format: String,
     },
 
-    /// Create a new connection in a workspace
+    /// Create a new connection, or list/inspect available connection types
     Create {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
+        #[command(subcommand)]
+        command: Option<ConnectionsCreateCommands>,
 
         /// Connection name
         #[arg(long)]
-        name: String,
+        name: Option<String>,
 
-        /// Connection type
+        /// Connection source type (e.g. postgres, mysql, snowflake)
         #[arg(long = "type")]
-        conn_type: String,
+        source_type: Option<String>,
 
-        /// Connection config as JSON string
+        /// Connection config as a JSON object
         #[arg(long)]
-        config: String,
+        config: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
         format: String,
     },
 
     /// Update a connection in a workspace
     Update {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
         /// Connection ID
         connection_id: String,
 
@@ -363,10 +370,6 @@ pub enum ConnectionsCommands {
 
     /// Delete a connection from a workspace
     Delete {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
-        workspace_id: Option<String>,
-
         /// Connection ID
         connection_id: String,
     },
