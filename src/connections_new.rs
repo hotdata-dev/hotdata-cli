@@ -246,7 +246,7 @@ fn walk_auth(schema: &Value) -> Map<String, Value> {
             .prompt()
             .unwrap_or_else(|_| std::process::exit(0));
         let idx = titles.iter().position(|t| t == &selected).unwrap();
-        return walk_properties(&one_of[idx]);
+        return walk_variant(&one_of[idx]);
     }
     // Single auth method
     walk_properties(schema)
