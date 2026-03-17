@@ -170,8 +170,14 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
         ("integer", _) => {
             let label = format!("{key}:");
             let t = Text::new(&label)
-                .with_validator(|input: &str| {
-                    if input.is_empty() || input.parse::<i64>().is_ok() {
+                .with_validator(move |input: &str| {
+                    if input.is_empty() {
+                        if is_required {
+                            return Ok(Validation::Invalid("This field is required".into()));
+                        }
+                        return Ok(Validation::Valid);
+                    }
+                    if input.parse::<i64>().is_ok() {
                         Ok(Validation::Valid)
                     } else {
                         Ok(Validation::Invalid("Must be a whole number".into()))

@@ -91,46 +91,43 @@ fn main() {
                 WorkspaceCommands::List { format } => workspace::list(&format),
                 _ => eprintln!("not yet implemented"),
             },
-            Commands::Connections { command } => match command {
-                ConnectionsCommands::New { workspace_id } => {
-                    let workspace_id = resolve_workspace(workspace_id);
-                    connections_new::run(&workspace_id)
-                }
-                ConnectionsCommands::Create { command, workspace_id, name, source_type, config, format } => {
-                    match command {
-                        Some(ConnectionsCreateCommands::List { name, workspace_id, format }) => {
-                            let workspace_id = resolve_workspace(workspace_id);
-                            match name.as_deref() {
-                                Some(name) => connections::types_get(&workspace_id, name, &format),
-                                None => connections::types_list(&workspace_id, &format),
+            Commands::Connections { workspace_id, command } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                match command {
+                    ConnectionsCommands::New => connections_new::run(&workspace_id),
+                    ConnectionsCommands::List { format } => {
+                        connections::list(&workspace_id, &format)
+                    }
+                    ConnectionsCommands::Create { command, name, source_type, config, format } => {
+                        match command {
+                            Some(ConnectionsCreateCommands::List { name, format }) => {
+                                match name.as_deref() {
+                                    Some(name) => connections::types_get(&workspace_id, name, &format),
+                                    None => connections::types_list(&workspace_id, &format),
+                                }
                             }
-                        }
-                        None => {
-                            let missing: Vec<&str> = [
-                                name.is_none().then_some("--name"),
-                                source_type.is_none().then_some("--type"),
-                                config.is_none().then_some("--config"),
-                            ].into_iter().flatten().collect();
-                            if !missing.is_empty() {
-                                eprintln!("error: missing required arguments: {}", missing.join(", "));
-                                std::process::exit(1);
+                            None => {
+                                let missing: Vec<&str> = [
+                                    name.is_none().then_some("--name"),
+                                    source_type.is_none().then_some("--type"),
+                                    config.is_none().then_some("--config"),
+                                ].into_iter().flatten().collect();
+                                if !missing.is_empty() {
+                                    eprintln!("error: missing required arguments: {}", missing.join(", "));
+                                    std::process::exit(1);
+                                }
+                                connections::create(
+                                    &workspace_id,
+                                    &name.unwrap(),
+                                    &source_type.unwrap(),
+                                    &config.unwrap(),
+                                    &format,
+                                )
                             }
-                            let workspace_id = resolve_workspace(workspace_id);
-                            connections::create(
-                                &workspace_id,
-                                &name.unwrap(),
-                                &source_type.unwrap(),
-                                &config.unwrap(),
-                                &format,
-                            )
                         }
                     }
-                },
-                ConnectionsCommands::List { workspace_id, format } => {
-                    let workspace_id = resolve_workspace(workspace_id);
-                    connections::list(&workspace_id, &format)
+                    _ => eprintln!("not yet implemented"),
                 }
-                _ => eprintln!("not yet implemented"),
             },
             Commands::Tables { command } => match command {
                 TablesCommands::List { workspace_id, connection_id, schema, table, limit, cursor, format } => {
