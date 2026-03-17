@@ -1,7 +1,7 @@
 ---
 name: hotdata-cli
 description: Use this skill when the user wants to run hotdata CLI commands, query the HotData API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", or asks you to use the hotdata CLI.
-version: 0.1.3
+version: 0.1.4
 ---
 
 # HotData CLI Skill

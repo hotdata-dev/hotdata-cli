@@ -1,3 +1,11 @@
+## [0.1.4] - 2026-03-17
+
+### 🚀 Features
+
+- *(skills)* Add skill install command for CLI
+- *(datasets)* Add datasets commands to create, list, and view datasets in CLI
+- *(datasets)* Add upload id functionality to datasets create command
+- *(connections)* Add connection command to list/view/create connections via the CLI
 ## [0.1.3] - 2026-03-11
 
 ### 🚀 Features
