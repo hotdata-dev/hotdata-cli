@@ -54,6 +54,32 @@ hotdata tables list <workspace_id> --connection-id <connection_id> [--format tab
 hotdata query "<sql>" --workspace-id <workspace_id> [--connection <connection_id>] [--format table|json|csv]
 ```
 
+## Releasing
+
+Releases use a two-phase workflow wrapping [`cargo-release`](https://github.com/crate-ci/cargo-release).
+
+**Phase 1 — prepare**
+
+```sh
+scripts/release.sh prepare <version>
+# e.g. scripts/release.sh prepare 0.2.0
+```
+
+This will:
+1. Create a `release/<version>` branch
+2. Bump the version in `Cargo.toml`, update `CHANGELOG.md`, and push the branch
+3. Open a GitHub pull request and launch it in the browser
+
+Squash and merge the PR into `main` when ready.
+
+**Phase 2 — finish**
+
+```sh
+scripts/release.sh finish
+```
+
+Run this from any branch after the PR is merged. It will switch to `main`, pull the latest, tag the release, and trigger the dist workflow.
+
 ## Configuration
 
 Config is stored at `~/.hotdata/config.yml` keyed by profile (default: `default`).
