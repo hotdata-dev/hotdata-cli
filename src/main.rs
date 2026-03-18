@@ -71,8 +71,14 @@ fn main() {
                         Some(DatasetsCommands::List { limit, offset, format }) => {
                             datasets::list(&workspace_id, limit, offset, &format)
                         }
-                        Some(DatasetsCommands::Create { label, table_name, file, upload_id, format }) => {
-                            datasets::create(&workspace_id, label.as_deref(), table_name.as_deref(), file.as_deref(), upload_id.as_deref(), &format)
+                        Some(DatasetsCommands::Create { label, table_name, file, upload_id, format, sql, query_id }) => {
+                            if let Some(sql) = sql {
+                                datasets::create_from_query(&workspace_id, &sql, label.as_deref(), table_name.as_deref())
+                            } else if let Some(query_id) = query_id {
+                                datasets::create_from_saved_query(&workspace_id, &query_id, label.as_deref(), table_name.as_deref())
+                            } else {
+                                datasets::create(&workspace_id, label.as_deref(), table_name.as_deref(), file.as_deref(), upload_id.as_deref(), &format)
+                            }
                         }
                         None => {
                             use clap::CommandFactory;

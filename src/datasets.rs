@@ -299,7 +299,6 @@ pub fn create(
     if let Some(tn) = table_name {
         body["table_name"] = json!(tn);
     }
-
     let url = format!("{}/datasets", profile_config.api_url);
 
     let resp = match client
@@ -345,6 +344,98 @@ pub fn create(
     println!("id:         {}", dataset.id);
     println!("label:      {}", dataset.label);
     println!("full_name:  datasets.main.{}", dataset.table_name);
+}
+
+fn create_from_source(
+    workspace_id: &str,
+    source: serde_json::Value,
+    label: Option<&str>,
+    table_name: Option<&str>,
+    label_required_hint: &str,
+) {
+    let profile_config = match config::load("default") {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let api_key = match &profile_config.api_key {
+        Some(key) if key != "PLACEHOLDER" => key.clone(),
+        _ => {
+            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            std::process::exit(1);
+        }
+    };
+
+    let label = match label {
+        Some(l) => l,
+        None => {
+            eprintln!("error: --label is required when using {label_required_hint}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut body = json!({ "label": label, "source": source });
+    if let Some(tn) = table_name {
+        body["table_name"] = json!(tn);
+    }
+
+    let url = format!("{}/datasets", profile_config.api_url);
+    let client = reqwest::blocking::Client::new();
+
+    let resp = match client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("X-Workspace-Id", workspace_id)
+        .json(&body)
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error connecting to API: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !resp.status().is_success() {
+        use crossterm::style::Stylize;
+        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
+        std::process::exit(1);
+    }
+
+    let dataset: CreateResponse = match resp.json() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    use crossterm::style::Stylize;
+    println!("{}", "Dataset created".green());
+    println!("id:         {}", dataset.id);
+    println!("label:      {}", dataset.label);
+    println!("full_name:  datasets.main.{}", dataset.table_name);
+}
+
+pub fn create_from_query(
+    workspace_id: &str,
+    sql: &str,
+    label: Option<&str>,
+    table_name: Option<&str>,
+) {
+    create_from_source(workspace_id, json!({ "sql": sql }), label, table_name, "--sql");
+}
+
+pub fn create_from_saved_query(
+    workspace_id: &str,
+    query_id: &str,
+    label: Option<&str>,
+    table_name: Option<&str>,
+) {
+    create_from_source(workspace_id, json!({ "saved_query_id": query_id }), label, table_name, "--query-id");
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
