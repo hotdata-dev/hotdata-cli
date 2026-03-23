@@ -33,6 +33,8 @@ case "$COMMAND" in
 
         BRANCH="release/$VERSION"
 
+        require_clean_tree
+
         # step 0: create release branch
         echo "→ Creating branch $BRANCH"
         git checkout -b "$BRANCH"
@@ -51,7 +53,11 @@ case "$COMMAND" in
 
         echo ""
         echo "✓ PR created: $PR_URL"
-        open "$PR_URL"
+        if command -v xdg-open &>/dev/null; then
+            xdg-open "$PR_URL" || true
+        elif command -v open &>/dev/null; then
+            open "$PR_URL" || true
+        fi
         echo ""
         echo "Next steps:"
         echo "  1. Review and merge the PR (use 'Squash and merge')"

@@ -118,14 +118,21 @@ fn do_upload<R: std::io::Read + Send + 'static>(
     content_type: &str,
     reader: R,
     pb: ProgressBar,
+    content_length: Option<u64>,
 ) -> String {
     let url = format!("{api_url}/files");
 
-    let resp = match client
+    let mut req = client
         .post(&url)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("X-Workspace-Id", workspace_id)
-        .header("Content-Type", content_type)
+        .header("Content-Type", content_type);
+
+    if let Some(len) = content_length {
+        req = req.header("Content-Length", len);
+    }
+
+    let resp = match req
         .body(reqwest::blocking::Body::new(reader))
         .send()
     {
@@ -190,7 +197,7 @@ fn upload_from_file(
     let pb = make_progress_bar(file_size);
     let reader = pb.wrap_read(f);
 
-    let id = do_upload(client, api_key, workspace_id, api_url, ft.content_type, reader, pb);
+    let id = do_upload(client, api_key, workspace_id, api_url, ft.content_type, reader, pb, Some(file_size));
     (id, ft.format)
 }
 
@@ -216,7 +223,7 @@ fn upload_from_stdin(
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     let reader = pb.wrap_read(reader);
 
-    let id = do_upload(client, api_key, workspace_id, api_url, ft.content_type, reader, pb);
+    let id = do_upload(client, api_key, workspace_id, api_url, ft.content_type, reader, pb, None);
     (id, ft.format)
 }
 
