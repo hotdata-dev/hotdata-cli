@@ -95,6 +95,7 @@ fn main() {
             Commands::Profile { .. } => eprintln!("not yet implemented"),
             Commands::Workspaces { command } => match command {
                 WorkspaceCommands::List { format } => workspace::list(&format),
+                WorkspaceCommands::Set { workspace_id } => workspace::set(workspace_id.as_deref()),
                 _ => eprintln!("not yet implemented"),
             },
             Commands::Connections { workspace_id, command } => {

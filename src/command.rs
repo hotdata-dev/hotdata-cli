@@ -242,8 +242,14 @@ pub enum WorkspaceCommands {
     /// List all workspaces
     List {
         /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
         format: String,
+    },
+
+    /// Set the default workspace
+    Set {
+        /// Workspace ID to set as default (omit for interactive selection)
+        workspace_id: Option<String>,
     },
 
     /// Get details for a workspace
