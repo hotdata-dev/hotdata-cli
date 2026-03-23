@@ -183,7 +183,7 @@ pub enum DatasetsCommands {
         format: String,
     },
 
-    /// Create a new dataset from a file, piped stdin, or a pre-existing upload ID
+    /// Create a new dataset from a file, piped stdin, upload ID, or SQL query
     Create {
         /// Dataset label (derived from filename if omitted)
         #[arg(long)]
@@ -194,18 +194,25 @@ pub enum DatasetsCommands {
         table_name: Option<String>,
 
         /// Path to a file to upload (omit to read from stdin)
-        #[arg(long, conflicts_with = "upload_id")]
+        #[arg(long, conflicts_with_all = ["upload_id", "sql"])]
         file: Option<String>,
 
         /// Skip upload and use a pre-existing upload ID directly
-        #[arg(long, conflicts_with = "file")]
+        #[arg(long, conflicts_with_all = ["file", "sql"])]
         upload_id: Option<String>,
 
         /// Source format when using --upload-id (csv, json, parquet)
         #[arg(long, default_value = "csv", value_parser = ["csv", "json", "parquet"], requires = "upload_id")]
         format: String,
-    },
 
+        /// SQL query to create the dataset from
+        #[arg(long, conflicts_with_all = ["file", "upload_id", "query_id"])]
+        sql: Option<String>,
+
+        /// Saved query ID to create the dataset from
+        #[arg(long, conflicts_with_all = ["file", "upload_id", "sql"])]
+        query_id: Option<String>,
+    },
 }
 
 

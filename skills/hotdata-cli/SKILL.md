@@ -131,10 +131,15 @@ hotdata datasets <dataset_id> [--workspace-id <workspace_id>] [--format table|js
 #### Create a dataset
 ```
 hotdata datasets create --label "My Dataset" --file data.csv [--table-name my_dataset] [--workspace-id <workspace_id>]
+hotdata datasets create --label "My Dataset" --sql "SELECT * FROM ..." [--table-name my_dataset] [--workspace-id <workspace_id>]
+hotdata datasets create --label "My Dataset" --query-id <saved_query_id> [--table-name my_dataset] [--workspace-id <workspace_id>]
 ```
 - `--file` uploads a local file. Omit to pipe data via stdin: `cat data.csv | hotdata datasets create --label "My Dataset"`
+- `--sql` creates a dataset from a SQL query result.
+- `--query-id` creates a dataset from a previously saved query.
+- `--file`, `--sql`, and `--query-id` are mutually exclusive.
 - Format is auto-detected from file extension (`.csv`, `.json`, `.parquet`) or file content.
-- `--label` is optional when `--file` is provided — defaults to the filename without extension.
+- `--label` is optional when `--file` is provided — defaults to the filename without extension. Required for `--sql` and `--query-id`.
 - `--table-name` is optional — derived from the label if omitted.
 
 #### Querying datasets
