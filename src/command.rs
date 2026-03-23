@@ -83,18 +83,21 @@ pub enum Commands {
         command: SkillCommands,
     },
 
-    /// Retrieve a stored query result by ID
+    /// Retrieve a stored query result by ID, or list recent results
     Results {
-        /// Result ID
-        result_id: String,
+        /// Result ID (omit to use a subcommand)
+        result_id: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
+        #[arg(long, global = true)]
         workspace_id: Option<String>,
 
         /// Output format
         #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
         format: String,
+
+        #[command(subcommand)]
+        command: Option<ResultsCommands>,
     },
 }
 
@@ -398,6 +401,24 @@ pub enum SkillCommands {
     },
     /// Show the installation status of the hotdata-cli skill
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum ResultsCommands {
+    /// List stored query results
+    List {
+        /// Maximum number of results (default: 100, max: 1000)
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination offset
+        #[arg(long)]
+        offset: Option<u32>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]

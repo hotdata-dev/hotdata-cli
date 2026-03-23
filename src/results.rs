@@ -1,5 +1,5 @@
 use crate::config;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Deserialize)]
@@ -23,6 +23,96 @@ fn value_to_string(v: &Value) -> String {
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
         Value::Array(_) | Value::Object(_) => v.to_string(),
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct ResultEntry {
+    id: String,
+    status: String,
+    created_at: String,
+}
+
+#[derive(Deserialize)]
+struct ListResponse {
+    results: Vec<ResultEntry>,
+    count: u64,
+    has_more: bool,
+}
+
+pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
+    let profile_config = match config::load("default") {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let api_key = match &profile_config.api_key {
+        Some(key) if key != "PLACEHOLDER" => key.clone(),
+        _ => {
+            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            std::process::exit(1);
+        }
+    };
+
+    let mut url = format!("{}/results", profile_config.api_url);
+    let mut params = vec![];
+    if let Some(l) = limit { params.push(format!("limit={l}")); }
+    if let Some(o) = offset { params.push(format!("offset={o}")); }
+    if !params.is_empty() { url = format!("{url}?{}", params.join("&")); }
+
+    let client = reqwest::blocking::Client::new();
+    let resp = match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("X-Workspace-Id", workspace_id)
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error connecting to API: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !resp.status().is_success() {
+        use crossterm::style::Stylize;
+        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
+        std::process::exit(1);
+    }
+
+    let body: ListResponse = match resp.json() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&body.results).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&body.results).unwrap()),
+        "table" => {
+            if body.results.is_empty() {
+                use crossterm::style::Stylize;
+                eprintln!("{}", "No results found.".dark_grey());
+            } else {
+                let rows: Vec<Vec<String>> = body.results.iter().map(|r| vec![
+                    r.id.clone(),
+                    r.status.clone(),
+                    crate::util::format_date(&r.created_at),
+                ]).collect();
+                crate::table::print(&["ID", "STATUS", "CREATED AT"], &rows);
+            }
+            if body.has_more {
+                let next = offset.unwrap_or(0) + body.count as u32;
+                use crossterm::style::Stylize;
+                eprintln!("{}", format!("showing {} results — use --offset {next} for more", body.count).dark_grey());
+            }
+        }
+        _ => unreachable!(),
     }
 }
 

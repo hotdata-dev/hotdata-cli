@@ -15,7 +15,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("HotData CLI - Command line interface for HotData (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -149,9 +149,22 @@ fn main() {
                 }
                 SkillCommands::Status => skill::status(),
             },
-            Commands::Results { result_id, workspace_id, format } => {
+            Commands::Results { result_id, workspace_id, format, command } => {
                 let workspace_id = resolve_workspace(workspace_id);
-                results::get(&result_id, &workspace_id, &format)
+                match command {
+                    Some(ResultsCommands::List { limit, offset, format }) => {
+                        results::list(&workspace_id, limit, offset, &format)
+                    }
+                    None => {
+                        match result_id {
+                            Some(id) => results::get(&id, &workspace_id, &format),
+                            None => {
+                                eprintln!("error: provide a result ID or use 'results list'");
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                }
             }
         },
     }
