@@ -150,6 +150,27 @@ pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result
     fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
 }
 
+pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Result<(), String> {
+    let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
+    let config_path = user_dirs.home_dir().join(".hotdata").join("config.yml");
+
+    let mut config_file: ConfigFile = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("error reading config file: {e}"))?;
+        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
+    } else {
+        ConfigFile { profiles: HashMap::new() }
+    };
+
+    let entry = config_file.profiles.entry(profile.to_string()).or_default();
+    entry.workspaces.retain(|w| w.public_id != workspace.public_id);
+    entry.workspaces.insert(0, workspace);
+
+    let content = serde_yaml::to_string(&config_file)
+        .map_err(|e| format!("error serializing config: {e}"))?;
+    fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
+}
+
 pub fn resolve_workspace_id(provided: Option<String>, profile_config: &ProfileConfig) -> Result<String, String> {
     if let Some(id) = provided {
         return Ok(id);
