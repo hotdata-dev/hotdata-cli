@@ -11,7 +11,7 @@ fn term_width() -> usize {
         .unwrap_or(120)
 }
 
-fn style_table(table: &mut tabled::Table, _ncols: usize) {
+fn style_table(table: &mut tabled::Table) {
     let tw = term_width();
 
     table
@@ -23,14 +23,13 @@ fn style_table(table: &mut tabled::Table, _ncols: usize) {
 
 /// Print a table with string data. Headers are &str slices, rows are Vec<String>.
 pub fn print(headers: &[&str], rows: &[Vec<String>]) {
-    let ncols = headers.len();
     let mut builder = tabled::builder::Builder::new();
     builder.push_record(headers.iter().map(|h| h.to_string()));
     for row in rows {
         builder.push_record(row.iter().map(|c| c.to_string()));
     }
     let mut table = builder.build();
-    style_table(&mut table, ncols);
+    style_table(&mut table);
     println!("{table}");
 }
 
@@ -38,7 +37,6 @@ pub fn print(headers: &[&str], rows: &[Vec<String>]) {
 pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
     use tabled::settings::object::Cell;
 
-    let ncols = headers.len();
     let mut builder = tabled::builder::Builder::new();
     builder.push_record(headers.iter().map(|h| h.to_string()));
 
@@ -71,7 +69,7 @@ pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
     }
 
     let mut table = builder.build();
-    style_table(&mut table, ncols);
+    style_table(&mut table);
 
     for (r, c, color) in colored_cells {
         table.with(Modify::new(Cell::new(r, c)).with(color));
