@@ -158,13 +158,16 @@ pub fn list(format: &str) {
             print!("{}", serde_yaml::to_string(&body.workspaces).unwrap());
         }
         "table" => {
-            let mut table = crate::util::make_table();
-            table.set_header(["DEFAULT", "PUBLIC_ID", "NAME", "PROVISION_STATUS"]);
-            for w in &body.workspaces {
-                let marker = if w.public_id == default_id { "*" } else { "" };
-                table.add_row([marker, &w.public_id, &w.name, &w.provision_status]);
+            if body.workspaces.is_empty() {
+                use crossterm::style::Stylize;
+                eprintln!("{}", "No workspaces found.".dark_grey());
+            } else {
+                let rows: Vec<Vec<String>> = body.workspaces.iter().map(|w| {
+                    let marker = if w.public_id == default_id { "*" } else { "" };
+                    vec![marker.to_string(), w.public_id.clone(), w.name.clone(), w.provision_status.clone()]
+                }).collect();
+                crate::table::print(&["DEFAULT", "PUBLIC_ID", "NAME", "PROVISION_STATUS"], &rows);
             }
-            println!("{table}");
         }
         _ => unreachable!(),
     }

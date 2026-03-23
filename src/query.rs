@@ -111,13 +111,7 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
             }
         }
         "table" => {
-            let mut table = crate::util::make_table();
-            table.set_header(&result.columns);
-            for row in &result.rows {
-                let cells: Vec<String> = row.iter().map(value_to_string).collect();
-                table.add_row(cells);
-            }
-            println!("{table}");
+            crate::table::print_json(&result.columns, &result.rows);
             use crossterm::style::Stylize;
             let id_part = result.result_id.as_deref().map(|id| format!(" [result-id: {id}]")).unwrap_or_default();
             eprintln!("{}", format!("\n{} row{} ({} ms){}", result.row_count, if result.row_count == 1 { "" } else { "s" }, result.execution_time_ms, id_part).dark_grey());
