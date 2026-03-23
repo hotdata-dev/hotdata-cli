@@ -134,13 +134,19 @@ pub fn list(
             "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
             "table" => {
                 let mut table = crate::util::make_table();
-                table.set_header(["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"]);
-                for t in &out {
-                    for col in &t.columns {
-                        table.add_row([&t.table, &col.name, &col.data_type, &col.nullable.to_string()]);
+                table.set_header(["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"].map(crate::util::hcell));
+                crate::util::no_wrap(&mut table);
+                if out.is_empty() {
+                    use crossterm::style::Stylize;
+                    eprintln!("{}", "No tables found.".dark_grey());
+                } else {
+                    for t in &out {
+                        for col in &t.columns {
+                            table.add_row([&t.table, &col.name, &col.data_type, &col.nullable.to_string()]);
+                        }
                     }
+                    crate::util::print_table(&table);
                 }
-                println!("{table}");
             }
             _ => unreachable!(),
         }
@@ -154,11 +160,17 @@ pub fn list(
             "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
             "table" => {
                 let mut table = crate::util::make_table();
-                table.set_header(["TABLE", "SYNCED", "LAST_SYNC"]);
-                for r in &out {
-                    table.add_row([&r.table, &r.synced.to_string(), r.last_sync.as_deref().unwrap_or("-")]);
+                table.set_header(["TABLE", "SYNCED", "LAST_SYNC"].map(crate::util::hcell));
+                crate::util::no_wrap(&mut table);
+                if out.is_empty() {
+                    use crossterm::style::Stylize;
+                    eprintln!("{}", "No tables found.".dark_grey());
+                } else {
+                    for r in &out {
+                        table.add_row([&r.table, &r.synced.to_string(), r.last_sync.as_deref().map(crate::util::format_date).as_deref().unwrap_or("-")]);
+                    }
+                    crate::util::print_table(&table);
                 }
-                println!("{table}");
             }
             _ => unreachable!(),
         }

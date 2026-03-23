@@ -159,12 +159,18 @@ pub fn list(format: &str) {
         }
         "table" => {
             let mut table = crate::util::make_table();
-            table.set_header(["DEFAULT", "PUBLIC_ID", "NAME", "PROVISION_STATUS"]);
-            for w in &body.workspaces {
-                let marker = if w.public_id == default_id { "*" } else { "" };
-                table.add_row([marker, &w.public_id, &w.name, &w.provision_status]);
+            table.set_header(["DEFAULT", "PUBLIC_ID", "NAME", "PROVISION_STATUS"].map(crate::util::hcell));
+            crate::util::no_wrap(&mut table);
+            if body.workspaces.is_empty() {
+                use crossterm::style::Stylize;
+                eprintln!("{}", "No workspaces found.".dark_grey());
+            } else {
+                for w in &body.workspaces {
+                    let marker = if w.public_id == default_id { "*" } else { "" };
+                    table.add_row([marker, &w.public_id, &w.name, &w.provision_status]);
+                }
+                crate::util::print_table(&table);
             }
-            println!("{table}");
         }
         _ => unreachable!(),
     }

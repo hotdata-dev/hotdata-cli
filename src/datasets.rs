@@ -476,16 +476,19 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
         "yaml" => print!("{}", serde_yaml::to_string(&body.datasets).unwrap()),
         "table" => {
             let mut table = crate::util::make_table();
-            table.set_header(["ID", "LABEL", "FULL NAME", "CREATED AT"]);
-            table.column_mut(1).unwrap().set_constraint(
-                comfy_table::ColumnConstraint::UpperBoundary(comfy_table::Width::Fixed(30))
-            );
-            for d in &body.datasets {
-                let created_at = d.created_at.split('.').next().unwrap_or(&d.created_at).replace('T', " ");
-                let full_name = format!("datasets.main.{}", d.table_name);
-                table.add_row([&d.id, &d.label, &full_name, &created_at]);
+            table.set_header(["ID", "LABEL", "FULL NAME", "CREATED AT"].map(crate::util::hcell));
+            crate::util::no_wrap(&mut table);
+            if body.datasets.is_empty() {
+                use crossterm::style::Stylize;
+                eprintln!("{}", "No datasets found.".dark_grey());
+            } else {
+                for d in &body.datasets {
+                    let created_at = crate::util::format_date(&d.created_at);
+                    let full_name = format!("datasets.main.{}", d.table_name);
+                    table.add_row([&d.id, &d.label, &full_name, &created_at]);
+                }
+                crate::util::print_table(&table);
             }
-            println!("{table}");
             if body.has_more {
                 let next = offset.unwrap_or(0) + body.count as u32;
                 use crossterm::style::Stylize;
@@ -547,8 +550,8 @@ pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
         "json" => println!("{}", serde_json::to_string_pretty(&d).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&d).unwrap()),
         "table" => {
-            let created_at = d.created_at.split('.').next().unwrap_or(&d.created_at).replace('T', " ");
-            let updated_at = d.updated_at.split('.').next().unwrap_or(&d.updated_at).replace('T', " ");
+            let created_at = crate::util::format_date(&d.created_at);
+            let updated_at = crate::util::format_date(&d.updated_at);
             println!("id:          {}", d.id);
             println!("label:       {}", d.label);
             println!("full_name:   datasets.main.{}", d.table_name);
@@ -558,11 +561,12 @@ pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
             if !d.columns.is_empty() {
                 println!();
                 let mut table = crate::util::make_table();
-                table.set_header(["COLUMN", "DATA TYPE", "NULLABLE"]);
+                table.set_header(["COLUMN", "DATA TYPE", "NULLABLE"].map(crate::util::hcell));
+                crate::util::no_wrap(&mut table);
                 for col in &d.columns {
                     table.add_row([&col.name, &col.data_type, &col.nullable.to_string()]);
                 }
-                println!("{table}");
+                crate::util::print_table(&table);
             }
         }
         _ => unreachable!(),
