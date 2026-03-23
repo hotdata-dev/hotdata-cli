@@ -71,17 +71,14 @@ pub fn types_list(workspace_id: &str, format: &str) {
         "json" => println!("{}", serde_json::to_string_pretty(&body.connection_types).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&body.connection_types).unwrap()),
         "table" => {
-            let mut table = crate::util::make_table();
-            table.set_header(["NAME", "LABEL"].map(crate::util::hcell));
-            crate::util::no_wrap(&mut table);
             if body.connection_types.is_empty() {
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No connection types found.".dark_grey());
             } else {
-                for ct in &body.connection_types {
-                    table.add_row([&ct.name, &ct.label]);
-                }
-                crate::util::print_table(&table);
+                let rows: Vec<Vec<String>> = body.connection_types.iter()
+                    .map(|ct| vec![ct.name.clone(), ct.label.clone()])
+                    .collect();
+                crate::table::print(&["NAME", "LABEL"], &rows);
             }
         }
         _ => unreachable!(),
@@ -318,17 +315,14 @@ pub fn list(workspace_id: &str, format: &str) {
             print!("{}", serde_yaml::to_string(&body.connections).unwrap());
         }
         "table" => {
-            let mut table = crate::util::make_table();
-            table.set_header(["ID", "NAME", "SOURCE TYPE"].map(crate::util::hcell));
-            crate::util::no_wrap(&mut table);
             if body.connections.is_empty() {
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No connections found.".dark_grey());
             } else {
-                for c in &body.connections {
-                    table.add_row([&c.id, &c.name, &c.source_type]);
-                }
-                crate::util::print_table(&table);
+                let rows: Vec<Vec<String>> = body.connections.iter()
+                    .map(|c| vec![c.id.clone(), c.name.clone(), c.source_type.clone()])
+                    .collect();
+                crate::table::print(&["ID", "NAME", "SOURCE TYPE"], &rows);
             }
         }
         _ => unreachable!(),

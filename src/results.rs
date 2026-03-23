@@ -104,14 +104,7 @@ pub fn get(result_id: &str, workspace_id: &str, format: &str) {
             }
         }
         "table" => {
-            let mut table = crate::util::make_table();
-            table.set_header(result.columns.iter().map(|c| crate::util::hcell(c)));
-            crate::util::no_wrap(&mut table);
-            for row in &result.rows {
-                let cells: Vec<comfy_table::Cell> = row.iter().map(crate::util::json_cell).collect();
-                table.add_row(cells);
-            }
-            crate::util::print_table(&table);
+            crate::table::print_json(&result.columns, &result.rows);
             use crossterm::style::Stylize;
             eprintln!("{}", format!("\n{} row{} ({} ms) [result-id: {}]", result.row_count, if result.row_count == 1 { "" } else { "s" }, result.execution_time_ms, result.result_id).dark_grey());
         }

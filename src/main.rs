@@ -8,6 +8,7 @@ mod init;
 mod query;
 mod results;
 mod skill;
+mod table;
 mod tables;
 mod util;
 mod workspace;

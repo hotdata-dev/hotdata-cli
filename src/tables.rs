@@ -133,19 +133,16 @@ pub fn list(
             "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
             "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
             "table" => {
-                let mut table = crate::util::make_table();
-                table.set_header(["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"].map(crate::util::hcell));
-                crate::util::no_wrap(&mut table);
                 if out.is_empty() {
                     use crossterm::style::Stylize;
                     eprintln!("{}", "No tables found.".dark_grey());
                 } else {
-                    for t in &out {
-                        for col in &t.columns {
-                            table.add_row([&t.table, &col.name, &col.data_type, &col.nullable.to_string()]);
-                        }
-                    }
-                    crate::util::print_table(&table);
+                    let rows: Vec<Vec<String>> = out.iter().flat_map(|t| {
+                        t.columns.iter().map(|col| vec![
+                            t.table.clone(), col.name.clone(), col.data_type.clone(), col.nullable.to_string(),
+                        ])
+                    }).collect();
+                    crate::table::print(&["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"], &rows);
                 }
             }
             _ => unreachable!(),
@@ -159,17 +156,16 @@ pub fn list(
             "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
             "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
             "table" => {
-                let mut table = crate::util::make_table();
-                table.set_header(["TABLE", "SYNCED", "LAST_SYNC"].map(crate::util::hcell));
-                crate::util::no_wrap(&mut table);
                 if out.is_empty() {
                     use crossterm::style::Stylize;
                     eprintln!("{}", "No tables found.".dark_grey());
                 } else {
-                    for r in &out {
-                        table.add_row([&r.table, &r.synced.to_string(), r.last_sync.as_deref().map(crate::util::format_date).as_deref().unwrap_or("-")]);
-                    }
-                    crate::util::print_table(&table);
+                    let rows: Vec<Vec<String>> = out.iter().map(|r| vec![
+                        r.table.clone(),
+                        r.synced.to_string(),
+                        r.last_sync.as_deref().map(crate::util::format_date).unwrap_or_else(|| "-".to_string()),
+                    ]).collect();
+                    crate::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &rows);
                 }
             }
             _ => unreachable!(),
