@@ -134,6 +134,9 @@ fn main() {
                             }
                         }
                     }
+                    ConnectionsCommands::Refresh { connection_id } => {
+                        connections::refresh(&workspace_id, &connection_id)
+                    }
                     _ => eprintln!("not yet implemented"),
                 }
             },
