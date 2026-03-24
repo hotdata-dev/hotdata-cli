@@ -203,7 +203,7 @@ pub fn resolve_workspace_id(provided: Option<String>, profile_config: &ProfileCo
         .workspaces
         .first()
         .map(|w| w.public_id.clone())
-        .ok_or_else(|| "no workspace-id provided and no default workspace found. Run 'hotdata auth login' or specify --workspace-id.".to_string())
+        .ok_or_else(|| "no workspace-id provided and no default workspace found. Run 'hotdata auth' or specify --workspace-id.".to_string())
 }
 
 /// Global API key override set via --api-key flag.

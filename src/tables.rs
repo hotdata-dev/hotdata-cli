@@ -66,7 +66,7 @@ pub fn list(
     let api_key = match &profile_config.api_key {
         Some(key) if key != "PLACEHOLDER" => key.clone(),
         _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
             std::process::exit(1);
         }
     };
