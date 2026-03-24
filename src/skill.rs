@@ -349,7 +349,7 @@ pub fn status() {
 
     if !exists {
         row("Installed", &"No".red().to_string());
-        println!("\nRun 'hotdata skill install' to install.");
+        println!("\nRun 'hotdata skills install' to install.");
         return;
     }
 
@@ -395,6 +395,6 @@ pub fn status() {
     }
 
     if installed_version.map_or(false, |v| v < current) {
-        println!("\nRun 'hotdata skill install' to update.");
+        println!("\nRun 'hotdata skills install' to update.");
     }
 }

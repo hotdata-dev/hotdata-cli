@@ -49,6 +49,7 @@ pub enum ApiKeySource {
     #[default]
     Config,
     Env,
+    Flag,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,6 +125,29 @@ pub fn save_api_key(profile: &str, api_key: &str) -> Result<(), String> {
     fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
 }
 
+pub fn remove_api_key(profile: &str) -> Result<(), String> {
+    let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
+    let config_path = user_dirs.home_dir().join(".hotdata").join("config.yml");
+
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| format!("error reading config file: {e}"))?;
+    let mut config_file: ConfigFile =
+        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
+
+    if let Some(entry) = config_file.profiles.get_mut(profile) {
+        entry.api_key = None;
+        entry.workspaces.clear();
+    }
+
+    let content = serde_yaml::to_string(&config_file)
+        .map_err(|e| format!("error serializing config: {e}"))?;
+    fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
+}
+
 pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result<(), String> {
     let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
     let config_path = user_dirs.home_dir().join(".hotdata").join("config.yml");
@@ -182,35 +206,40 @@ pub fn resolve_workspace_id(provided: Option<String>, profile_config: &ProfileCo
         .ok_or_else(|| "no workspace-id provided and no default workspace found. Run 'hotdata auth login' or specify --workspace-id.".to_string())
 }
 
+/// Global API key override set via --api-key flag.
+/// Call `set_api_key_flag` once at startup; `load` picks it up automatically.
+static API_KEY_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn set_api_key_flag(key: String) {
+    let _ = API_KEY_FLAG.set(key);
+}
+
 pub fn load(profile: &str) -> Result<ProfileConfig, String> {
     let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
     let config_file = user_dirs.home_dir().join(".hotdata").join("config.yml");
 
-    if !config_file.exists() {
-        return Err(format!(
-            "config file not found at {}. Run 'hotdata init' to create one.",
-            config_file.display()
-        ));
-    }
+    let mut profile_config = if config_file.exists() {
+        let content =
+            fs::read_to_string(&config_file).map_err(|e| format!("error reading config file: {e}"))?;
+        let config_file: ConfigFile = serde_yaml::from_str(&content).unwrap_or_else(|_| {
+            eprintln!("{}", "error parsing config file.".red());
+            eprintln!("Run 'hotdata auth' to generate a new config file.");
+            std::process::exit(1);
+        });
+        config_file.profiles.get(profile).cloned().unwrap_or_default()
+    } else {
+        ProfileConfig::default()
+    };
 
-    let content =
-        fs::read_to_string(&config_file).map_err(|e| format!("error reading config file: {e}"))?;
-
-    let config_file: ConfigFile = serde_yaml::from_str(&content).unwrap_or_else(|_| {
-        eprintln!("{}", "error parsing config file.".red());
-        eprintln!("Run 'hotdata auth login' to generate a new config file.");
-        std::process::exit(1);
-    });
-
-    let mut profile_config = config_file
-        .profiles
-        .get(profile)
-        .cloned()
-        .ok_or_else(|| format!("profile '{profile}' not found in config"))?;
-
+    // Priority: config (lowest) < env var < --api-key flag (highest)
     if let Ok(val) = env::var("HOTDATA_API_KEY") {
         profile_config.api_key = Some(val);
         profile_config.api_key_source = ApiKeySource::Env;
+    }
+
+    if let Some(val) = API_KEY_FLAG.get() {
+        profile_config.api_key = Some(val.clone());
+        profile_config.api_key_source = ApiKeySource::Flag;
     }
 
     if let Ok(val) = env::var("HOTDATA_API_URL") {

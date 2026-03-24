@@ -8,6 +8,14 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::stdout;
 
+pub fn logout(profile: &str) {
+    if let Err(e) = config::remove_api_key(profile) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+    println!("{}", "Logged out.".green());
+}
+
 pub fn status(profile: &str) {
     let profile_config = match config::load(profile) {
         Ok(c) => c,

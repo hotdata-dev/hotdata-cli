@@ -4,7 +4,6 @@ mod config;
 mod connections;
 mod connections_new;
 mod datasets;
-mod init;
 mod query;
 mod results;
 mod skill;
@@ -24,6 +23,10 @@ struct Cli {
     /// Print version
     #[arg(short = 'v', short_aliases = ['V'], long, action = clap::ArgAction::Version)]
     version: Option<bool>,
+
+    /// API key (overrides env var and config file)
+    #[arg(long, global = true)]
+    api_key: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -49,6 +52,10 @@ fn main() {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
+    if let Some(key) = cli.api_key {
+        config::set_api_key_flag(key);
+    }
+
     match cli.command {
         None => {
             use clap::CommandFactory;
@@ -56,12 +63,10 @@ fn main() {
             println!();
         }
         Some(cmd) => match cmd {
-            Commands::Init => init::run(),
-            Commands::Info => eprintln!("not yet implemented"),
             Commands::Auth { command } => match command {
-                AuthCommands::Login => auth::login(),
-                AuthCommands::Status { profile } => auth::status(&profile),
-                _ => eprintln!("not yet implemented"),
+                None => auth::login(),
+                Some(AuthCommands::Status) => auth::status("default"),
+                Some(AuthCommands::Logout) => auth::logout("default"),
             },
             Commands::Datasets { id, workspace_id, format, command } => {
                 let workspace_id = resolve_workspace(workspace_id);
@@ -83,8 +88,9 @@ fn main() {
                         }
                         None => {
                             use clap::CommandFactory;
-                            Cli::command().find_subcommand_mut("datasets").unwrap().print_help().unwrap();
-                            println!();
+                            let mut cmd = Cli::command();
+                            cmd.build();
+                            cmd.find_subcommand_mut("datasets").unwrap().print_help().unwrap();
                         }
                     }
                 }
@@ -93,7 +99,6 @@ fn main() {
                 let workspace_id = resolve_workspace(workspace_id);
                 query::execute(&sql, &workspace_id, connection.as_deref(), &format)
             }
-            Commands::Profile { .. } => eprintln!("not yet implemented"),
             Commands::Workspaces { command } => match command {
                 WorkspaceCommands::List { format } => workspace::list(&format),
                 WorkspaceCommands::Set { workspace_id } => workspace::set(workspace_id.as_deref()),
@@ -143,7 +148,7 @@ fn main() {
                     tables::list(&workspace_id, connection_id.as_deref(), schema.as_deref(), table.as_deref(), limit, cursor.as_deref(), &format)
                 }
             },
-            Commands::Skill { command } => match command {
+            Commands::Skills { command } => match command {
                 SkillCommands::Install { project } => {
                     if project { skill::install_project() } else { skill::install() }
                 }
@@ -159,8 +164,10 @@ fn main() {
                         match result_id {
                             Some(id) => results::get(&id, &workspace_id, &format),
                             None => {
-                                eprintln!("error: provide a result ID or use 'results list'");
-                                std::process::exit(1);
+                                use clap::CommandFactory;
+                                let mut cmd = Cli::command();
+                                cmd.build();
+                                cmd.find_subcommand_mut("results").unwrap().print_help().unwrap();
                             }
                         }
                     }
