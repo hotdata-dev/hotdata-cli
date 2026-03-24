@@ -18,7 +18,7 @@ use clap::{Parser, builder::Styles};
 use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
-#[command(name = "hotdata", version, about = concat!("HotData CLI - Command line interface for HotData (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
+#[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
 #[command(styles=get_styles())]
 struct Cli {
     /// Print version

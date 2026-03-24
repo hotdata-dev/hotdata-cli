@@ -2,10 +2,10 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize HotData CLI configuration file with default settings
+    /// Initialize Hotdata CLI configuration file with default settings
     Init,
 
-    /// Show HotData service information
+    /// Show Hotdata service information
     Info,
 
     /// Manage authentication and profiles
@@ -103,7 +103,7 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum AuthCommands {
-    /// Log in to HotData via browser
+    /// Log in to Hotdata via browser
     Login,
 
     /// Remove authentication for a profile

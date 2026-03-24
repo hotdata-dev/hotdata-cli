@@ -275,11 +275,11 @@ pub fn install_project() {
 pub fn install() {
     let current = Version::parse(CURRENT_VERSION).expect("invalid package version");
 
-    if is_managed_by_skills_agent() {
+    let needs_download = if is_managed_by_skills_agent() {
         match read_installed_version() {
             Some(ref v) if *v >= current => {
                 println!("Managed by skills agent — already up to date (v{v}).");
-                return;
+                false
             }
             Some(ref v) => {
                 println!(
@@ -287,26 +287,35 @@ pub fn install() {
                     format!("Managed by skills agent — updating from v{v} to v{current}...")
                         .yellow()
                 );
+                true
             }
             None => {
-                println!("Managed by skills agent — skipping.");
-                return;
+                println!("Installing hotdata-cli skill v{current}...");
+                true
             }
         }
     } else {
         match read_installed_version() {
             Some(ref v) if *v >= current => {
                 println!("Already up to date (v{v}).");
-                return;
+                false
             }
-            Some(ref v) => println!("Updating from v{v} to v{current}..."),
-            None => println!("Installing hotdata-cli skill v{current}..."),
+            Some(ref v) => {
+                println!("Updating from v{v} to v{current}...");
+                true
+            }
+            None => {
+                println!("Installing hotdata-cli skill v{current}...");
+                true
+            }
         }
-    }
+    };
 
-    if let Err(e) = download_and_extract() {
-        eprintln!("{}", e.red());
-        std::process::exit(1);
+    if needs_download {
+        if let Err(e) = download_and_extract() {
+            eprintln!("{}", e.red());
+            std::process::exit(1);
+        }
     }
 
     let symlinks = ensure_symlinks();
