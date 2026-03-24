@@ -328,3 +328,52 @@ pub fn list(workspace_id: &str, format: &str) {
         _ => unreachable!(),
     }
 }
+
+pub fn refresh(workspace_id: &str, connection_id: &str) {
+    let profile_config = match config::load("default") {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let api_key = match &profile_config.api_key {
+        Some(key) if key != "PLACEHOLDER" => key.clone(),
+        _ => {
+            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            std::process::exit(1);
+        }
+    };
+
+    let body = serde_json::json!({
+        "connection_id": connection_id,
+        "data": false,
+    });
+
+    let url = format!("{}/refresh", profile_config.api_url);
+    let client = reqwest::blocking::Client::new();
+
+    let resp = match client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("X-Workspace-Id", workspace_id)
+        .json(&body)
+        .send()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error connecting to API: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !resp.status().is_success() {
+        use crossterm::style::Stylize;
+        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
+        std::process::exit(1);
+    }
+
+    use crossterm::style::Stylize;
+    println!("{}", "Schema refresh completed.".green());
+}

@@ -384,6 +384,12 @@ pub enum ConnectionsCommands {
         format: String,
     },
 
+    /// Refresh a connection's schema
+    Refresh {
+        /// Connection ID
+        connection_id: String,
+    },
+
     /// Delete a connection from a workspace
     Delete {
         /// Connection ID
