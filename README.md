@@ -57,6 +57,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `datasets` | `list`, `create` | Manage uploaded datasets |
 | `query` | | Execute a SQL query |
 | `results` | `list` | Retrieve stored query results |
+| `jobs` | `list` | Manage background jobs |
 | `skills` | `install`, `status` | Manage the hotdata-cli agent skill |
 
 ## Global options
@@ -146,6 +147,17 @@ hotdata results list [--workspace-id <id>] [--limit <n>] [--offset <n>] [--forma
 ```
 
 - Query results include a `result-id` in the table footer — use it to retrieve past results without re-running queries.
+
+## Jobs
+
+```sh
+hotdata jobs list [--workspace-id <id>] [--job-type <type>] [--status <status>] [--all] [--limit <n>] [--offset <n>] [--format table|json|yaml]
+hotdata jobs <job_id> [--workspace-id <id>] [--format table|json|yaml]
+```
+
+- `list` shows only active jobs (`pending` and `running`) by default. Use `--all` to see all jobs.
+- `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `create_index`.
+- `--status` accepts: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 
 ## Configuration
 

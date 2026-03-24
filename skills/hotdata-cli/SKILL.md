@@ -176,6 +176,16 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--format table|json
 - Query results include a `result-id` in the footer (e.g. `[result-id: rslt...]`).
 - **Always use this command to retrieve past query results rather than re-running the same query.** Re-running queries wastes resources and may return different results.
 
+### Jobs
+```
+hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status <status>] [--all] [--format table|json|yaml]
+hotdata jobs <job_id> [--workspace-id <workspace_id>] [--format table|json|yaml]
+```
+- `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
+- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`.
+- `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
+- Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
+
 ### Auth
 ```
 hotdata auth                # Browser-based login
