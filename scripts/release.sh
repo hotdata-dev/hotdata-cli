@@ -42,12 +42,13 @@ case "$COMMAND" in
         # step 2: bump versions, commit, push branch
         echo ""
         echo "→ Running cargo release (no publish, no tag)..."
-        cargo release --no-publish --no-tag --allow-branch="$BRANCH" "$VERSION"
+        cargo release --no-publish --no-tag --allow-branch="$BRANCH" --execute "$VERSION"
 
         echo ""
         echo "→ Opening pull request..."
         PR_URL=$(gh pr create \
             --title "chore: Release hotdata-cli version $VERSION" \
+            --body "" \
             --base main \
             --head "$BRANCH")
 
