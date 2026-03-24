@@ -87,6 +87,23 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<ResultsCommands>,
     },
+
+    /// Manage background jobs
+    Jobs {
+        /// Job ID (omit to use a subcommand)
+        id: Option<String>,
+
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, global = true)]
+        workspace_id: Option<String>,
+
+        /// Output format (used with job ID)
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+
+        #[command(subcommand)]
+        command: Option<JobsCommands>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -96,6 +113,36 @@ pub enum AuthCommands {
 
     /// Show authentication status
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum JobsCommands {
+    /// List background jobs (shows active jobs by default)
+    List {
+        /// Filter by job type
+        #[arg(long, value_parser = ["noop", "data_refresh_table", "data_refresh_connection", "create_index"])]
+        job_type: Option<String>,
+
+        /// Filter by status
+        #[arg(long, value_parser = ["pending", "running", "succeeded", "partially_succeeded", "failed"])]
+        status: Option<String>,
+
+        /// Show all jobs, not just active ones
+        #[arg(long)]
+        all: bool,
+
+        /// Maximum number of results (default: 50)
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination offset
+        #[arg(long)]
+        offset: Option<u32>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]

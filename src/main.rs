@@ -4,6 +4,7 @@ mod config;
 mod connections;
 mod connections_new;
 mod datasets;
+mod jobs;
 mod query;
 mod results;
 mod skill;
@@ -14,7 +15,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, JobsCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -172,6 +173,24 @@ fn main() {
                                 cmd.build();
                                 cmd.find_subcommand_mut("results").unwrap().print_help().unwrap();
                             }
+                        }
+                    }
+                }
+            }
+            Commands::Jobs { id, workspace_id, format, command } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                if let Some(id) = id {
+                    jobs::get(&id, &workspace_id, &format)
+                } else {
+                    match command {
+                        Some(JobsCommands::List { job_type, status, all, limit, offset, format }) => {
+                            jobs::list(&workspace_id, job_type.as_deref(), status.as_deref(), all, limit, offset, &format)
+                        }
+                        None => {
+                            use clap::CommandFactory;
+                            let mut cmd = Cli::command();
+                            cmd.build();
+                            cmd.find_subcommand_mut("jobs").unwrap().print_help().unwrap();
                         }
                     }
                 }
