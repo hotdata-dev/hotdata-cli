@@ -1,12 +1,12 @@
 ---
 name: hotdata-cli
-description: Use this skill when the user wants to run hotdata CLI commands, query the HotData API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", or asks you to use the hotdata CLI.
+description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", or asks you to use the hotdata CLI.
 version: 0.1.4
 ---
 
-# HotData CLI Skill
+# Hotdata CLI Skill
 
-Use the `hotdata` CLI to interact with the HotData service. In this project, run it as:
+Use the `hotdata` CLI to interact with the Hotdata service. In this project, run it as:
 
 ```
 hotdata <command> [args]
@@ -16,13 +16,18 @@ Or if installed on PATH: `hotdata <command> [args]`
 
 ## Authentication
 
-Config is stored in `~/.hotdata/config.yml` keyed by profile (default: `default`).
-API key can also be set via `HOTDATA_API_KEY` env var.
+Run `hotdata auth` to authenticate via browser login. Config is stored in `~/.hotdata/config.yml`.
+
+API key resolution (lowest to highest priority):
+1. Config file (saved by `hotdata auth`)
+2. `HOTDATA_API_KEY` environment variable (or `.env` file)
+3. `--api-key <key>` flag (works on any command)
+
 API URL defaults to `https://api.hotdata.dev/v1` or overridden via `HOTDATA_API_URL`.
 
 ## Workspace ID
 
-All commands that accept `--workspace-id` are optional. If omitted, the first workspace saved during `hotdata auth login` is used as the default. **Omit `--workspace-id` unless you need to target a specific workspace.**
+All commands that accept `--workspace-id` are optional. If omitted, the active workspace is used. Use `hotdata workspaces set` to switch the active workspace interactively, or pass a workspace ID directly: `hotdata workspaces set <workspace_id>`. The active workspace is shown with a `*` marker in `hotdata workspaces list`. **Omit `--workspace-id` unless you need to target a specific workspace.**
 
 ## Available Commands
 
@@ -111,7 +116,7 @@ hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection
 
 ### Datasets
 
-Datasets are managed files uploaded to HotData and queryable as tables.
+Datasets are managed files uploaded to Hotdata and queryable as tables.
 
 #### List datasets
 ```
@@ -173,13 +178,8 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--format table|json
 
 ### Auth
 ```
-hotdata auth login          # Browser-based login
+hotdata auth                # Browser-based login
 hotdata auth status         # Check current auth status
-```
-
-### Init
-```
-hotdata init                # Create ~/.hotdata/config.yml
 ```
 
 ## Workflow: Running a Query

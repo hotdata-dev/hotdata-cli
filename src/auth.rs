@@ -8,6 +8,14 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::stdout;
 
+pub fn logout(profile: &str) {
+    if let Err(e) = config::remove_api_key(profile) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+    println!("{}", "Logged out.".green());
+}
+
 pub fn status(profile: &str) {
     let profile_config = match config::load(profile) {
         Ok(c) => c,
@@ -133,7 +141,7 @@ pub fn login() {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HotData — Login Successful</title>
+  <title>Hotdata — Login Successful</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -177,7 +185,7 @@ pub fn login() {
       </svg>
     </div>
     <h1>Login successful</h1>
-    <p>You're now authenticated with HotData.<br/>You can close this tab and return to the terminal.</p>
+    <p>You're now authenticated with Hotdata.<br/>You can close this tab and return to the terminal.</p>
   </div>
 </body>
 </html>"#;

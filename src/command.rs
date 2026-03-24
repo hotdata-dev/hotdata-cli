@@ -2,16 +2,10 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize HotData CLI configuration file with default settings
-    Init,
-
-    /// Show HotData service information
-    Info,
-
-    /// Manage authentication and profiles
+    /// Authenticate or manage auth settings
     Auth {
         #[command(subcommand)]
-        command: AuthCommands,
+        command: Option<AuthCommands>,
     },
 
     /// Manage datasets
@@ -49,12 +43,6 @@ pub enum Commands {
         format: String,
     },
 
-    /// Manage configuration profiles
-    Profile {
-        #[command(subcommand)]
-        command: ProfileCommands,
-    },
-
     /// Manage workspaces
     Workspaces {
         #[command(subcommand)]
@@ -78,7 +66,7 @@ pub enum Commands {
     },
 
     /// Manage the hotdata-cli agent skill
-    Skill {
+    Skills {
         #[command(subcommand)]
         command: SkillCommands,
     },
@@ -103,70 +91,11 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum AuthCommands {
-    /// Log in to HotData via browser
-    Login,
-
     /// Remove authentication for a profile
-    Logout {
-        /// Configuration profile name
-        #[arg(long, default_value = "default")]
-        profile: String,
-    },
+    Logout,
 
     /// Show authentication status
-    Status {
-        /// Configuration profile name
-        #[arg(long, default_value = "default")]
-        profile: String,
-    },
-
-    /// Update authentication configuration
-    Config {
-        /// API endpoint URL
-        #[arg(long)]
-        endpoint: Option<String>,
-
-        /// Configuration profile name
-        #[arg(long, default_value = "default")]
-        profile: String,
-    },
-
-    /// Validate the API key for the active profile
-    Validate,
-
-    /// Manage API keys
-    Keys {
-        #[command(subcommand)]
-        command: AuthKeysCommands,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum AuthKeysCommands {
-    /// Create a new API key for an organization
-    Create {
-        /// Organization ID
-        #[arg(long)]
-        org_id: String,
-
-        /// API key (if not provided, a new one will be generated)
-        #[arg(long)]
-        key: Option<String>,
-
-        /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
-    },
-
-    /// Delete an API key from an organization
-    Delete {
-        /// API key to delete
-        api_key: String,
-
-        /// Organization ID
-        #[arg(long)]
-        org_id: String,
-    },
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -218,27 +147,6 @@ pub enum DatasetsCommands {
     },
 }
 
-
-#[derive(Subcommand)]
-pub enum ProfileCommands {
-    /// List available configuration profiles
-    List,
-
-    /// Show the current active configuration profile
-    Current,
-
-    /// Set the active configuration profile for all future commands
-    Set {
-        /// Profile name to activate
-        profile: String,
-    },
-
-    /// Remove a configuration profile
-    Remove {
-        /// Profile name to remove
-        profile: String,
-    },
-}
 
 #[derive(Subcommand)]
 pub enum WorkspaceCommands {

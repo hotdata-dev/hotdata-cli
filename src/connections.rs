@@ -32,7 +32,7 @@ pub fn types_list(workspace_id: &str, format: &str) {
     let api_key = match &profile_config.api_key {
         Some(key) if key != "PLACEHOLDER" => key.clone(),
         _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
             std::process::exit(1);
         }
     };
@@ -97,7 +97,7 @@ pub fn types_get(workspace_id: &str, name: &str, format: &str) {
     let api_key = match &profile_config.api_key {
         Some(key) if key != "PLACEHOLDER" => key.clone(),
         _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
             std::process::exit(1);
         }
     };
@@ -179,7 +179,7 @@ pub fn create(
     let api_key = match &profile_config.api_key {
         Some(key) if key != "PLACEHOLDER" => key.clone(),
         _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
             std::process::exit(1);
         }
     };
@@ -272,7 +272,7 @@ pub fn list(workspace_id: &str, format: &str) {
     let api_key = match &profile_config.api_key {
         Some(key) if key != "PLACEHOLDER" => key.clone(),
         _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
             std::process::exit(1);
         }
     };

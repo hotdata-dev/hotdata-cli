@@ -25,7 +25,7 @@ fn load_client() -> (reqwest::blocking::Client, String, String) {
     let api_key = match &profile.api_key {
         Some(k) if k != "PLACEHOLDER" => k.clone(),
         _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
+            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
             std::process::exit(1);
         }
     };
