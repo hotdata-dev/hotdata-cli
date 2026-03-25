@@ -104,6 +104,30 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<JobsCommands>,
     },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: ShellChoice,
+    },
+}
+
+#[derive(Clone, clap::ValueEnum)]
+pub enum ShellChoice {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+impl From<ShellChoice> for clap_complete::Shell {
+    fn from(s: ShellChoice) -> Self {
+        match s {
+            ShellChoice::Bash => clap_complete::Shell::Bash,
+            ShellChoice::Zsh => clap_complete::Shell::Zsh,
+            ShellChoice::Fish => clap_complete::Shell::Fish,
+        }
+    }
 }
 
 #[derive(Subcommand)]

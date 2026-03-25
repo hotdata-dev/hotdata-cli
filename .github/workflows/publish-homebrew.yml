@@ -1,0 +1,65 @@
+name: Publish Homebrew Formula
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish-homebrew-formula:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PLAN: ${{ inputs.plan }}
+      GITHUB_USER: "axo bot"
+      GITHUB_EMAIL: "admin+bot@axo.dev"
+    if: ${{ !fromJson(inputs.plan).announcement_is_prerelease || fromJson(inputs.plan).publish_prereleases }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: true
+          repository: "hotdata-dev/homebrew-tap"
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Fetch homebrew formulae
+        uses: actions/download-artifact@v7
+        with:
+          pattern: artifacts-*
+          path: Formula/
+          merge-multiple: true
+
+      - name: Patch and commit formula files
+        run: |
+          git config --global user.name "${GITHUB_USER}"
+          git config --global user.email "${GITHUB_EMAIL}"
+
+          for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith(".rb")] | any)'); do
+            filename=$(echo "$release" | jq '.artifacts[] | select(endswith(".rb"))' --raw-output)
+            name=$(echo "$filename" | sed "s/\.rb$//")
+            version=$(echo "$release" | jq .app_version --raw-output)
+
+            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+            brew update
+            brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
+
+            # Add shell completions generation if not already present
+            if ! grep -q 'generate_completions_from_executable' "Formula/${filename}"; then
+              sed -i '/bin\.install "hotdata"/a\    generate_completions_from_executable(bin/"hotdata", "completions")' "Formula/${filename}"
+            fi
+
+            git add "Formula/${filename}"
+            git commit -m "${name} ${version}"
+          done
+          git push
+
+      - name: Remove .rb from GitHub Release assets
+        run: |
+          TAG=$(echo "$PLAN" | jq -r '.announcement_tag')
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            exit 0
+          fi
+          for asset in $(gh release view "$TAG" --repo hotdata-dev/hotdata-cli --json assets -q '.assets[].name' | grep '\.rb$'); do
+            gh release delete-asset "$TAG" "$asset" --repo hotdata-dev/hotdata-cli --yes
+          done
