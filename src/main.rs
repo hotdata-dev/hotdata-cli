@@ -195,6 +195,13 @@ fn main() {
                     }
                 }
             }
+            Commands::Completions { shell } => {
+                use clap::CommandFactory;
+                use clap_complete::{Shell, generate};
+                let shell: Shell = shell.parse().unwrap();
+                let mut cmd = Cli::command();
+                generate(shell, &mut cmd, "hotdata", &mut std::io::stdout());
+            }
         },
     }
 }

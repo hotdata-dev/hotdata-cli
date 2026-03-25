@@ -104,6 +104,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<JobsCommands>,
     },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_parser = ["bash", "zsh", "fish"])]
+        shell: String,
+    },
 }
 
 #[derive(Subcommand)]
