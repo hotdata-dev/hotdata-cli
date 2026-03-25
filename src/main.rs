@@ -197,8 +197,8 @@ fn main() {
             }
             Commands::Completions { shell } => {
                 use clap::CommandFactory;
-                use clap_complete::{Shell, generate};
-                let shell: Shell = shell.parse().unwrap();
+                use clap_complete::generate;
+                let shell: clap_complete::Shell = shell.into();
                 let mut cmd = Cli::command();
                 generate(shell, &mut cmd, "hotdata", &mut std::io::stdout());
             }
