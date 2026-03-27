@@ -46,18 +46,24 @@ fn highlight_sql(sql: &str) -> String {
             continue;
         }
 
-        // String literal
+        // String literal (handles '' escaped quotes in SQL)
         if ch == '\'' {
             let start = i;
             i += 1;
-            while i < len && chars[i] != '\'' {
-                if chars[i] == '\'' && i + 1 < len && chars[i + 1] == '\'' {
-                    i += 2;
+            loop {
+                if i >= len { break; }
+                if chars[i] == '\'' {
+                    i += 1;
+                    // '' is an escaped quote, continue the string
+                    if i < len && chars[i] == '\'' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
                 } else {
                     i += 1;
                 }
             }
-            if i < len { i += 1; }
             let s: String = chars[start..i].iter().collect();
             result.push_str(&s.yellow().to_string());
             continue;

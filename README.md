@@ -56,6 +56,9 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `tables` | `list` | List tables and columns |
 | `datasets` | `list`, `create` | Manage uploaded datasets |
 | `query` | | Execute a SQL query |
+| `queries` | `list`, `create`, `update`, `run` | Manage saved queries |
+| `search` | | Full-text search across a table column |
+| `indexes` | `list`, `create` | Manage indexes on a table |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
 | `skills` | `install`, `status` | Manage the hotdata-cli agent skill |
@@ -123,10 +126,12 @@ hotdata datasets list [--workspace-id <id>] [--limit <n>] [--offset <n>] [--form
 hotdata datasets <dataset_id> [--workspace-id <id>] [--format table|json|yaml]
 hotdata datasets create --file data.csv [--label "My Dataset"] [--table-name my_dataset]
 hotdata datasets create --sql "SELECT ..." --label "My Dataset"
+hotdata datasets create --url "https://example.com/data.parquet" --label "My Dataset"
 ```
 
 - Datasets are queryable as `datasets.main.<table_name>`.
-- `--file`, `--sql`, and `--query-id` are mutually exclusive.
+- `--file`, `--sql`, `--query-id`, and `--url` are mutually exclusive.
+- `--url` imports data directly from a URL (supports csv, json, parquet).
 - Format is auto-detected from file extension or content.
 - Piped stdin is supported: `cat data.csv | hotdata datasets create --label "My Dataset"`
 
@@ -138,6 +143,44 @@ hotdata query "<sql>" [--workspace-id <id>] [--connection <connection_id>] [--fo
 
 - Default format is `table`, which prints results with row count and execution time.
 - Use `--connection` to scope the query to a specific connection.
+
+## Saved Queries
+
+```sh
+hotdata queries list [--limit <n>] [--offset <n>] [--format table|json|yaml]
+hotdata queries <query_id> [--format table|json|yaml]
+hotdata queries create --name "My Query" --sql "SELECT ..." [--description "..."] [--tags "tag1,tag2"]
+hotdata queries update <query_id> [--name "New Name"] [--sql "SELECT ..."] [--description "..."] [--tags "tag1,tag2"]
+hotdata queries run <query_id> [--format table|json|csv]
+```
+
+- `list` shows saved queries with name, description, tags, and version.
+- View a query by ID to see its formatted and syntax-highlighted SQL.
+- `create` requires `--name` and `--sql`. Tags are comma-separated.
+- `update` accepts any combination of fields to change.
+- `run` executes a saved query and displays results like the `query` command.
+
+## Search
+
+```sh
+hotdata search "<query>" --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [--format table|json|csv]
+```
+
+- Full-text search using BM25 across a table column.
+- Requires a BM25 index on the target column (see `indexes create`).
+- Results are ordered by relevance score (descending).
+- `--select` specifies which columns to return (comma-separated, defaults to all). The `score` column is automatically appended when `--select` is used.
+
+## Indexes
+
+```sh
+hotdata indexes list --connection-id <id> --schema <schema> --table <table> [--workspace-id <id>] [--format table|json|yaml]
+hotdata indexes create --connection-id <id> --schema <schema> --table <table> --name <name> --columns <cols> [--type sorted|bm25|vector] [--metric l2|cosine|dot] [--async]
+```
+
+- `list` shows indexes on a table with name, type, columns, status, and creation date.
+- `create` creates an index. Use `--type bm25` for full-text search, `--type vector` for vector search (requires `--metric`).
+- `--async` submits index creation as a background job.
 
 ## Results
 
