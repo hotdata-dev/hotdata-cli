@@ -174,9 +174,7 @@ pub fn list(
 
     let jobs = if !all && status.is_none() {
         // Default: show only active jobs (pending + running)
-        let mut jobs = fetch_jobs(&client, &api_key, &api_url, workspace_id, job_type, Some("pending"), limit, offset);
-        jobs.extend(fetch_jobs(&client, &api_key, &api_url, workspace_id, job_type, Some("running"), limit, offset));
-        jobs
+        fetch_jobs(&client, &api_key, &api_url, workspace_id, job_type, Some("pending,running"), limit, offset)
     } else {
         fetch_jobs(&client, &api_key, &api_url, workspace_id, job_type, status, limit, offset)
     };

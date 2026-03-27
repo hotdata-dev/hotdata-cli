@@ -4,6 +4,7 @@ mod config;
 mod connections;
 mod connections_new;
 mod datasets;
+mod indexes;
 mod jobs;
 mod query;
 mod results;
@@ -15,7 +16,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, JobsCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -194,6 +195,33 @@ fn main() {
                         }
                     }
                 }
+            }
+            Commands::Indexes { workspace_id, command } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                match command {
+                    IndexesCommands::List { connection_id, schema, table, format } => {
+                        indexes::list(&workspace_id, &connection_id, &schema, &table, &format)
+                    }
+                    IndexesCommands::Create { connection_id, schema, table, name, columns, r#type, metric, r#async } => {
+                        indexes::create(&workspace_id, &connection_id, &schema, &table, &name, &columns, &r#type, metric.as_deref(), r#async)
+                    }
+                }
+            }
+            Commands::Search { query, table, column, select, limit, workspace_id, format } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                let columns = match select.as_deref() {
+                    Some(cols) => format!("{}, score", cols),
+                    None => "*".to_string(),
+                };
+                let sql = format!(
+                    "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
+                    columns,
+                    table.replace('\'', "''"),
+                    column.replace('\'', "''"),
+                    query.replace('\'', "''"),
+                    limit,
+                );
+                query::execute(&sql, &workspace_id, None, &format)
             }
             Commands::Completions { shell } => {
                 use clap::CommandFactory;
