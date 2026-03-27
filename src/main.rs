@@ -6,6 +6,7 @@ mod connections_new;
 mod datasets;
 mod indexes;
 mod jobs;
+mod queries;
 mod query;
 mod results;
 mod skill;
@@ -16,7 +17,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -79,11 +80,13 @@ fn main() {
                         Some(DatasetsCommands::List { limit, offset, format }) => {
                             datasets::list(&workspace_id, limit, offset, &format)
                         }
-                        Some(DatasetsCommands::Create { label, table_name, file, upload_id, format, sql, query_id }) => {
+                        Some(DatasetsCommands::Create { label, table_name, file, upload_id, format, sql, query_id, url }) => {
                             if let Some(sql) = sql {
                                 datasets::create_from_query(&workspace_id, &sql, label.as_deref(), table_name.as_deref())
                             } else if let Some(query_id) = query_id {
                                 datasets::create_from_saved_query(&workspace_id, &query_id, label.as_deref(), table_name.as_deref())
+                            } else if let Some(url) = url {
+                                datasets::create_from_url(&workspace_id, &url, label.as_deref(), table_name.as_deref())
                             } else {
                                 datasets::create_from_upload(&workspace_id, label.as_deref(), table_name.as_deref(), file.as_deref(), upload_id.as_deref(), &format)
                             }
@@ -222,6 +225,33 @@ fn main() {
                     limit,
                 );
                 query::execute(&sql, &workspace_id, None, &format)
+            }
+            Commands::Queries { id, format, command } => {
+                let workspace_id = resolve_workspace(None);
+                if let Some(id) = id {
+                    queries::get(&id, &workspace_id, &format)
+                } else {
+                    match command {
+                        Some(QueriesCommands::List { limit, offset, format }) => {
+                            queries::list(&workspace_id, limit, offset, &format)
+                        }
+                        Some(QueriesCommands::Run { id, format }) => {
+                            queries::run(&id, &workspace_id, &format)
+                        }
+                        Some(QueriesCommands::Create { name, sql, description, tags, format }) => {
+                            queries::create(&workspace_id, &name, &sql, description.as_deref(), tags.as_deref(), &format)
+                        }
+                        Some(QueriesCommands::Update { id, name, sql, description, tags, category, table_size, format }) => {
+                            queries::update(&workspace_id, &id, name.as_deref(), sql.as_deref(), description.as_deref(), tags.as_deref(), category.as_deref(), table_size.as_deref(), &format)
+                        }
+                        None => {
+                            use clap::CommandFactory;
+                            let mut cmd = Cli::command();
+                            cmd.build();
+                            cmd.find_subcommand_mut("queries").unwrap().print_help().unwrap();
+                        }
+                    }
+                }
             }
             Commands::Completions { shell } => {
                 use clap::CommandFactory;

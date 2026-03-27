@@ -3,13 +3,13 @@ use serde::Deserialize;
 use serde_json::Value;
 
 #[derive(Deserialize)]
-struct QueryResponse {
-    result_id: Option<String>,
-    columns: Vec<String>,
-    rows: Vec<Vec<Value>>,
-    row_count: u64,
-    execution_time_ms: u64,
-    warning: Option<String>,
+pub struct QueryResponse {
+    pub result_id: Option<String>,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Value>>,
+    pub row_count: u64,
+    pub execution_time_ms: u64,
+    pub warning: Option<String>,
 }
 
 fn value_to_string(v: &Value) -> String {
@@ -81,6 +81,10 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
         }
     };
 
+    print_result(&result, format);
+}
+
+pub fn print_result(result: &QueryResponse, format: &str) {
     if let Some(ref warning) = result.warning {
         eprintln!("warning: {warning}");
     }

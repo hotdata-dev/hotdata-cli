@@ -1,6 +1,6 @@
 ---
 name: hotdata-cli
-description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", or asks you to use the hotdata CLI.
+description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, manage saved queries, search tables, manage indexes, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list saved queries", "run a saved query", or asks you to use the hotdata CLI.
 version: 0.1.5
 ---
 
@@ -138,11 +138,13 @@ hotdata datasets <dataset_id> [--workspace-id <workspace_id>] [--format table|js
 hotdata datasets create --label "My Dataset" --file data.csv [--table-name my_dataset] [--workspace-id <workspace_id>]
 hotdata datasets create --label "My Dataset" --sql "SELECT * FROM ..." [--table-name my_dataset] [--workspace-id <workspace_id>]
 hotdata datasets create --label "My Dataset" --query-id <saved_query_id> [--table-name my_dataset] [--workspace-id <workspace_id>]
+hotdata datasets create --label "My Dataset" --url "https://example.com/data.parquet" [--table-name my_dataset] [--workspace-id <workspace_id>]
 ```
 - `--file` uploads a local file. Omit to pipe data via stdin: `cat data.csv | hotdata datasets create --label "My Dataset"`
 - `--sql` creates a dataset from a SQL query result.
 - `--query-id` creates a dataset from a previously saved query.
-- `--file`, `--sql`, and `--query-id` are mutually exclusive.
+- `--url` imports data directly from a URL (supports csv, json, parquet).
+- `--file`, `--sql`, `--query-id`, and `--url` are mutually exclusive.
 - Format is auto-detected from file extension (`.csv`, `.json`, `.parquet`) or file content.
 - `--label` is optional when `--file` is provided — defaults to the filename without extension. Required for `--sql` and `--query-id`.
 - `--table-name` is optional — derived from the label if omitted.
@@ -175,6 +177,41 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--format table|json
 - Retrieves a previously executed query result by its result ID.
 - Query results include a `result-id` in the footer (e.g. `[result-id: rslt...]`).
 - **Always use this command to retrieve past query results rather than re-running the same query.** Re-running queries wastes resources and may return different results.
+
+### Saved Queries
+```
+hotdata queries list [--limit <int>] [--offset <int>] [--format table|json|yaml]
+hotdata queries <query_id> [--format table|json|yaml]
+hotdata queries create --name "My Query" --sql "SELECT ..." [--description "..."] [--tags "tag1,tag2"] [--format table|json|yaml]
+hotdata queries update <query_id> [--name "New Name"] [--sql "SELECT ..."] [--description "..."] [--tags "tag1,tag2"] [--format table|json|yaml]
+hotdata queries run <query_id> [--format table|json|csv]
+```
+- `list` shows saved queries with name, description, tags, and version.
+- View a query by ID to see its formatted and syntax-highlighted SQL.
+- `create` requires `--name` and `--sql`. Tags are comma-separated.
+- `update` accepts any combination of fields to change.
+- `run` executes a saved query and displays results like the `query` command.
+- **Use `queries run` instead of re-typing SQL when a saved query exists.**
+
+### Search
+```
+hotdata search "<query>" --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [--format table|json|csv]
+```
+- Full-text search using BM25 across a table column.
+- Requires a BM25 index on the target column (see `indexes create`).
+- Results are ordered by relevance score (descending).
+- `--select` specifies which columns to return (comma-separated, defaults to all). The `score` column is automatically appended when `--select` is used.
+- Default limit is 10.
+
+### Indexes
+```
+hotdata indexes list --connection-id <id> --schema <schema> --table <table> [--workspace-id <workspace_id>] [--format table|json|yaml]
+hotdata indexes create --connection-id <id> --schema <schema> --table <table> --name <name> --columns <cols> [--type sorted|bm25|vector] [--metric l2|cosine|dot] [--async]
+```
+- `list` shows indexes on a table with name, type, columns, status, and creation date.
+- `create` creates an index. Use `--type bm25` for full-text search, `--type vector` for vector search (requires `--metric`).
+- `--async` submits index creation as a background job. Use `hotdata jobs <job_id>` to check status.
+- **Before using `hotdata search`, create a BM25 index on the target column.**
 
 ### Jobs
 ```

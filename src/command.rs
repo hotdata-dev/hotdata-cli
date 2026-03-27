@@ -145,6 +145,19 @@ pub enum Commands {
         format: String,
     },
 
+    /// Manage saved queries
+    Queries {
+        /// Query ID to show details
+        id: Option<String>,
+
+        /// Output format (used with query ID)
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+
+        #[command(subcommand)]
+        command: Option<QueriesCommands>,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -306,12 +319,16 @@ pub enum DatasetsCommands {
         format: String,
 
         /// SQL query to create the dataset from
-        #[arg(long, conflicts_with_all = ["file", "upload_id", "query_id"])]
+        #[arg(long, conflicts_with_all = ["file", "upload_id", "query_id", "url"])]
         sql: Option<String>,
 
         /// Saved query ID to create the dataset from
-        #[arg(long, conflicts_with_all = ["file", "upload_id", "sql"])]
+        #[arg(long, conflicts_with_all = ["file", "upload_id", "sql", "url"])]
         query_id: Option<String>,
+
+        /// URL to import data from
+        #[arg(long, conflicts_with_all = ["file", "upload_id", "sql", "query_id"])]
+        url: Option<String>,
     },
 }
 
@@ -496,6 +513,91 @@ pub enum ResultsCommands {
         /// Pagination offset
         #[arg(long)]
         offset: Option<u32>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum QueriesCommands {
+    /// List saved queries
+    List {
+        /// Maximum number of results
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination offset
+        #[arg(long)]
+        offset: Option<u32>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+    },
+
+    /// Create a new saved query
+    Create {
+        /// Query name
+        #[arg(long)]
+        name: String,
+
+        /// SQL query string
+        #[arg(long)]
+        sql: String,
+
+        /// Query description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Comma-separated tags
+        #[arg(long)]
+        tags: Option<String>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+    },
+
+    /// Execute a saved query
+    Run {
+        /// Saved query ID
+        id: String,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
+        format: String,
+    },
+
+    /// Update a saved query
+    Update {
+        /// Saved query ID
+        id: String,
+
+        /// New query name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// New SQL query string
+        #[arg(long)]
+        sql: Option<String>,
+
+        /// New description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Comma-separated tags
+        #[arg(long)]
+        tags: Option<String>,
+
+        /// Override the auto-detected category (pass empty string to clear)
+        #[arg(long)]
+        category: Option<String>,
+
+        /// User annotation for table size (pass empty string to clear)
+        #[arg(long)]
+        table_size: Option<String>,
 
         /// Output format
         #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
