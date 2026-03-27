@@ -1,3 +1,4 @@
+use crate::api::ApiClient;
 use crate::config;
 use serde::{Deserialize, Serialize};
 
@@ -15,54 +16,10 @@ struct ListResponse {
     workspaces: Vec<Workspace>,
 }
 
-fn load_client() -> (reqwest::blocking::Client, String, String) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-    let api_url = profile_config.api_url.to_string();
-    (reqwest::blocking::Client::new(), api_key, api_url)
-}
-
-fn fetch_all_workspaces(client: &reqwest::blocking::Client, api_key: &str, api_url: &str) -> Vec<Workspace> {
-    let url = format!("{api_url}/workspaces");
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-    if !resp.status().is_success() {
-        eprintln!("error: {}", crate::util::api_error(resp.text().unwrap_or_default()));
-        std::process::exit(1);
-    }
-    match resp.json::<ListResponse>() {
-        Ok(b) => b.workspaces,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
 pub fn set(workspace_id: Option<&str>) {
-    let (client, api_key, api_url) = load_client();
-    let workspaces = fetch_all_workspaces(&client, &api_key, &api_url);
+    let api = ApiClient::new(None);
+    let body: ListResponse = api.get("/workspaces");
+    let workspaces = body.workspaces;
 
     let chosen = match workspace_id {
         Some(id) => {
@@ -111,44 +68,10 @@ pub fn list(format: &str) {
             std::process::exit(1);
         }
     };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
     let default_id = profile_config.workspaces.first().map(|w| w.public_id.as_str()).unwrap_or("").to_string();
 
-    let url = format!("{}/workspaces", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        eprintln!("error: {}", crate::util::api_error(resp.text().unwrap_or_default()));
-        std::process::exit(1);
-    }
-
-    let body: ListResponse = match resp.json() {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(None);
+    let body: ListResponse = api.get("/workspaces");
 
     match format {
         "json" => {

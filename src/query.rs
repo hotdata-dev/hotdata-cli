@@ -1,4 +1,4 @@
-use crate::config;
+use crate::api::ApiClient;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -8,6 +8,7 @@ pub struct QueryResponse {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Value>>,
     pub row_count: u64,
+    #[serde(default)]
     pub execution_time_ms: u64,
     pub warning: Option<String>,
 }
@@ -23,57 +24,26 @@ fn value_to_string(v: &Value) -> String {
 }
 
 pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let url = format!("{}/query", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
+    let api = ApiClient::new(Some(workspace_id));
 
     let mut body = serde_json::json!({ "sql": sql });
     if let Some(conn) = connection {
         body["connection_id"] = Value::String(conn.to_string());
     }
 
-    let resp = match client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .json(&body)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
+    let (status, resp_body) = api.post_raw("/query", &body);
 
-    if !resp.status().is_success() {
-        let _status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        let message = serde_json::from_str::<Value>(&body)
+    if !status.is_success() {
+        let message = serde_json::from_str::<Value>(&resp_body)
             .ok()
             .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-            .unwrap_or(body);
+            .unwrap_or(resp_body);
         use crossterm::style::Stylize;
         eprintln!("{}", message.red());
         std::process::exit(1);
     }
 
-    let result: QueryResponse = match resp.json() {
+    let result: QueryResponse = match serde_json::from_str(&resp_body) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error parsing response: {e}");

@@ -1,4 +1,4 @@
-use crate::config;
+use crate::api::ApiClient;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -21,51 +21,8 @@ struct ConnectionTypeDetail {
 }
 
 pub fn types_list(workspace_id: &str, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let url = format!("{}/connection-types", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let body: ListConnectionTypesResponse = match resp.json() {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
+    let body: ListConnectionTypesResponse = api.get("/connection-types");
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.connection_types).unwrap()),
@@ -86,51 +43,8 @@ pub fn types_list(workspace_id: &str, format: &str) {
 }
 
 pub fn types_get(workspace_id: &str, name: &str, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let url = format!("{}/connection-types/{name}", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let detail: ConnectionTypeDetail = match resp.json() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
+    let detail: ConnectionTypeDetail = api.get(&format!("/connection-types/{name}"));
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&detail).unwrap()),
@@ -168,22 +82,6 @@ pub fn create(
     config: &str,
     format: &str,
 ) {
-    let profile_config = match crate::config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
     let config_value: serde_json::Value = match serde_json::from_str(config) {
         Ok(v) => v,
         Err(e) => {
@@ -198,28 +96,7 @@ pub fn create(
         "config": config_value,
     });
 
-    let url = format!("{}/connections", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .json(&body)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
+    let api = ApiClient::new(Some(workspace_id));
 
     #[derive(Deserialize, Serialize)]
     struct CreateResponse {
@@ -231,13 +108,7 @@ pub fn create(
         discovery_error: Option<String>,
     }
 
-    let result: CreateResponse = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let result: CreateResponse = api.post("/connections", &body);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
@@ -261,51 +132,8 @@ pub fn create(
 }
 
 pub fn list(workspace_id: &str, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let url = format!("{}/connections", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let body: ListResponse = match resp.json() {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
+    let body: ListResponse = api.get("/connections");
 
     match format {
         "json" => {
@@ -330,47 +158,17 @@ pub fn list(workspace_id: &str, format: &str) {
 }
 
 pub fn refresh(workspace_id: &str, connection_id: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth login' to log in.");
-            std::process::exit(1);
-        }
-    };
-
     let body = serde_json::json!({
         "connection_id": connection_id,
         "data": false,
     });
 
-    let url = format!("{}/refresh", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
+    let api = ApiClient::new(Some(workspace_id));
+    let (status, resp_body) = api.post_raw("/refresh", &body);
 
-    let resp = match client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .json(&body)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
+    if !status.is_success() {
         use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
+        eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
     }
 

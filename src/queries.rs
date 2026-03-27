@@ -1,4 +1,4 @@
-use crate::config;
+use crate::api::ApiClient;
 use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -158,62 +158,19 @@ struct ListResponse {
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let mut url = format!("{}/queries", profile_config.api_url);
-    let mut params = vec![];
-    if let Some(l) = limit { params.push(format!("limit={l}")); }
-    if let Some(o) = offset { params.push(format!("offset={o}")); }
-    if !params.is_empty() { url = format!("{url}?{}", params.join("&")); }
-
-    let client = reqwest::blocking::Client::new();
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let body: ListResponse = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
+    let qs = ApiClient::query_string(&[
+        ("limit", limit.map(|l| l.to_string())),
+        ("offset", offset.map(|o| o.to_string())),
+    ]);
+    let path = format!("/queries{qs}");
+    let body: ListResponse = api.get(&path);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.queries).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&body.queries).unwrap()),
         "table" => {
             if body.queries.is_empty() {
-                use crossterm::style::Stylize;
                 eprintln!("{}", "No saved queries found.".dark_grey());
             } else {
                 let rows: Vec<Vec<String>> = body.queries.iter().map(|q| vec![
@@ -228,7 +185,6 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
             }
             if body.has_more {
                 let next = offset.unwrap_or(0) + body.count as u32;
-                use crossterm::style::Stylize;
                 eprintln!("{}", format!("showing {} results — use --offset {next} for more", body.count).dark_grey());
             }
         }
@@ -237,52 +193,9 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
 }
 
 pub fn get(query_id: &str, workspace_id: &str, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let url = format!("{}/queries/{query_id}", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let q: SavedQueryDetail = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
-
+    let api = ApiClient::new(Some(workspace_id));
+    let path = format!("/queries/{query_id}");
+    let q: SavedQueryDetail = api.get(&path);
     print_detail(&q, format);
 }
 
@@ -331,55 +244,13 @@ pub fn create(
     tags: Option<&str>,
     format: &str,
 ) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
 
     let mut body = serde_json::json!({ "name": name, "sql": sql });
     if let Some(d) = description { body["description"] = serde_json::json!(d); }
     if let Some(tags) = parse_tags(tags) { body["tags"] = serde_json::json!(tags); }
 
-    let url = format!("{}/queries", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .json(&body)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let q: SavedQueryDetail = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let q: SavedQueryDetail = api.post("/queries", &body);
 
     println!("{}", "Query created".green());
     print_detail(&q, format);
@@ -396,26 +267,12 @@ pub fn update(
     table_size: Option<&str>,
     format: &str,
 ) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
     if name.is_none() && sql.is_none() && description.is_none() && tags.is_none() && category.is_none() && table_size.is_none() {
         eprintln!("error: no fields to update. Provide at least one of --name, --sql, --description, --tags, --category, or --table-size.");
         std::process::exit(1);
     }
+
+    let api = ApiClient::new(Some(workspace_id));
 
     let mut body = serde_json::json!({});
     if let Some(n) = name { body["name"] = serde_json::json!(n); }
@@ -433,85 +290,16 @@ pub fn update(
         None => {}
     }
 
-    let url = format!("{}/queries/{id}", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .put(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .json(&body)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let q: SavedQueryDetail = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let path = format!("/queries/{id}");
+    let q: SavedQueryDetail = api.put(&path, &body);
 
     println!("{}", "Query updated".green());
     print_detail(&q, format);
 }
 
 pub fn run(query_id: &str, workspace_id: &str, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let url = format!("{}/queries/{query_id}/execute", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let result: crate::query::QueryResponse = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
-
+    let api = ApiClient::new(Some(workspace_id));
+    let path = format!("/queries/{query_id}/execute");
+    let result: crate::query::QueryResponse = api.post_empty(&path);
     crate::query::print_result(&result, format);
 }

@@ -2,6 +2,8 @@ use inquire::{Confirm, Password, Select, Text};
 use inquire::validator::Validation;
 use serde_json::{Map, Number, Value};
 
+use crate::api::ApiClient;
+
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 struct ConnectionTypeSummary {
@@ -14,38 +16,8 @@ struct ConnectionTypeDetail {
     auth: Option<Value>,
 }
 
-fn load_client() -> (reqwest::blocking::Client, String, String) {
-    let profile = match crate::config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-    let api_key = match &profile.api_key {
-        Some(k) if k != "PLACEHOLDER" => k.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-    (reqwest::blocking::Client::new(), api_key, profile.api_url.to_string())
-}
-
-fn fetch_types(workspace_id: &str) -> Vec<ConnectionTypeSummary> {
-    let (client, api_key, api_url) = load_client();
-    let url = format!("{api_url}/connection-types");
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-        .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1) });
-    if !resp.status().is_success() {
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()));
-        std::process::exit(1);
-    }
-    let body: Value = resp.json().unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1) });
+fn fetch_types(api: &ApiClient) -> Vec<ConnectionTypeSummary> {
+    let body: Value = api.get("/connection-types");
     body["connection_types"]
         .as_array()
         .unwrap_or(&vec![])
@@ -59,20 +31,8 @@ fn fetch_types(workspace_id: &str) -> Vec<ConnectionTypeSummary> {
         .collect()
 }
 
-fn fetch_detail(workspace_id: &str, name: &str) -> ConnectionTypeDetail {
-    let (client, api_key, api_url) = load_client();
-    let url = format!("{api_url}/connection-types/{name}");
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-        .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1) });
-    if !resp.status().is_success() {
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()));
-        std::process::exit(1);
-    }
-    let body: Value = resp.json().unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1) });
+fn fetch_detail(api: &ApiClient, name: &str) -> ConnectionTypeDetail {
+    let body: Value = api.get(&format!("/connection-types/{name}"));
     ConnectionTypeDetail {
         config_schema: if body["config_schema"].is_null() { None } else { Some(body["config_schema"].clone()) },
         auth: if body["auth"].is_null() { None } else { Some(body["auth"].clone()) },
@@ -255,8 +215,10 @@ fn walk_auth(schema: &Value) -> Map<String, Value> {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run(workspace_id: &str) {
+    let api = ApiClient::new(Some(workspace_id));
+
     // Phase 1: Select connection type
-    let types = fetch_types(workspace_id);
+    let types = fetch_types(&api);
     if types.is_empty() {
         eprintln!("error: no connection types available");
         std::process::exit(1);
@@ -271,7 +233,7 @@ pub fn run(workspace_id: &str) {
     let source_type = &names[idx];
 
     // Phase 2: Fetch schema for selected type
-    let detail = fetch_detail(workspace_id, source_type);
+    let detail = fetch_detail(&api, source_type);
 
     // Phase 3: Connection name
     let conn_name = Text::new("Connection name:")
@@ -290,27 +252,11 @@ pub fn run(workspace_id: &str) {
     }
 
     // Phase 6: Submit
-    let (client, api_key, api_url) = load_client();
     let body = serde_json::json!({
         "name": conn_name,
         "source_type": source_type,
         "config": Value::Object(config),
     });
-
-    let url = format!("{api_url}/connections");
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .json(&body)
-        .send()
-        .unwrap_or_else(|e| { eprintln!("error connecting to API: {e}"); std::process::exit(1) });
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
 
     #[derive(serde::Deserialize)]
     struct CreateResponse {
@@ -322,8 +268,7 @@ pub fn run(workspace_id: &str) {
         discovery_error: Option<String>,
     }
 
-    let result: CreateResponse = resp.json()
-        .unwrap_or_else(|e| { eprintln!("error parsing response: {e}"); std::process::exit(1) });
+    let result: CreateResponse = api.post("/connections", &body);
 
     use crossterm::style::Stylize;
     println!("{}", "Connection created".green());
