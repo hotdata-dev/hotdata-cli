@@ -75,17 +75,20 @@ pub fn print(headers: &[&str], rows: &[Vec<String>]) {
 }
 
 /// Print a table with JSON-typed data. Numbers, bools, and nulls get per-cell coloring.
-/// Uses simple word-wrapping without ID column priority (for user-generated query results).
+/// Uses fair column width distribution (for user-generated query results).
 pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
     use tabled::settings::object::Cell;
 
     let tw = term_width();
+    let ncols = headers.len();
 
     let mut builder = tabled::builder::Builder::new();
     builder.push_record(headers.iter().map(|h| h.to_string()));
 
     // Track cells that need coloring: (row_index, col_index, color)
     let mut colored_cells: Vec<(usize, usize, Color)> = Vec::new();
+
+    let mut string_rows: Vec<Vec<String>> = Vec::with_capacity(rows.len());
 
     for (ri, row) in rows.iter().enumerate() {
         let string_row: Vec<String> = row
@@ -109,13 +112,22 @@ pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
                 }
             })
             .collect();
-        builder.push_record(string_row);
+        builder.push_record(&string_row);
+        string_rows.push(string_row);
     }
 
+    // Calculate fair column widths: each column gets its natural width capped
+    // at a fair share, then surplus space is redistributed to columns that need more.
+    let col_widths = fair_column_widths(headers, &string_rows, ncols, tw);
+
     let mut table = builder.build();
+    table.with(Style::modern_rounded());
+
+    for (i, &w) in col_widths.iter().enumerate() {
+        table.with(Modify::new(Columns::new(i..=i)).with(Width::wrap(w)));
+    }
+
     table
-        .with(Style::modern_rounded())
-        .with(Width::wrap(tw).keep_words(true))
         .with(Modify::new(Segment::all()).with(BorderColor::filled(Color::FG_BRIGHT_BLACK)))
         .with(Modify::new(Rows::first()).with(Color::FG_GREEN));
 
@@ -124,4 +136,64 @@ pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
     }
 
     println!("{table}");
+}
+
+/// Distribute terminal width fairly across columns.
+/// Each column gets at least its natural width (header or content), up to
+/// an equal share. Surplus from narrow columns is redistributed to wider ones.
+fn fair_column_widths(headers: &[String], rows: &[Vec<String>], ncols: usize, tw: usize) -> Vec<usize> {
+    if ncols == 0 { return vec![]; }
+
+    // borders + padding: 1 left border + (3 per column: pad+border) => ncols*3 + 1
+    let overhead = ncols * 3 + 1;
+    let available = tw.saturating_sub(overhead);
+
+    // Natural width based on content, with header allowed to add up to 3 extra chars
+    let natural: Vec<usize> = (0..ncols).map(|i| {
+        let content_w = rows.iter()
+            .filter_map(|r| r.get(i))
+            .map(|s| s.len())
+            .max()
+            .unwrap_or(1);
+        let header_w = headers.get(i).map(|h| h.len()).unwrap_or(0);
+        let header_cap = content_w + 3;
+        content_w.max(header_w.min(header_cap))
+    }).collect();
+
+    // Iteratively distribute: cap at fair share, give surplus to remaining columns
+    let mut widths = vec![0usize; ncols];
+    let mut remaining = available;
+    let mut unsettled: Vec<usize> = (0..ncols).collect();
+
+    while !unsettled.is_empty() {
+        let fair_share = remaining / unsettled.len();
+        let mut newly_settled = vec![];
+        let mut used = 0;
+
+        for &i in &unsettled {
+            if natural[i] <= fair_share {
+                widths[i] = natural[i];
+                used += natural[i];
+                newly_settled.push(i);
+            }
+        }
+
+        if newly_settled.is_empty() {
+            // All remaining columns exceed fair share — give each the fair share
+            for &i in &unsettled {
+                widths[i] = fair_share;
+            }
+            break;
+        }
+
+        remaining -= used;
+        unsettled.retain(|i| !newly_settled.contains(i));
+    }
+
+    // Ensure minimum width of 1
+    for w in &mut widths {
+        if *w == 0 { *w = 1; }
+    }
+
+    widths
 }

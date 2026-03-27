@@ -388,6 +388,22 @@ pub fn create_from_upload(
     create_dataset(workspace_id, label, table_name, source, on_failure);
 }
 
+pub fn create_from_url(
+    workspace_id: &str,
+    url: &str,
+    label: Option<&str>,
+    table_name: Option<&str>,
+) {
+    let label = match label {
+        Some(l) => l,
+        None => {
+            eprintln!("error: --label is required when using --url");
+            std::process::exit(1);
+        }
+    };
+    create_dataset(workspace_id, label, table_name, json!({ "Url": { "url": url } }), None);
+}
+
 pub fn create_from_query(
     workspace_id: &str,
     sql: &str,
