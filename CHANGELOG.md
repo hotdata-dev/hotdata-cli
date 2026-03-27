@@ -1,3 +1,10 @@
+## [0.1.6] - 2026-03-27
+
+### 🚀 Features
+
+- *(completions)* Add completions command and include in brew formula
+- *(search)* Add indexes and text search commands
+- *(queries)* Add upload url for datasets and new queries commands (#23)
 ## [0.1.5] - 2026-03-24
 
 ### 🚀 Features
