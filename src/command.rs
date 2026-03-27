@@ -105,6 +105,46 @@ pub enum Commands {
         command: Option<JobsCommands>,
     },
 
+    /// Manage indexes on a table
+    Indexes {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, global = true)]
+        workspace_id: Option<String>,
+
+        #[command(subcommand)]
+        command: IndexesCommands,
+    },
+
+    /// Full-text search across a table column
+    Search {
+        /// Search query text
+        query: String,
+
+        /// Table to search (connection.schema.table)
+        #[arg(long)]
+        table: String,
+
+        /// Column to search
+        #[arg(long)]
+        column: String,
+
+        /// Columns to display (comma-separated, defaults to all)
+        #[arg(long)]
+        select: Option<String>,
+
+        /// Maximum number of results
+        #[arg(long, default_value = "10")]
+        limit: u32,
+
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long)]
+        workspace_id: Option<String>,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
+        format: String,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -137,6 +177,63 @@ pub enum AuthCommands {
 
     /// Show authentication status
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum IndexesCommands {
+    /// List indexes on a table
+    List {
+        /// Connection ID
+        #[arg(long)]
+        connection_id: String,
+
+        /// Schema name
+        #[arg(long)]
+        schema: String,
+
+        /// Table name
+        #[arg(long)]
+        table: String,
+
+        /// Output format
+        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+    },
+
+    /// Create an index on a table
+    Create {
+        /// Connection ID
+        #[arg(long)]
+        connection_id: String,
+
+        /// Schema name
+        #[arg(long)]
+        schema: String,
+
+        /// Table name
+        #[arg(long)]
+        table: String,
+
+        /// Index name
+        #[arg(long)]
+        name: String,
+
+        /// Columns to index (comma-separated)
+        #[arg(long)]
+        columns: String,
+
+        /// Index type
+        #[arg(long, default_value = "sorted", value_parser = ["sorted", "bm25", "vector"])]
+        r#type: String,
+
+        /// Distance metric for vector indexes
+        #[arg(long, value_parser = ["l2", "cosine", "dot"])]
+        metric: Option<String>,
+
+        /// Create as a background job
+        #[arg(long)]
+        r#async: bool,
+    },
 }
 
 #[derive(Subcommand)]
