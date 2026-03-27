@@ -412,6 +412,11 @@ pub fn update(
         }
     };
 
+    if name.is_none() && sql.is_none() && description.is_none() && tags.is_none() && category.is_none() && table_size.is_none() {
+        eprintln!("error: no fields to update. Provide at least one of --name, --sql, --description, --tags, --category, or --table-size.");
+        std::process::exit(1);
+    }
+
     let mut body = serde_json::json!({});
     if let Some(n) = name { body["name"] = serde_json::json!(n); }
     if let Some(s) = sql { body["sql"] = serde_json::json!(s); }
