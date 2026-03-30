@@ -133,7 +133,7 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
             use crossterm::style::Stylize;
             eprintln!("{}", format!("query status: {status}").yellow());
             eprintln!("query_run_id: {}", run.id);
-            eprintln!("{}", format!("Poll again with: hotdata query {}", run.id).dark_grey());
+            eprintln!("{}", format!("Poll again with: hotdata query status {}", run.id).dark_grey());
         }
     }
 }
