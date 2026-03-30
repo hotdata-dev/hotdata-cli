@@ -21,7 +21,7 @@ jobs:
           app-id: ${{ secrets.HOTDATA_AUTOMATION_APP_ID }}
           private-key: ${{ secrets.HOTDATA_AUTOMATION_PRIVATE_KEY }}
           owner: hotdata-dev
-          repositories: homebrew-tap
+          repositories: homebrew-tap,hotdata-cli
 
       - uses: actions/checkout@v6
         with:
@@ -50,9 +50,12 @@ jobs:
             brew update
             brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
 
-            # Add shell completions generation if not already present
+            # Add shell completions generation after the last bin.install line
             if ! grep -q 'generate_completions_from_executable' "Formula/${filename}"; then
-              sed -i '/bin\.install "hotdata"/a\    generate_completions_from_executable(bin/"hotdata", "completions")' "Formula/${filename}"
+              last_bin_install=$(grep -n 'bin\.install' "Formula/${filename}" | tail -1 | cut -d: -f1)
+              if [ -n "$last_bin_install" ]; then
+                sed -i "${last_bin_install}a\\    generate_completions_from_executable(bin/\"hotdata\", \"completions\")" "Formula/${filename}"
+              fi
             fi
 
             git add "Formula/${filename}"
@@ -62,7 +65,7 @@ jobs:
 
       - name: Remove .rb from GitHub Release assets
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           TAG=$(echo "$PLAN" | jq -r '.announcement_tag')
           if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
