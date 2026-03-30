@@ -54,12 +54,19 @@ pub enum Commands {
 
     /// Manage workspace connections
     Connections {
+        /// Connection ID to show details
+        id: Option<String>,
+
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
+        /// Output format (used with connection ID)
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+
         #[command(subcommand)]
-        command: ConnectionsCommands,
+        command: Option<ConnectionsCommands>,
     },
 
     /// Manage tables in a workspace
@@ -364,55 +371,6 @@ pub enum WorkspaceCommands {
         /// Workspace ID to set as default (omit for interactive selection)
         workspace_id: Option<String>,
     },
-
-    /// Get details for a workspace
-    Get {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, short = 'w')]
-        workspace_id: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Create a new workspace
-    Create {
-        /// Workspace name
-        #[arg(long)]
-        name: String,
-
-        /// Workspace description
-        #[arg(long, default_value = "")]
-        description: String,
-
-        /// Organization ID for the workspace
-        #[arg(long)]
-        organization_id: String,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Update an existing workspace
-    Update {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, short = 'w')]
-        workspace_id: Option<String>,
-
-        /// New workspace name
-        #[arg(long)]
-        name: Option<String>,
-
-        /// New workspace description
-        #[arg(long)]
-        description: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -440,16 +398,6 @@ pub enum ConnectionsCommands {
         output: String,
     },
 
-    /// Get details for a specific connection
-    Get {
-        /// Connection ID
-        connection_id: String,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
     /// Create a new connection, or list/inspect available connection types
     Create {
         #[command(subcommand)]
@@ -472,36 +420,8 @@ pub enum ConnectionsCommands {
         output: String,
     },
 
-    /// Update a connection in a workspace
-    Update {
-        /// Connection ID
-        connection_id: String,
-
-        /// New connection name
-        #[arg(long)]
-        name: Option<String>,
-
-        /// New connection type
-        #[arg(long = "type")]
-        conn_type: Option<String>,
-
-        /// New connection config as JSON string
-        #[arg(long)]
-        config: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
     /// Refresh a connection's schema
     Refresh {
-        /// Connection ID
-        connection_id: String,
-    },
-
-    /// Delete a connection from a workspace
-    Delete {
         /// Connection ID
         connection_id: String,
     },

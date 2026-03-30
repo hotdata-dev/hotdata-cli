@@ -39,9 +39,11 @@ Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_st
 
 ### List Connections
 ```
-hotdata connections list [--workspace-id <workspace_id>] [--format table|json|yaml]
+hotdata connections list [-w <workspace_id>] [-o table|json|yaml]
+hotdata connections <connection_id> [-w <workspace_id>] [-o table|json|yaml]
 ```
-Returns `id`, `name`, `source_type` for each connection in the workspace.
+- `list` returns `id`, `name`, `source_type` for each connection.
+- Pass a connection ID to view details (id, name, source type, table counts).
 
 ### Create a Connection
 
