@@ -51,8 +51,8 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | Command | Subcommands | Description |
 | :-- | :-- | :-- |
 | `auth` | `status`, `logout` | Authenticate (run without subcommand to log in) |
-| `workspaces` | `list`, `set`, `get`, `create`, `update` | Manage workspaces |
-| `connections` | `list`, `get`, `create`, `refresh`, `update`, `delete`, `new` | Manage connections |
+| `workspaces` | `list`, `set` | Manage workspaces |
+| `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
 | `tables` | `list` | List tables and columns |
 | `datasets` | `list`, `create` | Manage uploaded datasets |
 | `query` | | Execute a SQL query |
@@ -85,13 +85,14 @@ hotdata workspaces set [<workspace_id>]
 ## Connections
 
 ```sh
-hotdata connections list [--workspace-id <id>] [--format table|json|yaml]
-hotdata connections get <connection_id> [--workspace-id <id>] [--format yaml|json|table]
-hotdata connections refresh <connection_id> [--workspace-id <id>]
-hotdata connections new [--workspace-id <id>]
+hotdata connections list [-w <id>] [-o table|json|yaml]
+hotdata connections <connection_id> [-w <id>] [-o table|json|yaml]
+hotdata connections refresh <connection_id> [-w <id>]
+hotdata connections new [-w <id>]
 ```
 
 - `list` returns `id`, `name`, `source_type` for each connection.
+- Pass a connection ID to view details (id, name, source type, table counts).
 - `refresh` triggers a schema refresh for a connection.
 - `new` launches an interactive connection creation wizard.
 

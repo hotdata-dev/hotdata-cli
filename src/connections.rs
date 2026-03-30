@@ -70,9 +70,39 @@ struct Connection {
     source_type: String,
 }
 
+#[derive(Deserialize, Serialize)]
+struct ConnectionDetail {
+    id: String,
+    name: String,
+    source_type: String,
+    #[serde(default)]
+    table_count: u64,
+    #[serde(default)]
+    synced_table_count: u64,
+}
+
 #[derive(Deserialize)]
 struct ListResponse {
     connections: Vec<Connection>,
+}
+
+pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
+    let api = ApiClient::new(Some(workspace_id));
+    let detail: ConnectionDetail = api.get(&format!("/connections/{connection_id}"));
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&detail).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&detail).unwrap()),
+        "table" => {
+            use crossterm::style::Stylize;
+            let label = |l: &str| format!("{:<16}", l).dark_grey().to_string();
+            println!("{}{}", label("id:"), detail.id.dark_cyan());
+            println!("{}{}", label("name:"), detail.name.white());
+            println!("{}{}", label("source_type:"), detail.source_type.green());
+            println!("{}{}", label("tables:"), format!("{} synced / {} total", detail.synced_table_count.to_string().cyan(), detail.table_count.to_string().cyan()));
+        }
+        _ => unreachable!(),
+    }
 }
 
 pub fn create(
