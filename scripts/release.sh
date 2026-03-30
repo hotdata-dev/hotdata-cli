@@ -79,7 +79,7 @@ case "$COMMAND" in
 
         echo ""
         echo "→ Running cargo release (tagging release)..."
-        cargo release
+        cargo release --execute
 
         echo ""
         echo "✓ Release complete. Tag pushed and dist workflow triggered."
