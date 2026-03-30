@@ -21,9 +21,10 @@ struct AsyncResponse {
 
 #[derive(Deserialize)]
 struct QueryRunResponse {
-    query_run_id: String,
+    id: String,
     status: String,
     result_id: Option<String>,
+    #[serde(default)]
     error: Option<String>,
 }
 
@@ -131,8 +132,8 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
         status => {
             use crossterm::style::Stylize;
             eprintln!("{}", format!("query status: {status}").yellow());
-            eprintln!("query_run_id: {}", run.query_run_id);
-            eprintln!("{}", format!("Poll again with: hotdata query {}", run.query_run_id).dark_grey());
+            eprintln!("query_run_id: {}", run.id);
+            eprintln!("{}", format!("Poll again with: hotdata query {}", run.id).dark_grey());
         }
     }
 }
