@@ -14,12 +14,12 @@ pub enum Commands {
         id: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, global = true)]
+        #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
         /// Output format (used with dataset ID)
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
 
         #[command(subcommand)]
         command: Option<DatasetsCommands>,
@@ -31,7 +31,7 @@ pub enum Commands {
         sql: String,
 
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
+        #[arg(long, short = 'w')]
         workspace_id: Option<String>,
 
         /// Scope query to a specific connection
@@ -39,8 +39,8 @@ pub enum Commands {
         connection: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
     },
 
     /// Manage workspaces
@@ -52,7 +52,7 @@ pub enum Commands {
     /// Manage workspace connections
     Connections {
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, global = true)]
+        #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
         #[command(subcommand)]
@@ -77,12 +77,12 @@ pub enum Commands {
         result_id: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, global = true)]
+        #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
 
         #[command(subcommand)]
         command: Option<ResultsCommands>,
@@ -94,12 +94,12 @@ pub enum Commands {
         id: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, global = true)]
+        #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
         /// Output format (used with job ID)
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
 
         #[command(subcommand)]
         command: Option<JobsCommands>,
@@ -108,7 +108,7 @@ pub enum Commands {
     /// Manage indexes on a table
     Indexes {
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, global = true)]
+        #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
         #[command(subcommand)]
@@ -137,12 +137,12 @@ pub enum Commands {
         limit: u32,
 
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
+        #[arg(long, short = 'w')]
         workspace_id: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
     },
 
     /// Manage saved queries
@@ -151,8 +151,8 @@ pub enum Commands {
         id: Option<String>,
 
         /// Output format (used with query ID)
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
 
         #[command(subcommand)]
         command: Option<QueriesCommands>,
@@ -197,7 +197,7 @@ pub enum IndexesCommands {
     /// List indexes on a table
     List {
         /// Connection ID
-        #[arg(long)]
+        #[arg(long, short = 'c')]
         connection_id: String,
 
         /// Schema name
@@ -209,14 +209,14 @@ pub enum IndexesCommands {
         table: String,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Create an index on a table
     Create {
         /// Connection ID
-        #[arg(long)]
+        #[arg(long, short = 'c')]
         connection_id: String,
 
         /// Schema name
@@ -274,8 +274,8 @@ pub enum JobsCommands {
         offset: Option<u32>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 }
 
@@ -292,8 +292,8 @@ pub enum DatasetsCommands {
         offset: Option<u32>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Create a new dataset from a file, piped stdin, upload ID, or SQL query
@@ -338,8 +338,8 @@ pub enum WorkspaceCommands {
     /// List all workspaces
     List {
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Set the default workspace
@@ -351,12 +351,12 @@ pub enum WorkspaceCommands {
     /// Get details for a workspace
     Get {
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
+        #[arg(long, short = 'w')]
         workspace_id: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Create a new workspace
@@ -374,14 +374,14 @@ pub enum WorkspaceCommands {
         organization_id: String,
 
         /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Update an existing workspace
     Update {
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
+        #[arg(long, short = 'w')]
         workspace_id: Option<String>,
 
         /// New workspace name
@@ -393,8 +393,8 @@ pub enum WorkspaceCommands {
         description: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 }
 
@@ -406,8 +406,8 @@ pub enum ConnectionsCreateCommands {
         name: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 }
 
@@ -419,8 +419,8 @@ pub enum ConnectionsCommands {
     /// List all connections for a workspace
     List {
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Get details for a specific connection
@@ -429,8 +429,8 @@ pub enum ConnectionsCommands {
         connection_id: String,
 
         /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Create a new connection, or list/inspect available connection types
@@ -451,8 +451,8 @@ pub enum ConnectionsCommands {
         config: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Update a connection in a workspace
@@ -473,8 +473,8 @@ pub enum ConnectionsCommands {
         config: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "yaml", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "yaml", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Refresh a connection's schema
@@ -515,8 +515,8 @@ pub enum ResultsCommands {
         offset: Option<u32>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 }
 
@@ -533,8 +533,8 @@ pub enum QueriesCommands {
         offset: Option<u32>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Create a new saved query
@@ -556,8 +556,8 @@ pub enum QueriesCommands {
         tags: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Execute a saved query
@@ -566,8 +566,8 @@ pub enum QueriesCommands {
         id: String,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "csv"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
     },
 
     /// Update a saved query
@@ -600,8 +600,8 @@ pub enum QueriesCommands {
         table_size: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 }
 
@@ -610,11 +610,11 @@ pub enum TablesCommands {
     /// List all tables in a workspace
     List {
         /// Workspace ID (defaults to first workspace from login)
-        #[arg(long)]
+        #[arg(long, short = 'w')]
         workspace_id: Option<String>,
 
         /// Filter by connection ID (also enables column output)
-        #[arg(long)]
+        #[arg(long, short = 'c')]
         connection_id: Option<String>,
 
         /// Filter by schema name (supports % wildcards)
@@ -634,7 +634,7 @@ pub enum TablesCommands {
         cursor: Option<String>,
 
         /// Output format
-        #[arg(long, default_value = "table", value_parser = ["table", "json", "yaml"])]
-        format: String,
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 }

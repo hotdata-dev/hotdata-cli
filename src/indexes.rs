@@ -1,4 +1,4 @@
-use crate::config;
+use crate::api::ApiClient;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -24,54 +24,9 @@ pub fn list(
     table: &str,
     format: &str,
 ) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let url = format!(
-        "{}/connections/{}/tables/{}/{}/indexes",
-        profile_config.api_url, connection_id, schema, table
-    );
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let body: ListResponse = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
+    let path = format!("/connections/{connection_id}/tables/{schema}/{table}/indexes");
+    let body: ListResponse = api.get(&path);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.indexes).unwrap()),
@@ -107,21 +62,7 @@ pub fn create(
     metric: Option<&str>,
     async_mode: bool,
 ) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
 
     let cols: Vec<&str> = columns.split(',').map(str::trim).collect();
     let mut body = serde_json::json!({
@@ -134,36 +75,19 @@ pub fn create(
         body["metric"] = serde_json::json!(m);
     }
 
-    let url = format!(
-        "{}/connections/{}/tables/{}/{}/indexes",
-        profile_config.api_url, connection_id, schema, table
-    );
-    let client = reqwest::blocking::Client::new();
+    let path = format!("/connections/{connection_id}/tables/{schema}/{table}/indexes");
+    let (status, resp_body) = api.post_raw(&path, &body);
 
-    let resp = match client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .json(&body)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
+    if !status.is_success() {
         use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
+        eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
     }
 
     use crossterm::style::Stylize;
     if async_mode {
-        let body: serde_json::Value = resp.json().unwrap_or_default();
-        let job_id = body["job_id"].as_str().unwrap_or("unknown");
+        let parsed: serde_json::Value = serde_json::from_str(&resp_body).unwrap_or_default();
+        let job_id = parsed["job_id"].as_str().unwrap_or("unknown");
         println!("{}", "Index creation submitted.".green());
         println!("job_id: {}", job_id);
         println!("{}", "Use 'hotdata jobs <job_id>' to check status.".dark_grey());

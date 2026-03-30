@@ -1,4 +1,4 @@
-use crate::config;
+use crate::api::ApiClient;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -55,72 +55,27 @@ pub fn list(
     cursor: Option<&str>,
     format: &str,
 ) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
 
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let mut params: Vec<String> = Vec::new();
+    let mut params: Vec<(&str, Option<String>)> = Vec::new();
     if let Some(id) = connection_id {
-        params.push(format!("connection_id={id}"));
-        params.push("include_columns=true".to_string());
+        params.push(("connection_id", Some(id.to_string())));
+        params.push(("include_columns", Some("true".to_string())));
     }
     if let Some(s) = schema {
-        params.push(format!("schema={s}"));
+        params.push(("schema", Some(s.to_string())));
     }
     if let Some(t) = table_filter {
-        params.push(format!("table={t}"));
+        params.push(("table", Some(t.to_string())));
     }
     if let Some(l) = limit {
-        params.push(format!("limit={l}"));
+        params.push(("limit", Some(l.to_string())));
     }
     if let Some(c) = cursor {
-        params.push(format!("cursor={c}"));
+        params.push(("cursor", Some(c.to_string())));
     }
 
-    let mut url = format!("{}/information_schema", profile_config.api_url);
-    if !params.is_empty() {
-        url.push_str(&format!("?{}", params.join("&")));
-    }
-
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        eprintln!("error: HTTP {}", resp.status());
-        std::process::exit(1);
-    }
-
-    let body: ListResponse = match resp.json() {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let body: ListResponse = api.get_with_params("/information_schema", &params);
 
     let has_more = body.has_more;
     let next_cursor = body.next_cursor.clone();

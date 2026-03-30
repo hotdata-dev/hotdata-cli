@@ -1,3 +1,4 @@
+mod api;
 mod auth;
 mod command;
 mod config;
@@ -31,6 +32,10 @@ struct Cli {
     #[arg(long, global = true)]
     api_key: Option<String>,
 
+    /// Print verbose API request and response details
+    #[arg(long, global = true)]
+    debug: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -58,6 +63,9 @@ fn main() {
     if let Some(key) = cli.api_key {
         config::set_api_key_flag(key);
     }
+    if cli.debug {
+        util::set_debug(true);
+    }
 
     match cli.command {
         None => {
@@ -71,14 +79,14 @@ fn main() {
                 Some(AuthCommands::Status) => auth::status("default"),
                 Some(AuthCommands::Logout) => auth::logout("default"),
             },
-            Commands::Datasets { id, workspace_id, format, command } => {
+            Commands::Datasets { id, workspace_id, output, command } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 if let Some(id) = id {
-                    datasets::get(&id, &workspace_id, &format)
+                    datasets::get(&id, &workspace_id, &output)
                 } else {
                     match command {
-                        Some(DatasetsCommands::List { limit, offset, format }) => {
-                            datasets::list(&workspace_id, limit, offset, &format)
+                        Some(DatasetsCommands::List { limit, offset, output }) => {
+                            datasets::list(&workspace_id, limit, offset, &output)
                         }
                         Some(DatasetsCommands::Create { label, table_name, file, upload_id, format, sql, query_id, url }) => {
                             if let Some(sql) = sql {
@@ -100,12 +108,12 @@ fn main() {
                     }
                 }
             }
-            Commands::Query { sql, workspace_id, connection, format } => {
+            Commands::Query { sql, workspace_id, connection, output } => {
                 let workspace_id = resolve_workspace(workspace_id);
-                query::execute(&sql, &workspace_id, connection.as_deref(), &format)
+                query::execute(&sql, &workspace_id, connection.as_deref(), &output)
             }
             Commands::Workspaces { command } => match command {
-                WorkspaceCommands::List { format } => workspace::list(&format),
+                WorkspaceCommands::List { output } => workspace::list(&output),
                 WorkspaceCommands::Set { workspace_id } => workspace::set(workspace_id.as_deref()),
                 _ => eprintln!("not yet implemented"),
             },
@@ -113,15 +121,15 @@ fn main() {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
                     ConnectionsCommands::New => connections_new::run(&workspace_id),
-                    ConnectionsCommands::List { format } => {
-                        connections::list(&workspace_id, &format)
+                    ConnectionsCommands::List { output } => {
+                        connections::list(&workspace_id, &output)
                     }
-                    ConnectionsCommands::Create { command, name, source_type, config, format } => {
+                    ConnectionsCommands::Create { command, name, source_type, config, output } => {
                         match command {
-                            Some(ConnectionsCreateCommands::List { name, format }) => {
+                            Some(ConnectionsCreateCommands::List { name, output }) => {
                                 match name.as_deref() {
-                                    Some(name) => connections::types_get(&workspace_id, name, &format),
-                                    None => connections::types_list(&workspace_id, &format),
+                                    Some(name) => connections::types_get(&workspace_id, name, &output),
+                                    None => connections::types_list(&workspace_id, &output),
                                 }
                             }
                             None => {
@@ -139,7 +147,7 @@ fn main() {
                                     &name.unwrap(),
                                     &source_type.unwrap(),
                                     &config.unwrap(),
-                                    &format,
+                                    &output,
                                 )
                             }
                         }
@@ -151,9 +159,9 @@ fn main() {
                 }
             },
             Commands::Tables { command } => match command {
-                TablesCommands::List { workspace_id, connection_id, schema, table, limit, cursor, format } => {
+                TablesCommands::List { workspace_id, connection_id, schema, table, limit, cursor, output } => {
                     let workspace_id = resolve_workspace(workspace_id);
-                    tables::list(&workspace_id, connection_id.as_deref(), schema.as_deref(), table.as_deref(), limit, cursor.as_deref(), &format)
+                    tables::list(&workspace_id, connection_id.as_deref(), schema.as_deref(), table.as_deref(), limit, cursor.as_deref(), &output)
                 }
             },
             Commands::Skills { command } => match command {
@@ -162,15 +170,15 @@ fn main() {
                 }
                 SkillCommands::Status => skill::status(),
             },
-            Commands::Results { result_id, workspace_id, format, command } => {
+            Commands::Results { result_id, workspace_id, output, command } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
-                    Some(ResultsCommands::List { limit, offset, format }) => {
-                        results::list(&workspace_id, limit, offset, &format)
+                    Some(ResultsCommands::List { limit, offset, output }) => {
+                        results::list(&workspace_id, limit, offset, &output)
                     }
                     None => {
                         match result_id {
-                            Some(id) => results::get(&id, &workspace_id, &format),
+                            Some(id) => results::get(&id, &workspace_id, &output),
                             None => {
                                 use clap::CommandFactory;
                                 let mut cmd = Cli::command();
@@ -181,14 +189,14 @@ fn main() {
                     }
                 }
             }
-            Commands::Jobs { id, workspace_id, format, command } => {
+            Commands::Jobs { id, workspace_id, output, command } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 if let Some(id) = id {
-                    jobs::get(&id, &workspace_id, &format)
+                    jobs::get(&id, &workspace_id, &output)
                 } else {
                     match command {
-                        Some(JobsCommands::List { job_type, status, all, limit, offset, format }) => {
-                            jobs::list(&workspace_id, job_type.as_deref(), status.as_deref(), all, limit, offset, &format)
+                        Some(JobsCommands::List { job_type, status, all, limit, offset, output }) => {
+                            jobs::list(&workspace_id, job_type.as_deref(), status.as_deref(), all, limit, offset, &output)
                         }
                         None => {
                             use clap::CommandFactory;
@@ -202,15 +210,15 @@ fn main() {
             Commands::Indexes { workspace_id, command } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
-                    IndexesCommands::List { connection_id, schema, table, format } => {
-                        indexes::list(&workspace_id, &connection_id, &schema, &table, &format)
+                    IndexesCommands::List { connection_id, schema, table, output } => {
+                        indexes::list(&workspace_id, &connection_id, &schema, &table, &output)
                     }
                     IndexesCommands::Create { connection_id, schema, table, name, columns, r#type, metric, r#async } => {
                         indexes::create(&workspace_id, &connection_id, &schema, &table, &name, &columns, &r#type, metric.as_deref(), r#async)
                     }
                 }
             }
-            Commands::Search { query, table, column, select, limit, workspace_id, format } => {
+            Commands::Search { query, table, column, select, limit, workspace_id, output } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 let columns = match select.as_deref() {
                     Some(cols) => format!("{}, score", cols),
@@ -224,25 +232,25 @@ fn main() {
                     query.replace('\'', "''"),
                     limit,
                 );
-                query::execute(&sql, &workspace_id, None, &format)
+                query::execute(&sql, &workspace_id, None, &output)
             }
-            Commands::Queries { id, format, command } => {
+            Commands::Queries { id, output, command } => {
                 let workspace_id = resolve_workspace(None);
                 if let Some(id) = id {
-                    queries::get(&id, &workspace_id, &format)
+                    queries::get(&id, &workspace_id, &output)
                 } else {
                     match command {
-                        Some(QueriesCommands::List { limit, offset, format }) => {
-                            queries::list(&workspace_id, limit, offset, &format)
+                        Some(QueriesCommands::List { limit, offset, output }) => {
+                            queries::list(&workspace_id, limit, offset, &output)
                         }
-                        Some(QueriesCommands::Run { id, format }) => {
-                            queries::run(&id, &workspace_id, &format)
+                        Some(QueriesCommands::Run { id, output }) => {
+                            queries::run(&id, &workspace_id, &output)
                         }
-                        Some(QueriesCommands::Create { name, sql, description, tags, format }) => {
-                            queries::create(&workspace_id, &name, &sql, description.as_deref(), tags.as_deref(), &format)
+                        Some(QueriesCommands::Create { name, sql, description, tags, output }) => {
+                            queries::create(&workspace_id, &name, &sql, description.as_deref(), tags.as_deref(), &output)
                         }
-                        Some(QueriesCommands::Update { id, name, sql, description, tags, category, table_size, format }) => {
-                            queries::update(&workspace_id, &id, name.as_deref(), sql.as_deref(), description.as_deref(), tags.as_deref(), category.as_deref(), table_size.as_deref(), &format)
+                        Some(QueriesCommands::Update { id, name, sql, description, tags, category, table_size, output }) => {
+                            queries::update(&workspace_id, &id, name.as_deref(), sql.as_deref(), description.as_deref(), tags.as_deref(), category.as_deref(), table_size.as_deref(), &output)
                         }
                         None => {
                             use clap::CommandFactory;

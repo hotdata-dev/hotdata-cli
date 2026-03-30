@@ -1,4 +1,4 @@
-use crate::config;
+use crate::api::ApiClient;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -111,48 +111,23 @@ fn make_progress_bar(total: u64) -> ProgressBar {
 }
 
 fn do_upload<R: std::io::Read + Send + 'static>(
-    client: &reqwest::blocking::Client,
-    api_key: &str,
-    workspace_id: &str,
-    api_url: &str,
+    api: &ApiClient,
     content_type: &str,
     reader: R,
     pb: ProgressBar,
     content_length: Option<u64>,
 ) -> String {
-    let url = format!("{api_url}/files");
-
-    let mut req = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .header("Content-Type", content_type);
-
-    if let Some(len) = content_length {
-        req = req.header("Content-Length", len);
-    }
-
-    let resp = match req
-        .body(reqwest::blocking::Body::new(reader))
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            pb.finish_and_clear();
-            eprintln!("error uploading: {e}");
-            std::process::exit(1);
-        }
-    };
+    let (status, resp_body) = api.post_body("/files", content_type, reader, content_length);
 
     pb.finish_and_clear();
 
-    if !resp.status().is_success() {
+    if !status.is_success() {
         use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
+        eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
     }
 
-    let body: serde_json::Value = match resp.json() {
+    let body: serde_json::Value = match serde_json::from_str(&resp_body) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error parsing upload response: {e}");
@@ -171,10 +146,7 @@ fn do_upload<R: std::io::Read + Send + 'static>(
 
 // Returns (upload_id, format)
 fn upload_from_file(
-    client: &reqwest::blocking::Client,
-    api_key: &str,
-    workspace_id: &str,
-    api_url: &str,
+    api: &ApiClient,
     path: &str,
 ) -> (String, &'static str) {
     let mut f = match std::fs::File::open(path) {
@@ -197,16 +169,13 @@ fn upload_from_file(
     let pb = make_progress_bar(file_size);
     let reader = pb.wrap_read(f);
 
-    let id = do_upload(client, api_key, workspace_id, api_url, ft.content_type, reader, pb, Some(file_size));
+    let id = do_upload(api, ft.content_type, reader, pb, Some(file_size));
     (id, ft.format)
 }
 
 // Returns (upload_id, format)
 fn upload_from_stdin(
-    client: &reqwest::blocking::Client,
-    api_key: &str,
-    workspace_id: &str,
-    api_url: &str,
+    api: &ApiClient,
 ) -> (String, &'static str) {
     use std::io::Read;
     let mut probe = [0u8; 512];
@@ -223,65 +192,34 @@ fn upload_from_stdin(
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     let reader = pb.wrap_read(reader);
 
-    let id = do_upload(client, api_key, workspace_id, api_url, ft.content_type, reader, pb, None);
+    let id = do_upload(api, ft.content_type, reader, pb, None);
     (id, ft.format)
 }
 
 fn create_dataset(
-    workspace_id: &str,
+    api: &ApiClient,
     label: &str,
     table_name: Option<&str>,
     source: serde_json::Value,
     on_failure: Option<Box<dyn FnOnce()>>,
 ) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
     let mut body = json!({ "label": label, "source": source });
     if let Some(tn) = table_name {
         body["table_name"] = json!(tn);
     }
 
-    let url = format!("{}/datasets", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
+    let (status, resp_body) = api.post_raw("/datasets", &body);
 
-    let resp = match client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .json(&body)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
+    if !status.is_success() {
         use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
+        eprintln!("{}", crate::util::api_error(resp_body).red());
         if let Some(f) = on_failure {
             f();
         }
         std::process::exit(1);
     }
 
-    let dataset: CreateResponse = match resp.json() {
+    let dataset: CreateResponse = match serde_json::from_str(&resp_body) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error parsing response: {e}");
@@ -304,21 +242,7 @@ pub fn create_from_upload(
     upload_id: Option<&str>,
     source_format: &str,
 ) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
 
     let label_derived;
     let label: &str = match label {
@@ -351,20 +275,18 @@ pub fn create_from_upload(
         },
     };
 
-    let client = reqwest::blocking::Client::new();
-
     let (upload_id, format, upload_id_was_uploaded): (String, &str, bool) = if let Some(id) = upload_id {
         (id.to_string(), source_format, false)
     } else {
         let (id, fmt) = match file {
-            Some(path) => upload_from_file(&client, &api_key, workspace_id, &profile_config.api_url, path),
+            Some(path) => upload_from_file(&api, path),
             None => {
                 use std::io::IsTerminal;
                 if std::io::stdin().is_terminal() {
                     eprintln!("error: no input data. Use --file <path>, --upload-id <id>, or pipe data via stdin.");
                     std::process::exit(1);
                 }
-                upload_from_stdin(&client, &api_key, workspace_id, &profile_config.api_url)
+                upload_from_stdin(&api)
             }
         };
         (id, fmt, true)
@@ -385,7 +307,7 @@ pub fn create_from_upload(
         None
     };
 
-    create_dataset(workspace_id, label, table_name, source, on_failure);
+    create_dataset(&api, label, table_name, source, on_failure);
 }
 
 pub fn create_from_url(
@@ -401,7 +323,8 @@ pub fn create_from_url(
             std::process::exit(1);
         }
     };
-    create_dataset(workspace_id, label, table_name, json!({ "Url": { "url": url } }), None);
+    let api = ApiClient::new(Some(workspace_id));
+    create_dataset(&api, label, table_name, json!({ "Url": { "url": url } }), None);
 }
 
 pub fn create_from_query(
@@ -417,7 +340,8 @@ pub fn create_from_query(
             std::process::exit(1);
         }
     };
-    create_dataset(workspace_id, label, table_name, json!({ "sql": sql }), None);
+    let api = ApiClient::new(Some(workspace_id));
+    create_dataset(&api, label, table_name, json!({ "sql": sql }), None);
 }
 
 pub fn create_from_saved_query(
@@ -433,59 +357,18 @@ pub fn create_from_saved_query(
             std::process::exit(1);
         }
     };
-    create_dataset(workspace_id, label, table_name, json!({ "saved_query_id": query_id }), None);
+    let api = ApiClient::new(Some(workspace_id));
+    create_dataset(&api, label, table_name, json!({ "saved_query_id": query_id }), None);
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
 
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let mut url = format!("{}/datasets", profile_config.api_url);
-    let mut params = vec![];
-    if let Some(l) = limit { params.push(format!("limit={l}")); }
-    if let Some(o) = offset { params.push(format!("offset={o}")); }
-    if !params.is_empty() { url = format!("{url}?{}", params.join("&")); }
-
-    let client = reqwest::blocking::Client::new();
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let body: ListResponse = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let params = [
+        ("limit", limit.map(|l| l.to_string())),
+        ("offset", offset.map(|o| o.to_string())),
+    ];
+    let body: ListResponse = api.get_with_params("/datasets", &params);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.datasets).unwrap()),
@@ -514,51 +397,9 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
 }
 
 pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
 
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let url = format!("{}/datasets/{dataset_id}", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let d: DatasetDetail = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let d: DatasetDetail = api.get(&format!("/datasets/{dataset_id}"));
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&d).unwrap()),

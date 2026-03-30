@@ -1,4 +1,4 @@
-use crate::config;
+use crate::api::ApiClient;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -19,51 +19,8 @@ struct ListResponse {
 }
 
 pub fn get(job_id: &str, workspace_id: &str, format: &str) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let url = format!("{}/jobs/{job_id}", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    let job: Job = match resp.json() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
+    let api = ApiClient::new(Some(workspace_id));
+    let job: Job = api.get(&format!("/jobs/{job_id}"));
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&job).unwrap()),
@@ -98,50 +55,20 @@ pub fn get(job_id: &str, workspace_id: &str, format: &str) {
 }
 
 fn fetch_jobs(
-    client: &reqwest::blocking::Client,
-    api_key: &str,
-    api_url: &str,
-    workspace_id: &str,
+    api: &ApiClient,
     job_type: Option<&str>,
     status: Option<&str>,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Vec<Job> {
-    let mut params = vec![];
-    if let Some(jt) = job_type { params.push(format!("job_type={jt}")); }
-    if let Some(s) = status { params.push(format!("status={s}")); }
-    if let Some(l) = limit { params.push(format!("limit={l}")); }
-    if let Some(o) = offset { params.push(format!("offset={o}")); }
-
-    let mut url = format!("{api_url}/jobs");
-    if !params.is_empty() { url = format!("{url}?{}", params.join("&")); }
-
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("X-Workspace-Id", workspace_id)
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !resp.status().is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp.text().unwrap_or_default()).red());
-        std::process::exit(1);
-    }
-
-    match resp.json::<ListResponse>() {
-        Ok(v) => v.jobs,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    }
+    let params = [
+        ("job_type", job_type.map(String::from)),
+        ("status", status.map(String::from)),
+        ("limit", limit.map(|l| l.to_string())),
+        ("offset", offset.map(|o| o.to_string())),
+    ];
+    let resp: ListResponse = api.get_with_params("/jobs", &params);
+    resp.jobs
 }
 
 pub fn list(
@@ -153,30 +80,13 @@ pub fn list(
     offset: Option<u32>,
     format: &str,
 ) {
-    let profile_config = match config::load("default") {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    };
-
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => {
-            eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
-            std::process::exit(1);
-        }
-    };
-
-    let client = reqwest::blocking::Client::new();
-    let api_url = profile_config.api_url.to_string();
+    let api = ApiClient::new(Some(workspace_id));
 
     let jobs = if !all && status.is_none() {
         // Default: show only active jobs (pending + running)
-        fetch_jobs(&client, &api_key, &api_url, workspace_id, job_type, Some("pending,running"), limit, offset)
+        fetch_jobs(&api, job_type, Some("pending,running"), limit, offset)
     } else {
-        fetch_jobs(&client, &api_key, &api_url, workspace_id, job_type, status, limit, offset)
+        fetch_jobs(&api, job_type, status, limit, offset)
     };
 
     let body = ListResponse { jobs };
