@@ -13,6 +13,21 @@ pub struct QueryResponse {
     pub warning: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct AsyncResponse {
+    query_run_id: String,
+    status: String,
+}
+
+#[derive(Deserialize)]
+struct QueryRunResponse {
+    id: String,
+    status: String,
+    result_id: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
 fn value_to_string(v: &Value) -> String {
     match v {
         Value::Null => "NULL".to_string(),
@@ -33,12 +48,40 @@ fn value_to_string(v: &Value) -> String {
 pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
 
-    let mut body = serde_json::json!({ "sql": sql });
+    let mut body = serde_json::json!({
+        "sql": sql,
+        "async": true,
+        "async_after_ms": 1000,
+    });
     if let Some(conn) = connection {
         body["connection_id"] = Value::String(conn.to_string());
     }
 
+    let spinner = indicatif::ProgressBar::new_spinner();
+    spinner.set_style(
+        indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .unwrap(),
+    );
+    spinner.set_message("running query...");
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
     let (status, resp_body) = api.post_raw("/query", &body);
+    spinner.finish_and_clear();
+
+    if status.as_u16() == 202 {
+        let async_resp: AsyncResponse = match serde_json::from_str(&resp_body) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error parsing async response: {e}");
+                std::process::exit(1);
+            }
+        };
+        use crossterm::style::Stylize;
+        eprintln!("{}", format!("query still running (status: {})", async_resp.status).yellow());
+        eprintln!("query_run_id: {}", async_resp.query_run_id);
+        eprintln!("{}", format!("Poll with: hotdata query status {}", async_resp.query_run_id).dark_grey());
+        std::process::exit(2);
+    }
 
     if !status.is_success() {
         let message = serde_json::from_str::<Value>(&resp_body)
@@ -59,6 +102,41 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
     };
 
     print_result(&result, format);
+}
+
+/// Poll a query run by ID. If succeeded and has a result_id, fetch and display the result.
+pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
+    let api = ApiClient::new(Some(workspace_id));
+
+    let run: QueryRunResponse = api.get(&format!("/query-runs/{query_run_id}"));
+
+    match run.status.as_str() {
+        "succeeded" => {
+            match run.result_id {
+                Some(ref result_id) => {
+                    let result: QueryResponse = api.get(&format!("/results/{result_id}"));
+                    print_result(&result, format);
+                }
+                None => {
+                    use crossterm::style::Stylize;
+                    println!("{}", "Query succeeded but no result available.".yellow());
+                }
+            }
+        }
+        "failed" => {
+            use crossterm::style::Stylize;
+            let err = run.error.as_deref().unwrap_or("unknown error");
+            eprintln!("{}", format!("query failed: {err}").red());
+            std::process::exit(1);
+        }
+        status => {
+            use crossterm::style::Stylize;
+            eprintln!("{}", format!("query status: {status}").yellow());
+            eprintln!("query_run_id: {}", run.id);
+            eprintln!("{}", format!("Poll again with: hotdata query status {}", run.id).dark_grey());
+            std::process::exit(2);
+        }
+    }
 }
 
 pub fn print_result(result: &QueryResponse, format: &str) {

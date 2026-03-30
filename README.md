@@ -138,11 +138,15 @@ hotdata datasets create --url "https://example.com/data.parquet" --label "My Dat
 ## Query
 
 ```sh
-hotdata query "<sql>" [--workspace-id <id>] [--connection <connection_id>] [--format table|json|csv]
+hotdata query "<sql>" [-w <id>] [--connection <connection_id>] [-o table|json|csv]
+hotdata query status <query_run_id> [-o table|json|csv]
 ```
 
-- Default format is `table`, which prints results with row count and execution time.
+- Default output is `table`, which prints results with row count and execution time.
 - Use `--connection` to scope the query to a specific connection.
+- Long-running queries automatically fall back to async execution and return a `query_run_id`.
+- Use `hotdata query status <query_run_id>` to poll for results.
+- Exit codes for `query status`: `0` = succeeded, `1` = failed, `2` = still running (poll again).
 
 ## Saved Queries
 
@@ -163,13 +167,21 @@ hotdata queries run <query_id> [--format table|json|csv]
 ## Search
 
 ```sh
-hotdata search "<query>" --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [--format table|json|csv]
+# BM25 full-text search
+hotdata search "query text" --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [-o table|json|csv]
+
+# Vector search with --model (calls OpenAI to embed the query)
+hotdata search "query text" --table <table> --column <vector_column> --model text-embedding-3-small [--limit <n>]
+
+# Vector search with piped embedding
+echo '[0.1, -0.2, ...]' | hotdata search --table <table> --column <vector_column> [--limit <n>]
 ```
 
-- Full-text search using BM25 across a table column.
-- Requires a BM25 index on the target column (see `indexes create`).
-- Results are ordered by relevance score (descending).
-- `--select` specifies which columns to return (comma-separated, defaults to all). The `score` column is automatically appended when `--select` is used.
+- Without `--model` and with query text: BM25 full-text search. Requires a BM25 index on the target column.
+- With `--model`: generates an embedding via OpenAI and performs vector search using `l2_distance`. Requires `OPENAI_API_KEY` env var.
+- Without query text and with piped stdin: reads a vector (raw JSON array or OpenAI embedding response) and performs vector search.
+- BM25 results are ordered by relevance score (descending). Vector results are ordered by distance (ascending).
+- `--select` specifies which columns to return (comma-separated, defaults to all).
 
 ## Indexes
 

@@ -163,16 +163,21 @@ Use `hotdata datasets <dataset_id>` to look up the `table_name` before writing q
 
 ### Execute SQL Query
 ```
-hotdata query "<sql>" [--workspace-id <workspace_id>] [--connection <connection_id>] [--format table|json|csv]
+hotdata query "<sql>" [-w <workspace_id>] [--connection <connection_id>] [-o table|json|csv]
+hotdata query status <query_run_id> [-o table|json|csv]
 ```
-- Default format is `table`, which prints results with row count and execution time.
+- Default output is `table`, which prints results with row count and execution time.
 - Use `--connection` to scope the query to a specific connection.
 - Use `hotdata tables list` to discover tables and columns — do not query `information_schema` directly.
 - **Always use PostgreSQL dialect SQL.**
+- Long-running queries automatically fall back to async execution and return a `query_run_id`.
+- Use `hotdata query status <query_run_id>` to poll for results.
+- Exit codes for `query status`: `0` = succeeded, `1` = failed, `2` = still running (poll again).
+- **When a query returns a `query_run_id`, use `query status` to poll rather than re-running the query.**
 
 ### Get Query Result
 ```
-hotdata results <result_id> [--workspace-id <workspace_id>] [--format table|json|csv]
+hotdata results <result_id> [-w <workspace_id>] [-o table|json|csv]
 ```
 - Retrieves a previously executed query result by its result ID.
 - Query results include a `result-id` in the footer (e.g. `[result-id: rslt...]`).
@@ -195,23 +200,31 @@ hotdata queries run <query_id> [--format table|json|csv]
 
 ### Search
 ```
-hotdata search "<query>" --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [--format table|json|csv]
+# BM25 full-text search
+hotdata search "query text" --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [-o table|json|csv]
+
+# Vector search with --model (calls OpenAI to embed the query)
+hotdata search "query text" --table <table> --column <vector_column> --model text-embedding-3-small [--limit <n>]
+
+# Vector search with piped embedding
+echo '[0.1, -0.2, ...]' | hotdata search --table <table> --column <vector_column> [--limit <n>]
 ```
-- Full-text search using BM25 across a table column.
-- Requires a BM25 index on the target column (see `indexes create`).
-- Results are ordered by relevance score (descending).
-- `--select` specifies which columns to return (comma-separated, defaults to all). The `score` column is automatically appended when `--select` is used.
+- Without `--model` and with query text: BM25 full-text search. Requires a BM25 index on the target column.
+- With `--model`: generates an embedding via OpenAI and performs vector search using `l2_distance`. Requires `OPENAI_API_KEY` env var. Supported models: `text-embedding-3-small`, `text-embedding-3-large`.
+- Without query text and with piped stdin: reads a vector (raw JSON array or OpenAI embedding response) and performs vector search.
+- BM25 results are ordered by relevance score (descending). Vector results are ordered by distance (ascending).
+- `--select` specifies which columns to return (comma-separated, defaults to all).
 - Default limit is 10.
+- **For BM25 search, create a BM25 index on the target column first. For vector search, create a vector index.**
 
 ### Indexes
 ```
-hotdata indexes list --connection-id <id> --schema <schema> --table <table> [--workspace-id <workspace_id>] [--format table|json|yaml]
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> --name <name> --columns <cols> [--type sorted|bm25|vector] [--metric l2|cosine|dot] [--async]
+hotdata indexes list -c <connection_id> --schema <schema> --table <table> [-w <workspace_id>] [-o table|json|yaml]
+hotdata indexes create -c <connection_id> --schema <schema> --table <table> --name <name> --columns <cols> [--type sorted|bm25|vector] [--metric l2|cosine|dot] [--async]
 ```
 - `list` shows indexes on a table with name, type, columns, status, and creation date.
 - `create` creates an index. Use `--type bm25` for full-text search, `--type vector` for vector search (requires `--metric`).
 - `--async` submits index creation as a background job. Use `hotdata jobs <job_id>` to check status.
-- **Before using `hotdata search`, create a BM25 index on the target column.**
 
 ### Jobs
 ```

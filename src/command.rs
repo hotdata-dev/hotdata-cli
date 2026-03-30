@@ -25,10 +25,10 @@ pub enum Commands {
         command: Option<DatasetsCommands>,
     },
 
-    /// Execute a SQL query
+    /// Execute a SQL query, or check status of a running query
     Query {
-        /// SQL query string
-        sql: String,
+        /// SQL query string (omit when using a subcommand)
+        sql: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long, short = 'w')]
@@ -41,6 +41,9 @@ pub enum Commands {
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
         output: String,
+
+        #[command(subcommand)]
+        command: Option<QueryCommands>,
     },
 
     /// Manage workspaces
@@ -185,6 +188,16 @@ impl From<ShellChoice> for clap_complete::Shell {
             ShellChoice::Fish => clap_complete::Shell::Fish,
         }
     }
+}
+
+#[derive(Subcommand)]
+pub enum QueryCommands {
+    /// Check the status of a running query and retrieve results.
+    /// Exit codes: 0 = succeeded, 1 = failed, 2 = still running (poll again)
+    Status {
+        /// Query run ID
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
