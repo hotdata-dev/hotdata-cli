@@ -61,14 +61,13 @@ fn fetch_jobs(
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Vec<Job> {
-    let qs = ApiClient::query_string(&[
+    let params = [
         ("job_type", job_type.map(String::from)),
         ("status", status.map(String::from)),
         ("limit", limit.map(|l| l.to_string())),
         ("offset", offset.map(|o| o.to_string())),
-    ]);
-    let path = format!("/jobs{qs}");
-    let resp: ListResponse = api.get(&path);
+    ];
+    let resp: ListResponse = api.get_with_params("/jobs", &params);
     resp.jobs
 }
 

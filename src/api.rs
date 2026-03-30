@@ -39,8 +39,8 @@ impl ApiClient {
     }
 
     fn debug_headers(&self) -> Vec<(&str, String)> {
-        let masked = if self.api_key.len() > 8 {
-            format!("Bearer {}...{}", &self.api_key[..4], &self.api_key[self.api_key.len()-4..])
+        let masked = if self.api_key.len() > 4 {
+            format!("Bearer ...{}", &self.api_key[self.api_key.len()-4..])
         } else {
             "Bearer ***".to_string()
         };
@@ -64,6 +64,38 @@ impl ApiClient {
             req = req.header("X-Workspace-Id", ws);
         }
         req
+    }
+
+    /// GET request with query parameters, returns parsed response.
+    /// Parameters with `None` values are omitted.
+    pub fn get_with_params<T: DeserializeOwned>(&self, path: &str, params: &[(&str, Option<String>)]) -> T {
+        let filtered: Vec<(&str, &String)> = params.iter()
+            .filter_map(|(k, v)| v.as_ref().map(|val| (*k, val)))
+            .collect();
+        let url = format!("{}{path}", self.api_url);
+        self.log_request("GET", &url, None);
+
+        let resp = match self.build_request(reqwest::Method::GET, &url).query(&filtered).send() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error connecting to API: {e}");
+                std::process::exit(1);
+            }
+        };
+
+        let (status, body) = util::debug_response(resp);
+        if !status.is_success() {
+            eprintln!("{}", util::api_error(body).red());
+            std::process::exit(1);
+        }
+
+        match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error parsing response: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 
     /// GET request, returns parsed response.
@@ -232,15 +264,4 @@ impl ApiClient {
         util::debug_response(resp)
     }
 
-    /// Build a query string from optional parameters.
-    pub fn query_string(params: &[(&str, Option<String>)]) -> String {
-        let parts: Vec<String> = params.iter()
-            .filter_map(|(k, v)| v.as_ref().map(|val| format!("{k}={val}")))
-            .collect();
-        if parts.is_empty() {
-            String::new()
-        } else {
-            format!("?{}", parts.join("&"))
-        }
-    }
 }

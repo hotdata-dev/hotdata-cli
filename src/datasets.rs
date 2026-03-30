@@ -364,13 +364,11 @@ pub fn create_from_saved_query(
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
 
-    let qs = ApiClient::query_string(&[
+    let params = [
         ("limit", limit.map(|l| l.to_string())),
         ("offset", offset.map(|o| o.to_string())),
-    ]);
-    let path = format!("/datasets{qs}");
-
-    let body: ListResponse = api.get(&path);
+    ];
+    let body: ListResponse = api.get_with_params("/datasets", &params);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.datasets).unwrap()),

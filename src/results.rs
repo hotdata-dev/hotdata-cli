@@ -18,13 +18,11 @@ struct ListResponse {
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
 
-    let qs = ApiClient::query_string(&[
+    let params = [
         ("limit", limit.map(|l| l.to_string())),
         ("offset", offset.map(|o| o.to_string())),
-    ]);
-    let path = format!("/results{qs}");
-
-    let body: ListResponse = api.get(&path);
+    ];
+    let body: ListResponse = api.get_with_params("/results", &params);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.results).unwrap()),

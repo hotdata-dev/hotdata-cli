@@ -75,10 +75,7 @@ pub fn list(
         params.push(("cursor", Some(c.to_string())));
     }
 
-    let qs = ApiClient::query_string(&params);
-    let path = format!("/information_schema{qs}");
-
-    let body: ListResponse = api.get(&path);
+    let body: ListResponse = api.get_with_params("/information_schema", &params);
 
     let has_more = body.has_more;
     let next_cursor = body.next_cursor.clone();
