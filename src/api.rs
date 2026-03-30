@@ -203,8 +203,8 @@ impl ApiClient {
         }
     }
 
-    /// POST with a custom request body (for file uploads). Returns parsed response.
-    pub fn post_body<T: DeserializeOwned, R: std::io::Read + Send + 'static>(
+    /// POST with a custom request body (for file uploads). Returns raw status and body.
+    pub fn post_body<R: std::io::Read + Send + 'static>(
         &self,
         path: &str,
         content_type: &str,

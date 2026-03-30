@@ -117,7 +117,7 @@ fn do_upload<R: std::io::Read + Send + 'static>(
     pb: ProgressBar,
     content_length: Option<u64>,
 ) -> String {
-    let (status, resp_body) = api.post_body::<serde_json::Value, _>("/files", content_type, reader, content_length);
+    let (status, resp_body) = api.post_body("/files", content_type, reader, content_length);
 
     pb.finish_and_clear();
 
