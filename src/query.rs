@@ -13,13 +13,25 @@ pub struct QueryResponse {
     pub warning: Option<String>,
 }
 
+fn format_array(arr: &[Value]) -> String {
+    let is_numeric = arr.iter().all(|v| v.is_number());
+    if is_numeric && arr.len() > 6 {
+        let head: Vec<String> = arr[..3].iter().map(|v| v.to_string()).collect();
+        let tail: Vec<String> = arr[arr.len()-3..].iter().map(|v| v.to_string()).collect();
+        format!("[{}, ... {}, {}]", head.join(", "), tail.join(", "), format!("({} total)", arr.len()))
+    } else {
+        format!("[{}]", arr.iter().map(|v| value_to_string(v)).collect::<Vec<_>>().join(", "))
+    }
+}
+
 fn value_to_string(v: &Value) -> String {
     match v {
         Value::Null => "NULL".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
-        Value::Array(_) | Value::Object(_) => v.to_string(),
+        Value::Array(arr) => format_array(arr),
+        Value::Object(_) => v.to_string(),
     }
 }
 

@@ -5,6 +5,18 @@ use tabled::settings::{
     width::Width,
 };
 
+/// Truncate numeric arrays to first 3 + last 3 when over 6 elements.
+fn format_array(arr: &[serde_json::Value]) -> String {
+    let is_numeric = arr.iter().all(|v| v.is_number());
+    if is_numeric && arr.len() > 6 {
+        let head: Vec<String> = arr[..3].iter().map(|v| v.to_string()).collect();
+        let tail: Vec<String> = arr[arr.len()-3..].iter().map(|v| v.to_string()).collect();
+        format!("[{}, ..., {}] ({} items)", head.join(", "), tail.join(", "), arr.len())
+    } else {
+        format!("[{}]", arr.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "))
+    }
+}
+
 fn term_width() -> usize {
     crossterm::terminal::size()
         .map(|(w, _)| w as usize)
@@ -107,6 +119,10 @@ pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
                     serde_json::Value::Bool(b) => {
                         colored_cells.push((ri + 1, ci, Color::FG_YELLOW));
                         b.to_string()
+                    }
+                    serde_json::Value::Array(arr) => {
+                        colored_cells.push((ri + 1, ci, Color::FG_BRIGHT_BLACK));
+                        format_array(arr)
                     }
                     _ => v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()),
                 }

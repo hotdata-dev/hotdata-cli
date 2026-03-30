@@ -115,10 +115,10 @@ pub enum Commands {
         command: IndexesCommands,
     },
 
-    /// Full-text search across a table column
+    /// Full-text or vector search across a table column
     Search {
-        /// Search query text
-        query: String,
+        /// Search query text (omit to read a vector from stdin for vector search)
+        query: Option<String>,
 
         /// Table to search (connection.schema.table)
         #[arg(long)]
@@ -135,6 +135,10 @@ pub enum Commands {
         /// Maximum number of results
         #[arg(long, default_value = "10")]
         limit: u32,
+
+        /// Embedding model to generate a vector from the query text (e.g. text-embedding-3-small)
+        #[arg(long, value_parser = ["text-embedding-3-small", "text-embedding-3-large"])]
+        model: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long, short = 'w')]
