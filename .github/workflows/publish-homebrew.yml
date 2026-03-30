@@ -50,9 +50,12 @@ jobs:
             brew update
             brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
 
-            # Add shell completions generation before the closing "end" of the install method
+            # Add shell completions generation after the last bin.install line
             if ! grep -q 'generate_completions_from_executable' "Formula/${filename}"; then
-              sed -i '/^  end$/i\    generate_completions_from_executable(bin/"hotdata", "completions")' "Formula/${filename}"
+              last_bin_install=$(grep -n 'bin\.install' "Formula/${filename}" | tail -1 | cut -d: -f1)
+              if [ -n "$last_bin_install" ]; then
+                sed -i "${last_bin_install}a\\    generate_completions_from_executable(bin/\"hotdata\", \"completions\")" "Formula/${filename}"
+              fi
             fi
 
             git add "Formula/${filename}"
