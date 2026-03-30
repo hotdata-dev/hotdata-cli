@@ -19,7 +19,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -109,9 +109,24 @@ fn main() {
                     }
                 }
             }
-            Commands::Query { sql, workspace_id, connection, output } => {
+            Commands::Query { sql, workspace_id, connection, output, command } => {
                 let workspace_id = resolve_workspace(workspace_id);
-                query::execute(&sql, &workspace_id, connection.as_deref(), &output)
+                match command {
+                    Some(QueryCommands::Status { id }) => {
+                        query::poll(&id, &workspace_id, &output)
+                    }
+                    None => {
+                        match sql {
+                            Some(sql) => query::execute(&sql, &workspace_id, connection.as_deref(), &output),
+                            None => {
+                                use clap::CommandFactory;
+                                let mut cmd = Cli::command();
+                                cmd.build();
+                                cmd.find_subcommand_mut("query").unwrap().print_help().unwrap();
+                            }
+                        }
+                    }
+                }
             }
             Commands::Workspaces { command } => match command {
                 WorkspaceCommands::List { output } => workspace::list(&output),
