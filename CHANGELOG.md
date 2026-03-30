@@ -1,3 +1,10 @@
+## [0.1.7] - 2026-03-30
+
+### 🚀 Features
+
+- *(search)* Add basic vector search (l2_distance)
+- *(query)* Async query execution by returning early from long running queries
+- *(connections)* Add connection information command (#28)
 ## [0.1.6] - 2026-03-27
 
 ### 🚀 Features
