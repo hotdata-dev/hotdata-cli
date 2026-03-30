@@ -14,11 +14,10 @@ pub struct QueryResponse {
 }
 
 fn format_array(arr: &[Value]) -> String {
-    let is_numeric = arr.iter().all(|v| v.is_number());
-    if is_numeric && arr.len() > 6 {
+    if arr.len() > 6 {
         let head: Vec<String> = arr[..3].iter().map(|v| v.to_string()).collect();
         let tail: Vec<String> = arr[arr.len()-3..].iter().map(|v| v.to_string()).collect();
-        format!("[{}, ... {}, {}]", head.join(", "), tail.join(", "), format!("({} total)", arr.len()))
+        format!("[{}, ..., {}] ({} items)", head.join(", "), tail.join(", "), arr.len())
     } else {
         format!("[{}]", arr.iter().map(|v| value_to_string(v)).collect::<Vec<_>>().join(", "))
     }
