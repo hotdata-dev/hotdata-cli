@@ -80,7 +80,7 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
         eprintln!("{}", format!("query still running (status: {})", async_resp.status).yellow());
         eprintln!("query_run_id: {}", async_resp.query_run_id);
         eprintln!("{}", format!("Poll with: hotdata query status {}", async_resp.query_run_id).dark_grey());
-        return;
+        std::process::exit(2);
     }
 
     if !status.is_success() {
@@ -134,6 +134,7 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
             eprintln!("{}", format!("query status: {status}").yellow());
             eprintln!("query_run_id: {}", run.id);
             eprintln!("{}", format!("Poll again with: hotdata query status {}", run.id).dark_grey());
+            std::process::exit(2);
         }
     }
 }
