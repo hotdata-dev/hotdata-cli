@@ -19,7 +19,14 @@ fn value_to_string(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
-        Value::Array(_) | Value::Object(_) => v.to_string(),
+        Value::Array(arr) => {
+            let (formatted, count) = crate::table::truncate_array(arr);
+            match count {
+                Some(n) => format!("{formatted} ({n} items)"),
+                None => formatted,
+            }
+        }
+        Value::Object(_) => v.to_string(),
     }
 }
 

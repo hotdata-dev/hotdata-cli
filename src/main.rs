@@ -5,6 +5,7 @@ mod config;
 mod connections;
 mod connections_new;
 mod datasets;
+mod embedding;
 mod indexes;
 mod jobs;
 mod queries;
@@ -218,20 +219,54 @@ fn main() {
                     }
                 }
             }
-            Commands::Search { query, table, column, select, limit, workspace_id, output } => {
+            Commands::Search { query, table, column, select, limit, model, workspace_id, output } => {
                 let workspace_id = resolve_workspace(workspace_id);
-                let columns = match select.as_deref() {
-                    Some(cols) => format!("{}, score", cols),
-                    None => "*".to_string(),
+                let select_cols = select.as_deref().unwrap_or("*");
+
+                // Determine search mode:
+                // 1. --model flag: embed the query text via the model provider
+                // 2. No query + piped stdin: read vector from stdin
+                // 3. Query text without --model: BM25 text search
+                let sql = if let Some(ref model_name) = model {
+                    let query_text = match query {
+                        Some(ref q) => q.as_str(),
+                        None => {
+                            eprintln!("error: --model requires a search query text");
+                            std::process::exit(1);
+                        }
+                    };
+                    let vec = embedding::openai_embed(query_text, model_name);
+                    let vec_str = embedding::vector_to_sql(&vec);
+                    format!(
+                        "SELECT {}, l2_distance({}, {}) as dist FROM {} ORDER BY dist LIMIT {}",
+                        select_cols, column, vec_str, table, limit,
+                    )
+                } else if query.is_none() {
+                    use std::io::IsTerminal;
+                    if std::io::stdin().is_terminal() {
+                        eprintln!("error: provide a search query or pipe a vector via stdin");
+                        std::process::exit(1);
+                    }
+                    let vec = embedding::read_vector_from_stdin();
+                    let vec_str = embedding::vector_to_sql(&vec);
+                    format!(
+                        "SELECT {}, l2_distance({}, {}) as dist FROM {} ORDER BY dist LIMIT {}",
+                        select_cols, column, vec_str, table, limit,
+                    )
+                } else {
+                    let bm25_columns = match select.as_deref() {
+                        Some(cols) => format!("{}, score", cols),
+                        None => "*".to_string(),
+                    };
+                    format!(
+                        "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
+                        bm25_columns,
+                        table.replace('\'', "''"),
+                        column.replace('\'', "''"),
+                        query.unwrap().replace('\'', "''"),
+                        limit,
+                    )
                 };
-                let sql = format!(
-                    "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
-                    columns,
-                    table.replace('\'', "''"),
-                    column.replace('\'', "''"),
-                    query.replace('\'', "''"),
-                    limit,
-                );
                 query::execute(&sql, &workspace_id, None, &output)
             }
             Commands::Queries { id, output, command } => {
