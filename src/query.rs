@@ -13,23 +13,19 @@ pub struct QueryResponse {
     pub warning: Option<String>,
 }
 
-fn format_array(arr: &[Value]) -> String {
-    if arr.len() > 6 {
-        let head: Vec<String> = arr[..3].iter().map(|v| v.to_string()).collect();
-        let tail: Vec<String> = arr[arr.len()-3..].iter().map(|v| v.to_string()).collect();
-        format!("[{}, ..., {}] ({} items)", head.join(", "), tail.join(", "), arr.len())
-    } else {
-        format!("[{}]", arr.iter().map(|v| value_to_string(v)).collect::<Vec<_>>().join(", "))
-    }
-}
-
 fn value_to_string(v: &Value) -> String {
     match v {
         Value::Null => "NULL".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
-        Value::Array(arr) => format_array(arr),
+        Value::Array(arr) => {
+            let (formatted, count) = crate::table::truncate_array(arr);
+            match count {
+                Some(n) => format!("{formatted} ({n} items)"),
+                None => formatted,
+            }
+        }
         Value::Object(_) => v.to_string(),
     }
 }

@@ -6,14 +6,24 @@ use tabled::settings::{
 };
 
 /// Truncate arrays to first 3 + last 3 when over 6 elements.
-fn format_array(arr: &[serde_json::Value]) -> String {
-    use crossterm::style::Stylize;
+/// Returns (formatted_values, total_count) where total_count is Some when truncated.
+pub fn truncate_array(arr: &[serde_json::Value]) -> (String, Option<usize>) {
     if arr.len() > 6 {
         let head: Vec<String> = arr[..3].iter().map(|v| v.to_string()).collect();
         let tail: Vec<String> = arr[arr.len()-3..].iter().map(|v| v.to_string()).collect();
-        format!("[{}, ..., {}] {}", head.join(", "), tail.join(", "), format!("({} items)", arr.len()).dark_grey())
+        (format!("[{}, ..., {}]", head.join(", "), tail.join(", ")), Some(arr.len()))
     } else {
-        format!("[{}]", arr.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "))
+        (format!("[{}]", arr.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")), None)
+    }
+}
+
+/// Format an array for styled table output.
+fn format_array(arr: &[serde_json::Value]) -> String {
+    use crossterm::style::Stylize;
+    let (formatted, count) = truncate_array(arr);
+    match count {
+        Some(n) => format!("{formatted} {}", format!("({n} items)").dark_grey()),
+        None => formatted,
     }
 }
 
