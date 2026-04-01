@@ -83,6 +83,30 @@ pub fn login() {
     let api_url = profile_config.api_url.to_string();
     let app_url = profile_config.app_url.to_string();
 
+    // Check if already authenticated
+    if let Some(api_key) = &profile_config.api_key {
+        if api_key != "PLACEHOLDER" {
+            let client = reqwest::blocking::Client::new();
+            if let Ok(resp) = client
+                .get(format!("{api_url}/workspaces"))
+                .header("Authorization", format!("Bearer {api_key}"))
+                .send()
+            {
+                if resp.status().is_success() {
+                    println!("{}", "You are already signed in.".green());
+                    print!("Do you want to log in again? [y/N] ");
+                    use std::io::Write;
+                    std::io::stdout().flush().unwrap();
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input).unwrap();
+                    if !input.trim().eq_ignore_ascii_case("y") {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     let code_verifier = generate_code_verifier();
     let code_challenge = generate_code_challenge(&code_verifier);
     let state = generate_random_string(32);
@@ -260,6 +284,10 @@ pub fn login() {
                 }
                 None => print_row("Workspace", &"None".dark_grey().to_string()),
             }
+        }
+        Ok(r) if r.status() == reqwest::StatusCode::FORBIDDEN => {
+            eprintln!("{}", "You are not authorized to create a new API token.".red());
+            std::process::exit(1);
         }
         Ok(r) => {
             eprintln!("token exchange failed: HTTP {}", r.status());
