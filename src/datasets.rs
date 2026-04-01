@@ -324,7 +324,7 @@ pub fn create_from_url(
         }
     };
     let api = ApiClient::new(Some(workspace_id));
-    create_dataset(&api, label, table_name, json!({ "Url": { "url": url } }), None);
+    create_dataset(&api, label, table_name, json!({ "url": url }), None);
 }
 
 pub fn create_from_query(
