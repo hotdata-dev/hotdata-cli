@@ -99,6 +99,13 @@ pub struct ConfigFile {
     pub profiles: HashMap<String, ProfileConfig>,
 }
 
+fn write_config(config_path: &std::path::Path, content: &str) -> Result<(), String> {
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("error creating config directory: {e}"))?;
+    }
+    fs::write(config_path, content).map_err(|e| format!("error writing config file: {e}"))
+}
+
 pub fn save_api_key(profile: &str, api_key: &str) -> Result<(), String> {
     let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
     let config_path = user_dirs.home_dir().join(".hotdata").join("config.yml");
@@ -122,7 +129,7 @@ pub fn save_api_key(profile: &str, api_key: &str) -> Result<(), String> {
     let content = serde_yaml::to_string(&config_file)
         .map_err(|e| format!("error serializing config: {e}"))?;
 
-    fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
+    write_config(&config_path, &content)
 }
 
 pub fn remove_api_key(profile: &str) -> Result<(), String> {
@@ -145,7 +152,7 @@ pub fn remove_api_key(profile: &str) -> Result<(), String> {
 
     let content = serde_yaml::to_string(&config_file)
         .map_err(|e| format!("error serializing config: {e}"))?;
-    fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
+    write_config(&config_path, &content)
 }
 
 pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result<(), String> {
@@ -171,7 +178,7 @@ pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result
     let content = serde_yaml::to_string(&config_file)
         .map_err(|e| format!("error serializing config: {e}"))?;
 
-    fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
+    write_config(&config_path, &content)
 }
 
 pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Result<(), String> {
@@ -192,7 +199,7 @@ pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Resul
 
     let content = serde_yaml::to_string(&config_file)
         .map_err(|e| format!("error serializing config: {e}"))?;
-    fs::write(&config_path, content).map_err(|e| format!("error writing config file: {e}"))
+    write_config(&config_path, &content)
 }
 
 pub fn resolve_workspace_id(provided: Option<String>, profile_config: &ProfileConfig) -> Result<String, String> {
