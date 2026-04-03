@@ -1,3 +1,8 @@
+## [0.1.8] - 2026-04-03
+
+### 🐛 Bug Fixes
+
+- *(auth)* Fix config initialization and url upload api parameter
 ## [0.1.7] - 2026-03-30
 
 ### 🚀 Features
