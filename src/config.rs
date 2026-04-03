@@ -5,11 +5,26 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::ops::Deref;
+use std::path::PathBuf;
+
+/// Returns the config directory, defaulting to ~/.hotdata.
+/// Override with HOTDATA_CONFIG_DIR env var (useful for testing).
+pub fn config_dir() -> Result<PathBuf, String> {
+    if let Ok(dir) = env::var("HOTDATA_CONFIG_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
+    Ok(user_dirs.home_dir().join(".hotdata"))
+}
+
+fn config_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join("config.yml"))
+}
 
 pub const DEFAULT_API_URL: &str = "https://api.hotdata.dev/v1";
 pub const DEFAULT_APP_URL: &str = "https://app.hotdata.dev";
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct WorkspaceEntry {
     pub public_id: String,
     pub name: String,
@@ -53,7 +68,7 @@ pub enum ApiKeySource {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ApiUrl(Option<String>);
+pub struct ApiUrl(pub(crate) Option<String>);
 
 impl Default for ApiUrl {
     fn default() -> Self {
@@ -107,8 +122,7 @@ fn write_config(config_path: &std::path::Path, content: &str) -> Result<(), Stri
 }
 
 pub fn save_api_key(profile: &str, api_key: &str) -> Result<(), String> {
-    let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
-    let config_path = user_dirs.home_dir().join(".hotdata").join("config.yml");
+    let config_path = config_path()?;
 
     let mut config_file: ConfigFile = if config_path.exists() {
         let content = fs::read_to_string(&config_path)
@@ -133,8 +147,7 @@ pub fn save_api_key(profile: &str, api_key: &str) -> Result<(), String> {
 }
 
 pub fn remove_api_key(profile: &str) -> Result<(), String> {
-    let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
-    let config_path = user_dirs.home_dir().join(".hotdata").join("config.yml");
+    let config_path = config_path()?;
 
     if !config_path.exists() {
         return Ok(());
@@ -156,8 +169,7 @@ pub fn remove_api_key(profile: &str) -> Result<(), String> {
 }
 
 pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result<(), String> {
-    let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
-    let config_path = user_dirs.home_dir().join(".hotdata").join("config.yml");
+    let config_path = config_path()?;
 
     let mut config_file: ConfigFile = if config_path.exists() {
         let content = fs::read_to_string(&config_path)
@@ -182,8 +194,7 @@ pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result
 }
 
 pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Result<(), String> {
-    let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
-    let config_path = user_dirs.home_dir().join(".hotdata").join("config.yml");
+    let config_path = config_path()?;
 
     let mut config_file: ConfigFile = if config_path.exists() {
         let content = fs::read_to_string(&config_path)
@@ -222,8 +233,7 @@ pub fn set_api_key_flag(key: String) {
 }
 
 pub fn load(profile: &str) -> Result<ProfileConfig, String> {
-    let user_dirs = UserDirs::new().ok_or("could not determine home directory")?;
-    let config_file = user_dirs.home_dir().join(".hotdata").join("config.yml");
+    let config_file = config_path()?;
 
     let mut profile_config = if config_file.exists() {
         let content =
@@ -258,4 +268,178 @@ pub fn load(profile: &str) -> Result<ProfileConfig, String> {
     }
 
     Ok(profile_config)
+}
+
+/// Test utilities shared across modules.
+#[cfg(test)]
+pub mod test_helpers {
+    use std::sync::Mutex;
+
+    // Serialize all tests that modify HOTDATA_CONFIG_DIR env var.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Set HOTDATA_CONFIG_DIR to a temp dir and return it with a lock guard.
+    /// Hold the guard for the duration of the test.
+    pub fn with_temp_config_dir() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: tests are serialized via ENV_LOCK mutex, so no concurrent env mutation.
+        unsafe { std::env::set_var("HOTDATA_CONFIG_DIR", tmp.path()) };
+        (tmp, guard)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::test_helpers::with_temp_config_dir;
+
+    #[test]
+    fn save_and_load_api_key() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        save_api_key("default", "test-key-123").unwrap();
+        let profile = load("default").unwrap();
+        assert_eq!(profile.api_key, Some("test-key-123".to_string()));
+    }
+
+    #[test]
+    fn save_api_key_creates_config_dir() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        // Config file shouldn't exist yet
+        let path = config_path().unwrap();
+        assert!(!path.exists());
+
+        save_api_key("default", "key").unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn remove_api_key_clears_key_and_workspaces() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        save_api_key("default", "key-to-remove").unwrap();
+        save_workspaces(
+            "default",
+            vec![WorkspaceEntry {
+                public_id: "ws-1".into(),
+                name: "Test WS".into(),
+            }],
+        )
+        .unwrap();
+
+        remove_api_key("default").unwrap();
+
+        let profile = load("default").unwrap();
+        assert_eq!(profile.api_key, None);
+        assert!(profile.workspaces.is_empty());
+    }
+
+    #[test]
+    fn remove_api_key_noop_when_no_config() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        // Should not error when config file doesn't exist
+        assert!(remove_api_key("default").is_ok());
+    }
+
+    #[test]
+    fn save_and_load_workspaces() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        save_api_key("default", "key").unwrap();
+        let workspaces = vec![
+            WorkspaceEntry { public_id: "ws-1".into(), name: "First".into() },
+            WorkspaceEntry { public_id: "ws-2".into(), name: "Second".into() },
+        ];
+        save_workspaces("default", workspaces).unwrap();
+
+        let profile = load("default").unwrap();
+        assert_eq!(profile.workspaces.len(), 2);
+        assert_eq!(profile.workspaces[0].public_id, "ws-1");
+        assert_eq!(profile.workspaces[1].name, "Second");
+    }
+
+    #[test]
+    fn save_default_workspace_moves_to_front() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        save_api_key("default", "key").unwrap();
+        let workspaces = vec![
+            WorkspaceEntry { public_id: "ws-1".into(), name: "First".into() },
+            WorkspaceEntry { public_id: "ws-2".into(), name: "Second".into() },
+        ];
+        save_workspaces("default", workspaces).unwrap();
+
+        // Set ws-2 as default — should move to front
+        save_default_workspace(
+            "default",
+            WorkspaceEntry { public_id: "ws-2".into(), name: "Second".into() },
+        )
+        .unwrap();
+
+        let profile = load("default").unwrap();
+        assert_eq!(profile.workspaces[0].public_id, "ws-2");
+        assert_eq!(profile.workspaces[1].public_id, "ws-1");
+    }
+
+    #[test]
+    fn load_missing_profile_returns_default() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        save_api_key("default", "key").unwrap();
+
+        let profile = load("nonexistent").unwrap();
+        assert_eq!(profile.api_key, None);
+        assert!(profile.workspaces.is_empty());
+    }
+
+    #[test]
+    fn load_no_config_file_returns_default() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        let profile = load("default").unwrap();
+        assert_eq!(profile.api_key, None);
+    }
+
+    #[test]
+    fn multiple_profiles() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        save_api_key("default", "key-default").unwrap();
+        save_api_key("staging", "key-staging").unwrap();
+
+        let default = load("default").unwrap();
+        let staging = load("staging").unwrap();
+        assert_eq!(default.api_key, Some("key-default".to_string()));
+        assert_eq!(staging.api_key, Some("key-staging".to_string()));
+    }
+
+    #[test]
+    fn resolve_workspace_id_prefers_provided() {
+        let profile = ProfileConfig {
+            workspaces: vec![WorkspaceEntry { public_id: "ws-1".into(), name: "WS".into() }],
+            ..Default::default()
+        };
+        let result = resolve_workspace_id(Some("explicit-id".into()), &profile).unwrap();
+        assert_eq!(result, "explicit-id");
+    }
+
+    #[test]
+    fn resolve_workspace_id_falls_back_to_first() {
+        let profile = ProfileConfig {
+            workspaces: vec![WorkspaceEntry { public_id: "ws-1".into(), name: "WS".into() }],
+            ..Default::default()
+        };
+        let result = resolve_workspace_id(None, &profile).unwrap();
+        assert_eq!(result, "ws-1");
+    }
+
+    #[test]
+    fn resolve_workspace_id_errors_when_none() {
+        let profile = ProfileConfig::default();
+        let result = resolve_workspace_id(None, &profile);
+        assert!(result.is_err());
+    }
 }

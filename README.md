@@ -1,5 +1,11 @@
 # hotdata-cli
 
+<p align="center">
+  <img src="https://img.shields.io/badge/version-0.1.8-blue" alt="version">
+  <a href="https://github.com/hotdata-dev/hotdata-cli/actions/workflows/ci.yml"><img src="https://github.com/hotdata-dev/hotdata-cli/actions/workflows/ci.yml/badge.svg" alt="build"></a>
+  <a href="https://codecov.io/gh/hotdata-dev/hotdata-cli"><img src="https://codecov.io/gh/hotdata-dev/hotdata-cli/branch/main/graph/badge.svg" alt="coverage"></a>
+</p>
+
 Command line interface for [Hotdata](https://www.hotdata.dev).
 
 ## Install
