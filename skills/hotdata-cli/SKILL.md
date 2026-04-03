@@ -45,6 +45,13 @@ hotdata connections <connection_id> [-w <workspace_id>] [-o table|json|yaml]
 - `list` returns `id`, `name`, `source_type` for each connection.
 - Pass a connection ID to view details (id, name, source type, table counts).
 
+### Refresh connection schema
+```
+hotdata connections refresh <connection_id> [-w <workspace_id>]
+```
+- Refreshes the connection’s catalog so new or changed tables and columns appear in `hotdata tables list` and queries.
+- Use after DDL or other changes in the source database when the workspace view is stale.
+
 ### Create a Connection
 
 #### Step 1 — Discover available connection types
@@ -177,26 +184,36 @@ hotdata query status <query_run_id> [-o table|json|csv]
 - Exit codes for `query status`: `0` = succeeded, `1` = failed, `2` = still running (poll again).
 - **When a query returns a `query_run_id`, use `query status` to poll rather than re-running the query.**
 
-### Get Query Result
+### Query results
+#### List stored results
+```
+hotdata results list [-w <workspace_id>] [--limit <int>] [--offset <int>] [-o table|json|yaml]
+```
+- Lists recent stored query results with `id`, `status`, and `created_at`.
+- Results are paginated; when more are available, the CLI prints a hint with the next `--offset`.
+- Use a row’s `id` with `hotdata results <result_id>` below.
+
+#### Get result by ID
 ```
 hotdata results <result_id> [-w <workspace_id>] [-o table|json|csv]
 ```
 - Retrieves a previously executed query result by its result ID.
-- Query results include a `result-id` in the footer (e.g. `[result-id: rslt...]`).
-- **Always use this command to retrieve past query results rather than re-running the same query.** Re-running queries wastes resources and may return different results.
+- Query output also includes a `result-id` in the footer (e.g. `[result-id: rslt...]`).
+- **Always use `results list` / `results <id>` to retrieve past query results rather than re-running the same query.** Re-running queries wastes resources and may return different results.
 
 ### Saved Queries
 ```
 hotdata queries list [--limit <int>] [--offset <int>] [--format table|json|yaml]
 hotdata queries <query_id> [--format table|json|yaml]
 hotdata queries create --name "My Query" --sql "SELECT ..." [--description "..."] [--tags "tag1,tag2"] [--format table|json|yaml]
-hotdata queries update <query_id> [--name "New Name"] [--sql "SELECT ..."] [--description "..."] [--tags "tag1,tag2"] [--format table|json|yaml]
+hotdata queries update <query_id> [--name "New Name"] [--sql "SELECT ..."] [--description "..."] [--tags "tag1,tag2"] [--category "..."] [--table-size "..."] [--format table|json|yaml]
 hotdata queries run <query_id> [--format table|json|csv]
 ```
 - `list` shows saved queries with name, description, tags, and version.
 - View a query by ID to see its formatted and syntax-highlighted SQL.
 - `create` requires `--name` and `--sql`. Tags are comma-separated.
-- `update` accepts any combination of fields to change.
+- `update` accepts any combination of `--name`, `--sql`, `--description`, and `--tags` to change those fields.
+- `update` also supports `--category` and `--table-size` for metadata; pass an **empty string** for either flag to clear its value.
 - `run` executes a saved query and displays results like the `query` command.
 - **Use `queries run` instead of re-typing SQL when a saved query exists.**
 
