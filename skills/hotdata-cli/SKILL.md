@@ -29,6 +29,20 @@ API URL defaults to `https://api.hotdata.dev/v1` or overridden via `HOTDATA_API_
 
 All commands that accept `--workspace-id` are optional. If omitted, the active workspace is used. Use `hotdata workspaces set` to switch the active workspace interactively, or pass a workspace ID directly: `hotdata workspaces set <workspace_id>`. The active workspace is shown with a `*` marker in `hotdata workspaces list`. **Omit `--workspace-id` unless you need to target a specific workspace.**
 
+## Multi-step workflows (Model, Library, History, Chain, Indexes)
+
+These are **patterns** built from the commands below—not separate CLI subcommands:
+
+- **Model** — Markdown semantic map of your workspace (entities, keys, joins). Refresh using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** modeling pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
+- **Library** — Curated **`hotdata queries`** entries for repeatable SQL (`queries create`, `queries run`, …).
+- **History** — Find prior **`hotdata results`** and saved queries (`results list`, `results <id>`, `queries list`).
+- **Chain** — Follow-ups via **`datasets create`** then `query` against `datasets.main.<table>`.
+- **Indexes** — Review SQL and schema, compare to existing indexes, create **sorted**, **bm25**, or **vector** indexes when it clearly helps; see [references/WORKFLOWS.md](references/WORKFLOWS.md#indexes).
+
+Full step-by-step procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md).
+
+**Project-owned files:** Put `DATA_MODEL.md` or `data_model.md` (e.g. under `docs/`) in the **directory where you run `hotdata`**—your repo or project—not under `~/.claude/skills/` or other agent skill paths. Copy the template from [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) to start; use [references/MODEL_BUILD.md](references/MODEL_BUILD.md) when you need the full procedure.
+
 ## Available Commands
 
 ### List Workspaces
@@ -259,7 +273,10 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--format table|json|yaml]
 ```
 hotdata auth                # Browser-based login
 hotdata auth status         # Check current auth status
+hotdata auth logout         # Remove saved auth for the default profile
 ```
+
+Other commands (not covered in detail above): `hotdata connections new` (interactive connection wizard), `hotdata skills install|status`, `hotdata completions <bash|zsh|fish>`.
 
 ## Workflow: Running a Query
 
