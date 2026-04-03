@@ -115,7 +115,7 @@ struct WsItem { public_id: String, name: String }
 
 /// Exchange an authorization code + PKCE verifier for an API token,
 /// then fetch available workspaces.
-fn exchange_token(api_url: &str, code: &str, code_verifier: &str) -> LoginResult {
+fn exchange_and_save_token(api_url: &str, code: &str, code_verifier: &str) -> LoginResult {
     let token_url = format!("{api_url}/auth/token");
     let client = reqwest::blocking::Client::new();
 
@@ -306,7 +306,7 @@ pub fn login() {
         }
     };
 
-    match exchange_token(&api_url, &code, &code_verifier) {
+    match exchange_and_save_token(&api_url, &code, &code_verifier) {
         LoginResult::Success { workspace, .. } => {
             stdout()
                 .execute(SetForegroundColor(Color::Green))
@@ -480,10 +480,10 @@ mod tests {
         mock.assert();
     }
 
-    // --- exchange_token tests ---
+    // --- exchange_and_save_token tests ---
 
     #[test]
-    fn exchange_token_success() {
+    fn exchange_and_save_token_success() {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
 
@@ -502,7 +502,7 @@ mod tests {
             .with_body(r#"{"workspaces":[{"public_id":"ws-123","name":"My Workspace"}]}"#)
             .create();
 
-        let result = exchange_token(&server.url(), "auth-code", "verifier");
+        let result = exchange_and_save_token(&server.url(), "auth-code", "verifier");
 
         token_mock.assert();
         ws_mock.assert();
@@ -523,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn exchange_token_success_no_workspaces() {
+    fn exchange_and_save_token_success_no_workspaces() {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
 
@@ -541,7 +541,7 @@ mod tests {
             .with_body(r#"{"workspaces":[]}"#)
             .create();
 
-        let result = exchange_token(&server.url(), "code", "verifier");
+        let result = exchange_and_save_token(&server.url(), "code", "verifier");
 
         token_mock.assert();
         ws_mock.assert();
@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn exchange_token_forbidden() {
+    fn exchange_and_save_token_forbidden() {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
 
@@ -565,13 +565,13 @@ mod tests {
             .with_status(403)
             .create();
 
-        let result = exchange_token(&server.url(), "code", "verifier");
+        let result = exchange_and_save_token(&server.url(), "code", "verifier");
         mock.assert();
         assert_eq!(result, LoginResult::Forbidden);
     }
 
     #[test]
-    fn exchange_token_unauthorized() {
+    fn exchange_and_save_token_unauthorized() {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
 
@@ -580,7 +580,7 @@ mod tests {
             .with_status(401)
             .create();
 
-        let result = exchange_token(&server.url(), "code", "verifier");
+        let result = exchange_and_save_token(&server.url(), "code", "verifier");
         mock.assert();
         match result {
             LoginResult::Failed(msg) => assert!(msg.contains("401")),
@@ -589,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn exchange_token_server_error() {
+    fn exchange_and_save_token_server_error() {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
 
@@ -598,7 +598,7 @@ mod tests {
             .with_status(500)
             .create();
 
-        let result = exchange_token(&server.url(), "code", "verifier");
+        let result = exchange_and_save_token(&server.url(), "code", "verifier");
         mock.assert();
         match result {
             LoginResult::Failed(msg) => assert!(msg.contains("500")),
@@ -607,10 +607,10 @@ mod tests {
     }
 
     #[test]
-    fn exchange_token_connection_error() {
+    fn exchange_and_save_token_connection_error() {
         let (_tmp, _guard) = with_temp_config_dir();
 
-        let result = exchange_token("http://127.0.0.1:1", "code", "verifier");
+        let result = exchange_and_save_token("http://127.0.0.1:1", "code", "verifier");
         match result {
             LoginResult::ConnectionError(_) => {}
             other => panic!("expected ConnectionError, got {:?}", other),
