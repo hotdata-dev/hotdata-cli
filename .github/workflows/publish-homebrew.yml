@@ -16,21 +16,21 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
         with:
           app-id: ${{ secrets.HOTDATA_AUTOMATION_APP_ID }}
           private-key: ${{ secrets.HOTDATA_AUTOMATION_PRIVATE_KEY }}
           owner: hotdata-dev
           repositories: homebrew-tap,hotdata-cli
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: true
           repository: "hotdata-dev/homebrew-tap"
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Fetch homebrew formulae
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: artifacts-*
           path: Formula/
