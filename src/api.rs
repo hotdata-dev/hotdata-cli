@@ -8,6 +8,7 @@ pub struct ApiClient {
     api_key: String,
     pub api_url: String,
     workspace_id: Option<String>,
+    session_id: Option<String>,
 }
 
 impl ApiClient {
@@ -35,6 +36,13 @@ impl ApiClient {
             api_key,
             api_url: profile_config.api_url.to_string(),
             workspace_id: workspace_id.map(String::from),
+            session_id: std::env::var("HOTDATA_SESSION").ok().or_else(|| {
+                if crate::sessions::find_session_run_ancestor().is_some() {
+                    eprintln!("error: session has been lost -- restart the process");
+                    std::process::exit(1);
+                }
+                profile_config.session
+            }),
         }
     }
 
@@ -47,6 +55,9 @@ impl ApiClient {
         let mut headers = vec![("Authorization", masked)];
         if let Some(ref ws) = self.workspace_id {
             headers.push(("X-Workspace-Id", ws.clone()));
+        }
+        if let Some(ref sid) = self.session_id {
+            headers.push(("X-Session-Id", sid.clone()));
         }
         headers
     }
@@ -62,6 +73,9 @@ impl ApiClient {
             .header("Authorization", format!("Bearer {}", self.api_key));
         if let Some(ref ws) = self.workspace_id {
             req = req.header("X-Workspace-Id", ws);
+        }
+        if let Some(ref sid) = self.session_id {
+            req = req.header("X-Session-Id", sid);
         }
         req
     }
@@ -210,6 +224,38 @@ impl ApiClient {
         self.log_request("PUT", &url, Some(body));
 
         let resp = match self.build_request(reqwest::Method::PUT, &url)
+            .json(body)
+            .send()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error connecting to API: {e}");
+                std::process::exit(1);
+            }
+        };
+
+        let (status, resp_body) = util::debug_response(resp);
+        if !status.is_success() {
+            eprintln!("{}", util::api_error(resp_body).red());
+            std::process::exit(1);
+        }
+
+        match serde_json::from_str(&resp_body) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error parsing response: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+
+    /// PATCH request with JSON body, returns parsed response.
+    pub fn patch<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> T {
+        let url = format!("{}{path}", self.api_url);
+        self.log_request("PATCH", &url, Some(body));
+
+        let resp = match self.build_request(reqwest::Method::PATCH, &url)
             .json(body)
             .send()
         {

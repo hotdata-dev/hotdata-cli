@@ -172,6 +172,23 @@ pub enum Commands {
         command: Option<QueriesCommands>,
     },
 
+    /// Manage work sessions
+    Sessions {
+        /// Session ID to show details
+        id: Option<String>,
+
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w', global = true)]
+        workspace_id: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+
+        #[command(subcommand)]
+        command: Option<SessionsCommands>,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -539,6 +556,64 @@ pub enum QueriesCommands {
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SessionsCommands {
+    /// List all sessions in a workspace
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Create a new session and set it as active
+    New {
+        /// Session name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Update a session's markdown or name
+    Update {
+        /// Session ID (defaults to active session)
+        id: Option<String>,
+
+        /// New session name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Markdown content
+        #[arg(long)]
+        markdown: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Set the active session (omit ID to clear)
+    Set {
+        /// Session ID to set as active (omit to clear)
+        id: Option<String>,
+    },
+
+    /// Run a command with a hotdata session. Creates a new session unless an ID was provided.
+    /// Example: hotdata sessions run claude
+    /// Example: hotdata sessions <id> run claude
+    Run {
+        /// Session name (only used when creating a new session)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Command and arguments to execute
+        #[arg(trailing_var_arg = true, required = true)]
+        cmd: Vec<String>,
     },
 }
 
