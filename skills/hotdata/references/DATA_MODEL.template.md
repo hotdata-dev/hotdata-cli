@@ -2,7 +2,7 @@
 
 > Copy this file to your **project** directory (e.g. `./DATA_MODEL.md`, `./data_model.md`, or `./docs/DATA_MODEL.md`).  
 > Do not commit workspace-specific content into agent skill folders.  
-> For a **full** build (per-table detail, connector enrichment, index summary), follow [MODEL_BUILD.md](MODEL_BUILD.md) from the installed skill’s `references/` (or this repo’s `skills/hotdata-cli/references/`). Relative links to `MODEL_BUILD.md` below work only while this file lives next to those references; in your project, open that path separately if the link 404s.
+> For a **full** build (per-table detail, connector enrichment, index summary), follow [MODEL_BUILD.md](MODEL_BUILD.md) from the installed skill’s `references/` (or this repo’s `skills/hotdata/references/`). Relative links to `MODEL_BUILD.md` below work only while this file lives next to those references; in your project, open that path separately if the link 404s.
 
 **Workspace (Hotdata):** `<workspace name or id>`  
 **Last catalog refresh:** `<YYYY-MM-DD>`

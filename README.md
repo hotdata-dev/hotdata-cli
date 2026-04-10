@@ -71,6 +71,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `indexes` | `list`, `create` | Manage indexes on a table |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
+| `sessions` | `list`, `new`, `set`, `update`, `run` | Manage work sessions |
 | `skills` | `install`, `status` | Manage the hotdata-cli agent skill |
 
 ## Global options
@@ -224,6 +225,32 @@ hotdata jobs <job_id> [--workspace-id <id>] [--format table|json|yaml]
 - `list` shows only active jobs (`pending` and `running`) by default. Use `--all` to see all jobs.
 - `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `create_index`.
 - `--status` accepts: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
+
+## Sessions
+
+Sessions group related CLI activity (queries, dataset operations, etc.) under a single context.
+
+```sh
+hotdata sessions list [-w <id>] [-o table|json|yaml]
+hotdata sessions <session_id> [-w <id>] [-o table|json|yaml]
+hotdata sessions new [--name "My Session"] [-o table|json|yaml]
+hotdata sessions set [<session_id>]
+hotdata sessions update [<session_id>] [--name "New Name"] [--markdown "..."] [-o table|json|yaml]
+hotdata sessions run <cmd> [args...]
+hotdata sessions <session_id> run <cmd> [args...]
+```
+
+- `list` shows all sessions with a `*` marker on the active one.
+- `new` creates a session and sets it as active.
+- `set` switches the active session. Omit the ID to clear the active session.
+- `update` modifies the name or markdown of a session (defaults to the active session).
+- `run` launches a command with `HOTDATA_SESSION` and `HOTDATA_WORKSPACE` set in the environment. Creates a new session unless a session ID is provided before `run`.
+- Nesting `sessions run` inside an existing session is not allowed — the CLI will exit with an error.
+
+| Variable | Description |
+| :-- | :-- |
+| `HOTDATA_SESSION` | Set automatically by `sessions run`. Attaches all CLI operations to a session. |
+| `HOTDATA_WORKSPACE` | Set automatically by `sessions run`. Locks the workspace for the duration. |
 
 ## Configuration
 

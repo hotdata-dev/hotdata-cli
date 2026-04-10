@@ -75,7 +75,7 @@ pub enum Commands {
         command: TablesCommands,
     },
 
-    /// Manage the hotdata-cli agent skill
+    /// Manage the hotdata agent skill
     Skills {
         #[command(subcommand)]
         command: SkillCommands,
@@ -446,13 +446,13 @@ pub enum ConnectionsCommands {
 
 #[derive(Subcommand)]
 pub enum SkillCommands {
-    /// Install or update the hotdata-cli skill into agent directories
+    /// Install or update the hotdata skill into agent directories
     Install {
         /// Install into the current project directory instead of globally
         #[arg(long)]
         project: bool,
     },
-    /// Show the installation status of the hotdata-cli skill
+    /// Show the installation status of the hotdata skill
     Status,
 }
 
