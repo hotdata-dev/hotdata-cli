@@ -17,7 +17,7 @@
 **Homebrew**
 
 ```sh
-brew install hotdata-dev/tap/hotdata-cli
+brew install hotdata-dev/tap/cli
 ```
 
 **Binary (macOS, Linux)**
