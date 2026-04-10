@@ -1,3 +1,21 @@
+## [0.1.9] - 2026-04-10
+
+### 🚀 Features
+
+- *(sessions)* Add session command feature
+
+### 🐛 Bug Fixes
+
+- *(security)* Update tar from 0.4.44 to 0.4.45
+- *(ci)* Update workflow actions for Node.js 24 compatibility
+- *(ci)* Revert release.yml (cargo-dist managed)
+- *(ci)* SHA-pin codecov-action for consistency
+- *(ci)* Keep create-github-app-token at v1 to avoid breaking changes
+
+### 📚 Documentation
+
+- *(skill)* Document results list, connections refresh, queries update flags
+- *(skill)* Workflows, references, and SKILL alignment
 ## [0.1.8] - 2026-04-03
 
 ### 🐛 Bug Fixes
