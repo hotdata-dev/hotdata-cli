@@ -86,6 +86,11 @@ fn check_session_lock() {
 }
 
 pub fn find_session_run_ancestor() -> Option<sysinfo::Pid> {
+    static CACHED: std::sync::OnceLock<Option<sysinfo::Pid>> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(find_session_run_ancestor_inner)
+}
+
+fn find_session_run_ancestor_inner() -> Option<sysinfo::Pid> {
     use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
     let sys = System::new_with_specifics(
@@ -174,6 +179,7 @@ pub fn update(workspace_id: &str, session_id: &str, name: Option<&str>, markdown
 }
 
 pub fn run(session_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd: &[String]) {
+    check_session_lock();
     let sid = match session_id {
         Some(id) => {
             // Verify the session exists
@@ -209,6 +215,23 @@ pub fn run(session_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd
             eprintln!("error: failed to execute '{}': {e}", cmd[0]);
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_session_run_ancestor_returns_none_in_test() {
+        // No `hotdata sessions run` ancestor exists in the test runner
+        assert!(find_session_run_ancestor_inner().is_none());
+    }
+
+    #[test]
+    fn find_session_run_ancestor_cached_matches_inner() {
+        // The cached version should agree with the inner function
+        assert_eq!(find_session_run_ancestor(), find_session_run_ancestor_inner());
     }
 }
 
