@@ -72,7 +72,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
 | `sessions` | `list`, `new`, `set`, `read`, `update`, `run` | Manage work sessions |
-| `skills` | `install`, `status` | Manage the hotdata-cli agent skill |
+| `skills` | `install`, `status` | Manage the hotdata agent skill |
 
 ## Global options
 
