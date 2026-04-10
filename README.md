@@ -244,13 +244,7 @@ hotdata sessions <session_id> run <cmd> [args...]
 - `new` creates a session and sets it as active.
 - `set` switches the active session. Omit the ID to clear the active session.
 - `update` modifies the name or markdown of a session (defaults to the active session).
-- `run` launches a command with `HOTDATA_SESSION` and `HOTDATA_WORKSPACE` set in the environment. Creates a new session unless a session ID is provided before `run`.
-- Nesting `sessions run` inside an existing session is not allowed — the CLI will exit with an error.
-
-| Variable | Description |
-| :-- | :-- |
-| `HOTDATA_SESSION` | Set automatically by `sessions run`. Attaches all CLI operations to a session. |
-| `HOTDATA_WORKSPACE` | Set automatically by `sessions run`. Locks the workspace for the duration. |
+- `run` runs a command with the hotdata CLI sandboxed in a session. Creates a new session unless a session ID is provided before `run`. Useful for launching an agent that can only access session data. Nesting sessions is not allowed.
 
 ## Configuration
 
