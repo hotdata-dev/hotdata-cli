@@ -5,11 +5,11 @@ use std::fs;
 use std::path::PathBuf;
 
 const REPO: &str = "hotdata-dev/hotdata-cli";
-const SKILL_NAME: &str = "hotdata-cli";
+const SKILL_NAME: &str = "hotdata";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Agent root directories to check for symlink installation.
-/// If the root dir exists, we create <root>/skills/hotdata-cli -> ~/.agents/skills/hotdata-cli
+/// If the root dir exists, we create <root>/skills/hotdata -> ~/.agents/skills/hotdata
 const AGENT_ROOTS: &[&str] = &[".claude", ".pi"];
 
 fn home_dir() -> PathBuf {
@@ -19,13 +19,13 @@ fn home_dir() -> PathBuf {
         .to_path_buf()
 }
 
-/// The canonical install location: ~/.agents/skills/hotdata-cli
-/// Source of truth: ~/.hotdata/skills/hotdata-cli
+/// The canonical install location: ~/.agents/skills/hotdata
+/// Source of truth: ~/.hotdata/skills/hotdata
 fn skill_store_path() -> PathBuf {
     home_dir().join(".hotdata").join("skills").join(SKILL_NAME)
 }
 
-/// Canonical agents layer: ~/.agents/skills/hotdata-cli
+/// Canonical agents layer: ~/.agents/skills/hotdata
 fn agents_skill_path() -> PathBuf {
     home_dir().join(".agents").join("skills").join(SKILL_NAME)
 }
@@ -185,11 +185,11 @@ fn ensure_symlinks() -> Vec<(String, PathBuf, Result<bool, String>)> {
     let agents_path = agents_skill_path();
     let mut results = Vec::new();
 
-    // First: ~/.agents/skills/hotdata-cli -> ~/.hotdata/skills/hotdata-cli
+    // First: ~/.agents/skills/hotdata -> ~/.hotdata/skills/hotdata
     let agents_result = ensure_symlink_or_copy(&store_path, &agents_path);
     results.push(("~/.agents".to_string(), agents_path.clone(), agents_result));
 
-    // Then: each detected agent root -> ~/.agents/skills/hotdata-cli
+    // Then: each detected agent root -> ~/.agents/skills/hotdata
     for (root, link_path) in detected_agent_skill_paths() {
         let result = ensure_symlink_or_copy(&agents_path, &link_path);
         results.push((format!("~/{root}"), link_path, result));
@@ -228,7 +228,7 @@ pub fn install_project() {
     let cwd = std::env::current_dir().expect("could not determine current directory");
     let project_agents = cwd.join(".agents").join("skills").join(SKILL_NAME);
 
-    // Always copy (not symlink) from store to .agents/skills/hotdata-cli
+    // Always copy (not symlink) from store to .agents/skills/hotdata
     if project_agents.exists() {
         fs::remove_dir_all(&project_agents).unwrap_or_else(|e| {
             eprintln!(
@@ -257,7 +257,7 @@ pub fn install_project() {
     );
     println!("{:<20}{}", "Location:", rel_agents.display().to_string().cyan());
 
-    // For .claude and .pi in cwd: symlink (fallback copy) from .agents/skills/hotdata-cli
+    // For .claude and .pi in cwd: symlink (fallback copy) from .agents/skills/hotdata
     for root in AGENT_ROOTS {
         let root_path = cwd.join(root);
         if root_path.exists() {
@@ -290,7 +290,7 @@ pub fn install() {
                 true
             }
             None => {
-                println!("Installing hotdata-cli skill v{current}...");
+                println!("Installing hotdata skill v{current}...");
                 true
             }
         }
@@ -305,7 +305,7 @@ pub fn install() {
                 true
             }
             None => {
-                println!("Installing hotdata-cli skill v{current}...");
+                println!("Installing hotdata skill v{current}...");
                 true
             }
         }

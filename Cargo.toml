@@ -45,7 +45,7 @@ tempfile = "3"
 pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}" ]
 publish = false
 pre-release-replacements = [
-  { file = "skills/hotdata-cli/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
+  { file = "skills/hotdata/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   { file = "README.md", search = "version-[0-9.]+-blue", replace = "version-{{version}}-blue", exactly = 1 },
 ]
 

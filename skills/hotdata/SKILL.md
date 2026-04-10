@@ -1,6 +1,6 @@
 ---
-name: hotdata-cli
-description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, manage saved queries, search tables, manage indexes, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list saved queries", "run a saved query", or asks you to use the hotdata CLI.
+name: hotdata
+description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, manage saved queries, search tables, manage indexes, manage sessions, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list saved queries", "run a saved query", "list sessions", "create a session", "run a session", or asks you to use the hotdata CLI.
 version: 0.1.8
 ---
 
@@ -275,6 +275,69 @@ hotdata auth                # Browser-based login
 hotdata auth status         # Check current auth status
 hotdata auth logout         # Remove saved auth for the default profile
 ```
+
+### Sessions
+
+Sessions are for **ad-hoc, exploratory work** that does not need to be long-lived. They group related CLI activity (queries, dataset operations, etc.) under a single context so it can be tracked and cleaned up together. **Datasets created inside a session are tied to that session and will be removed when the session ends.** If you need data to persist beyond the session, create datasets outside of a session context.
+
+> **IMPORTANT: If `HOTDATA_SESSION` is set in the environment, you are inside an active session. NEVER attempt to unset, override, or work around this variable. Do not clear it, do not start a new session, do not run `sessions run` or `sessions new` or `sessions set`. All your work should be attributed to the current session. Attempting to nest or escape a session will fail with an error.**
+
+```
+hotdata sessions list [-w <workspace_id>] [-o table|json|yaml]
+hotdata sessions <session_id> [-w <workspace_id>] [-o table|json|yaml]
+hotdata sessions new [--name "Session Name"] [-o table|json|yaml]
+hotdata sessions set [<session_id>]
+hotdata sessions read
+hotdata sessions update [<session_id>] [--name "New Name"] [--markdown "..."] [-o table|json|yaml]
+hotdata sessions run <cmd> [args...]
+hotdata sessions <session_id> run <cmd> [args...]
+```
+
+- `list` shows all sessions with a `*` marker on the active one.
+- `new` creates a session and sets it as active. Blocked inside an existing session.
+- `set` switches the active session. Omit the ID to clear. Blocked inside an existing session.
+- `read` prints the markdown content of the current session. Use this to retrieve session state at the start of work or between steps.
+- `update` modifies a session's name or markdown. Defaults to the active session if no ID is given. The `--markdown` field is for writing details about the work being done in the session — observations, intermediate findings, next steps, etc. This state persists for the life of the session and is the primary way to record context that should survive across commands or agent invocations within the session.
+- `run` launches a command with `HOTDATA_SESSION` and `HOTDATA_WORKSPACE` set in the child process environment. Creates a new session unless a session ID is provided before `run`. Blocked inside an existing session.
+- When inside a session (HOTDATA_SESSION is set), all API requests automatically include the session ID — no extra flags needed.
+
+#### Example: Building a data model in a session
+
+Use a session to explore tables and iteratively build a model description in the session markdown.
+
+1. Start a session:
+   ```
+   hotdata sessions new --name "Model: sales pipeline"
+   ```
+2. Inspect tables and columns:
+   ```
+   hotdata tables list --connection-id <connection_id>
+   ```
+3. Run exploratory queries to understand relationships, cardinality, and key columns:
+   ```
+   hotdata query "SELECT DISTINCT status FROM sales.public.deals LIMIT 20"
+   hotdata query "SELECT count(*), count(DISTINCT account_id) FROM sales.public.deals"
+   ```
+4. Write findings into the session markdown as you go:
+   ```
+   hotdata sessions update --markdown "## sales pipeline model
+   
+   ### deals (sales.public.deals)
+   - PK: id
+   - FK: account_id -> accounts.id
+   - status: open | won | lost
+   - ~50k rows, one row per deal
+   
+   ### accounts (sales.public.accounts)
+   - PK: id
+   - name, industry, created_at
+   - ~12k rows, one row per company
+   
+   ### TODO
+   - check how line_items joins to deals
+   - confirm revenue column semantics"
+   ```
+5. Continue exploring and update the markdown as the model takes shape. The markdown is the living artifact — when the session ends, its content captures what was learned.
 
 Other commands (not covered in detail above): `hotdata connections new` (interactive connection wizard), `hotdata skills install|status`, `hotdata completions <bash|zsh|fish>`.
 

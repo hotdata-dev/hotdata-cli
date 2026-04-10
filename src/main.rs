@@ -358,6 +358,20 @@ fn main() {
                             }
                         }
                     }
+                    Some(SessionsCommands::Read) => {
+                        let session_id = id.or_else(|| {
+                            std::env::var("HOTDATA_SESSION").ok()
+                        }).or_else(|| {
+                            config::load("default").ok().and_then(|p| p.session)
+                        });
+                        match session_id {
+                            Some(sid) => sessions::read(&sid, &workspace_id),
+                            None => {
+                                eprintln!("error: no active session. Use 'sessions new' or 'sessions set <id>'.");
+                                std::process::exit(1);
+                            }
+                        }
+                    }
                     Some(SessionsCommands::Set { id: set_id }) => {
                         sessions::set(set_id.as_deref(), &workspace_id)
                     }
