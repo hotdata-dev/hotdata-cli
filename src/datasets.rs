@@ -8,15 +8,23 @@ use std::path::Path;
 struct Dataset {
     id: String,
     label: String,
+    #[serde(default = "default_schema")]
+    schema_name: String,
     table_name: String,
     created_at: String,
     updated_at: String,
+}
+
+fn default_schema() -> String {
+    "main".to_string()
 }
 
 #[derive(Deserialize)]
 struct CreateResponse {
     id: String,
     label: String,
+    #[serde(default = "default_schema")]
+    schema_name: String,
     table_name: String,
 }
 
@@ -231,7 +239,7 @@ fn create_dataset(
     println!("{}", "Dataset created".green());
     println!("id:         {}", dataset.id);
     println!("label:      {}", dataset.label);
-    println!("full_name:  datasets.main.{}", dataset.table_name);
+    println!("full_name:  datasets.{}.{}", dataset.schema_name, dataset.table_name);
 }
 
 pub fn create_from_upload(
@@ -381,7 +389,7 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                 let rows: Vec<Vec<String>> = body.datasets.iter().map(|d| vec![
                     d.id.clone(),
                     d.label.clone(),
-                    format!("datasets.main.{}", d.table_name),
+                    format!("datasets.{}.{}", d.schema_name, d.table_name),
                     crate::util::format_date(&d.created_at),
                 ]).collect();
                 crate::table::print(&["ID", "LABEL", "FULL NAME", "CREATED AT"], &rows);

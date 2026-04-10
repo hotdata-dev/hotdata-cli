@@ -17,6 +17,10 @@ struct ListResponse {
 }
 
 pub fn set(workspace_id: Option<&str>) {
+    if std::env::var("HOTDATA_WORKSPACE").is_ok() || crate::sessions::find_session_run_ancestor().is_some() {
+        eprintln!("error: workspace is locked");
+        std::process::exit(1);
+    }
     let api = ApiClient::new(None);
     let body: ListResponse = api.get("/workspaces");
     let workspaces = body.workspaces;
@@ -68,7 +72,8 @@ pub fn list(format: &str) {
             std::process::exit(1);
         }
     };
-    let default_id = profile_config.workspaces.first().map(|w| w.public_id.as_str()).unwrap_or("").to_string();
+    let default_id = std::env::var("HOTDATA_WORKSPACE")
+        .unwrap_or_else(|_| profile_config.workspaces.first().map(|w| w.public_id.clone()).unwrap_or_default());
 
     let api = ApiClient::new(None);
     let body: ListResponse = api.get("/workspaces");

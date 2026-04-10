@@ -11,6 +11,7 @@ mod jobs;
 mod queries;
 mod query;
 mod results;
+mod sessions;
 mod skill;
 mod table;
 mod tables;
@@ -19,7 +20,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SessionsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -42,6 +43,20 @@ struct Cli {
 }
 
 fn resolve_workspace(provided: Option<String>) -> String {
+    // HOTDATA_WORKSPACE env var takes priority and blocks --workspace-id flag
+    if let Ok(ws) = std::env::var("HOTDATA_WORKSPACE") {
+        if let Some(ref flag) = provided {
+            if flag != &ws {
+                eprintln!("error: cannot override workspace -- locked by HOTDATA_WORKSPACE environment variable ({ws})");
+                std::process::exit(1);
+            }
+        }
+        return ws;
+    }
+    if sessions::find_session_run_ancestor().is_some() {
+        eprintln!("error: workspace has been lost -- restart the process");
+        std::process::exit(1);
+    }
     match config::load("default") {
         Ok(profile) => match config::resolve_workspace_id(provided, &profile) {
             Ok(id) => id,
@@ -315,6 +330,46 @@ fn main() {
                             let mut cmd = Cli::command();
                             cmd.build();
                             cmd.find_subcommand_mut("queries").unwrap().print_help().unwrap();
+                        }
+                    }
+                }
+            }
+            Commands::Sessions { id, workspace_id, output, command } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                match command {
+                    Some(SessionsCommands::Run { name, cmd }) => {
+                        sessions::run(id.as_deref(), &workspace_id, name.as_deref(), &cmd)
+                    }
+                    Some(SessionsCommands::List { output }) => {
+                        sessions::list(&workspace_id, &output)
+                    }
+                    Some(SessionsCommands::New { name, output }) => {
+                        sessions::new(&workspace_id, name.as_deref(), &output)
+                    }
+                    Some(SessionsCommands::Update { id: update_id, name, markdown, output }) => {
+                        let session_id = update_id.or(id).or_else(|| {
+                            config::load("default").ok().and_then(|p| p.session)
+                        });
+                        match session_id {
+                            Some(sid) => sessions::update(&workspace_id, &sid, name.as_deref(), markdown.as_deref(), &output),
+                            None => {
+                                eprintln!("error: no session ID provided and no active session set. Use 'sessions new' or 'sessions set <id>'.");
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Some(SessionsCommands::Set { id: set_id }) => {
+                        sessions::set(set_id.as_deref(), &workspace_id)
+                    }
+                    None => {
+                        match id {
+                            Some(id) => sessions::get(&id, &workspace_id, &output),
+                            None => {
+                                use clap::CommandFactory;
+                                let mut cmd = Cli::command();
+                                cmd.build();
+                                cmd.find_subcommand_mut("sessions").unwrap().print_help().unwrap();
+                            }
                         }
                     }
                 }
