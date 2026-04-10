@@ -71,7 +71,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `indexes` | `list`, `create` | Manage indexes on a table |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
-| `sessions` | `list`, `new`, `set`, `update`, `run` | Manage work sessions |
+| `sessions` | `list`, `new`, `set`, `read`, `update`, `run` | Manage work sessions |
 | `skills` | `install`, `status` | Manage the hotdata-cli agent skill |
 
 ## Global options
@@ -235,6 +235,7 @@ hotdata sessions list [-w <id>] [-o table|json|yaml]
 hotdata sessions <session_id> [-w <id>] [-o table|json|yaml]
 hotdata sessions new [--name "My Session"] [-o table|json|yaml]
 hotdata sessions set [<session_id>]
+hotdata sessions read
 hotdata sessions update [<session_id>] [--name "New Name"] [--markdown "..."] [-o table|json|yaml]
 hotdata sessions run <cmd> [args...]
 hotdata sessions <session_id> run <cmd> [args...]
@@ -243,6 +244,7 @@ hotdata sessions <session_id> run <cmd> [args...]
 - `list` shows all sessions with a `*` marker on the active one.
 - `new` creates a session and sets it as active.
 - `set` switches the active session. Omit the ID to clear the active session.
+- `read` prints the markdown content of the current session.
 - `update` modifies the name or markdown of a session (defaults to the active session).
 - `run` runs a command with the hotdata CLI sandboxed in a session. Creates a new session unless a session ID is provided before `run`. Useful for launching an agent that can only access session data. Nesting sessions is not allowed.
 

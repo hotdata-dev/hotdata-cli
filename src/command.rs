@@ -597,6 +597,9 @@ pub enum SessionsCommands {
         output: String,
     },
 
+    /// Print the markdown content of the current session
+    Read,
+
     /// Set the active session (omit ID to clear)
     Set {
         /// Session ID to set as active (omit to clear)

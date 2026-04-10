@@ -287,6 +287,7 @@ hotdata sessions list [-w <workspace_id>] [-o table|json|yaml]
 hotdata sessions <session_id> [-w <workspace_id>] [-o table|json|yaml]
 hotdata sessions new [--name "Session Name"] [-o table|json|yaml]
 hotdata sessions set [<session_id>]
+hotdata sessions read
 hotdata sessions update [<session_id>] [--name "New Name"] [--markdown "..."] [-o table|json|yaml]
 hotdata sessions run <cmd> [args...]
 hotdata sessions <session_id> run <cmd> [args...]
@@ -295,6 +296,7 @@ hotdata sessions <session_id> run <cmd> [args...]
 - `list` shows all sessions with a `*` marker on the active one.
 - `new` creates a session and sets it as active. Blocked inside an existing session.
 - `set` switches the active session. Omit the ID to clear. Blocked inside an existing session.
+- `read` prints the markdown content of the current session. Use this to retrieve session state at the start of work or between steps.
 - `update` modifies a session's name or markdown. Defaults to the active session if no ID is given. The `--markdown` field is for writing details about the work being done in the session — observations, intermediate findings, next steps, etc. This state persists for the life of the session and is the primary way to record context that should survive across commands or agent invocations within the session.
 - `run` launches a command with `HOTDATA_SESSION` and `HOTDATA_WORKSPACE` set in the child process environment. Creates a new session unless a session ID is provided before `run`. Blocked inside an existing session.
 - When inside a session (HOTDATA_SESSION is set), all API requests automatically include the session ID — no extra flags needed.

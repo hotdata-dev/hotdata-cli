@@ -78,6 +78,17 @@ pub fn get(session_id: &str, workspace_id: &str, format: &str) {
     }
 }
 
+pub fn read(session_id: &str, workspace_id: &str) {
+    let api = ApiClient::new(Some(workspace_id));
+    let path = format!("/sessions/{session_id}");
+    let body: DetailResponse = api.get(&path);
+    if body.session.markdown.is_empty() {
+        eprintln!("{}", "Session markdown is empty.".dark_grey());
+    } else {
+        print!("{}", body.session.markdown);
+    }
+}
+
 fn check_session_lock() {
     if std::env::var("HOTDATA_SESSION").is_ok() || find_session_run_ancestor().is_some() {
         eprintln!("error: session is locked");
