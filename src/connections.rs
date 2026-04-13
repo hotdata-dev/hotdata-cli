@@ -2,6 +2,37 @@ use crate::api::ApiClient;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
+struct HealthResponse {
+    #[allow(dead_code)]
+    connection_id: String,
+    healthy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    latency_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn fetch_health(api: &ApiClient, connection_id: &str, show_spinner: bool) -> HealthResponse {
+    let spinner = show_spinner.then(|| crate::util::spinner("Checking connection health..."));
+    let health: HealthResponse = api.get(&format!("/connections/{connection_id}/health"));
+    if let Some(s) = spinner { s.finish_and_clear(); }
+    health
+}
+
+fn format_health(health: &HealthResponse) -> String {
+    use crossterm::style::Stylize;
+    if health.healthy {
+        match health.latency_ms {
+            Some(ms) => format!("{} {}", "healthy".green(), format!("({ms}ms)").dark_grey()),
+            None => "healthy".green().to_string(),
+        }
+    } else {
+        let err = health.error.as_deref().unwrap_or("unknown error");
+        format!("{} — {}", "unhealthy".red(), err)
+    }
+}
+
+#[derive(Deserialize, Serialize)]
 struct ConnectionType {
     name: String,
     label: String,
@@ -88,11 +119,37 @@ struct ListResponse {
 
 pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
+    let is_table = format == "table";
+
+    let spinner = is_table.then(|| crate::util::spinner("Fetching connection..."));
     let detail: ConnectionDetail = api.get(&format!("/connections/{connection_id}"));
+    if let Some(s) = spinner { s.finish_and_clear(); }
+
+    let health = fetch_health(&api, connection_id, is_table);
 
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&detail).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&detail).unwrap()),
+        "json" => {
+            let combined = serde_json::json!({
+                "id": detail.id,
+                "name": detail.name,
+                "source_type": detail.source_type,
+                "table_count": detail.table_count,
+                "synced_table_count": detail.synced_table_count,
+                "health": &health,
+            });
+            println!("{}", serde_json::to_string_pretty(&combined).unwrap());
+        }
+        "yaml" => {
+            let combined = serde_json::json!({
+                "id": detail.id,
+                "name": detail.name,
+                "source_type": detail.source_type,
+                "table_count": detail.table_count,
+                "synced_table_count": detail.synced_table_count,
+                "health": &health,
+            });
+            print!("{}", serde_yaml::to_string(&combined).unwrap());
+        }
         "table" => {
             use crossterm::style::Stylize;
             let label = |l: &str| format!("{:<16}", l).dark_grey().to_string();
@@ -100,9 +157,20 @@ pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
             println!("{}{}", label("name:"), detail.name.white());
             println!("{}{}", label("source_type:"), detail.source_type.green());
             println!("{}{}", label("tables:"), format!("{} synced / {} total", detail.synced_table_count.to_string().cyan(), detail.table_count.to_string().cyan()));
+            println!("{}{}", label("health:"), format_health(&health));
         }
         _ => unreachable!(),
     }
+}
+
+#[derive(Deserialize, Serialize)]
+struct CreateResponse {
+    id: String,
+    name: String,
+    source_type: String,
+    tables_discovered: u64,
+    discovery_status: String,
+    discovery_error: Option<String>,
 }
 
 pub fn create(
@@ -127,22 +195,53 @@ pub fn create(
     });
 
     let api = ApiClient::new(Some(workspace_id));
+    let is_table = format == "table";
 
-    #[derive(Deserialize, Serialize)]
-    struct CreateResponse {
-        id: String,
-        name: String,
-        source_type: String,
-        tables_discovered: u64,
-        discovery_status: String,
-        discovery_error: Option<String>,
+    let spinner = is_table.then(|| crate::util::spinner("Creating connection..."));
+    let (status, resp_body) = api.post_raw("/connections", &body);
+    if let Some(s) = &spinner { s.finish_and_clear(); }
+
+    if !status.is_success() {
+        use crossterm::style::Stylize;
+        eprintln!("{}", crate::util::api_error(resp_body).red());
+        std::process::exit(1);
     }
 
-    let result: CreateResponse = api.post("/connections", &body);
+    let result: CreateResponse = match serde_json::from_str(&resp_body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let health = fetch_health(&api, &result.id, is_table);
 
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
+        "json" => {
+            let combined = serde_json::json!({
+                "id": result.id,
+                "name": result.name,
+                "source_type": result.source_type,
+                "tables_discovered": result.tables_discovered,
+                "discovery_status": result.discovery_status,
+                "discovery_error": result.discovery_error,
+                "health": &health,
+            });
+            println!("{}", serde_json::to_string_pretty(&combined).unwrap());
+        }
+        "yaml" => {
+            let combined = serde_json::json!({
+                "id": result.id,
+                "name": result.name,
+                "source_type": result.source_type,
+                "tables_discovered": result.tables_discovered,
+                "discovery_status": result.discovery_status,
+                "discovery_error": result.discovery_error,
+                "health": &health,
+            });
+            print!("{}", serde_yaml::to_string(&combined).unwrap());
+        }
         "table" => {
             use crossterm::style::Stylize;
             println!("{}", "Connection created".green());
@@ -156,8 +255,13 @@ pub fn create(
                 _         => result.discovery_status.yellow().to_string(),
             };
             println!("discovery_status:  {status_colored}");
+            println!("health:            {}", format_health(&health));
         }
         _ => unreachable!(),
+    }
+
+    if !health.healthy {
+        std::process::exit(1);
     }
 }
 

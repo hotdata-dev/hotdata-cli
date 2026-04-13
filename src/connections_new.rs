@@ -268,9 +268,37 @@ pub fn run(workspace_id: &str) {
         discovery_error: Option<String>,
     }
 
-    let result: CreateResponse = api.post("/connections", &body);
+    #[derive(serde::Deserialize)]
+    struct HealthResponse {
+        healthy: bool,
+        #[serde(default)]
+        latency_ms: Option<u64>,
+        #[serde(default)]
+        error: Option<String>,
+    }
+
+    let create_spinner = crate::util::spinner("Creating connection...");
+    let (status_code, resp_body) = api.post_raw("/connections", &body);
+    create_spinner.finish_and_clear();
 
     use crossterm::style::Stylize;
+    if !status_code.is_success() {
+        eprintln!("{}", crate::util::api_error(resp_body).red());
+        std::process::exit(1);
+    }
+
+    let result: CreateResponse = match serde_json::from_str(&resp_body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let health_spinner = crate::util::spinner("Checking connection health...");
+    let health: HealthResponse = api.get(&format!("/connections/{}/health", result.id));
+    health_spinner.finish_and_clear();
+
     println!("{}", "Connection created".green());
     println!("id:                {}", result.id);
     println!("name:              {}", result.name);
@@ -282,4 +310,18 @@ pub fn run(workspace_id: &str) {
         _         => result.discovery_status.yellow().to_string(),
     };
     println!("discovery_status:  {status}");
+    let health_str = if health.healthy {
+        match health.latency_ms {
+            Some(ms) => format!("{} {}", "healthy".green(), format!("({ms}ms)").dark_grey()),
+            None => "healthy".green().to_string(),
+        }
+    } else {
+        let err = health.error.as_deref().unwrap_or("unknown error");
+        format!("{} — {}", "unhealthy".red(), err)
+    };
+    println!("health:            {health_str}");
+
+    if !health.healthy {
+        std::process::exit(1);
+    }
 }

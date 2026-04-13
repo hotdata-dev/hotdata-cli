@@ -57,13 +57,7 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
         body["connection_id"] = Value::String(conn.to_string());
     }
 
-    let spinner = indicatif::ProgressBar::new_spinner();
-    spinner.set_style(
-        indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .unwrap(),
-    );
-    spinner.set_message("running query...");
-    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+    let spinner = crate::util::spinner("running query...");
 
     let (status, resp_body) = api.post_raw("/query", &body);
     spinner.finish_and_clear();
