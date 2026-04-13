@@ -78,14 +78,232 @@ pub fn get(session_id: &str, workspace_id: &str, format: &str) {
     }
 }
 
-pub fn read(session_id: &str, workspace_id: &str) {
+/// Resolve which session id to operate on for read-style commands, enforcing
+/// the "can only read the active session" rule. Exits the process with an
+/// error if the rule is violated or no session can be determined.
+pub fn resolve_read_target(requested: Option<String>) -> String {
+    let active = std::env::var("HOTDATA_SESSION").ok()
+        .or_else(|| config::load("default").ok().and_then(|p| p.session));
+    match (active, requested) {
+        (Some(active_sid), Some(req)) if req != active_sid => {
+            eprintln!(
+                "error: cannot read other session while in an active session ({active_sid}).\n\
+                 remove the active session with 'hotdata sessions set', or switch with 'hotdata sessions set <id>'."
+            );
+            std::process::exit(1);
+        }
+        (Some(active_sid), _) => active_sid,
+        (None, Some(req)) => req,
+        (None, None) => {
+            eprintln!("error: no session ID provided and no active session. Provide <id> or use 'sessions new' / 'sessions set <id>'.");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn fetch_session(session_id: &str, workspace_id: &str) -> Session {
     let api = ApiClient::new(Some(workspace_id));
-    let path = format!("/sessions/{session_id}");
-    let body: DetailResponse = api.get(&path);
-    if body.session.markdown.is_empty() {
-        eprintln!("{}", "Session markdown is empty.".dark_grey());
+    let body: DetailResponse = api.get(&format!("/sessions/{session_id}"));
+    body.session
+}
+
+fn print_updated(updated_at: &str) {
+    eprintln!("updated: {updated_at}");
+}
+
+/// Interpret common C-style backslash escapes in CLI input. Lets users (and
+/// agents) pass `\n`, `\t`, `\r`, `\\`, `\"` in a double-quoted shell arg and
+/// get real control characters, matching `echo -e` / JSON conventions.
+/// Unknown escapes (e.g. `\q`) pass through as literal `\q` unchanged.
+fn unescape_cli(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('\'') => out.push('\''),
+            Some('0') => out.push('\0'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod unescape_tests {
+    use super::unescape_cli;
+
+    #[test]
+    fn decodes_standard_escapes() {
+        assert_eq!(unescape_cli(r"a\nb"), "a\nb");
+        assert_eq!(unescape_cli(r"a\r\nb"), "a\r\nb");
+        assert_eq!(unescape_cli(r"\t\\"), "\t\\");
+    }
+
+    #[test]
+    fn passes_unknown_escapes_through() {
+        assert_eq!(unescape_cli(r"\q"), r"\q");
+    }
+
+    #[test]
+    fn handles_trailing_backslash() {
+        assert_eq!(unescape_cli(r"abc\"), r"abc\");
+    }
+}
+
+/// Parse ATX markdown headings (1–6 `#` prefix), skipping fenced code blocks.
+/// Returns (line_number_1_indexed, level, text).
+fn parse_headings(md: &str) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for (i, line) in md.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence { continue; }
+        let level = trimmed.chars().take_while(|c| *c == '#').count();
+        if level == 0 || level > 6 { continue; }
+        let rest = &trimmed[level..];
+        if !rest.is_empty() && !rest.starts_with(' ') { continue; }
+        out.push((i + 1, level, rest.trim().to_string()));
+    }
+    out
+}
+
+/// Locate the start and end line (1-indexed, inclusive) of the section whose
+/// heading text exactly matches `needle`. Section ends just before the next
+/// heading at the same-or-higher level (= smaller or equal `#` count).
+fn find_section(md: &str, needle: &str) -> Option<(usize, usize)> {
+    let headings = parse_headings(md);
+    let idx = headings.iter().position(|(_, _, t)| t == needle)?;
+    let (start, level, _) = &headings[idx];
+    let end = headings[idx + 1..]
+        .iter()
+        .find(|(_, lvl, _)| *lvl <= *level)
+        .map(|(n, _, _)| n - 1)
+        .unwrap_or_else(|| md.lines().count());
+    Some((*start, end))
+}
+
+/// Parse a "--lines A:B" spec into an inclusive 1-indexed range, clamped to
+/// the file length. Empty A -> 1, empty B -> total, negative A -> last N.
+fn parse_line_range(spec: &str, total: usize) -> Result<(usize, usize), String> {
+    let (a, b) = spec.split_once(':').ok_or_else(|| {
+        format!("--lines must be in the form A:B (got {spec:?})")
+    })?;
+    let start = if a.is_empty() {
+        1
+    } else if let Some(n) = a.strip_prefix('-') {
+        let n: usize = n.parse().map_err(|_| format!("invalid start: {a}"))?;
+        total.saturating_sub(n).saturating_add(1).max(1)
     } else {
-        print!("{}", body.session.markdown);
+        a.parse::<usize>().map_err(|_| format!("invalid start: {a}"))?.max(1)
+    };
+    let end = if b.is_empty() {
+        total
+    } else {
+        b.parse::<usize>().map_err(|_| format!("invalid end: {b}"))?
+    };
+    Ok((start, end.min(total)))
+}
+
+fn select_slice(md: &str, lines: Option<&str>, section: Option<&str>) -> String {
+    match (lines, section) {
+        (Some(_), Some(_)) => {
+            eprintln!("error: --lines and --section are mutually exclusive");
+            std::process::exit(1);
+        }
+        (Some(spec), None) => {
+            let total = md.lines().count();
+            match parse_line_range(spec, total) {
+                Ok((start, end)) => slice_inclusive(md, start, end),
+                Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+            }
+        }
+        (None, Some(heading)) => {
+            match find_section(md, heading) {
+                Some((start, end)) => slice_inclusive(md, start, end),
+                None => {
+                    eprintln!("error: no heading matched {heading:?}. Use 'sessions outline' to list headings.");
+                    std::process::exit(1);
+                }
+            }
+        }
+        (None, None) => md.to_string(),
+    }
+}
+
+fn slice_inclusive(md: &str, start: usize, end: usize) -> String {
+    md.lines()
+        .enumerate()
+        .filter(|(i, _)| {
+            let n = i + 1;
+            n >= start && n <= end
+        })
+        .map(|(_, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn read(
+    session_id: &str,
+    workspace_id: &str,
+    lines: Option<&str>,
+    section: Option<&str>,
+    output: &str,
+) {
+    let s = fetch_session(session_id, workspace_id);
+    print_updated(&s.updated_at);
+
+    if s.markdown.is_empty() {
+        eprintln!("{}", "Session markdown is empty.".dark_grey());
+        return;
+    }
+
+    let content = select_slice(&s.markdown, lines, section);
+    if crate::markdown::should_style(output) {
+        crate::markdown::render(&content);
+    } else {
+        print!("{content}");
+        if !content.ends_with('\n') {
+            println!();
+        }
+    }
+}
+
+pub fn outline(session_id: &str, workspace_id: &str, output: &str) {
+    let s = fetch_session(session_id, workspace_id);
+    print_updated(&s.updated_at);
+
+    let headings = parse_headings(&s.markdown);
+    if headings.is_empty() {
+        eprintln!("{}", "No headings found.".dark_grey());
+        return;
+    }
+    let styled = crate::markdown::should_style(output);
+    for (line_num, level, text) in headings {
+        if styled {
+            let line_num_str = format!("{line_num:>4}").dark_grey();
+            let heading = crate::markdown::style_heading(&text, level);
+            println!("{line_num_str}  {heading}");
+        } else {
+            let hashes = "#".repeat(level);
+            println!("{line_num:>4}  {hashes} {text}");
+        }
     }
 }
 
@@ -169,7 +387,9 @@ pub fn update(workspace_id: &str, session_id: &str, name: Option<&str>, markdown
 
     let mut body = serde_json::json!({});
     if let Some(n) = name { body["name"] = serde_json::json!(n); }
-    if let Some(m) = markdown { body["markdown"] = serde_json::json!(m); }
+    if let Some(m) = markdown {
+        body["markdown"] = serde_json::json!(unescape_cli(m));
+    }
 
     let path = format!("/sessions/{session_id}");
     let resp: DetailResponse = api.patch(&path, &body);

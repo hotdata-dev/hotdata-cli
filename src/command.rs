@@ -597,8 +597,37 @@ pub enum SessionsCommands {
         output: String,
     },
 
-    /// Print the markdown content of the current session
-    Read,
+    /// Print the markdown content of a session
+    Read {
+        /// Session ID to read (defaults to the active session).
+        /// When an active session is set, only that session may be read.
+        id: Option<String>,
+
+        /// Line range, e.g. "100:200", ":50" (first 50), "100:" (from 100),
+        /// or "-20:" (last 20). 1-indexed, inclusive on both ends.
+        #[arg(long)]
+        lines: Option<String>,
+
+        /// Read only the matching markdown section (by heading text, exact match).
+        /// Use `sessions outline` to list heading texts.
+        #[arg(long)]
+        section: Option<String>,
+
+        /// Output style: `plain` (raw), `markdown` (ANSI-styled), `auto`
+        /// (styled only when stdout is a TTY).
+        #[arg(long = "output", short = 'o', default_value = "auto", value_parser = ["auto", "plain", "markdown"])]
+        output: String,
+    },
+
+    /// Print a table of contents (heading line numbers + text)
+    Outline {
+        /// Session ID (defaults to the active session)
+        id: Option<String>,
+
+        /// Output style: `plain`, `markdown`, or `auto` (TTY-detect).
+        #[arg(long = "output", short = 'o', default_value = "auto", value_parser = ["auto", "plain", "markdown"])]
+        output: String,
+    },
 
     /// Set the active session (omit ID to clear)
     Set {

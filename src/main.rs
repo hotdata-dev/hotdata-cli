@@ -8,6 +8,7 @@ mod datasets;
 mod embedding;
 mod indexes;
 mod jobs;
+mod markdown;
 mod queries;
 mod query;
 mod results;
@@ -358,19 +359,13 @@ fn main() {
                             }
                         }
                     }
-                    Some(SessionsCommands::Read) => {
-                        let session_id = id.or_else(|| {
-                            std::env::var("HOTDATA_SESSION").ok()
-                        }).or_else(|| {
-                            config::load("default").ok().and_then(|p| p.session)
-                        });
-                        match session_id {
-                            Some(sid) => sessions::read(&sid, &workspace_id),
-                            None => {
-                                eprintln!("error: no active session. Use 'sessions new' or 'sessions set <id>'.");
-                                std::process::exit(1);
-                            }
-                        }
+                    Some(SessionsCommands::Read { id: read_id, lines, section, output }) => {
+                        let target = sessions::resolve_read_target(read_id.or(id));
+                        sessions::read(&target, &workspace_id, lines.as_deref(), section.as_deref(), &output);
+                    }
+                    Some(SessionsCommands::Outline { id: outline_id, output }) => {
+                        let target = sessions::resolve_read_target(outline_id.or(id));
+                        sessions::outline(&target, &workspace_id, &output);
                     }
                     Some(SessionsCommands::Set { id: set_id }) => {
                         sessions::set(set_id.as_deref(), &workspace_id)
