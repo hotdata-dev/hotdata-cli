@@ -277,6 +277,11 @@ pub fn run(workspace_id: &str) {
         error: Option<String>,
     }
 
+    enum HealthStatus {
+        Available(HealthResponse),
+        Unavailable(String),
+    }
+
     let create_spinner = crate::util::spinner("Creating connection...");
     let (status_code, resp_body) = api.post_raw("/connections", &body);
     create_spinner.finish_and_clear();
@@ -296,8 +301,17 @@ pub fn run(workspace_id: &str) {
     };
 
     let health_spinner = crate::util::spinner("Checking connection health...");
-    let health: HealthResponse = api.get(&format!("/connections/{}/health", result.id));
+    let (hstatus, hbody) = api.get_raw(&format!("/connections/{}/health", result.id));
     health_spinner.finish_and_clear();
+
+    let health = if !hstatus.is_success() {
+        HealthStatus::Unavailable(crate::util::api_error(hbody))
+    } else {
+        match serde_json::from_str::<HealthResponse>(&hbody) {
+            Ok(h) => HealthStatus::Available(h),
+            Err(e) => HealthStatus::Unavailable(format!("parse error: {e}")),
+        }
+    };
 
     println!("{}", "Connection created".green());
     println!("id:                {}", result.id);
@@ -310,18 +324,22 @@ pub fn run(workspace_id: &str) {
         _         => result.discovery_status.yellow().to_string(),
     };
     println!("discovery_status:  {status}");
-    let health_str = if health.healthy {
-        match health.latency_ms {
+    let health_str = match &health {
+        HealthStatus::Available(h) if h.healthy => match h.latency_ms {
             Some(ms) => format!("{} {}", "healthy".green(), format!("({ms}ms)").dark_grey()),
             None => "healthy".green().to_string(),
+        },
+        HealthStatus::Available(h) => {
+            let err = h.error.as_deref().unwrap_or("unknown error");
+            format!("{} — {}", "unhealthy".red(), err)
         }
-    } else {
-        let err = health.error.as_deref().unwrap_or("unknown error");
-        format!("{} — {}", "unhealthy".red(), err)
+        HealthStatus::Unavailable(err) => {
+            format!("{} — {}", "unavailable".yellow(), err)
+        }
     };
     println!("health:            {health_str}");
 
-    if !health.healthy {
+    if matches!(&health, HealthStatus::Available(h) if !h.healthy) {
         std::process::exit(1);
     }
 }

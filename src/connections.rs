@@ -12,23 +12,56 @@ struct HealthResponse {
     error: Option<String>,
 }
 
-fn fetch_health(api: &ApiClient, connection_id: &str, show_spinner: bool) -> HealthResponse {
-    let spinner = show_spinner.then(|| crate::util::spinner("Checking connection health..."));
-    let health: HealthResponse = api.get(&format!("/connections/{connection_id}/health"));
-    if let Some(s) = spinner { s.finish_and_clear(); }
-    health
+/// Result of a best-effort health check. Either the endpoint responded with a
+/// parseable body, or it did not — in which case we record why and keep going.
+enum HealthStatus {
+    Available(HealthResponse),
+    Unavailable(String),
 }
 
-fn format_health(health: &HealthResponse) -> String {
+impl HealthStatus {
+    fn is_confirmed_unhealthy(&self) -> bool {
+        matches!(self, HealthStatus::Available(h) if !h.healthy)
+    }
+}
+
+impl Serialize for HealthStatus {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        match self {
+            HealthStatus::Available(h) => h.serialize(ser),
+            HealthStatus::Unavailable(_) => ser.serialize_none(),
+        }
+    }
+}
+
+fn fetch_health(api: &ApiClient, connection_id: &str, show_spinner: bool) -> HealthStatus {
+    let spinner = show_spinner.then(|| crate::util::spinner("Checking connection health..."));
+    let (status, body) = api.get_raw(&format!("/connections/{connection_id}/health"));
+    if let Some(s) = spinner { s.finish_and_clear(); }
+
+    if !status.is_success() {
+        return HealthStatus::Unavailable(crate::util::api_error(body));
+    }
+    match serde_json::from_str::<HealthResponse>(&body) {
+        Ok(h) => HealthStatus::Available(h),
+        Err(e) => HealthStatus::Unavailable(format!("parse error: {e}")),
+    }
+}
+
+fn format_health(health: &HealthStatus) -> String {
     use crossterm::style::Stylize;
-    if health.healthy {
-        match health.latency_ms {
+    match health {
+        HealthStatus::Available(h) if h.healthy => match h.latency_ms {
             Some(ms) => format!("{} {}", "healthy".green(), format!("({ms}ms)").dark_grey()),
             None => "healthy".green().to_string(),
+        },
+        HealthStatus::Available(h) => {
+            let err = h.error.as_deref().unwrap_or("unknown error");
+            format!("{} — {}", "unhealthy".red(), err)
         }
-    } else {
-        let err = health.error.as_deref().unwrap_or("unknown error");
-        format!("{} — {}", "unhealthy".red(), err)
+        HealthStatus::Unavailable(err) => {
+            format!("{} — {}", "unavailable".yellow(), err)
+        }
     }
 }
 
@@ -260,7 +293,7 @@ pub fn create(
         _ => unreachable!(),
     }
 
-    if !health.healthy {
+    if health.is_confirmed_unhealthy() {
         std::process::exit(1);
     }
 }
