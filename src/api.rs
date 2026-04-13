@@ -171,6 +171,24 @@ impl ApiClient {
         }
     }
 
+    /// GET request, exits only on connection error, returns raw (status, body).
+    /// Use for best-effort endpoints (e.g. health checks) where the caller wants
+    /// to handle non-2xx responses gracefully instead of aborting.
+    pub fn get_raw(&self, path: &str) -> (reqwest::StatusCode, String) {
+        let url = format!("{}{path}", self.api_url);
+        self.log_request("GET", &url, None);
+
+        let resp = match self.build_request(reqwest::Method::GET, &url).send() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error connecting to API: {e}");
+                std::process::exit(1);
+            }
+        };
+
+        util::debug_response(resp)
+    }
+
     /// POST request with JSON body, exits on error, returns raw (status, body).
     pub fn post_raw(&self, path: &str, body: &serde_json::Value) -> (reqwest::StatusCode, String) {
         let url = format!("{}{path}", self.api_url);

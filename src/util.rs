@@ -1,4 +1,17 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+/// Create a steady-ticking spinner with a cyan glyph and the given message.
+/// Writes to stderr so stdout (json/yaml output) stays clean.
+pub fn spinner(msg: &str) -> indicatif::ProgressBar {
+    let pb = indicatif::ProgressBar::new_spinner();
+    pb.set_style(
+        indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap(),
+    );
+    pb.set_message(msg.to_string());
+    pb.enable_steady_tick(Duration::from_millis(80));
+    pb
+}
 
 static DEBUG: AtomicBool = AtomicBool::new(false);
 
