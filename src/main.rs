@@ -11,7 +11,7 @@ mod jobs;
 mod queries;
 mod query;
 mod results;
-mod sessions;
+mod sandbox;
 mod skill;
 mod table;
 mod tables;
@@ -20,7 +20,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SessionsCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -35,7 +35,7 @@ struct Cli {
     api_key: Option<String>,
 
     /// Print verbose API request and response details
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     debug: bool,
 
     #[command(subcommand)]
@@ -53,7 +53,7 @@ fn resolve_workspace(provided: Option<String>) -> String {
         }
         return ws;
     }
-    if sessions::find_session_run_ancestor().is_some() {
+    if sandbox::find_sandbox_run_ancestor().is_some() {
         eprintln!("error: workspace has been lost -- restart the process");
         std::process::exit(1);
     }
@@ -313,17 +313,8 @@ fn main() {
                     queries::get(&id, &workspace_id, &output)
                 } else {
                     match command {
-                        Some(QueriesCommands::List { limit, offset, output }) => {
-                            queries::list(&workspace_id, limit, offset, &output)
-                        }
-                        Some(QueriesCommands::Run { id, output }) => {
-                            queries::run(&id, &workspace_id, &output)
-                        }
-                        Some(QueriesCommands::Create { name, sql, description, tags, output }) => {
-                            queries::create(&workspace_id, &name, &sql, description.as_deref(), tags.as_deref(), &output)
-                        }
-                        Some(QueriesCommands::Update { id, name, sql, description, tags, category, table_size, output }) => {
-                            queries::update(&workspace_id, &id, name.as_deref(), sql.as_deref(), description.as_deref(), tags.as_deref(), category.as_deref(), table_size.as_deref(), &output)
+                        Some(QueriesCommands::List { limit, cursor, status, output }) => {
+                            queries::list(&workspace_id, Some(limit), cursor.as_deref(), status.as_deref(), &output)
                         }
                         None => {
                             use clap::CommandFactory;
@@ -334,55 +325,55 @@ fn main() {
                     }
                 }
             }
-            Commands::Sessions { id, workspace_id, output, command } => {
+            Commands::Sandbox { id, workspace_id, output, command } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
-                    Some(SessionsCommands::Run { name, cmd }) => {
-                        sessions::run(id.as_deref(), &workspace_id, name.as_deref(), &cmd)
+                    Some(SandboxCommands::Run { name, cmd }) => {
+                        sandbox::run(id.as_deref(), &workspace_id, name.as_deref(), &cmd)
                     }
-                    Some(SessionsCommands::List { output }) => {
-                        sessions::list(&workspace_id, &output)
+                    Some(SandboxCommands::List { output }) => {
+                        sandbox::list(&workspace_id, &output)
                     }
-                    Some(SessionsCommands::New { name, output }) => {
-                        sessions::new(&workspace_id, name.as_deref(), &output)
+                    Some(SandboxCommands::New { name, output }) => {
+                        sandbox::new(&workspace_id, name.as_deref(), &output)
                     }
-                    Some(SessionsCommands::Update { id: update_id, name, markdown, output }) => {
-                        let session_id = update_id.or(id).or_else(|| {
-                            config::load("default").ok().and_then(|p| p.session)
+                    Some(SandboxCommands::Update { id: update_id, name, markdown, output }) => {
+                        let sandbox_id = update_id.or(id).or_else(|| {
+                            config::load("default").ok().and_then(|p| p.sandbox)
                         });
-                        match session_id {
-                            Some(sid) => sessions::update(&workspace_id, &sid, name.as_deref(), markdown.as_deref(), &output),
+                        match sandbox_id {
+                            Some(sid) => sandbox::update(&workspace_id, &sid, name.as_deref(), markdown.as_deref(), &output),
                             None => {
-                                eprintln!("error: no session ID provided and no active session set. Use 'sessions new' or 'sessions set <id>'.");
+                                eprintln!("error: no sandbox ID provided and no active sandbox set. Use 'sandbox new' or 'sandbox set <id>'.");
                                 std::process::exit(1);
                             }
                         }
                     }
-                    Some(SessionsCommands::Read) => {
-                        let session_id = id.or_else(|| {
-                            std::env::var("HOTDATA_SESSION").ok()
+                    Some(SandboxCommands::Read) => {
+                        let sandbox_id = id.or_else(|| {
+                            std::env::var("HOTDATA_SANDBOX").ok()
                         }).or_else(|| {
-                            config::load("default").ok().and_then(|p| p.session)
+                            config::load("default").ok().and_then(|p| p.sandbox)
                         });
-                        match session_id {
-                            Some(sid) => sessions::read(&sid, &workspace_id),
+                        match sandbox_id {
+                            Some(sid) => sandbox::read(&sid, &workspace_id),
                             None => {
-                                eprintln!("error: no active session. Use 'sessions new' or 'sessions set <id>'.");
+                                eprintln!("error: no active sandbox. Use 'sandbox new' or 'sandbox set <id>'.");
                                 std::process::exit(1);
                             }
                         }
                     }
-                    Some(SessionsCommands::Set { id: set_id }) => {
-                        sessions::set(set_id.as_deref(), &workspace_id)
+                    Some(SandboxCommands::Set { id: set_id }) => {
+                        sandbox::set(set_id.as_deref(), &workspace_id)
                     }
                     None => {
                         match id {
-                            Some(id) => sessions::get(&id, &workspace_id, &output),
+                            Some(id) => sandbox::get(&id, &workspace_id, &output),
                             None => {
                                 use clap::CommandFactory;
                                 let mut cmd = Cli::command();
                                 cmd.build();
-                                cmd.find_subcommand_mut("sessions").unwrap().print_help().unwrap();
+                                cmd.find_subcommand_mut("sandbox").unwrap().print_help().unwrap();
                             }
                         }
                     }

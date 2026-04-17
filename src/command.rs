@@ -159,12 +159,12 @@ pub enum Commands {
         output: String,
     },
 
-    /// Manage saved queries
+    /// Inspect query run history
     Queries {
-        /// Query ID to show details
+        /// Query run ID to show details
         id: Option<String>,
 
-        /// Output format (used with query ID)
+        /// Output format (used with query run ID)
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
 
@@ -172,9 +172,9 @@ pub enum Commands {
         command: Option<QueriesCommands>,
     },
 
-    /// Manage work sessions
-    Sessions {
-        /// Session ID to show details
+    /// Manage sandboxes
+    Sandbox {
+        /// Sandbox ID to show details
         id: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
@@ -186,7 +186,7 @@ pub enum Commands {
         output: String,
 
         #[command(subcommand)]
-        command: Option<SessionsCommands>,
+        command: Option<SandboxCommands>,
     },
 
     /// Generate shell completions
@@ -476,82 +476,19 @@ pub enum ResultsCommands {
 
 #[derive(Subcommand)]
 pub enum QueriesCommands {
-    /// List saved queries
+    /// List query runs
     List {
         /// Maximum number of results
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+
+        /// Pagination cursor from a previous response
         #[arg(long)]
-        limit: Option<u32>,
+        cursor: Option<String>,
 
-        /// Pagination offset
+        /// Filter by status (comma-separated, e.g. running,failed)
         #[arg(long)]
-        offset: Option<u32>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Create a new saved query
-    Create {
-        /// Query name
-        #[arg(long)]
-        name: String,
-
-        /// SQL query string
-        #[arg(long)]
-        sql: String,
-
-        /// Query description
-        #[arg(long)]
-        description: Option<String>,
-
-        /// Comma-separated tags
-        #[arg(long)]
-        tags: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Execute a saved query
-    Run {
-        /// Saved query ID
-        id: String,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
-        output: String,
-    },
-
-    /// Update a saved query
-    Update {
-        /// Saved query ID
-        id: String,
-
-        /// New query name
-        #[arg(long)]
-        name: Option<String>,
-
-        /// New SQL query string
-        #[arg(long)]
-        sql: Option<String>,
-
-        /// New description
-        #[arg(long)]
-        description: Option<String>,
-
-        /// Comma-separated tags
-        #[arg(long)]
-        tags: Option<String>,
-
-        /// Override the auto-detected category (pass empty string to clear)
-        #[arg(long)]
-        category: Option<String>,
-
-        /// User annotation for table size (pass empty string to clear)
-        #[arg(long)]
-        table_size: Option<String>,
+        status: Option<String>,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
@@ -560,17 +497,17 @@ pub enum QueriesCommands {
 }
 
 #[derive(Subcommand)]
-pub enum SessionsCommands {
-    /// List all sessions in a workspace
+pub enum SandboxCommands {
+    /// List all sandboxes in a workspace
     List {
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
     },
 
-    /// Create a new session and set it as active
+    /// Create a new sandbox and set it as active
     New {
-        /// Session name
+        /// Sandbox name
         #[arg(long)]
         name: Option<String>,
 
@@ -579,12 +516,12 @@ pub enum SessionsCommands {
         output: String,
     },
 
-    /// Update a session's markdown or name
+    /// Update a sandbox's markdown or name
     Update {
-        /// Session ID (defaults to active session)
+        /// Sandbox ID (defaults to active sandbox)
         id: Option<String>,
 
-        /// New session name
+        /// New sandbox name
         #[arg(long)]
         name: Option<String>,
 
@@ -597,20 +534,20 @@ pub enum SessionsCommands {
         output: String,
     },
 
-    /// Print the markdown content of the current session
+    /// Print the markdown content of the current sandbox
     Read,
 
-    /// Set the active session (omit ID to clear)
+    /// Set the active sandbox (omit ID to clear)
     Set {
-        /// Session ID to set as active (omit to clear)
+        /// Sandbox ID to set as active (omit to clear)
         id: Option<String>,
     },
 
-    /// Run a command with a hotdata session. Creates a new session unless an ID was provided.
-    /// Example: hotdata sessions run claude
-    /// Example: hotdata sessions <id> run claude
+    /// Run a command inside a hotdata sandbox. Creates a new sandbox unless an ID was provided.
+    /// Example: hotdata sandbox run claude
+    /// Example: hotdata sandbox <id> run claude
     Run {
-        /// Session name (only used when creating a new session)
+        /// Sandbox name (only used when creating a new sandbox)
         #[arg(long)]
         name: Option<String>,
 

@@ -76,14 +76,6 @@ Stable `datasets.main.*` tables built for **Chain** workflows (not necessarily u
 |------------|------------|---------|-------------|
 | | | | |
 
-## Saved query index (Library)
-
-Link business questions to saved queries (ids/names from `hotdata queries list`):
-
-| Question / report | Saved query name | ID (optional) |
-|-------------------|------------------|---------------|
-| | | |
-
 ## Notes
 
 Assumptions, known gaps, and refresh checklist.

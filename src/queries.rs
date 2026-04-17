@@ -1,7 +1,6 @@
 use crate::api::ApiClient;
-use crossterm::style::Stylize;
+use crossterm::style::{Color, Stylize};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS",
@@ -109,114 +108,149 @@ fn highlight_sql(sql: &str) -> String {
 }
 
 #[derive(Deserialize, Serialize)]
-struct SavedQuery {
+struct QueryRun {
     id: String,
-    name: String,
-    description: String,
-    tags: Vec<String>,
-    latest_version: u64,
+    status: String,
     created_at: String,
-    updated_at: String,
-}
-
-#[derive(Deserialize, Serialize)]
-struct SavedQueryDetail {
-    id: String,
-    name: String,
-    description: String,
-    sql: String,
+    completed_at: Option<String>,
+    execution_time_ms: Option<u64>,
+    server_processing_ms: Option<u64>,
+    row_count: Option<u64>,
+    saved_query_id: Option<String>,
+    saved_query_version: Option<u64>,
+    snapshot_id: String,
     sql_hash: String,
-    tags: Vec<String>,
-    latest_version: u64,
-    #[serde(default)]
-    category: Value,
-    #[serde(default)]
-    has_aggregation: Value,
-    #[serde(default)]
-    has_group_by: Value,
-    #[serde(default)]
-    has_join: Value,
-    #[serde(default)]
-    has_limit: Value,
-    #[serde(default)]
-    has_order_by: Value,
-    #[serde(default)]
-    has_predicate: Value,
-    #[serde(default)]
-    num_tables: Value,
-    #[serde(default)]
-    table_size: Value,
-    created_at: String,
-    updated_at: String,
+    sql_text: String,
+    result_id: Option<String>,
+    error_message: Option<String>,
+    warning_message: Option<String>,
+    trace_id: Option<String>,
+    user_public_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct ListResponse {
-    queries: Vec<SavedQuery>,
+    query_runs: Vec<QueryRun>,
     count: u64,
     has_more: bool,
+    next_cursor: Option<String>,
 }
 
-pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
+fn color_status(status: &str) -> String {
+    let color = match status {
+        "succeeded" => Color::Green,
+        "failed" => Color::Red,
+        "running" | "queued" | "pending" => Color::Yellow,
+        _ => Color::Reset,
+    };
+    status.with(color).to_string()
+}
+
+fn truncate_sql(sql: &str, max: usize) -> String {
+    let flat = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        let prefix: String = flat.chars().take(max.saturating_sub(1)).collect();
+        format!("{prefix}…")
+    }
+}
+
+pub fn list(
+    workspace_id: &str,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+    status: Option<&str>,
+    format: &str,
+) {
     let api = ApiClient::new(Some(workspace_id));
+
     let params = [
         ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
+        ("cursor", cursor.map(str::to_string)),
+        ("status", status.map(str::to_string)),
     ];
-    let body: ListResponse = api.get_with_params("/queries", &params);
+    let body: ListResponse = api.get_with_params("/query-runs", &params);
 
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&body.queries).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&body.queries).unwrap()),
+        "json" => println!("{}", serde_json::to_string_pretty(&body.query_runs).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&body.query_runs).unwrap()),
         "table" => {
-            if body.queries.is_empty() {
-                eprintln!("{}", "No saved queries found.".dark_grey());
+            if body.query_runs.is_empty() {
+                eprintln!("{}", "No query runs found.".dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body.queries.iter().map(|q| vec![
-                    q.id.clone(),
-                    q.name.clone(),
-                    q.description.clone(),
-                    q.tags.join(", "),
-                    q.latest_version.to_string(),
-                    crate::util::format_date(&q.updated_at),
+                let rows: Vec<Vec<String>> = body.query_runs.iter().map(|r| vec![
+                    r.id.clone(),
+                    color_status(&r.status),
+                    crate::util::format_date(&r.created_at),
+                    r.execution_time_ms.map(|ms| ms.to_string()).unwrap_or_else(|| "-".to_string()),
+                    r.row_count.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string()),
+                    truncate_sql(&r.sql_text, 60),
                 ]).collect();
-                crate::table::print(&["ID", "NAME", "DESCRIPTION", "TAGS", "VERSION", "UPDATED"], &rows);
+                crate::table::print(&["ID", "STATUS", "CREATED", "DURATION_MS", "ROWS", "SQL"], &rows);
             }
             if body.has_more {
-                let next = offset.unwrap_or(0) + body.count as u32;
-                eprintln!("{}", format!("showing {} results — use --offset {next} for more", body.count).dark_grey());
+                let next = body.next_cursor.as_deref().unwrap_or("");
+                eprintln!("{}", format!("showing {} results — use --cursor {next} for more", body.count).dark_grey());
             }
         }
         _ => unreachable!(),
     }
 }
 
-pub fn get(query_id: &str, workspace_id: &str, format: &str) {
+pub fn get(query_run_id: &str, workspace_id: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    let path = format!("/queries/{query_id}");
-    let q: SavedQueryDetail = api.get(&path);
-    print_detail(&q, format);
+    let path = format!("/query-runs/{query_run_id}");
+    let run: QueryRun = api.get(&path);
+    print_detail(&run, format);
 }
 
-fn print_detail(q: &SavedQueryDetail, format: &str) {
+fn print_detail(r: &QueryRun, format: &str) {
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(q).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(q).unwrap()),
+        "json" => println!("{}", serde_json::to_string_pretty(r).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(r).unwrap()),
         "table" => {
-            let label = |l: &str| format!("{:<12}", l).dark_grey().to_string();
-            println!("{}{}", label("id:"), q.id);
-            println!("{}{}", label("name:"), q.name);
-            println!("{}{}", label("description:"), q.description);
-            println!("{}{}", label("version:"), q.latest_version);
-            if !q.tags.is_empty() {
-                println!("{}{}", label("tags:"), q.tags.join(", "));
+            let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
+            println!("{}{}", label("id:"), r.id);
+            println!("{}{}", label("status:"), color_status(&r.status));
+            println!("{}{}", label("created:"), crate::util::format_date(&r.created_at));
+            if let Some(ref c) = r.completed_at {
+                println!("{}{}", label("completed:"), crate::util::format_date(c));
             }
-            println!("{}{}", label("created:"), crate::util::format_date(&q.created_at));
-            println!("{}{}", label("updated:"), crate::util::format_date(&q.updated_at));
+            if let Some(ms) = r.execution_time_ms {
+                println!("{}{} ms", label("duration:"), ms);
+            }
+            if let Some(ms) = r.server_processing_ms {
+                println!("{}{} ms", label("server time:"), ms);
+            }
+            if let Some(n) = r.row_count {
+                println!("{}{}", label("rows:"), n);
+            }
+            if let Some(ref id) = r.result_id {
+                println!("{}{}", label("result id:"), id);
+            }
+            if let Some(ref id) = r.saved_query_id {
+                let version = r.saved_query_version.map(|v| format!(" (v{v})")).unwrap_or_default();
+                println!("{}{}{}", label("saved query:"), id, version);
+            }
+            println!("{}{}", label("snapshot:"), r.snapshot_id);
+            println!("{}{}", label("sql hash:"), r.sql_hash);
+            if let Some(ref id) = r.trace_id {
+                println!("{}{}", label("trace:"), id);
+            }
+            if let Some(ref id) = r.user_public_id {
+                println!("{}{}", label("user:"), id);
+            }
+            if let Some(ref msg) = r.warning_message {
+                println!("{}{}", label("warning:"), msg.as_str().yellow());
+            }
+            if let Some(ref msg) = r.error_message {
+                println!("{}{}", label("error:"), msg.as_str().red());
+            }
             println!();
             println!("{}", "SQL:".dark_grey());
             let formatted = sqlformat::format(
-                &q.sql,
+                &r.sql_text,
                 &sqlformat::QueryParams::None,
                 &sqlformat::FormatOptions {
                     indent: sqlformat::Indent::Spaces(2),
@@ -229,76 +263,4 @@ fn print_detail(q: &SavedQueryDetail, format: &str) {
         }
         _ => unreachable!(),
     }
-}
-
-fn parse_tags(tags: Option<&str>) -> Option<Vec<&str>> {
-    tags.map(|t| t.split(',').map(str::trim).collect())
-}
-
-pub fn create(
-    workspace_id: &str,
-    name: &str,
-    sql: &str,
-    description: Option<&str>,
-    tags: Option<&str>,
-    format: &str,
-) {
-    let api = ApiClient::new(Some(workspace_id));
-
-    let mut body = serde_json::json!({ "name": name, "sql": sql });
-    if let Some(d) = description { body["description"] = serde_json::json!(d); }
-    if let Some(tags) = parse_tags(tags) { body["tags"] = serde_json::json!(tags); }
-
-    let q: SavedQueryDetail = api.post("/queries", &body);
-
-    println!("{}", "Query created".green());
-    print_detail(&q, format);
-}
-
-pub fn update(
-    workspace_id: &str,
-    id: &str,
-    name: Option<&str>,
-    sql: Option<&str>,
-    description: Option<&str>,
-    tags: Option<&str>,
-    category: Option<&str>,
-    table_size: Option<&str>,
-    format: &str,
-) {
-    if name.is_none() && sql.is_none() && description.is_none() && tags.is_none() && category.is_none() && table_size.is_none() {
-        eprintln!("error: no fields to update. Provide at least one of --name, --sql, --description, --tags, --category, or --table-size.");
-        std::process::exit(1);
-    }
-
-    let api = ApiClient::new(Some(workspace_id));
-
-    let mut body = serde_json::json!({});
-    if let Some(n) = name { body["name"] = serde_json::json!(n); }
-    if let Some(s) = sql { body["sql"] = serde_json::json!(s); }
-    if let Some(d) = description { body["description"] = serde_json::json!(d); }
-    if let Some(tags) = parse_tags(tags) { body["tags"] = serde_json::json!(tags); }
-    match category {
-        Some("") => { body["category_override"] = serde_json::json!(null); }
-        Some(c) => { body["category_override"] = serde_json::json!(c); }
-        None => {}
-    }
-    match table_size {
-        Some("") => { body["table_size_override"] = serde_json::json!(null); }
-        Some(ts) => { body["table_size_override"] = serde_json::json!(ts); }
-        None => {}
-    }
-
-    let path = format!("/queries/{id}");
-    let q: SavedQueryDetail = api.put(&path, &body);
-
-    println!("{}", "Query updated".green());
-    print_detail(&q, format);
-}
-
-pub fn run(query_id: &str, workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let path = format!("/queries/{query_id}/execute");
-    let result: crate::query::QueryResponse = api.post_empty(&path);
-    crate::query::print_result(&result, format);
 }

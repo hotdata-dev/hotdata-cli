@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, manage saved queries, search tables, manage indexes, manage sessions, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list saved queries", "run a saved query", "list sessions", "create a session", "run a session", or asks you to use the hotdata CLI.
+description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, inspect query run history, search tables, manage indexes, manage sandboxes, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list query runs", "list past queries", "query history", "list sandboxes", "create a sandbox", "run a sandbox", or asks you to use the hotdata CLI.
 version: 0.1.9
 ---
 
@@ -29,13 +29,12 @@ API URL defaults to `https://api.hotdata.dev/v1` or overridden via `HOTDATA_API_
 
 All commands that accept `--workspace-id` are optional. If omitted, the active workspace is used. Use `hotdata workspaces set` to switch the active workspace interactively, or pass a workspace ID directly: `hotdata workspaces set <workspace_id>`. The active workspace is shown with a `*` marker in `hotdata workspaces list`. **Omit `--workspace-id` unless you need to target a specific workspace.**
 
-## Multi-step workflows (Model, Library, History, Chain, Indexes)
+## Multi-step workflows (Model, History, Chain, Indexes)
 
 These are **patterns** built from the commands below—not separate CLI subcommands:
 
 - **Model** — Markdown semantic map of your workspace (entities, keys, joins). Refresh using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** modeling pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
-- **Library** — Curated **`hotdata queries`** entries for repeatable SQL (`queries create`, `queries run`, …).
-- **History** — Find prior **`hotdata results`** and saved queries (`results list`, `results <id>`, `queries list`).
+- **History** — Inspect prior activity via `hotdata queries list` (query runs) and `hotdata results list` / `results <id>` (row data).
 - **Chain** — Follow-ups via **`datasets create`** then `query` against `datasets.main.<table>`.
 - **Indexes** — Review SQL and schema, compare to existing indexes, create **sorted**, **bm25**, or **vector** indexes when it clearly helps; see [references/WORKFLOWS.md](references/WORKFLOWS.md#indexes).
 
@@ -215,21 +214,15 @@ hotdata results <result_id> [-w <workspace_id>] [-o table|json|csv]
 - Query output also includes a `result-id` in the footer (e.g. `[result-id: rslt...]`).
 - **Always use `results list` / `results <id>` to retrieve past query results rather than re-running the same query.** Re-running queries wastes resources and may return different results.
 
-### Saved Queries
+### Query Run History
 ```
-hotdata queries list [--limit <int>] [--offset <int>] [--format table|json|yaml]
-hotdata queries <query_id> [--format table|json|yaml]
-hotdata queries create --name "My Query" --sql "SELECT ..." [--description "..."] [--tags "tag1,tag2"] [--format table|json|yaml]
-hotdata queries update <query_id> [--name "New Name"] [--sql "SELECT ..."] [--description "..."] [--tags "tag1,tag2"] [--category "..."] [--table-size "..."] [--format table|json|yaml]
-hotdata queries run <query_id> [--format table|json|csv]
+hotdata queries list [--limit <int>] [--cursor <token>] [--status <csv>] [-o table|json|yaml]
+hotdata queries <query_run_id> [-o table|json|yaml]
 ```
-- `list` shows saved queries with name, description, tags, and version.
-- View a query by ID to see its formatted and syntax-highlighted SQL.
-- `create` requires `--name` and `--sql`. Tags are comma-separated.
-- `update` accepts any combination of `--name`, `--sql`, `--description`, and `--tags` to change those fields.
-- `update` also supports `--category` and `--table-size` for metadata; pass an **empty string** for either flag to clear its value.
-- `run` executes a saved query and displays results like the `query` command.
-- **Use `queries run` instead of re-typing SQL when a saved query exists.**
+- `list` shows query runs with status, creation time, duration, row count, and a truncated SQL preview (default limit 20).
+- `--status` filters by run status (comma-separated, e.g. `--status running,failed`).
+- View a run by ID to see full metadata (timings, `result_id`, snapshot, hashes) and the formatted, syntax-highlighted SQL.
+- If a run has a `result_id`, fetch its rows with `hotdata results <result_id>`.
 
 ### Search
 ```
@@ -276,38 +269,38 @@ hotdata auth status         # Check current auth status
 hotdata auth logout         # Remove saved auth for the default profile
 ```
 
-### Sessions
+### Sandboxes
 
-Sessions are for **ad-hoc, exploratory work** that does not need to be long-lived. They group related CLI activity (queries, dataset operations, etc.) under a single context so it can be tracked and cleaned up together. **Datasets created inside a session are tied to that session and will be removed when the session ends.** If you need data to persist beyond the session, create datasets outside of a session context.
+Sandboxes are for **ad-hoc, exploratory work** that does not need to be long-lived. They group related CLI activity (queries, dataset operations, etc.) under a single context so it can be tracked and cleaned up together. **Datasets created inside a sandbox are tied to that sandbox and will be removed when the sandbox ends.** If you need data to persist beyond the sandbox, create datasets outside of a sandbox context.
 
-> **IMPORTANT: If `HOTDATA_SESSION` is set in the environment, you are inside an active session. NEVER attempt to unset, override, or work around this variable. Do not clear it, do not start a new session, do not run `sessions run` or `sessions new` or `sessions set`. All your work should be attributed to the current session. Attempting to nest or escape a session will fail with an error.**
+> **IMPORTANT: If `HOTDATA_SANDBOX` is set in the environment, you are inside an active sandbox. NEVER attempt to unset, override, or work around this variable. Do not clear it, do not start a new sandbox, do not run `sandbox run` or `sandbox new` or `sandbox set`. All your work should be attributed to the current sandbox. Attempting to nest or escape a sandbox will fail with an error.**
 
 ```
-hotdata sessions list [-w <workspace_id>] [-o table|json|yaml]
-hotdata sessions <session_id> [-w <workspace_id>] [-o table|json|yaml]
-hotdata sessions new [--name "Session Name"] [-o table|json|yaml]
-hotdata sessions set [<session_id>]
-hotdata sessions read
-hotdata sessions update [<session_id>] [--name "New Name"] [--markdown "..."] [-o table|json|yaml]
-hotdata sessions run <cmd> [args...]
-hotdata sessions <session_id> run <cmd> [args...]
+hotdata sandbox list [-w <workspace_id>] [-o table|json|yaml]
+hotdata sandbox <sandbox_id> [-w <workspace_id>] [-o table|json|yaml]
+hotdata sandbox new [--name "Sandbox Name"] [-o table|json|yaml]
+hotdata sandbox set [<sandbox_id>]
+hotdata sandbox read
+hotdata sandbox update [<sandbox_id>] [--name "New Name"] [--markdown "..."] [-o table|json|yaml]
+hotdata sandbox run <cmd> [args...]
+hotdata sandbox <sandbox_id> run <cmd> [args...]
 ```
 
-- `list` shows all sessions with a `*` marker on the active one.
-- `new` creates a session and sets it as active. Blocked inside an existing session.
-- `set` switches the active session. Omit the ID to clear. Blocked inside an existing session.
-- `read` prints the markdown content of the current session. Use this to retrieve session state at the start of work or between steps.
-- `update` modifies a session's name or markdown. Defaults to the active session if no ID is given. The `--markdown` field is for writing details about the work being done in the session — observations, intermediate findings, next steps, etc. This state persists for the life of the session and is the primary way to record context that should survive across commands or agent invocations within the session.
-- `run` launches a command with `HOTDATA_SESSION` and `HOTDATA_WORKSPACE` set in the child process environment. Creates a new session unless a session ID is provided before `run`. Blocked inside an existing session.
-- When inside a session (HOTDATA_SESSION is set), all API requests automatically include the session ID — no extra flags needed.
+- `list` shows all sandboxes with a `*` marker on the active one.
+- `new` creates a sandbox and sets it as active. Blocked inside an existing sandbox.
+- `set` switches the active sandbox. Omit the ID to clear. Blocked inside an existing sandbox.
+- `read` prints the markdown content of the current sandbox. Use this to retrieve sandbox state at the start of work or between steps.
+- `update` modifies a sandbox's name or markdown. Defaults to the active sandbox if no ID is given. The `--markdown` field is for writing details about the work being done in the sandbox — observations, intermediate findings, next steps, etc. This state persists for the life of the sandbox and is the primary way to record context that should survive across commands or agent invocations within the sandbox.
+- `run` launches a command with `HOTDATA_SANDBOX` and `HOTDATA_WORKSPACE` set in the child process environment. Creates a new sandbox unless a sandbox ID is provided before `run`. Blocked inside an existing sandbox.
+- When inside a sandbox (HOTDATA_SANDBOX is set), all API requests automatically include the sandbox ID — no extra flags needed.
 
-#### Example: Building a data model in a session
+#### Example: Building a data model in a sandbox
 
-Use a session to explore tables and iteratively build a model description in the session markdown.
+Use a sandbox to explore tables and iteratively build a model description in the sandbox markdown.
 
-1. Start a session:
+1. Start a sandbox:
    ```
-   hotdata sessions new --name "Model: sales pipeline"
+   hotdata sandbox new --name "Model: sales pipeline"
    ```
 2. Inspect tables and columns:
    ```
@@ -318,9 +311,9 @@ Use a session to explore tables and iteratively build a model description in the
    hotdata query "SELECT DISTINCT status FROM sales.public.deals LIMIT 20"
    hotdata query "SELECT count(*), count(DISTINCT account_id) FROM sales.public.deals"
    ```
-4. Write findings into the session markdown as you go:
+4. Write findings into the sandbox markdown as you go:
    ```
-   hotdata sessions update --markdown "## sales pipeline model
+   hotdata sandbox update --markdown "## sales pipeline model
    
    ### deals (sales.public.deals)
    - PK: id
@@ -337,7 +330,7 @@ Use a session to explore tables and iteratively build a model description in the
    - check how line_items joins to deals
    - confirm revenue column semantics"
    ```
-5. Continue exploring and update the markdown as the model takes shape. The markdown is the living artifact — when the session ends, its content captures what was learned.
+5. Continue exploring and update the markdown as the model takes shape. The markdown is the living artifact — when the sandbox ends, its content captures what was learned.
 
 Other commands (not covered in detail above): `hotdata connections new` (interactive connection wizard), `hotdata skills install|status`, `hotdata completions <bash|zsh|fish>`.
 
