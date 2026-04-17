@@ -1,3 +1,8 @@
+## [0.1.10] - 2026-04-17
+
+### 🐛 Bug Fixes
+
+- *(connections)* Add health check to connection flow
 ## [0.1.9] - 2026-04-10
 
 ### 🚀 Features
