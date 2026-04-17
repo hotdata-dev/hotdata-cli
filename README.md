@@ -66,12 +66,12 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `tables` | `list` | List tables and columns |
 | `datasets` | `list`, `create` | Manage uploaded datasets |
 | `query` | | Execute a SQL query |
-| `queries` | `list`, `create`, `update`, `run` | Manage saved queries |
+| `queries` | `list` | Inspect query run history |
 | `search` | | Full-text search across a table column |
 | `indexes` | `list`, `create` | Manage indexes on a table |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
-| `sessions` | `list`, `new`, `set`, `read`, `update`, `run` | Manage work sessions |
+| `sandbox` | `list`, `new`, `set`, `read`, `update`, `run` | Manage sandboxes |
 | `skills` | `install`, `status` | Manage the hotdata agent skill |
 
 ## Global options
@@ -160,21 +160,17 @@ hotdata query status <query_run_id> [-o table|json|csv]
 - Use `hotdata query status <query_run_id>` to poll for results.
 - Exit codes for `query status`: `0` = succeeded, `1` = failed, `2` = still running (poll again).
 
-## Saved Queries
+## Query Run History
 
 ```sh
-hotdata queries list [--limit <n>] [--offset <n>] [--format table|json|yaml]
-hotdata queries <query_id> [--format table|json|yaml]
-hotdata queries create --name "My Query" --sql "SELECT ..." [--description "..."] [--tags "tag1,tag2"]
-hotdata queries update <query_id> [--name "New Name"] [--sql "SELECT ..."] [--description "..."] [--tags "tag1,tag2"]
-hotdata queries run <query_id> [--format table|json|csv]
+hotdata queries list [--limit <n>] [--cursor <token>] [--status <csv>] [-o table|json|yaml]
+hotdata queries <query_run_id> [-o table|json|yaml]
 ```
 
-- `list` shows saved queries with name, description, tags, and version.
-- View a query by ID to see its formatted and syntax-highlighted SQL.
-- `create` requires `--name` and `--sql`. Tags are comma-separated.
-- `update` accepts any combination of fields to change.
-- `run` executes a saved query and displays results like the `query` command.
+- `list` shows past query executions with status, creation time, duration, row count, and a truncated SQL preview (default limit 20).
+- `--status` filters by run status (comma-separated, e.g. `--status running,failed`).
+- View a run by ID to see full metadata (timings, `result_id`, snapshot, hashes) and the formatted, syntax-highlighted SQL.
+- If a run has a `result_id`, fetch its rows with `hotdata results <result_id>`.
 
 ## Search
 
@@ -226,27 +222,27 @@ hotdata jobs <job_id> [--workspace-id <id>] [--format table|json|yaml]
 - `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `create_index`.
 - `--status` accepts: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 
-## Sessions
+## Sandboxes
 
-Sessions group related CLI activity (queries, dataset operations, etc.) under a single context.
+Sandboxes group related CLI activity (queries, dataset operations, etc.) under a single context.
 
 ```sh
-hotdata sessions list [-w <id>] [-o table|json|yaml]
-hotdata sessions <session_id> [-w <id>] [-o table|json|yaml]
-hotdata sessions new [--name "My Session"] [-o table|json|yaml]
-hotdata sessions set [<session_id>]
-hotdata sessions read
-hotdata sessions update [<session_id>] [--name "New Name"] [--markdown "..."] [-o table|json|yaml]
-hotdata sessions run <cmd> [args...]
-hotdata sessions <session_id> run <cmd> [args...]
+hotdata sandbox list [-w <id>] [-o table|json|yaml]
+hotdata sandbox <sandbox_id> [-w <id>] [-o table|json|yaml]
+hotdata sandbox new [--name "My Sandbox"] [-o table|json|yaml]
+hotdata sandbox set [<sandbox_id>]
+hotdata sandbox read
+hotdata sandbox update [<sandbox_id>] [--name "New Name"] [--markdown "..."] [-o table|json|yaml]
+hotdata sandbox run <cmd> [args...]
+hotdata sandbox <sandbox_id> run <cmd> [args...]
 ```
 
-- `list` shows all sessions with a `*` marker on the active one.
-- `new` creates a session and sets it as active.
-- `set` switches the active session. Omit the ID to clear the active session.
-- `read` prints the markdown content of the current session.
-- `update` modifies the name or markdown of a session (defaults to the active session).
-- `run` runs a command with the hotdata CLI sandboxed in a session. Creates a new session unless a session ID is provided before `run`. Useful for launching an agent that can only access session data. Nesting sessions is not allowed.
+- `list` shows all sandboxes with a `*` marker on the active one.
+- `new` creates a sandbox and sets it as active.
+- `set` switches the active sandbox. Omit the ID to clear the active sandbox.
+- `read` prints the markdown content of the current sandbox.
+- `update` modifies the name or markdown of a sandbox (defaults to the active sandbox).
+- `run` runs a command with the hotdata CLI scoped to a sandbox. Creates a new sandbox unless a sandbox ID is provided before `run`. Useful for launching an agent that can only access sandbox data. Nesting sandboxes is not allowed.
 
 ## Configuration
 

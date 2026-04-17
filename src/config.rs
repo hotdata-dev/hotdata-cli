@@ -107,8 +107,8 @@ pub struct ProfileConfig {
     pub api_key_source: ApiKeySource,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspaces: Vec<WorkspaceEntry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "session")]
+    pub sandbox: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -215,7 +215,7 @@ pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Resul
     write_config(&config_path, &content)
 }
 
-pub fn save_session(profile: &str, session_id: &str) -> Result<(), String> {
+pub fn save_sandbox(profile: &str, sandbox_id: &str) -> Result<(), String> {
     let config_path = config_path()?;
 
     let mut config_file: ConfigFile = if config_path.exists() {
@@ -230,14 +230,14 @@ pub fn save_session(profile: &str, session_id: &str) -> Result<(), String> {
         .profiles
         .entry(profile.to_string())
         .or_default()
-        .session = Some(session_id.to_string());
+        .sandbox = Some(sandbox_id.to_string());
 
     let content = serde_yaml::to_string(&config_file)
         .map_err(|e| format!("error serializing config: {e}"))?;
     write_config(&config_path, &content)
 }
 
-pub fn clear_session(profile: &str) -> Result<(), String> {
+pub fn clear_sandbox(profile: &str) -> Result<(), String> {
     let config_path = config_path()?;
 
     if !config_path.exists() {
@@ -250,7 +250,7 @@ pub fn clear_session(profile: &str) -> Result<(), String> {
         serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
 
     if let Some(entry) = config_file.profiles.get_mut(profile) {
-        entry.session = None;
+        entry.sandbox = None;
     }
 
     let content = serde_yaml::to_string(&config_file)

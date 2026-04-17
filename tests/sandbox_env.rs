@@ -4,48 +4,48 @@ fn hotdata() -> Command {
     Command::new(env!("CARGO_BIN_EXE_hotdata"))
 }
 
-// --- session lock tests ---
+// --- sandbox lock tests ---
 
 #[test]
-fn sessions_run_blocked_when_hotdata_session_set() {
+fn sandbox_run_blocked_when_hotdata_sandbox_set() {
     let output = hotdata()
-        .args(["sessions", "run", "echo", "hi"])
-        .env("HOTDATA_SESSION", "existing-session")
+        .args(["sandbox", "run", "echo", "hi"])
+        .env("HOTDATA_SANDBOX", "existing-sandbox")
         .env("HOTDATA_WORKSPACE", "ws-1")
         .output()
         .unwrap();
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("session is locked"), "stderr: {stderr}");
+    assert!(stderr.contains("sandbox is locked"), "stderr: {stderr}");
 }
 
 #[test]
-fn sessions_new_blocked_when_hotdata_session_set() {
+fn sandbox_new_blocked_when_hotdata_sandbox_set() {
     let output = hotdata()
-        .args(["sessions", "new"])
-        .env("HOTDATA_SESSION", "existing-session")
+        .args(["sandbox", "new"])
+        .env("HOTDATA_SANDBOX", "existing-sandbox")
         .env("HOTDATA_WORKSPACE", "ws-1")
         .output()
         .unwrap();
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("session is locked"), "stderr: {stderr}");
+    assert!(stderr.contains("sandbox is locked"), "stderr: {stderr}");
 }
 
 #[test]
-fn sessions_set_blocked_when_hotdata_session_set() {
+fn sandbox_set_blocked_when_hotdata_sandbox_set() {
     let output = hotdata()
-        .args(["sessions", "set", "some-id"])
-        .env("HOTDATA_SESSION", "existing-session")
+        .args(["sandbox", "set", "some-id"])
+        .env("HOTDATA_SANDBOX", "existing-sandbox")
         .env("HOTDATA_WORKSPACE", "ws-1")
         .output()
         .unwrap();
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("session is locked"), "stderr: {stderr}");
+    assert!(stderr.contains("sandbox is locked"), "stderr: {stderr}");
 }
 
 // --- workspace env lock tests ---
@@ -53,9 +53,9 @@ fn sessions_set_blocked_when_hotdata_session_set() {
 #[test]
 fn workspace_env_blocks_conflicting_flag() {
     let output = hotdata()
-        .args(["sessions", "-w", "other-ws", "list"])
+        .args(["sandbox", "-w", "other-ws", "list"])
         .env("HOTDATA_WORKSPACE", "locked-ws")
-        .env_remove("HOTDATA_SESSION")
+        .env_remove("HOTDATA_SANDBOX")
         .output()
         .unwrap();
 
@@ -72,9 +72,9 @@ fn workspace_env_allows_matching_flag() {
     // When the flag matches the env var, no workspace conflict error.
     // Will fail later on auth, but should NOT fail on workspace lock.
     let output = hotdata()
-        .args(["sessions", "-w", "ws-1", "list"])
+        .args(["sandbox", "-w", "ws-1", "list"])
         .env("HOTDATA_WORKSPACE", "ws-1")
-        .env_remove("HOTDATA_SESSION")
+        .env_remove("HOTDATA_SANDBOX")
         .output()
         .unwrap();
 

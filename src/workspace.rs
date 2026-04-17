@@ -17,7 +17,7 @@ struct ListResponse {
 }
 
 pub fn set(workspace_id: Option<&str>) {
-    if std::env::var("HOTDATA_WORKSPACE").is_ok() || crate::sessions::find_session_run_ancestor().is_some() {
+    if std::env::var("HOTDATA_WORKSPACE").is_ok() || crate::sandbox::find_sandbox_run_ancestor().is_some() {
         eprintln!("error: workspace is locked");
         std::process::exit(1);
     }
