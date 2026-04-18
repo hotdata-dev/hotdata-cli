@@ -1,3 +1,4 @@
+use crate::auth;
 use crate::config;
 use crate::util;
 use crossterm::style::Stylize;
@@ -57,7 +58,9 @@ impl ApiClient {
             headers.push(("X-Workspace-Id", ws.clone()));
         }
         if let Some(ref sid) = self.sandbox_id {
+            // Send both headers during the session→sandbox migration window.
             headers.push(("X-Session-Id", sid.clone()));
+            headers.push(("X-Sandbox-Id", sid.clone()));
         }
         headers
     }
@@ -68,6 +71,19 @@ impl ApiClient {
         util::debug_request(method, url, &header_refs, body);
     }
 
+    /// Prints an error for a non-2xx response and exits. On 4xx, first re-probes
+    /// the API key: if it's actually invalid, a clear re-auth hint is shown
+    /// instead of whatever cryptic body the primary endpoint returned.
+    fn fail_response(&self, status: reqwest::StatusCode, body: String) -> ! {
+        let auth_status = if status.is_client_error() {
+            config::load("default").ok().map(|pc| auth::check_status(&pc))
+        } else {
+            None
+        };
+        eprintln!("{}", format_fail_message(status, &body, auth_status.as_ref()).red());
+        std::process::exit(1);
+    }
+
     fn build_request(&self, method: reqwest::Method, url: &str) -> reqwest::blocking::RequestBuilder {
         let mut req = self.client.request(method, url)
             .header("Authorization", format!("Bearer {}", self.api_key));
@@ -75,7 +91,9 @@ impl ApiClient {
             req = req.header("X-Workspace-Id", ws);
         }
         if let Some(ref sid) = self.sandbox_id {
+            // Send both headers during the session→sandbox migration window.
             req = req.header("X-Session-Id", sid);
+            req = req.header("X-Sandbox-Id", sid);
         }
         req
     }
@@ -99,8 +117,7 @@ impl ApiClient {
 
         let (status, body) = util::debug_response(resp);
         if !status.is_success() {
-            eprintln!("{}", util::api_error(body).red());
-            std::process::exit(1);
+            self.fail_response(status, body);
         }
 
         match serde_json::from_str(&body) {
@@ -127,8 +144,7 @@ impl ApiClient {
 
         let (status, body) = util::debug_response(resp);
         if !status.is_success() {
-            eprintln!("{}", util::api_error(body).red());
-            std::process::exit(1);
+            self.fail_response(status, body);
         }
 
         match serde_json::from_str(&body) {
@@ -158,8 +174,7 @@ impl ApiClient {
 
         let (status, resp_body) = util::debug_response(resp);
         if !status.is_success() {
-            eprintln!("{}", util::api_error(resp_body).red());
-            std::process::exit(1);
+            self.fail_response(status, resp_body);
         }
 
         match serde_json::from_str(&resp_body) {
@@ -226,8 +241,7 @@ impl ApiClient {
 
         let (status, resp_body) = util::debug_response(resp);
         if !status.is_success() {
-            eprintln!("{}", util::api_error(resp_body).red());
-            std::process::exit(1);
+            self.fail_response(status, resp_body);
         }
 
         match serde_json::from_str(&resp_body) {
@@ -268,4 +282,125 @@ impl ApiClient {
         util::debug_response(resp)
     }
 
+}
+
+/// Decide what error text to print for a failed response. Pulled out as a pure
+/// function so the 4xx-to-re-auth-hint logic can be unit-tested without
+/// making real HTTP calls or touching `std::process::exit`.
+fn format_fail_message(
+    status: reqwest::StatusCode,
+    body: &str,
+    auth_status: Option<&auth::AuthStatus>,
+) -> String {
+    if status.is_client_error() {
+        if let Some(auth::AuthStatus::Invalid(_)) = auth_status {
+            return "error: API key is invalid. Run 'hotdata auth' to re-authenticate.".to_string();
+        }
+    }
+    util::api_error(body.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use auth::AuthStatus;
+
+    #[test]
+    fn format_fail_message_401_with_invalid_key_shows_reauth_hint() {
+        let msg = format_fail_message(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "",
+            Some(&AuthStatus::Invalid(401)),
+        );
+        assert!(msg.contains("API key is invalid"));
+        assert!(msg.contains("hotdata auth"));
+    }
+
+    #[test]
+    fn format_fail_message_404_with_invalid_key_shows_reauth_hint() {
+        // This is the user-reported scenario: the server masks an auth failure
+        // behind a 404 with an empty body. The re-auth probe catches it.
+        let msg = format_fail_message(
+            reqwest::StatusCode::NOT_FOUND,
+            "",
+            Some(&AuthStatus::Invalid(401)),
+        );
+        assert!(msg.contains("API key is invalid"), "got: {msg}");
+    }
+
+    #[test]
+    fn format_fail_message_404_with_valid_key_shows_real_error() {
+        // If the auth probe says the key is fine, surface the upstream body.
+        let body = r#"{"error":{"message":"Query run 'qrun_notreal' not found"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::NOT_FOUND,
+            body,
+            Some(&AuthStatus::Authenticated),
+        );
+        assert!(!msg.contains("API key is invalid"));
+        assert!(msg.contains("Query run 'qrun_notreal' not found"));
+    }
+
+    #[test]
+    fn format_fail_message_400_with_valid_key_shows_real_error() {
+        let body = r#"{"error":{"message":"invalid_sql"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::BAD_REQUEST,
+            body,
+            Some(&AuthStatus::Authenticated),
+        );
+        assert_eq!(msg, "invalid_sql");
+    }
+
+    #[test]
+    fn format_fail_message_5xx_never_shows_reauth_hint() {
+        // 5xx is not a client error — the auth probe is not even run, so
+        // `auth_status` is None from the caller and we just surface the body.
+        let msg = format_fail_message(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "server exploded",
+            None,
+        );
+        assert!(!msg.contains("API key is invalid"));
+        assert_eq!(msg, "server exploded");
+    }
+
+    #[test]
+    fn format_fail_message_4xx_connection_error_on_probe_falls_through() {
+        // If the probe itself couldn't reach the API, we can't claim the key
+        // is invalid — surface the original body instead.
+        let body = r#"{"error":{"message":"forbidden"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            Some(&AuthStatus::ConnectionError("tcp reset".to_string())),
+        );
+        assert!(!msg.contains("API key is invalid"));
+        assert_eq!(msg, "forbidden");
+    }
+
+    #[test]
+    fn format_fail_message_4xx_no_probe_result_falls_through() {
+        // Caller couldn't load config (None) — still surface the upstream error.
+        let body = "plain body";
+        let msg = format_fail_message(
+            reqwest::StatusCode::NOT_FOUND,
+            body,
+            None,
+        );
+        assert!(!msg.contains("API key is invalid"));
+        assert_eq!(msg, "plain body");
+    }
+
+    #[test]
+    fn format_fail_message_4xx_authenticated_probe_shows_server_message() {
+        // Valid key but a genuine client error — upstream message wins.
+        let body = r#"{"error":{"message":"workspace_not_found"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::NOT_FOUND,
+            body,
+            Some(&AuthStatus::Authenticated),
+        );
+        assert_eq!(msg, "workspace_not_found");
+    }
 }
