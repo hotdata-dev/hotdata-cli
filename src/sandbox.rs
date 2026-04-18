@@ -14,19 +14,17 @@ struct Sandbox {
 
 #[derive(Deserialize)]
 struct ListResponse {
-    #[serde(rename = "sessions")]
     sandboxes: Vec<Sandbox>,
 }
 
 #[derive(Deserialize)]
 struct DetailResponse {
-    #[serde(rename = "session")]
     sandbox: Sandbox,
 }
 
 pub fn list(workspace_id: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    let body: ListResponse = api.get("/sessions");
+    let body: ListResponse = api.get("/sandboxes");
 
     let current_sandbox = std::env::var("HOTDATA_SANDBOX")
         .ok()
@@ -57,7 +55,7 @@ pub fn list(workspace_id: &str, format: &str) {
 
 pub fn get(sandbox_id: &str, workspace_id: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    let path = format!("/sessions/{sandbox_id}");
+    let path = format!("/sandboxes/{sandbox_id}");
     let body: DetailResponse = api.get(&path);
     let s = &body.sandbox;
 
@@ -82,7 +80,7 @@ pub fn get(sandbox_id: &str, workspace_id: &str, format: &str) {
 
 pub fn read(sandbox_id: &str, workspace_id: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    let path = format!("/sessions/{sandbox_id}");
+    let path = format!("/sandboxes/{sandbox_id}");
     let body: DetailResponse = api.get(&path);
     if body.sandbox.markdown.is_empty() {
         eprintln!("{}", "Sandbox markdown is empty.".dark_grey());
@@ -139,7 +137,7 @@ pub fn new(workspace_id: &str, name: Option<&str>, format: &str) {
         body["name"] = serde_json::json!(n);
     }
 
-    let resp: DetailResponse = api.post("/sessions", &body);
+    let resp: DetailResponse = api.post("/sandboxes", &body);
     let s = &resp.sandbox;
 
     // Set as the active sandbox in config
@@ -173,7 +171,7 @@ pub fn update(workspace_id: &str, sandbox_id: &str, name: Option<&str>, markdown
     if let Some(n) = name { body["name"] = serde_json::json!(n); }
     if let Some(m) = markdown { body["markdown"] = serde_json::json!(m); }
 
-    let path = format!("/sessions/{sandbox_id}");
+    let path = format!("/sandboxes/{sandbox_id}");
     let resp: DetailResponse = api.patch(&path, &body);
     let s = &resp.sandbox;
 
@@ -197,7 +195,7 @@ pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd
         Some(id) => {
             // Verify the sandbox exists
             let api = ApiClient::new(Some(workspace_id));
-            let path = format!("/sessions/{id}");
+            let path = format!("/sandboxes/{id}");
             let _: DetailResponse = api.get(&path);
             id.to_string()
         }
@@ -208,7 +206,7 @@ pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd
             if let Some(n) = name {
                 body["name"] = serde_json::json!(n);
             }
-            let resp: DetailResponse = api.post("/sessions", &body);
+            let resp: DetailResponse = api.post("/sandboxes", &body);
             resp.sandbox.public_id
         }
     };
@@ -254,7 +252,7 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
         Some(id) => {
             // Verify the sandbox exists by fetching it
             let api = ApiClient::new(Some(workspace_id));
-            let path = format!("/sessions/{id}");
+            let path = format!("/sandboxes/{id}");
             let _: DetailResponse = api.get(&path);
 
             if let Err(e) = config::save_sandbox("default", id) {
