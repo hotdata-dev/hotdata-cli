@@ -184,8 +184,16 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
     }
 
     let path = local_md_path(name);
-    let api = ApiClient::new(Some(workspace_id));
 
+    if !dry_run && !force && path.exists() {
+        eprintln!(
+            "{}",
+            format!("error: {} already exists (use --force to overwrite)", path.display()).red()
+        );
+        std::process::exit(1);
+    }
+
+    let api = ApiClient::new(Some(workspace_id));
     let ctx = match fetch_context(&api, name) {
         Ok(c) => c,
         Err(reqwest::StatusCode::NOT_FOUND) => {
@@ -205,14 +213,6 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
             format!("would write {} chars to {}", n_chars, path.display()).dark_grey()
         );
         return;
-    }
-
-    if path.exists() && !force {
-        eprintln!(
-            "{}",
-            format!("error: {} already exists (use --force to overwrite)", path.display()).red()
-        );
-        std::process::exit(1);
     }
 
     if let Some(parent) = path.parent() {
@@ -307,5 +307,34 @@ mod tests {
     #[test]
     fn validate_rejects_dot() {
         assert!(validate_context_stem("foo.md").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_leading_digit() {
+        assert!(validate_context_stem("1abc").is_err());
+    }
+
+    #[test]
+    fn validate_accepts_leading_underscore() {
+        validate_context_stem("_private").unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_max_length() {
+        let s = format!("a{}", "b".repeat(127));
+        assert_eq!(s.len(), 128);
+        validate_context_stem(&s).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_too_long() {
+        let s = format!("a{}", "b".repeat(128));
+        assert_eq!(s.len(), 129);
+        assert!(validate_context_stem(&s).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_reserved_uppercase() {
+        assert!(validate_context_stem("SELECT").is_err());
     }
 }
