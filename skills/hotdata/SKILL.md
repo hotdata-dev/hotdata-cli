@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, inspect query run history, search tables, manage indexes, manage sandboxes, manage workspace context (data model, glossary, and other named Markdown in the context API), sync context with local files via pull/push, or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list query runs", "list past queries", "query history", "list sandboxes", "create a sandbox", "run a sandbox", "workspace context", "pull context", "push context", "data model", or asks you to use the hotdata CLI.
+description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, inspect query run history, search tables, manage indexes, manage sandboxes, manage workspace context and the data model via the context API (`hotdata context`), or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list query runs", "list past queries", "query history", "list sandboxes", "create a sandbox", "run a sandbox", "workspace context", "pull context", "push context", "data model", or asks you to use the hotdata CLI.
 version: 0.1.11
 ---
 
@@ -31,17 +31,19 @@ All commands that accept `--workspace-id` are optional. If omitted, the active w
 
 ## Workspace context (API)
 
-The workspace stores **named Markdown documents** through the Hotdata **context API** (`/v1/context`). The CLI maps each name to a file **`./<NAME>.md`** in the **current working directory** (only for `pull` / `push`; names follow SQL table–identifier rules: ASCII letters, digits, underscore; no dot in the API name; max 128 characters; SQL reserved words are not allowed as names).
+The workspace stores **named Markdown documents** only through the Hotdata **context API** (`/v1/context`). The **authoritative** copy always lives on the server under a **name** (stem) such as `DATAMODEL` or `GLOSSARY`.
 
-**Agents (Claude and similar): use the context API as the canonical store.** Do not assume a data model exists only on disk in the repo.
+The CLI command **`hotdata context push`** reads **`./<NAME>.md`** and **`pull`** writes that file in the **current working directory**—those files exist only as a **transport surface** for the API, not as a second source of truth. **`hotdata context show <name>`** prints Markdown to stdout so agents can read the model **without** any local file. Context names follow SQL table–identifier rules (ASCII letters, digits, underscore; no dot in the API name; max 128 characters; SQL reserved words are not allowed).
 
-1. **Before** planning queries, explaining schema, or making modeling decisions, load what the workspace already has: `hotdata context show DATAMODEL` (and `hotdata context list` to discover other stems such as `GLOSSARY`).
-2. **After** you materially change the data model (or glossary), persist it for the workspace: write or edit `./DATAMODEL.md` in the project directory where CLI commands run, then `hotdata context push DATAMODEL`. If there is no local file yet, create `./DATAMODEL.md` from the template or from `context show` output, then edit and push.
-3. **Optional:** `hotdata context pull DATAMODEL` refreshes `./DATAMODEL.md` from the server; use `--force` if the file already exists.
+**Agents (Claude and similar): treat workspace context as the only store for the data model and shared narrative docs.**
 
-The standard stem for the workspace semantic model is **`DATAMODEL`** (local sync file **`DATAMODEL.md`**). Use additional stems the same way (for example **`GLOSSARY`** ↔ **`GLOSSARY.md`**) for other long-lived narrative context.
+1. **Before** planning queries, explaining schema, or modeling, load the workspace: `hotdata context show DATAMODEL` (and `hotdata context list` for other stems such as `GLOSSARY`). Handle a missing context by starting from [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and pushing when ready.
+2. **After** you change the model, persist it with **`hotdata context push DATAMODEL`**. The CLI requires a local `./DATAMODEL.md` for that step: write the body there (from `context show`, the template, or your edits), then run `push` from the project directory.
+3. Use **`hotdata context pull DATAMODEL`** when you intentionally want a local `./DATAMODEL.md` copy (for example a human editor); it still reflects API state, not a parallel document.
 
-Template and deep modeling procedure still apply to the **content** you store: [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md), [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Keep those documents **out of agent skill install paths**; the authoritative copy for the team should live in **workspace context** (and optionally a synced local file in the repo).
+The standard stem for the workspace semantic model is **`DATAMODEL`**. Add other stems the same way (e.g. **`GLOSSARY`**) for glossary or runbooks.
+
+Use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [references/MODEL_BUILD.md](references/MODEL_BUILD.md) for **what to write inside** the Markdown you store in context. Never put workspace-specific model text inside agent skill install paths—only in **workspace context** (and transient `./<NAME>.md` for push/pull when needed).
 
 ## Multi-step workflows (Model, History, Chain, Indexes)
 
@@ -53,8 +55,6 @@ These are **patterns** built from the commands below—not separate CLI subcomma
 - **Indexes** — Review SQL and schema, compare to existing indexes, create **sorted**, **bm25**, or **vector** indexes when it clearly helps; see [references/WORKFLOWS.md](references/WORKFLOWS.md#indexes).
 
 Full step-by-step procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md).
-
-**Legacy / optional local paths:** Older docs may refer to `DATA_MODEL.md` under `docs/` or the project root. **Going forward, prefer workspace context** (`DATAMODEL` + `context show` / `push` / `pull`). If the user keeps a git-tracked file, treat it as a **synced copy**: `context pull` when starting, `context push` after edits.
 
 ## Available Commands
 
@@ -199,7 +199,7 @@ Use `hotdata datasets <dataset_id>` to look up the `table_name` before writing q
 
 ### Workspace context (named Markdown)
 
-Syncs workspace **context API** documents with **`./<NAME>.md`** in the current directory. See [Workspace context (API)](#workspace-context-api) for agent rules.
+Reads and writes workspace **context API** documents. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Workspace context (API)](#workspace-context-api).
 
 ```
 hotdata context list [-w <workspace_id>] [--prefix <stem>] [-o table|json|yaml]
