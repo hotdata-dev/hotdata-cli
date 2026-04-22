@@ -189,6 +189,16 @@ pub enum Commands {
         command: Option<SandboxCommands>,
     },
 
+    /// Sync workspace text context with local Markdown (`./<NAME>.md` in the current directory)
+    Context {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w', global = true)]
+        workspace_id: Option<String>,
+
+        #[command(subcommand)]
+        command: ContextCommands,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -554,6 +564,50 @@ pub enum SandboxCommands {
         /// Command and arguments to execute
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ContextCommands {
+    /// List named contexts in the workspace
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+
+        /// Only include names starting with this prefix (case-sensitive)
+        #[arg(long)]
+        prefix: Option<String>,
+    },
+
+    /// Print context content to stdout
+    Show {
+        /// Context name (same rules as a SQL table identifier; local file is <NAME>.md)
+        name: String,
+    },
+
+    /// Download context from the workspace to ./<NAME>.md
+    Pull {
+        /// Context name
+        name: String,
+
+        /// Overwrite ./<NAME>.md if it already exists
+        #[arg(long)]
+        force: bool,
+
+        /// Print the target path and size only; do not write a file
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Upload ./<NAME>.md to the workspace as named context
+    Push {
+        /// Context name
+        name: String,
+
+        /// Print what would be sent; do not POST
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 

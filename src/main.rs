@@ -4,6 +4,7 @@ mod command;
 mod config;
 mod connections;
 mod connections_new;
+mod context;
 mod datasets;
 mod embedding;
 mod indexes;
@@ -20,7 +21,7 @@ mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands};
+use command::{AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands, DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -377,6 +378,19 @@ fn main() {
                             }
                         }
                     }
+                }
+            }
+            Commands::Context { workspace_id, command } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                match command {
+                    ContextCommands::List { output, prefix } => {
+                        context::list(&workspace_id, prefix.as_deref(), &output)
+                    }
+                    ContextCommands::Show { name } => context::show(&workspace_id, &name),
+                    ContextCommands::Pull { name, force, dry_run } => {
+                        context::pull(&workspace_id, &name, force, dry_run)
+                    }
+                    ContextCommands::Push { name, dry_run } => context::push(&workspace_id, &name, dry_run),
                 }
             }
             Commands::Completions { shell } => {
