@@ -8,7 +8,7 @@ pub enum Commands {
         command: Option<AuthCommands>,
     },
 
-    /// Upload and query parquet and csv files
+    /// Upload and query Parquet, CSV, and JSON files
     Datasets {
         /// Dataset ID to show details
         id: Option<String>,
