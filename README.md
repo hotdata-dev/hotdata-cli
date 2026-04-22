@@ -65,6 +65,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
 | `tables` | `list` | List tables and columns |
 | `datasets` | `list`, `create` | Manage uploaded datasets |
+| `context` | `list`, `show`, `pull`, `push` | Workspace Markdown context (e.g. data model `DATAMODEL`) via the context API |
 | `query` | | Execute a SQL query |
 | `queries` | `list` | Inspect query run history |
 | `search` | | Full-text search across a table column |
@@ -146,6 +147,22 @@ hotdata datasets create --url "https://example.com/data.parquet" --label "My Dat
 - `--url` imports data directly from a URL (supports csv, json, parquet).
 - Format is auto-detected from file extension or content.
 - Piped stdin is supported: `cat data.csv | hotdata datasets create --label "My Dataset"`
+
+## Workspace context
+
+Named Markdown documents for a workspace (data model, glossary, etc.) are stored in the **context API**. The CLI treats the server as the **source of truth**; local files are only used where the tool requires a path on disk.
+
+```sh
+hotdata context list [-w <id>] [--prefix <stem>] [-o table|json|yaml]
+hotdata context show <name> [-w <id>]
+hotdata context pull <name> [-w <id>] [--force] [--dry-run]
+hotdata context push <name> [-w <id>] [--dry-run]
+```
+
+- **`show`** prints Markdown to stdout (no local file needed). Use this to read the workspace data model in scripts or agents.
+- **`pull`** writes `./<name>.md` in the **current directory** from the API. Refuses to overwrite an existing file unless `--force`.
+- **`push`** reads `./<name>.md` and upserts that name in the workspace. Use after editing the file in your project directory.
+- Names follow SQL identifier rules (ASCII letters, digits, underscore; max 128 characters; SQL reserved words are not allowed). The usual stem for the semantic data model is **`DATAMODEL`** (file **`DATAMODEL.md`** for push/pull only).
 
 ## Query
 
