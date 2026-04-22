@@ -173,7 +173,7 @@ pub fn show(workspace_id: &str, name: &str) {
             );
             std::process::exit(1);
         }
-        Err(_) => unreachable!(),
+        Err(status) => panic!("unexpected error status from fetch_context: {status}"),
     }
 }
 
@@ -203,7 +203,7 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
             );
             std::process::exit(1);
         }
-        Err(_) => unreachable!(),
+        Err(status) => panic!("unexpected error status from fetch_context: {status}"),
     };
 
     let n_chars = ctx.content.chars().count();
@@ -213,13 +213,6 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
             format!("would write {} chars to {}", n_chars, path.display()).dark_grey()
         );
         return;
-    }
-
-    if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            eprintln!("error: could not create directory {}: {e}", parent.display());
-            std::process::exit(1);
-        }
     }
 
     let mut f = fs::File::create(&path).unwrap_or_else(|e| {
