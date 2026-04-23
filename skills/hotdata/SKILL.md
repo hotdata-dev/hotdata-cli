@@ -25,9 +25,17 @@ API key resolution (lowest to highest priority):
 
 API URL defaults to `https://api.hotdata.dev/v1` or overridden via `HOTDATA_API_URL`.
 
+Optional: pass **`--debug`** on any command to print verbose HTTP request/response details.
+
 ## Workspace ID
 
-All commands that accept `--workspace-id` are optional. If omitted, the active workspace is used. Use `hotdata workspaces set` to switch the active workspace interactively, or pass a workspace ID directly: `hotdata workspaces set <workspace_id>`. The active workspace is shown with a `*` marker in `hotdata workspaces list`. **Omit `--workspace-id` unless you need to target a specific workspace.**
+Commands that accept `-w` / `--workspace-id` default to the active workspace from config when omitted. Use `hotdata workspaces set` to switch interactively, or `hotdata workspaces set <workspace_id>` for a direct choice. In `hotdata workspaces list`, the `*` marker labels the **default** workspace the CLI resolves to.
+
+**`hotdata queries` does not take `-w`:** query run history always uses the active workspace—set it with `workspaces set` first if needed.
+
+If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked** to that value: passing a different `-w` / `--workspace-id` is an error, and **`hotdata workspaces set` fails** (“workspace is locked”). **`workspaces set` is also blocked** while the current process was started under **`hotdata sandbox run`** (nested workspace changes are not allowed in that tree).
+
+**Omit `-w` / `--workspace-id` unless you need to target a specific workspace** (and it is not locked by env or session).
 
 ## Workspace context (API)
 
@@ -60,9 +68,9 @@ Full step-by-step procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md)
 
 ### List Workspaces
 ```
-hotdata workspaces list [--format table|json|yaml]
+hotdata workspaces list [-o table|json|yaml]
 ```
-Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_status`.
+Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_status`. Table output marks the default workspace with `*`.
 
 ### List Connections
 ```
@@ -83,15 +91,15 @@ hotdata connections refresh <connection_id> [-w <workspace_id>]
 
 #### Step 1 — Discover available connection types
 ```
-hotdata connections create list [--workspace-id <workspace_id>] [--format table|json|yaml]
+hotdata connections create list [-w <workspace_id>] [-o table|json|yaml]
 ```
 Returns all available connection types with `name` and `label`.
 
 #### Step 2 — Inspect the schema for a specific type
 ```
-hotdata connections create list <name> [--workspace-id <workspace_id>] [--format json]
+hotdata connections create list <name> [-w <workspace_id>] [-o json]
 ```
-Returns `config` and `auth` JSON Schema objects describing all required and optional fields for that connection type. Use `--format json` to get the full schema detail.
+Returns `config` and `auth` JSON Schema objects describing all required and optional fields for that connection type. Use **`-o json`** to get the full schema detail.
 
 - `config` — connection configuration fields (host, port, database, etc.). May be `null` for services that need no configuration.
 - `auth` — authentication fields (password, token, credentials, etc.). May be `null` for services that need no authentication. May be a `oneOf` with multiple authentication method options.
@@ -140,7 +148,7 @@ hotdata connections create \
 
 ### List Tables and Columns
 ```
-hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection_id>] [--schema <pattern>] [--table <pattern>] [--limit <int>] [--cursor <cursor>] [--format table|json|yaml]
+hotdata tables list [-w <workspace_id>] [-c <connection_id>] [--schema <pattern>] [--table <pattern>] [--limit <int>] [--cursor <cursor>] [-o table|json|yaml]
 ```
 - Default format is `table`.
 - **Always use this command to inspect available tables and columns.** Do NOT use the `query` command to query `information_schema` for this purpose.
@@ -156,7 +164,7 @@ Datasets are managed files uploaded to Hotdata and queryable as tables.
 
 #### List datasets
 ```
-hotdata datasets list [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--format table|json|yaml]
+hotdata datasets list [-w <workspace_id>] [--limit <int>] [--offset <int>] [-o table|json|yaml]
 ```
 - Default format is `table`.
 - Returns `id`, `label`, `table_name`, `created_at`.
@@ -164,7 +172,7 @@ hotdata datasets list [--workspace-id <workspace_id>] [--limit <int>] [--offset 
 
 #### Get dataset details
 ```
-hotdata datasets <dataset_id> [--workspace-id <workspace_id>] [--format table|json|yaml]
+hotdata datasets <dataset_id> [-w <workspace_id>] [-o table|json|yaml]
 ```
 - Shows dataset metadata and a full column listing with `name`, `data_type`, `nullable`.
 - Use this to inspect schema before querying.
@@ -175,12 +183,14 @@ hotdata datasets create --label "My Dataset" --file data.csv [--table-name my_da
 hotdata datasets create --label "My Dataset" --sql "SELECT * FROM ..." [--table-name my_dataset] [--workspace-id <workspace_id>]
 hotdata datasets create --label "My Dataset" --query-id <saved_query_id> [--table-name my_dataset] [--workspace-id <workspace_id>]
 hotdata datasets create --label "My Dataset" --url "https://example.com/data.parquet" [--table-name my_dataset] [--workspace-id <workspace_id>]
+hotdata datasets create --label "My Dataset" --upload-id <upload_id> [--format csv|json|parquet] [--table-name my_dataset] [-w <workspace_id>]
 ```
 - `--file` uploads a local file. Omit to pipe data via stdin: `cat data.csv | hotdata datasets create --label "My Dataset"`
 - `--sql` creates a dataset from a SQL query result.
 - `--query-id` creates a dataset from a previously saved query.
 - `--url` imports data directly from a URL (supports csv, json, parquet).
-- `--file`, `--sql`, `--query-id`, and `--url` are mutually exclusive.
+- `--upload-id` uses an upload the API already accepted; **`--format`** (default `csv`) applies only with `--upload-id`.
+- `--file`, `--sql`, `--query-id`, `--url`, and `--upload-id` are mutually exclusive.
 - Format is auto-detected from file extension (`.csv`, `.json`, `.parquet`) or file content.
 - `--label` is optional when `--file` is provided — defaults to the filename without extension. Required for `--sql` and `--query-id`.
 - `--table-name` is optional — derived from the label if omitted.
@@ -251,10 +261,13 @@ hotdata results <result_id> [-w <workspace_id>] [-o table|json|csv]
 hotdata queries list [--limit <int>] [--cursor <token>] [--status <csv>] [-o table|json|yaml]
 hotdata queries <query_run_id> [-o table|json|yaml]
 ```
+These commands use the **active workspace only** (there is no `-w` / `--workspace-id` on `queries`); set the default workspace with `workspaces set` if needed.
 - `list` shows query runs with status, creation time, duration, row count, and a truncated SQL preview (default limit 20).
 - `--status` filters by run status (comma-separated, e.g. `--status running,failed`).
 - View a run by ID to see full metadata (timings, `result_id`, snapshot, hashes) and the formatted, syntax-highlighted SQL.
 - If a run has a `result_id`, fetch its rows with `hotdata results <result_id>`.
+
+To create a dataset from a **saved query** still registered for the workspace, use **`hotdata datasets create --query-id <saved_query_id>`** (this CLI does not expose separate saved-query create/run subcommands).
 
 ### Search
 ```
@@ -286,8 +299,8 @@ hotdata indexes create -c <connection_id> --schema <schema> --table <table> --na
 
 ### Jobs
 ```
-hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status <status>] [--all] [--format table|json|yaml]
-hotdata jobs <job_id> [--workspace-id <workspace_id>] [--format table|json|yaml]
+hotdata jobs list [-w <workspace_id>] [--job-type <type>] [--status <status>] [--all] [--limit <n>] [--offset <n>] [-o table|json|yaml]
+hotdata jobs <job_id> [-w <workspace_id>] [-o table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
 - `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`.
@@ -395,7 +408,7 @@ Other commands (not covered in detail above): `hotdata connections new` (interac
    ```
 2. Inspect the schema for the desired type:
    ```
-   hotdata connections create list <type_name> --format json
+   hotdata connections create list <type_name> -o json
    ```
 3. Collect required config and auth field values from the user or environment. **Never hardcode credentials — use env vars or files.**
 4. Create the connection:
