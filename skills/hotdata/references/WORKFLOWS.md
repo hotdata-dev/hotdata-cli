@@ -1,6 +1,6 @@
 # Hotdata CLI workflows
 
-Procedures for **Model**, **History**, **Chain**, and **Indexes**. These compose existing `hotdata` commands; they are not separate subcommands.
+Procedures for **Model**, **History**, **Chain**, **Indexes**, and **sandboxes with datasets** (see **Sandboxes and datasets**). These compose existing `hotdata` commands; they are not separate subcommands.
 
 ## Where things live
 
@@ -8,7 +8,7 @@ Procedures for **Model**, **History**, **Chain**, and **Indexes**. These compose
 |--------|----------|
 | **Model** | **Workspace context API** — stem **`DATAMODEL`** (`hotdata context show DATAMODEL`, `context push` / `pull` with `./DATAMODEL.md` in the project cwd only as the CLI file surface). Never store workspace-specific model text inside agent skill directories. |
 | **History** | `hotdata queries list` / `queries <query_run_id>` for query runs (execution history); `hotdata results list` / `results <id>` for row data. |
-| **Chain** | Intermediate tables in **`datasets.main.*`**; document stable chains in **workspace context `DATAMODEL`** under **Derived tables (Chain)**. |
+| **Chain** | Intermediate tables in **`datasets.<schema>.<table>`** — usually **`datasets.main.*`** for workspace-wide materializations; **sandbox uploads** use **`datasets.<sandbox_id>.*`** (see **Sandboxes and datasets** below). Document stable chains in **workspace context `DATAMODEL`** under **Derived tables (Chain)**. |
 | **Indexes** | Recommendations and live objects in Hotdata (`indexes list` / `indexes create`). Record rationale in **`DATAMODEL`** (e.g. Search & index summary) or a dedicated context stem if you split concerns. |
 
 ---
@@ -42,6 +42,8 @@ hotdata datasets list
 hotdata datasets <dataset_id>                # schema detail per dataset
 ```
 
+`datasets list` returns **every** dataset in the workspace (no sandbox-only filter). Use the **`FULL NAME`** column (`datasets.<schema>.<table>`): **`main`** in the middle segment is the usual workspace catalog; a value like **`s_…`** is the **sandbox id** for sandbox-scoped datasets.
+
 Use output to update **Connections**, **Tables**, **Columns**, and **Datasets** in **workspace context `DATAMODEL`** (edit via `./DATAMODEL.md` + `hotdata context push DATAMODEL`, or your editor workflow). Optional: small exploratory queries once names are known:
 
 ```bash
@@ -49,6 +51,22 @@ hotdata query "SELECT * FROM <connection>.<schema>.<table> LIMIT 5"
 ```
 
 **Rule:** Use `hotdata tables list` for discovery; do not use `query` against `information_schema` for that (see main skill).
+
+---
+
+## Sandboxes and datasets
+
+Use this when work is isolated in a **sandbox** (exploratory runs, ephemeral datasets).
+
+**Active sandbox vs `sandbox run`:** After `hotdata sandbox new` or `hotdata sandbox set <sandbox_id>`, run **`hotdata datasets create`**, **`hotdata query`**, etc. **directly** — the CLI attaches the sandbox from saved config. **`hotdata sandbox run <cmd>`** (no sandbox id before `run`) **always creates a new sandbox**; it does **not** reuse the active one. To wrap a command in an **existing** sandbox, use **`hotdata sandbox <sandbox_id> run <cmd> [args…]`**.
+
+**Qualified table names:** Workspace-wide dataset tables are typically **`datasets.main.<table_name>`**. Datasets created **inside** a sandbox use **`datasets.<sandbox_id>.<table_name>`**, not `main`. After **`datasets create`**, use the printed **`full_name`**; after **`datasets list`**, use the **`FULL NAME`** column — do not assume `datasets.main` for sandbox data.
+
+**Access:** Queries against sandbox-only tables need sandbox context: **active sandbox in config** (`sandbox set`) **or** commands run under **`hotdata sandbox <sandbox_id> run …`**. Otherwise you may see **access denied**.
+
+**Listing:** `datasets list` does not filter by sandbox; use **`FULL NAME`** to distinguish `…main…` from `…s_…` rows.
+
+**SQL:** Column names from uploads that are not all-lowercase are **case-sensitive** in PostgreSQL; quote with double quotes (e.g. `"CustomerName"`).
 
 ---
 
@@ -68,8 +86,8 @@ hotdata queries <query_run_id>
 ### Results
 
 ```bash
-hotdata results list [-w <workspace_id>] [--limit N] [--offset N]
-hotdata results <result_id> [-w <workspace_id>]
+hotdata results list [--workspace-id <workspace_id>] [--limit N] [--offset N]
+hotdata results <result_id> [--workspace-id <workspace_id>]
 ```
 
 Query footers include a `result-id` when applicable—record it for later, or pick it up from `queries <query_run_id>`. **Prefer `hotdata results <result_id>` over re-running identical heavy SQL.**
@@ -80,7 +98,7 @@ Query footers include a `result-id` when applicable—record it for later, or pi
 
 **Goal:** Follow-up analysis on a **bounded** intermediate without rescanning huge base tables.
 
-**Pattern:** materialize → query `datasets.main.*`.
+**Pattern:** materialize → query using the dataset’s **qualified name** (`datasets.<schema>.<table>`).
 
 1. **Base** — run SQL:
 
@@ -101,14 +119,20 @@ Query footers include a `result-id` when applicable—record it for later, or pi
    hotdata datasets create --label "from saved" --query-id <query_id> [--table-name ...]
    ```
 
-3. **Chain** — query the dataset:
+   Note the **`full_name`** line in the output (e.g. `datasets.main.chain_revenue_slice` or `datasets.s_….…` inside a sandbox).
+
+3. **Chain** — query the dataset using that **`full_name`** (or **`FULL NAME`** from `datasets list`); do not hardcode `datasets.main` if the schema segment is a sandbox id:
 
    ```bash
-   hotdata datasets list                    # find table_name if needed
-   hotdata query "SELECT * FROM datasets.main.<table_name> WHERE ..."
+   hotdata datasets list                    # FULL NAME column: datasets.<schema>.<table>
+   hotdata query "SELECT * FROM datasets.main.<table_name> WHERE ..."   # workspace / no sandbox
+   # Sandbox example (use the actual full_name from create or list):
+   # hotdata query "SELECT * FROM datasets.s_ufmblmvq.<table_name> WHERE ..."
    ```
 
-**Naming:** Prefer predictable `--table-name` values, e.g. `chain_<topic>_<YYYYMMDD>`, and list long-lived chains in **DATAMODEL → Derived tables (Chain)** in workspace context.
+   For **sandbox-scoped** chain tables, ensure an **active sandbox** (`sandbox set`) or run the query inside **`hotdata sandbox <sandbox_id> run hotdata query "…"`**. Quote mixed-case columns: e.g. `"Revenue"`.
+
+**Naming:** Prefer predictable `--table-name` values, e.g. `chain_<topic>_<YYYYMMDD>`, and list long-lived chains in **DATAMODEL → Derived tables (Chain)** in workspace context (record the **full** `datasets.<schema>.<table>` you use in SQL).
 
 ---
 
@@ -138,7 +162,7 @@ High-cardinality **text** columns (`title`, `body`, `description`, …) may warr
 For each `connection.schema.table` you care about:
 
 ```bash
-hotdata indexes list -c <connection_id> --schema <schema> --table <table> [-w <workspace_id>]
+hotdata indexes list --connection-id <connection_id> --schema <schema> --table <table> [--workspace-id <workspace_id>]
 ```
 
 Skip creating a duplicate: same table + overlapping columns + same purpose (e.g. another bm25 on the same column).
@@ -149,15 +173,15 @@ Use stable names (e.g. `idx_<table>_<columns>_<type>`). Examples:
 
 ```bash
 # Sorted (default) — filters, joins, ordering on scalar columns
-hotdata indexes create -c <connection_id> --schema <schema> --table <table> \
+hotdata indexes create --connection-id <connection_id> --schema <schema> --table <table> \
   --name idx_orders_created --columns created_at --type sorted
 
 # BM25 — full-text on one text column (required for bm25_search on that column)
-hotdata indexes create -c <connection_id> --schema <schema> --table <table> \
+hotdata indexes create --connection-id <connection_id> --schema <schema> --table <table> \
   --name idx_posts_body_bm25 --columns body --type bm25
 
 # Vector — embeddings; requires --metric
-hotdata indexes create -c <connection_id> --schema <schema> --table <table> \
+hotdata indexes create --connection-id <connection_id> --schema <schema> --table <table> \
   --name idx_chunks_embedding --columns embedding --type vector --metric l2
 ```
 
@@ -177,5 +201,6 @@ Re-run representative **`hotdata query`** or **`hotdata search`** workloads. Upd
 
 ## Cross-cutting
 
-- **Workspace:** Use active workspace or `-w` / `--workspace-id` when targeting a non-default workspace.
+- **Workspace:** Use active workspace or `--workspace-id` when targeting a non-default workspace.
+- **Sandboxes:** See **Sandboxes and datasets** above (`sandbox run` vs direct commands, `full_name`, access denied without context).
 - **Jobs:** For async work (indexes, some refreshes), `hotdata jobs list` and `hotdata jobs <job_id>`.
