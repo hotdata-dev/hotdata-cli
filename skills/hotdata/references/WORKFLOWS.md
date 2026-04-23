@@ -2,14 +2,14 @@
 
 Procedures for **Model**, **History**, **Chain**, and **Indexes**. These compose existing `hotdata` commands; they are not separate subcommands.
 
-## Where files live
+## Where things live
 
 | Concept | Location |
 |--------|----------|
-| **Model** | Your **project** root or `docs/` (e.g. `DATA_MODEL.md` / `data_model.md`). Never store workspace-specific model text inside agent skill directories. |
+| **Model** | **Workspace context API** — stem **`DATAMODEL`** (`hotdata context show DATAMODEL`, `context push` / `pull` with `./DATAMODEL.md` in the project cwd only as the CLI file surface). Never store workspace-specific model text inside agent skill directories. |
 | **History** | `hotdata queries list` / `queries <query_run_id>` for query runs (execution history); `hotdata results list` / `results <id>` for row data. |
-| **Chain** | Intermediate tables in **`datasets.main.*`**; document stable ones in the Model file under **Derived tables (Chain)**. |
-| **Indexes** | Recommendations and decisions live in Hotdata (`indexes list` / `indexes create`). Optional project log (e.g. `INDEXES.md`) if you track rationale outside the catalog. |
+| **Chain** | Intermediate tables in **`datasets.main.*`**; document stable chains in **workspace context `DATAMODEL`** under **Derived tables (Chain)**. |
+| **Indexes** | Recommendations and live objects in Hotdata (`indexes list` / `indexes create`). Record rationale in **`DATAMODEL`** (e.g. Search & index summary) or a dedicated context stem if you split concerns. |
 
 ---
 
@@ -19,8 +19,9 @@ Procedures for **Model**, **History**, **Chain**, and **Indexes**. These compose
 
 ### Initialize
 
-1. Copy `references/DATA_MODEL.template.md` from this skill bundle to your project as `DATA_MODEL.md` or `docs/DATA_MODEL.md`.
-2. Fill workspace-specific sections as you discover schema.
+1. Use [DATA_MODEL.template.md](DATA_MODEL.template.md) in this skill bundle as the **structure** for what you store in workspace context.
+2. In the **project directory** where you run `hotdata`, create or refresh `./DATAMODEL.md` (from the template, from `hotdata context show DATAMODEL`, or from `hotdata context pull DATAMODEL`), fill workspace-specific sections as you discover schema, then **`hotdata context push DATAMODEL`** so the workspace owns the document.
+3. Agents that skip local files: `hotdata context show DATAMODEL` to read; when updating, write `./DATAMODEL.md` then `hotdata context push DATAMODEL`.
 
 ### Deep model pass (optional)
 
@@ -41,7 +42,7 @@ hotdata datasets list
 hotdata datasets <dataset_id>                # schema detail per dataset
 ```
 
-Use output to update **Connections**, **Tables**, **Columns**, and **Datasets** in the model. Optional: small exploratory queries once names are known:
+Use output to update **Connections**, **Tables**, **Columns**, and **Datasets** in **workspace context `DATAMODEL`** (edit via `./DATAMODEL.md` + `hotdata context push DATAMODEL`, or your editor workflow). Optional: small exploratory queries once names are known:
 
 ```bash
 hotdata query "SELECT * FROM <connection>.<schema>.<table> LIMIT 5"
@@ -107,7 +108,7 @@ Query footers include a `result-id` when applicable—record it for later, or pi
    hotdata query "SELECT * FROM datasets.main.<table_name> WHERE ..."
    ```
 
-**Naming:** Prefer predictable `--table-name` values, e.g. `chain_<topic>_<YYYYMMDD>`, and list long-lived chains in **Model → Derived tables (Chain)**.
+**Naming:** Prefer predictable `--table-name` values, e.g. `chain_<topic>_<YYYYMMDD>`, and list long-lived chains in **DATAMODEL → Derived tables (Chain)** in workspace context.
 
 ---
 
@@ -164,7 +165,7 @@ Large builds: add `--async` and track with **`hotdata jobs list`** / **`hotdata 
 
 ### 4. Verify
 
-Re-run representative **`hotdata query`** or **`hotdata search`** workloads. Update **Model → Search & index summary** (if you maintain a data model doc) so future agents know what exists.
+Re-run representative **`hotdata query`** or **`hotdata search`** workloads. Update **DATAMODEL → Search & index summary** in workspace context (`hotdata context push DATAMODEL` after editing `./DATAMODEL.md`) so future agents see what exists.
 
 ### Guardrails
 
