@@ -47,6 +47,8 @@ require_conventional = false
 split_commits = false
 # An array of regex based parsers to modify commit messages prior to further processing.
 commit_preprocessors = [
+    # Legacy non-conventional commit on main (pre–conventional-commit discipline).
+    { pattern = "^change to sandbox api$", replace = "feat(sandbox): align CLI with updated sandbox API" },
     # Replace issue numbers with link templates to be updated in `changelog.postprocessors`.
     #{ pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](<REPO>/issues/${2}))"},
     # Check spelling of the commit message using https://github.com/crate-ci/typos.
@@ -61,11 +63,15 @@ protect_breaking_commits = false
 commit_parsers = [
     { message = "^feat", group = "<!-- 0 -->🚀 Features" },
     { message = "^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
-    { message = "^doc", group = "<!-- 3 -->📚 Documentation" },
+    { message = "^docs\\(changelog\\)", skip = true },
+    { message = "^docs", group = "<!-- 3 -->📚 Documentation" },
     { message = "^perf", group = "<!-- 4 -->⚡ Performance" },
     { message = "^refactor", group = "<!-- 2 -->🚜 Refactor" },
     { message = "^style", group = "<!-- 5 -->🎨 Styling" },
     { message = "^test", group = "<!-- 6 -->🧪 Testing" },
+    { message = "^chore: Release hotdata-cli version", skip = true },
+    { message = "^chore: bump version", skip = true },
+    { message = "^Merge pull request", skip = true },
     # { message = "^chore\\(release\\): prepare for", skip = true },
     # { message = "^chore\\(deps.*\\)", skip = true },
     # { message = "^chore\\(pr\\)", skip = true },
@@ -73,7 +79,7 @@ commit_parsers = [
     # { message = "^chore|^ci", group = "<!-- 7 -->⚙️ Miscellaneous Tasks" },
     { body = ".*security", group = "<!-- 8 -->🛡️ Security" },
     { message = "^revert", group = "<!-- 9 -->◀️ Revert" },
-    # { message = ".*", group = "<!-- 10 -->💼 Other" },
+    { message = ".*", group = "<!-- 10 -->💼 Other" },
 ]
 # Exclude commits that are not matched by any commit parser.
 filter_commits = true

@@ -42,7 +42,7 @@ mockito = "1"
 tempfile = "3"
 
 [package.metadata.release]
-pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}" ]
+pre-release-hook = ["git-cliff", "-o", "CHANGELOG.md", "--tag", "v{{version}}" ]
 publish = false
 pre-release-replacements = [
   { file = "skills/hotdata/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
