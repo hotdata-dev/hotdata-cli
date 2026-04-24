@@ -8,7 +8,7 @@ Procedures for **Model**, **History**, **Chain**, **Indexes**, and **sandboxes w
 
 | Concept | Location |
 |--------|----------|
-| **Model** | **`context:DATAMODEL`** — workspace context API (`hotdata context show DATAMODEL`, `context push` / `pull` with `./DATAMODEL.md` in the project cwd only as the CLI file surface). Never store workspace-specific model text inside agent skill directories. |
+| **Model** | **`context:DATAMODEL`** — workspace context API (`hotdata context list` then `show` / `pull` / `push` with `./DATAMODEL.md` in the project cwd only as the CLI file surface; **list before `show`** so missing `DATAMODEL` does not error). Never store workspace-specific model text inside agent skill directories. |
 | **History** | `hotdata queries list` / `queries <query_run_id>` for query runs (execution history); `hotdata results list` / `results <id>` for row data. |
 | **Chain** | Intermediate tables in **`datasets.<schema>.<table>`** — usually **`datasets.main.*`** for workspace-wide materializations; **sandbox uploads** use **`datasets.<sandbox_id>.*`** (see **Sandboxes and datasets** below). Document stable chains in **context:DATAMODEL** under **Derived tables (Chain)**. |
 | **Indexes** | Recommendations and live objects in Hotdata (`indexes list` / `indexes create`). Record rationale in **context:DATAMODEL** (e.g. Search & index summary) or a dedicated **context:** stem if you split concerns. |
@@ -22,8 +22,8 @@ Procedures for **Model**, **History**, **Chain**, **Indexes**, and **sandboxes w
 ### Initialize
 
 1. Use [DATA_MODEL.template.md](DATA_MODEL.template.md) in this skill bundle as the **structure** for what you store as **context:DATAMODEL**.
-2. In the **project directory** where you run `hotdata`, create or refresh `./DATAMODEL.md` (from the template, from `hotdata context show DATAMODEL`, or from `hotdata context pull DATAMODEL`), fill workspace-specific sections as you discover schema, then **`hotdata context push DATAMODEL`** so the server owns **context:DATAMODEL**.
-3. Agents that skip local files: `hotdata context show DATAMODEL` to read **context:DATAMODEL**; when updating, write `./DATAMODEL.md` then `hotdata context push DATAMODEL`.
+2. Run **`hotdata context list`**. **Only if** `DATAMODEL` appears, you may use `hotdata context show DATAMODEL` or `pull` to hydrate `./DATAMODEL.md`. If it does **not** appear, start from the template only—**do not** run `show` (it exits 1). In the **project directory** where you run `hotdata`, create or refresh `./DATAMODEL.md`, fill workspace-specific sections as you discover schema, then **`hotdata context push DATAMODEL`** so the server owns **context:DATAMODEL**.
+3. Agents that skip local files: **`context list`** first; **`context show DATAMODEL` only when listed** to read **context:DATAMODEL**; when updating, write `./DATAMODEL.md` then `hotdata context push DATAMODEL`.
 
 ### Deep model pass (optional)
 

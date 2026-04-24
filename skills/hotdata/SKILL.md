@@ -45,9 +45,11 @@ The workspace stores those documents only through the **context API**. The **aut
 
 The CLI command **`hotdata context push`** reads **`./<NAME>.md`** and **`pull`** writes that file in the **current working directory**—those files exist only as a **transport surface** for the API, not as a second source of truth. **`hotdata context show <name>`** prints Markdown to stdout so agents can read **`context:<NAME>`** without any local file. Stems follow SQL table–identifier rules (ASCII letters, digits, underscore; no dot in the API name; max 128 characters; SQL reserved words are not allowed).
 
+> **Agents: do not blindly run `hotdata context show DATAMODEL` on session start.** Run **`hotdata context list`** first (optional `--prefix DATAMODEL`). Call **`hotdata context show DATAMODEL` only if** the list includes the `DATAMODEL` stem. If **`show` exits 1** with *no context named …*, that is **normal** when nothing has been pushed yet—**not a hard failure**; do not retry in a loop, and **avoid speculative `show` in parallel** with other shell tools where one failure cancels sibling calls. Proceed without **context:DATAMODEL** until the user asks to create or load one.
+
 **Agents (Claude and similar):** use workspace context as the only durable store for **context:DATAMODEL**, **context:GLOSSARY**, and any other **`context:<STEM>`** documents you introduce. Keep transient analysis notes in **sandbox markdown** or the conversation until you **promote** them into **context:DATAMODEL** when they should guide the whole workspace ([details below](#analysis-modeling-vs-contextdatamodel)).
 
-1. **Before** planning non-trivial queries, explaining schema to others, or editing **context:DATAMODEL**, load it: `hotdata context show DATAMODEL` (and `hotdata context list` for other stems such as **context:GLOSSARY**). Handle a missing document by starting from [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and pushing when ready.
+1. **Before** planning non-trivial queries, explaining schema to others, or editing **context:DATAMODEL**, **discover** stored names with `hotdata context list` (and other stems such as **context:GLOSSARY** as needed). **Only if** `DATAMODEL` appears in the list, load it: `hotdata context show DATAMODEL`. If it is **absent**, skip `show` and treat **context:DATAMODEL** as unset—use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) when the user wants to bootstrap, then `push` when ready.
 2. **After** you change **context:DATAMODEL**, persist with **`hotdata context push DATAMODEL`**. The CLI requires a local `./DATAMODEL.md` for that step: write the body there (from `context show`, the template, or your edits), then run `push` from the project directory.
 3. Use **`hotdata context pull DATAMODEL`** when you intentionally want a local `./DATAMODEL.md` copy (for example a human editor); it still reflects API state for **context:DATAMODEL**, not a parallel document.
 
@@ -61,7 +63,7 @@ Keep two layers separate:
 
 - **context:DATAMODEL (Hotdata workspace data model)** — A **durable, workspace-wide** map stored only via the **context API**: entities and tables across connections, PK/FK relationships, how datasets tie back to sources, naming and query conventions the **whole team** should rely on. This is **higher-level shared structure**, not a transcript of one investigation.
 
-**Promotion:** When analysis findings should **outlive** the sandbox or session and **guide everyone**, merge them into **context:DATAMODEL** (`hotdata context show DATAMODEL` → reconcile → `hotdata context push DATAMODEL`). You do **not** need to update **context:DATAMODEL** after every ad-hoc query—only when the workspace story or join graph meaningfully changes.
+**Promotion:** When analysis findings should **outlive** the sandbox or session and **guide everyone**, merge them into **context:DATAMODEL** (`hotdata context list` → if `DATAMODEL` is listed, `hotdata context show DATAMODEL` → reconcile → `hotdata context push DATAMODEL`). You do **not** need to update **context:DATAMODEL** after every ad-hoc query—only when the workspace story or join graph meaningfully changes.
 
 Use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [references/MODEL_BUILD.md](references/MODEL_BUILD.md) for **what to write inside** the Markdown you store under **context:** stems. Never put workspace-specific model text inside agent skill install paths—only in **workspace context** (and transient `./<NAME>.md` for push/pull when needed).
 
@@ -69,7 +71,7 @@ Use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [
 
 These are **patterns** built from the commands below—not separate CLI subcommands:
 
-- **Model (`context:DATAMODEL`)** — The **shared** Markdown semantic map of the workspace (entities, keys, joins across connections). **Store and read it only via workspace context** (`hotdata context show DATAMODEL`, `context push DATAMODEL`); refresh using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Contrast **analysis modeling** in sandboxes or chat (see [Analysis modeling vs context:DATAMODEL](#analysis-modeling-vs-contextdatamodel)).
+- **Model (`context:DATAMODEL`)** — The **shared** Markdown semantic map of the workspace (entities, keys, joins across connections). **Store and read it only via workspace context** (`hotdata context list`, then `hotdata context show DATAMODEL` **only when listed**, `context push DATAMODEL`); refresh using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Contrast **analysis modeling** in sandboxes or chat (see [Analysis modeling vs context:DATAMODEL](#analysis-modeling-vs-contextdatamodel)).
 - **History** — Inspect prior activity via `hotdata queries list` (query runs) and `hotdata results list` / `results <id>` (row data).
 - **Chain** — Follow-ups via **`datasets create`** then `query` against `datasets.<schema>.<table>`.
 - **Indexes** — Review SQL and schema, compare to existing indexes, create **sorted**, **bm25**, or **vector** indexes when it clearly helps; see [references/WORKFLOWS.md](references/WORKFLOWS.md#indexes).
@@ -232,8 +234,8 @@ hotdata context pull <name> [--workspace-id <workspace_id>] [--force] [--dry-run
 hotdata context push <name> [--workspace-id <workspace_id>] [--dry-run]
 ```
 
-- `list` — names, `updated_at`, and character counts for each stored context. Use `--prefix` to narrow names (case-sensitive).
-- `show` — print the Markdown body to **stdout** (use this when there is **no** local `./<NAME>.md`; ideal for agents).
+- `list` — names, `updated_at`, and character counts for each stored context. Use `--prefix` to narrow names (case-sensitive). **Agents:** call **`list` before `show`** for `DATAMODEL` (or any stem) so you do not rely on `show` failing when the document does not exist yet.
+- `show` — print the Markdown body to **stdout** (use this when there is **no** local `./<NAME>.md`; ideal for agents). **Errors** if no context with that `name` exists (exit 1)—expected for a new workspace; use `list` first to avoid that path.
 - `pull` — download context `name` to `./<NAME>.md`. Refuses to overwrite an existing file unless `--force`. `--dry-run` prints target path and size only.
 - `push` — upload `./<NAME>.md` to upsert context `name` on the server. `--dry-run` prints size only. Body size must stay within the API limit (order of 512k characters).
 
@@ -394,13 +396,13 @@ Use a sandbox to explore tables and capture **analysis-oriented** notes in sandb
    - confirm revenue column semantics"
    ```
 5. Continue exploring and update the markdown as your **analysis picture** takes shape. Sandbox markdown is the living artifact for **that sandbox** only.
-6. When that picture should become **context:DATAMODEL** (outlive the sandbox or be shared with everyone), promote it: save consolidated Markdown as `./DATAMODEL.md` and run `hotdata context push DATAMODEL` (or merge with `hotdata context show DATAMODEL` first, then push).
+6. When that picture should become **context:DATAMODEL** (outlive the sandbox or be shared with everyone), promote it: save consolidated Markdown as `./DATAMODEL.md` in the project directory and run `hotdata context push DATAMODEL` (if **context:DATAMODEL** already exists on the server, merge with `hotdata context show DATAMODEL` first—confirm `DATAMODEL` appears in `hotdata context list` before `show`).
 
 Other commands (not covered in detail above): `hotdata connections new` (interactive connection wizard), `hotdata skills install|status`, `hotdata completions <bash|zsh|fish>`.
 
 ## Workflow: Running a Query
 
-0. (Recommended for agents) When the query depends on **workspace-wide** table relationships or naming conventions, load **context:DATAMODEL**: `hotdata context show DATAMODEL`. If the command errors because no document exists yet, proceed without it—ad-hoc analysis does not require populated **context:DATAMODEL**.
+0. (Recommended for agents) When the query depends on **workspace-wide** table relationships or naming conventions, run **`hotdata context list`** first; **only if** `DATAMODEL` is listed, run `hotdata context show DATAMODEL` to load **context:DATAMODEL**. If it is **not** listed, **do not** run `show`—ad-hoc analysis does not require populated **context:DATAMODEL**.
 1. List connections:
    ```
    hotdata connections list

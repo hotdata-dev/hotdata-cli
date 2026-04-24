@@ -4,7 +4,7 @@ Optional **deep pass** for a single authoritative markdown document stored as **
 
 **Notation:** **`context:DATAMODEL`** is the live server document; **not** the same phrase as “building a data model” for a one-off analysis. **CLI** uses the bare stem: `hotdata context show DATAMODEL`.
 
-**Output:** Maintain **context:DATAMODEL** with `hotdata context show DATAMODEL`, edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store workspace-specific model text inside agent skill folders.
+**Output:** After **`hotdata context list`** confirms `DATAMODEL` exists, read **context:DATAMODEL** with `hotdata context show DATAMODEL`; edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store workspace-specific model text inside agent skill folders.
 
 ---
 
