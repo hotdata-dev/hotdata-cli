@@ -1,3 +1,25 @@
+## [0.1.12] - 2026-04-23
+
+### 🚀 Features
+
+- *(context)* Add `context list`, `context show`, `context pull`, and `context push` for workspace Markdown stored via the context API.
+
+### 🐛 Bug Fixes
+
+- *(context)* Fail fast on `pull` when `./<name>.md` already exists (use `--force` to overwrite).
+
+### 📚 Documentation
+
+- *(readme)* Document workspace context commands and the API-first data model workflow.
+- *(skill)* Refresh Hotdata SKILL for current CLI flags, sandbox vs workspace dataset naming (`FULL NAME`, `full_name`, `datasets.<schema>.<table>`), and workflow references.
+- *(cli)* Clarify datasets command as upload plus queryable Parquet/CSV (and related help text).
+
+## [0.1.11] - 2026-04-20
+
+### 🚀 Features
+
+- *(sandbox)* Align sandbox commands with the updated sandbox API.
+
 ## [0.1.10] - 2026-04-17
 
 ### 🐛 Bug Fixes
