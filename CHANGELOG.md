@@ -1,3 +1,22 @@
+## [0.1.13] - 2026-04-24
+
+### 🚀 Features
+
+- *(auth)* Add login subcommand mirroring bare auth
+
+### 🐛 Bug Fixes
+
+- *(context)* Strip .md suffix using correct byte length
+- *(context)* Avoid UTF-8 panic when probing .md suffix
+
+### 💼 Other
+
+- *(release)* Pass --no-confirm to cargo release
+
+### 📚 Documentation
+
+- *(skill)* List before show; avoid blind context show DATAMODEL
+- *(skill)* Context:<STEM> notation and analysis vs DATAMODEL
 ## [0.1.12] - 2026-04-24
 
 ### 🚀 Features
@@ -7,6 +26,10 @@
 ### 🐛 Bug Fixes
 
 - *(context)* Fail-fast pull when target exists; expand stem tests
+
+### 💼 Other
+
+- *(release)* Regenerate changelog with git-cliff
 
 ### 🚜 Refactor
 
