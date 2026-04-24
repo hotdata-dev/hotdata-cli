@@ -92,7 +92,7 @@ fn main() {
         }
         Some(cmd) => match cmd {
             Commands::Auth { command } => match command {
-                None => auth::login(),
+                None | Some(AuthCommands::Login) => auth::login(),
                 Some(AuthCommands::Status) => auth::status("default"),
                 Some(AuthCommands::Logout) => auth::logout("default"),
             },

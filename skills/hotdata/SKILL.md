@@ -16,10 +16,10 @@ Or if installed on PATH: `hotdata <command> [args]`
 
 ## Authentication
 
-Run `hotdata auth` to authenticate via browser login. Config is stored in `~/.hotdata/config.yml`.
+Run **`hotdata auth login`** (or **`hotdata auth`** with no subcommand—same behavior) to authenticate via browser login. Config is stored in `~/.hotdata/config.yml`.
 
 API key resolution (lowest to highest priority):
-1. Config file (saved by `hotdata auth`)
+1. Config file (saved by `hotdata auth login` / `hotdata auth`)
 2. `HOTDATA_API_KEY` environment variable (or `.env` file)
 3. `--api-key <key>` flag (works on any command)
 
@@ -325,7 +325,8 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 
 ### Auth
 ```
-hotdata auth                # Browser-based login
+hotdata auth login          # Browser-based login (same as: hotdata auth)
+hotdata auth                # Browser-based login (same as: hotdata auth login)
 hotdata auth status         # Check current auth status
 hotdata auth logout         # Remove saved auth for the default profile
 ```
