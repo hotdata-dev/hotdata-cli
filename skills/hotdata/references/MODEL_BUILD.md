@@ -1,8 +1,10 @@
 # Building a workspace data model (advanced)
 
-Optional **deep pass** for a single authoritative markdown model stored in **workspace context**. For a short checklist only, use the **Model** section in [WORKFLOWS.md](WORKFLOWS.md) and [DATA_MODEL.template.md](DATA_MODEL.template.md).
+Optional **deep pass** for a single authoritative markdown document stored as **`context:DATAMODEL`** (workspace **context API**). For a short checklist only, use the **Model** section in [WORKFLOWS.md](WORKFLOWS.md) and [DATA_MODEL.template.md](DATA_MODEL.template.md).
 
-**Output:** The live document is **`DATAMODEL`** in the context API. After **`hotdata context list`** confirms `DATAMODEL` exists, read it with `hotdata context show DATAMODEL`; edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store workspace-specific model text inside agent skill folders.
+**Notation:** **`context:DATAMODEL`** is the live server document; **not** the same phrase as “building a data model” for a one-off analysis. **CLI** uses the bare stem: `hotdata context show DATAMODEL`.
+
+**Output:** After **`hotdata context list`** confirms `DATAMODEL` exists, read **context:DATAMODEL** with `hotdata context show DATAMODEL`; edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store workspace-specific model text inside agent skill folders.
 
 ---
 
@@ -53,7 +55,7 @@ Use **connector and tooling docs** when `source_type` (or table shapes) match:
 - **Vectors** — Columns typed as lists of floats (e.g. embedding columns) are candidates for vector search; note them.
 - **Well-known SaaS shapes** — Apply general patterns (e.g. Stripe charges/customers, HubSpot contacts/deals) only when naming and structure fit; **link** the doc you used so a human can verify.
 
-Do **not** invent facts: if context is missing, say so and suggest a small sample query:
+Do **not** invent facts: if **context:DATAMODEL** (or needed facts) is missing, say so and suggest a small sample query:
 
 ```bash
 hotdata query "SELECT * FROM <connection>.<schema>.<table> LIMIT 5"
@@ -95,7 +97,7 @@ When suggesting a new index, use the same connection/schema/table/column names a
 
 ## 6. Document structure
 
-This Markdown body is what you store under **`DATAMODEL`** (`hotdata context push DATAMODEL`). Start from [DATA_MODEL.template.md](DATA_MODEL.template.md) and extend as needed:
+This Markdown body is what you store as **context:DATAMODEL** (`hotdata context push DATAMODEL`). Start from [DATA_MODEL.template.md](DATA_MODEL.template.md) and extend as needed:
 
 - **Overview** — Domains and what the workspace is for.
 - **Per connection** — Optional subsection per source; for **deep** models, **repeat** one block per `connection.schema.table` (grain, column table with name/type/nullable/PK-FK/notes, relationships, queryability, caveats)—the template’s single `####` heading is a pattern to copy for each table.

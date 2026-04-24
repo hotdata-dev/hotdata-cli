@@ -2,26 +2,28 @@
 
 Procedures for **Model**, **History**, **Chain**, **Indexes**, and **sandboxes with datasets** (see **Sandboxes and datasets**). These compose existing `hotdata` commands; they are not separate subcommands.
 
+**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**, **`context:GLOSSARY`**) means the **workspace document** stored under that stem via the **context API**—not generic “data model” language and not local files except as `pull`/`push` transport. **CLI** still uses bare stems: `hotdata context show DATAMODEL`.
+
 ## Where things live
 
 | Concept | Location |
 |--------|----------|
-| **Model** | **Workspace context API** — stem **`DATAMODEL`** (`hotdata context show DATAMODEL`, `context push` / `pull` with `./DATAMODEL.md` in the project cwd only as the CLI file surface). Never store workspace-specific model text inside agent skill directories. |
+| **Model** | **`context:DATAMODEL`** — workspace context API (`hotdata context list` then `show` / `pull` / `push` with `./DATAMODEL.md` in the project cwd only as the CLI file surface; **list before `show`** so missing `DATAMODEL` does not error). Never store workspace-specific model text inside agent skill directories. |
 | **History** | `hotdata queries list` / `queries <query_run_id>` for query runs (execution history); `hotdata results list` / `results <id>` for row data. |
-| **Chain** | Intermediate tables in **`datasets.<schema>.<table>`** — usually **`datasets.main.*`** for workspace-wide materializations; **sandbox uploads** use **`datasets.<sandbox_id>.*`** (see **Sandboxes and datasets** below). Document stable chains in **workspace context `DATAMODEL`** under **Derived tables (Chain)**. |
-| **Indexes** | Recommendations and live objects in Hotdata (`indexes list` / `indexes create`). Record rationale in **`DATAMODEL`** (e.g. Search & index summary) or a dedicated context stem if you split concerns. |
+| **Chain** | Intermediate tables in **`datasets.<schema>.<table>`** — usually **`datasets.main.*`** for workspace-wide materializations; **sandbox uploads** use **`datasets.<sandbox_id>.*`** (see **Sandboxes and datasets** below). Document stable chains in **context:DATAMODEL** under **Derived tables (Chain)**. |
+| **Indexes** | Recommendations and live objects in Hotdata (`indexes list` / `indexes create`). Record rationale in **context:DATAMODEL** (e.g. Search & index summary) or a dedicated **context:** stem if you split concerns. |
 
 ---
 
 ## Model
 
-**Goal:** A markdown map of entities, keys, grain, and how connections relate—on top of the live **catalog** from Hotdata.
+**Goal:** A markdown map of entities, keys, grain, and how connections relate—stored as **context:DATAMODEL** on top of the live **catalog** from Hotdata.
 
 ### Initialize
 
-1. Use [DATA_MODEL.template.md](DATA_MODEL.template.md) in this skill bundle as the **structure** for what you store in workspace context.
-2. Run **`hotdata context list`**. **Only if** `DATAMODEL` appears, you may use `hotdata context show DATAMODEL` or `pull` to hydrate `./DATAMODEL.md`. If it does **not** appear, start from the template only—**do not** run `show` (it exits 1). In the **project directory** where you run `hotdata`, create or refresh `./DATAMODEL.md`, fill workspace-specific sections as you discover schema, then **`hotdata context push DATAMODEL`** so the workspace owns the document.
-3. Agents that skip local files: **`context list`** first; **`context show DATAMODEL` only when listed**; when updating, write `./DATAMODEL.md` then `hotdata context push DATAMODEL`.
+1. Use [DATA_MODEL.template.md](DATA_MODEL.template.md) in this skill bundle as the **structure** for what you store as **context:DATAMODEL**.
+2. Run **`hotdata context list`**. **Only if** `DATAMODEL` appears, you may use `hotdata context show DATAMODEL` or `pull` to hydrate `./DATAMODEL.md`. If it does **not** appear, start from the template only—**do not** run `show` (it exits 1). In the **project directory** where you run `hotdata`, create or refresh `./DATAMODEL.md`, fill workspace-specific sections as you discover schema, then **`hotdata context push DATAMODEL`** so the server owns **context:DATAMODEL**.
+3. Agents that skip local files: **`context list`** first; **`context show DATAMODEL` only when listed** to read **context:DATAMODEL**; when updating, write `./DATAMODEL.md` then `hotdata context push DATAMODEL`.
 
 ### Deep model pass (optional)
 
@@ -44,7 +46,7 @@ hotdata datasets <dataset_id>                # schema detail per dataset
 
 `datasets list` returns **every** dataset in the workspace (no sandbox-only filter). Use the **`FULL NAME`** column (`datasets.<schema>.<table>`): **`main`** in the middle segment is the usual workspace catalog; a value like **`s_…`** is the **sandbox id** for sandbox-scoped datasets.
 
-Use output to update **Connections**, **Tables**, **Columns**, and **Datasets** in **workspace context `DATAMODEL`** (edit via `./DATAMODEL.md` + `hotdata context push DATAMODEL`, or your editor workflow). Optional: small exploratory queries once names are known:
+Use output to update **Connections**, **Tables**, **Columns**, and **Datasets** in **context:DATAMODEL** (edit via `./DATAMODEL.md` + `hotdata context push DATAMODEL`, or your editor workflow). Optional: small exploratory queries once names are known:
 
 ```bash
 hotdata query "SELECT * FROM <connection>.<schema>.<table> LIMIT 5"
@@ -132,7 +134,7 @@ Query footers include a `result-id` when applicable—record it for later, or pi
 
    For **sandbox-scoped** chain tables, ensure an **active sandbox** (`sandbox set`) or run the query inside **`hotdata sandbox <sandbox_id> run hotdata query "…"`**. Quote mixed-case columns: e.g. `"Revenue"`.
 
-**Naming:** Prefer predictable `--table-name` values, e.g. `chain_<topic>_<YYYYMMDD>`, and list long-lived chains in **DATAMODEL → Derived tables (Chain)** in workspace context (record the **full** `datasets.<schema>.<table>` you use in SQL).
+**Naming:** Prefer predictable `--table-name` values, e.g. `chain_<topic>_<YYYYMMDD>`, and list long-lived chains in **context:DATAMODEL → Derived tables (Chain)** (record the **full** `datasets.<schema>.<table>` you use in SQL).
 
 ---
 
@@ -189,7 +191,7 @@ Large builds: add `--async` and track with **`hotdata jobs list`** / **`hotdata 
 
 ### 4. Verify
 
-Re-run representative **`hotdata query`** or **`hotdata search`** workloads. Update **DATAMODEL → Search & index summary** in workspace context (`hotdata context push DATAMODEL` after editing `./DATAMODEL.md`) so future agents see what exists.
+Re-run representative **`hotdata query`** or **`hotdata search`** workloads. Update **context:DATAMODEL → Search & index summary** (`hotdata context push DATAMODEL` after editing `./DATAMODEL.md`) so future agents see what exists.
 
 ### Guardrails
 
