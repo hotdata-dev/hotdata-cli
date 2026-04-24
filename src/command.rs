@@ -236,6 +236,9 @@ pub enum QueryCommands {
 
 #[derive(Subcommand)]
 pub enum AuthCommands {
+    /// Log in via browser (same as `hotdata auth` with no subcommand)
+    Login,
+
     /// Remove authentication for a profile
     Logout,
 

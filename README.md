@@ -33,9 +33,11 @@ cp target/release/hotdata /usr/local/bin/hotdata
 
 ## Connect
 
-Run the following command to authenticate:
+Run either of the following (they are equivalent):
 
 ```sh
+hotdata auth login
+# or
 hotdata auth
 ```
 
@@ -60,7 +62,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 
 | Command | Subcommands | Description |
 | :-- | :-- | :-- |
-| `auth` | `status`, `logout` | Authenticate (run without subcommand to log in) |
+| `auth` | `login`, `status`, `logout` | `login` or bare `auth` opens browser login; `status` / `logout` manage the saved profile |
 | `workspaces` | `list`, `set` | Manage workspaces |
 | `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
 | `tables` | `list` | List tables and columns |

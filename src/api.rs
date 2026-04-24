@@ -27,7 +27,7 @@ impl ApiClient {
         let api_key = match &profile_config.api_key {
             Some(key) if key != "PLACEHOLDER" => key.clone(),
             _ => {
-                eprintln!("error: not authenticated. Run 'hotdata auth' to log in.");
+                eprintln!("error: not authenticated. Run 'hotdata auth login' (or 'hotdata auth') to log in.");
                 std::process::exit(1);
             }
         };
@@ -294,7 +294,7 @@ fn format_fail_message(
 ) -> String {
     if status.is_client_error() {
         if let Some(auth::AuthStatus::Invalid(_)) = auth_status {
-            return "error: API key is invalid. Run 'hotdata auth' to re-authenticate.".to_string();
+            return "error: API key is invalid. Run 'hotdata auth login' (or 'hotdata auth') to re-authenticate.".to_string();
         }
     }
     util::api_error(body.to_string())
@@ -313,7 +313,7 @@ mod tests {
             Some(&AuthStatus::Invalid(401)),
         );
         assert!(msg.contains("API key is invalid"));
-        assert!(msg.contains("hotdata auth"));
+        assert!(msg.contains("hotdata auth login") || msg.contains("hotdata auth"));
     }
 
     #[test]
