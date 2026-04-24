@@ -2,7 +2,7 @@
 
 Optional **deep pass** for a single authoritative markdown model stored in **workspace context**. For a short checklist only, use the **Model** section in [WORKFLOWS.md](WORKFLOWS.md) and [DATA_MODEL.template.md](DATA_MODEL.template.md).
 
-**Output:** The live document is **`DATAMODEL`** in the context API. Maintain it with `hotdata context show DATAMODEL`, edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store workspace-specific model text inside agent skill folders.
+**Output:** The live document is **`DATAMODEL`** in the context API. After **`hotdata context list`** confirms `DATAMODEL` exists, read it with `hotdata context show DATAMODEL`; edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store workspace-specific model text inside agent skill folders.
 
 ---
 

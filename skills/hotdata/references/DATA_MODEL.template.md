@@ -1,6 +1,6 @@
 # Data model — `<project name>`
 
-> **Storage:** This Markdown structure is kept in **workspace context** under the name **`DATAMODEL`**. Use `hotdata context show DATAMODEL` to read it; maintain `./DATAMODEL.md` in your **project directory** (where you run `hotdata`) only when editing, then `hotdata context push DATAMODEL`. Do not use `docs/DATA_MODEL.md` or other repo paths as the source of truth.  
+> **Storage:** This Markdown structure is kept in **workspace context** under the name **`DATAMODEL`**. Use **`hotdata context list`** first; **only if** `DATAMODEL` appears, use `hotdata context show DATAMODEL` to read it (otherwise there is nothing to show yet). Maintain `./DATAMODEL.md` in your **project directory** (where you run `hotdata`) only when editing, then `hotdata context push DATAMODEL`. Do not use `docs/DATA_MODEL.md` or other repo paths as the source of truth.  
 > Do not commit workspace-specific content into agent skill folders.  
 > For a **full** build (per-table detail, connector enrichment, index summary), follow [MODEL_BUILD.md](MODEL_BUILD.md) from the installed skill’s `references/` (or this repo’s `skills/hotdata/references/`). Relative links to `MODEL_BUILD.md` below work only while this file lives next to those references; in your project, open that path separately if the link 404s.
 
