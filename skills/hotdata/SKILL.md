@@ -59,7 +59,7 @@ These are **patterns** built from the commands below—not separate CLI subcomma
 
 - **Model** — Markdown semantic map of your workspace (entities, keys, joins). **Store and read it via workspace context** (`hotdata context show DATAMODEL`, `context push DATAMODEL`); refresh content using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** modeling pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
 - **History** — Inspect prior activity via `hotdata queries list` (query runs) and `hotdata results list` / `results <id>` (row data).
-- **Chain** — Follow-ups via **`datasets create`** then `query` against `datasets.main.<table>`.
+- **Chain** — Follow-ups via **`datasets create`** then `query` against `datasets.<schema>.<table>`.
 - **Indexes** — Review SQL and schema, compare to existing indexes, create **sorted**, **bm25**, or **vector** indexes when it clearly helps; see [references/WORKFLOWS.md](references/WORKFLOWS.md#indexes).
 
 Full step-by-step procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md).
@@ -200,13 +200,7 @@ hotdata datasets create --label "My Dataset" --upload-id <upload_id> [--format c
 
 #### Querying datasets
 
-Workspace-scoped datasets (created **outside** a sandbox, or the usual “main” catalog path) are referenced as **`datasets.main.<table_name>`**.
-
-**Sandbox-created datasets** use the **sandbox id as the schema**, not `main`, for example:
-```
-datasets.<sandbox_id>.<table_name>
-```
-(e.g. `datasets.s_ufmblmvq.tac_csat`). The create output’s **`full_name`** is authoritative—copy it into `FROM` / `JOIN` clauses instead of guessing `datasets.main.…`.
+Qualified dataset tables are **`datasets.<schema>.<table_name>`**: **`main`** for workspace-scoped datasets (created outside a sandbox), or the **sandbox id** for sandbox-created data (e.g. `datasets.s_ufmblmvq.tac_csat`). The create output’s **`full_name`** is authoritative—copy it into `FROM` / `JOIN` clauses instead of guessing `datasets.main.…`.
 
 Example (workspace dataset on `main`):
 ```
