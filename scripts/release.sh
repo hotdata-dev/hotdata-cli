@@ -42,7 +42,7 @@ case "$COMMAND" in
         # step 2: bump versions, commit, push branch
         echo ""
         echo "→ Running cargo release (no publish, no tag)..."
-        cargo release --no-publish --no-tag --allow-branch="$BRANCH" --execute "$VERSION"
+        cargo release --no-publish --no-tag --no-confirm --allow-branch="$BRANCH" --execute "$VERSION"
 
         echo ""
         echo "→ Opening pull request..."
@@ -79,7 +79,7 @@ case "$COMMAND" in
 
         echo ""
         echo "→ Running cargo release (tagging release)..."
-        cargo release --execute
+        cargo release --no-confirm --execute
 
         echo ""
         echo "✓ Release complete. Tag pushed and dist workflow triggered."
