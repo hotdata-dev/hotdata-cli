@@ -58,11 +58,17 @@ pub fn normalize_context_cli_name(name: &str) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or(trimmed);
     const MD_SUFFIX: &str = ".md";
-    if basename.len() >= MD_SUFFIX.len() {
-        let start = basename.len() - MD_SUFFIX.len();
-        let suffix = &basename[start..];
-        if suffix.eq_ignore_ascii_case(MD_SUFFIX) {
-            return basename[..start].to_string();
+    let md_len = MD_SUFFIX.len();
+    let bytes = basename.as_bytes();
+    if bytes.len() >= md_len {
+        let i = bytes.len() - md_len;
+        // Inspect bytes only: avoid slicing `str` at `i` until we know the last `md_len` bytes are
+        // ASCII `.md` (so `i` is a UTF-8 char boundary — e.g. `x𝕌` must not index `basename[2..]`).
+        if bytes[i] == b'.'
+            && bytes[i + 1].eq_ignore_ascii_case(&b'm')
+            && bytes[i + 2].eq_ignore_ascii_case(&b'd')
+        {
+            return basename[..i].to_string();
         }
     }
     basename.to_string()
@@ -373,5 +379,16 @@ mod tests {
     #[test]
     fn normalize_strips_md_one_char_stem() {
         assert_eq!(normalize_context_cli_name("a.md"), "a");
+    }
+
+    #[test]
+    fn normalize_does_not_panic_multibyte_stem_without_md() {
+        // 1 ASCII byte + 4-byte UTF-8; byte index 2 is inside the codepoint — must not slice there.
+        assert_eq!(normalize_context_cli_name("x𝕌"), "x𝕌");
+    }
+
+    #[test]
+    fn normalize_strips_md_after_multibyte_char() {
+        assert_eq!(normalize_context_cli_name("x𝕌.md"), "x𝕌");
     }
 }
