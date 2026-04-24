@@ -1,6 +1,6 @@
 [package]
 name = "hotdata-cli"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 repository = "https://github.com/hotdata-dev/hotdata-cli"
 description = "CLI tool for Hotdata.dev"
@@ -42,7 +42,7 @@ mockito = "1"
 tempfile = "3"
 
 [package.metadata.release]
-pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}" ]
+pre-release-hook = ["git-cliff", "-o", "CHANGELOG.md", "--tag", "v{{version}}" ]
 publish = false
 pre-release-replacements = [
   { file = "skills/hotdata/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },

@@ -1,3 +1,31 @@
+## [0.1.12] - 2026-04-24
+
+### 🚀 Features
+
+- *(context)* Add context list/show/pull/push commands
+
+### 🐛 Bug Fixes
+
+- *(context)* Fail-fast pull when target exists; expand stem tests
+
+### 🚜 Refactor
+
+- *(context)* Clearer fetch_context exhaustiveness; drop no-op mkdir
+
+### 📚 Documentation
+
+- *(cli)* Clarify datasets command as upload and query Parquet/CSV
+- *(skill)* Prefer workspace context API for data model and agents
+- *(skill)* Context API only for data model and workspace docs
+- *(readme)* Document workspace context commands and API-first model
+- *(skill)* Align Hotdata SKILL with current CLI flags
+- *(skill)* Sandbox datasets, long flags, and WORKFLOWS
+- *(skill)* Unify dataset SQL as datasets.<schema>.<table>
+## [0.1.11] - 2026-04-20
+
+### 🚀 Features
+
+- *(sandbox)* Align CLI with updated sandbox API
 ## [0.1.10] - 2026-04-17
 
 ### 🐛 Bug Fixes
