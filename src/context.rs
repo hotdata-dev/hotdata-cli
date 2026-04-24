@@ -49,6 +49,31 @@ struct UpsertResponse {
     context: WorkspaceContextEntry,
 }
 
+/// Normalizes a context name from the CLI: trims, takes the final path segment, and strips a
+/// trailing `.md` (any ASCII case) so `USER.md` or `./USER.md` refer to context stem `USER`.
+pub fn normalize_context_cli_name(name: &str) -> String {
+    let trimmed = name.trim();
+    let basename = std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(trimmed);
+    const MD_SUFFIX: &str = ".md";
+    let md_len = MD_SUFFIX.len();
+    let bytes = basename.as_bytes();
+    if bytes.len() >= md_len {
+        let i = bytes.len() - md_len;
+        // Inspect bytes only: avoid slicing `str` at `i` until we know the last `md_len` bytes are
+        // ASCII `.md` (so `i` is a UTF-8 char boundary — e.g. `x𝕌` must not index `basename[2..]`).
+        if bytes[i] == b'.'
+            && bytes[i + 1].eq_ignore_ascii_case(&b'm')
+            && bytes[i + 2].eq_ignore_ascii_case(&b'd')
+        {
+            return basename[..i].to_string();
+        }
+    }
+    basename.to_string()
+}
+
 /// Validates a context stem (API `name` and basename before `.md`).
 /// Same rules as runtimedb `validate_table_name`.
 pub fn validate_context_stem(name: &str) -> Result<(), String> {
@@ -148,13 +173,14 @@ pub fn list(workspace_id: &str, prefix: Option<&str>, format: &str) {
 }
 
 pub fn show(workspace_id: &str, name: &str) {
-    if let Err(e) = validate_context_stem(name) {
+    let name = normalize_context_cli_name(name);
+    if let Err(e) = validate_context_stem(&name) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 
     let api = ApiClient::new(Some(workspace_id));
-    match fetch_context(&api, name) {
+    match fetch_context(&api, &name) {
         Ok(ctx) => {
             print!("{}", ctx.content);
             if !ctx.content.ends_with('\n') {
@@ -178,12 +204,13 @@ pub fn show(workspace_id: &str, name: &str) {
 }
 
 pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
-    if let Err(e) = validate_context_stem(name) {
+    let name = normalize_context_cli_name(name);
+    if let Err(e) = validate_context_stem(&name) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 
-    let path = local_md_path(name);
+    let path = local_md_path(&name);
 
     if !dry_run && !force && path.exists() {
         eprintln!(
@@ -194,7 +221,7 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
     }
 
     let api = ApiClient::new(Some(workspace_id));
-    let ctx = match fetch_context(&api, name) {
+    let ctx = match fetch_context(&api, &name) {
         Ok(c) => c,
         Err(reqwest::StatusCode::NOT_FOUND) => {
             eprintln!(
@@ -232,12 +259,13 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
 }
 
 pub fn push(workspace_id: &str, name: &str, dry_run: bool) {
-    if let Err(e) = validate_context_stem(name) {
+    let name = normalize_context_cli_name(name);
+    if let Err(e) = validate_context_stem(&name) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 
-    let path = local_md_path(name);
+    let path = local_md_path(&name);
     if !path.is_file() {
         eprintln!(
             "{}",
@@ -269,7 +297,7 @@ pub fn push(workspace_id: &str, name: &str, dry_run: bool) {
     }
 
     let api = ApiClient::new(Some(workspace_id));
-    let body = json!({ "name": name, "content": content });
+    let body = json!({ "name": &name, "content": content });
     let resp: UpsertResponse = api.post("/context", &body);
 
     println!(
@@ -329,5 +357,38 @@ mod tests {
     #[test]
     fn validate_rejects_reserved_uppercase() {
         assert!(validate_context_stem("SELECT").is_err());
+    }
+
+    #[test]
+    fn normalize_strips_trailing_md() {
+        assert_eq!(normalize_context_cli_name("USER.md"), "USER");
+        assert_eq!(normalize_context_cli_name("USER.MD"), "USER");
+        assert_eq!(normalize_context_cli_name("  USER.md  "), "USER");
+    }
+
+    #[test]
+    fn normalize_accepts_path_with_md() {
+        assert_eq!(normalize_context_cli_name("./DATAMODEL.md"), "DATAMODEL");
+    }
+
+    #[test]
+    fn normalize_preserves_stem_without_md() {
+        assert_eq!(normalize_context_cli_name("DATAMODEL"), "DATAMODEL");
+    }
+
+    #[test]
+    fn normalize_strips_md_one_char_stem() {
+        assert_eq!(normalize_context_cli_name("a.md"), "a");
+    }
+
+    #[test]
+    fn normalize_does_not_panic_multibyte_stem_without_md() {
+        // 1 ASCII byte + 4-byte UTF-8; byte index 2 is inside the codepoint — must not slice there.
+        assert_eq!(normalize_context_cli_name("x𝕌"), "x𝕌");
+    }
+
+    #[test]
+    fn normalize_strips_md_after_multibyte_char() {
+        assert_eq!(normalize_context_cli_name("x𝕌.md"), "x𝕌");
     }
 }

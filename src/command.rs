@@ -582,13 +582,13 @@ pub enum ContextCommands {
 
     /// Print context content to stdout
     Show {
-        /// Context name (same rules as a SQL table identifier; local file is <NAME>.md)
+        /// Context name (same rules as a SQL table identifier; local file is <NAME>.md). A trailing `.md` is ignored (e.g. `USER.md` → `USER`).
         name: String,
     },
 
     /// Download context from the workspace to ./<NAME>.md
     Pull {
-        /// Context name
+        /// Context name (trailing `.md` ignored, e.g. `USER.md` → `USER`)
         name: String,
 
         /// Overwrite ./<NAME>.md if it already exists
@@ -602,7 +602,7 @@ pub enum ContextCommands {
 
     /// Upload ./<NAME>.md to the workspace as named context
     Push {
-        /// Context name
+        /// Context name (trailing `.md` ignored, e.g. `USER.md` → `USER`; reads `./USER.md`)
         name: String,
 
         /// Print what would be sent; do not POST
