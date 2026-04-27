@@ -48,6 +48,18 @@ impl ApiClient {
         }
     }
 
+    /// Test-only client (no config load). Used with a local mock HTTP server.
+    #[cfg(test)]
+    pub(crate) fn test_new(api_url: &str, api_key: &str, workspace_id: Option<&str>) -> Self {
+        Self {
+            client: reqwest::blocking::Client::new(),
+            api_key: api_key.to_string(),
+            api_url: api_url.to_string(),
+            workspace_id: workspace_id.map(String::from),
+            sandbox_id: None,
+        }
+    }
+
     fn debug_headers(&self) -> Vec<(&str, String)> {
         let masked = if self.api_key.len() > 4 {
             format!("Bearer ...{}", &self.api_key[self.api_key.len()-4..])
@@ -336,6 +348,44 @@ fn format_fail_message(
 mod tests {
     use super::*;
     use auth::AuthStatus;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct Probe {
+        n: i32,
+    }
+
+    #[test]
+    fn get_none_if_not_found_returns_none_on_404() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/missing")
+            .match_header("Authorization", "Bearer test-key")
+            .with_status(404)
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "test-key", None);
+        let got: Option<Probe> = api.get_none_if_not_found("/missing");
+        assert!(got.is_none());
+        mock.assert();
+    }
+
+    #[test]
+    fn get_none_if_not_found_returns_some_on_200() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/ok")
+            .match_header("Authorization", "Bearer test-key")
+            .match_header("X-Workspace-Id", "ws-1")
+            .with_status(200)
+            .with_body(r#"{"n":7}"#)
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "test-key", Some("ws-1"));
+        let got: Option<Probe> = api.get_none_if_not_found("/ok");
+        assert_eq!(got.unwrap().n, 7);
+        mock.assert();
+    }
 
     #[test]
     fn format_fail_message_401_with_invalid_key_shows_reauth_hint() {

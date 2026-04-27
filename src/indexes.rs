@@ -2,6 +2,7 @@ use crate::api::ApiClient;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
 #[derive(Deserialize, Serialize)]
 struct Index {
@@ -52,14 +53,40 @@ struct ConnectionsBody {
     connections: Vec<ConnectionRef>,
 }
 
-fn connection_lookup(api: &ApiClient) -> HashMap<String, String> {
-    let body: ConnectionsBody = api.get("/connections");
+fn connection_label_to_id_map(connections: &[ConnectionRef]) -> HashMap<String, String> {
     let mut m = HashMap::new();
-    for c in body.connections {
-        m.insert(c.id.clone(), c.id.clone());
-        m.insert(c.name.clone(), c.id);
+    for c in connections {
+        m.insert(c.name.clone(), c.id.clone());
     }
     m
+}
+
+fn connection_lookup(api: &ApiClient) -> HashMap<String, String> {
+    let body: ConnectionsBody = api.get("/connections");
+    connection_label_to_id_map(&body.connections)
+}
+
+/// How to continue after merging one `/information_schema` page.
+fn information_schema_followup(
+    has_more: bool,
+    next_cursor: Option<String>,
+) -> ControlFlow<(), String> {
+    if !has_more {
+        return ControlFlow::Break(());
+    }
+    let Some(c) = next_cursor else {
+        return ControlFlow::Break(());
+    };
+    ControlFlow::Continue(c)
+}
+
+fn sort_info_tables(tables: &mut [InfoTable]) {
+    tables.sort_by(|a, b| {
+        a.connection
+            .cmp(&b.connection)
+            .then_with(|| a.schema.cmp(&b.schema))
+            .then_with(|| a.table.cmp(&b.table))
+    });
 }
 
 fn collect_tables(
@@ -86,17 +113,12 @@ fn collect_tables(
         }
         let body: InfoListResponse = api.get_with_params("/information_schema", &params);
         out.extend(body.tables);
-        if !body.has_more {
-            break;
+        match information_schema_followup(body.has_more, body.next_cursor) {
+            ControlFlow::Break(()) => break,
+            ControlFlow::Continue(c) => cursor = Some(c),
         }
-        cursor = body.next_cursor;
     }
-    out.sort_by(|a, b| {
-        a.connection
-            .cmp(&b.connection)
-            .then_with(|| a.schema.cmp(&b.schema))
-            .then_with(|| a.table.cmp(&b.table))
-    });
+    sort_info_tables(&mut out);
     out
 }
 
@@ -264,5 +286,155 @@ pub fn create(
         println!("{}", "Use 'hotdata jobs <job_id>' to check status.".dark_grey());
     } else {
         println!("{}", "Index created.".green());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn information_schema_followup_terminates_when_not_has_more() {
+        assert!(matches!(
+            information_schema_followup(false, Some("c".into())),
+            ControlFlow::Break(())
+        ));
+    }
+
+    #[test]
+    fn information_schema_followup_breaks_when_more_but_no_cursor() {
+        assert!(matches!(
+            information_schema_followup(true, None),
+            ControlFlow::Break(())
+        ));
+    }
+
+    #[test]
+    fn information_schema_followup_continues_with_cursor() {
+        assert!(matches!(
+            information_schema_followup(true, Some("next".into())),
+            ControlFlow::Continue(ref s) if s == "next"
+        ));
+    }
+
+    #[test]
+    fn sort_info_tables_orders_by_connection_schema_table() {
+        let mut tables = vec![
+            InfoTable {
+                connection: "b".into(),
+                schema: "s".into(),
+                table: "t2".into(),
+            },
+            InfoTable {
+                connection: "a".into(),
+                schema: "s".into(),
+                table: "t1".into(),
+            },
+        ];
+        sort_info_tables(&mut tables);
+        assert_eq!(tables[0].table, "t1");
+        assert_eq!(tables[1].table, "t2");
+    }
+
+    #[test]
+    fn connection_label_to_id_map_maps_names_only() {
+        let connections = vec![
+            ConnectionRef {
+                id: "conn-id".into(),
+                name: "Warehouse".into(),
+            },
+            ConnectionRef {
+                id: "other".into(),
+                name: "Lake".into(),
+            },
+        ];
+        let m = connection_label_to_id_map(&connections);
+        assert_eq!(m.get("Warehouse").map(String::as_str), Some("conn-id"));
+        assert_eq!(m.get("Lake").map(String::as_str), Some("other"));
+        assert!(!m.contains_key("conn-id"));
+    }
+
+    #[test]
+    fn collect_tables_single_page() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/information_schema")
+            .match_header("Authorization", "Bearer k")
+            .match_header("X-Workspace-Id", "ws1")
+            .with_status(200)
+            .with_body(
+                r#"{"tables":[
+                {"connection":"c1","schema":"public","table":"z"},
+                {"connection":"c1","schema":"public","table":"a"}
+            ],"has_more":false,"next_cursor":null}"#,
+            )
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "k", Some("ws1"));
+        let tables = collect_tables(&api, None, None, None);
+        mock.assert();
+        assert_eq!(tables.len(), 2);
+        assert_eq!(tables[0].table, "a");
+        assert_eq!(tables[1].table, "z");
+    }
+
+    #[test]
+    fn list_one_table_scan_returns_empty_on_404() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"^/connections/.+/tables/.+/.+/indexes$".into()),
+            )
+            .match_header("Authorization", "Bearer k")
+            .with_status(404)
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let rows = list_one_table_scan(&api, "cid", "sch", "tbl");
+        mock.assert();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn list_one_table_returns_indexes() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/connections/cid/tables/sch/tbl/indexes")
+            .match_header("Authorization", "Bearer k")
+            .with_status(200)
+            .with_body(
+                r#"{"indexes":[{
+                "index_name":"ix1",
+                "index_type":"btree",
+                "columns":["c1"],
+                "metric":null,
+                "status":"ready",
+                "created_at":"2020-01-01T00:00:00Z",
+                "updated_at":"2020-01-01T00:00:00Z"
+            }]}"#,
+            )
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "k", None);
+        let rows = list_one_table(&api, "cid", "sch", "tbl");
+        mock.assert();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].index_name, "ix1");
+    }
+
+    #[test]
+    fn list_one_table_scan_returns_indexes_on_200() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/connections/x/tables/s/t/indexes")
+            .with_status(200)
+            .with_body(r#"{"indexes":[]}"#)
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "k", None);
+        let rows = list_one_table_scan(&api, "x", "s", "t");
+        mock.assert();
+        assert!(rows.is_empty());
     }
 }
