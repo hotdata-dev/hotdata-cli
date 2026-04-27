@@ -85,6 +85,10 @@ fn download_and_extract() -> Result<(), String> {
     let url = download_url();
     println!("Downloading skill...");
 
+    // Binary download — can't route through `send_debug` (which calls
+    // `resp.text()` and would corrupt the gzip stream). Log the
+    // request line manually so `--debug` still shows the URL.
+    crate::util::debug_request("GET", &url, &[], None);
     let client = reqwest::blocking::Client::new();
     let resp = client
         .get(&url)

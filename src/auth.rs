@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::io::stdout;
 
 pub fn logout(profile: &str) {
-    if let Err(e) = config::remove_api_key(profile) {
+    crate::jwt::clear_session();
+    if let Err(e) = config::clear_workspaces(profile) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
@@ -25,21 +26,31 @@ pub enum AuthStatus {
 }
 
 pub fn check_status(profile_config: &config::ProfileConfig) -> AuthStatus {
-    let api_key = match &profile_config.api_key {
-        Some(key) if key != "PLACEHOLDER" => key.clone(),
-        _ => return AuthStatus::NotConfigured,
+    let api_key_fallback = profile_config
+        .api_key
+        .as_deref()
+        .filter(|k| !k.is_empty() && *k != "PLACEHOLDER");
+
+    // PKCE-origin sessions don't write an api_key, so absence of a key
+    // alone isn't "not configured" — only true if there's also no
+    // cached JWT session to validate.
+    if api_key_fallback.is_none() && crate::jwt::load_session().is_none() {
+        return AuthStatus::NotConfigured;
+    }
+
+    let access_token = match crate::jwt::ensure_access_token(profile_config, api_key_fallback) {
+        Ok(t) => t,
+        Err(_) => return AuthStatus::Invalid(401),
     };
 
     let url = format!("{}/workspaces", profile_config.api_url);
     let client = reqwest::blocking::Client::new();
-
-    match client
+    let req = client
         .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .send()
-    {
-        Ok(resp) if resp.status().is_success() => AuthStatus::Authenticated,
-        Ok(resp) => AuthStatus::Invalid(resp.status().as_u16()),
+        .header("Authorization", format!("Bearer {access_token}"));
+    match crate::util::send_debug(&client, req, None) {
+        Ok((status, _)) if status.is_success() => AuthStatus::Authenticated,
+        Ok((status, _)) => AuthStatus::Invalid(status.as_u16()),
         Err(e) => AuthStatus::ConnectionError(e.to_string()),
     }
 }
@@ -53,21 +64,42 @@ pub fn status(profile: &str) {
         }
     };
 
-    let source_label = if profile_config.api_key_source == ApiKeySource::Env {
-        " (env override)"
-    } else {
-        ""
+    // The credential the CLI is *about to use*. Note: even when an
+    // override is set, the wire credential is still a JWT (minted on
+    // demand from the override) — but we report the user-visible source.
+    let method_label = match profile_config.api_key_source {
+        ApiKeySource::Flag => "API Key flag",
+        ApiKeySource::Env => "API Key env",
+        ApiKeySource::Config => "CLI Session",
+    };
+
+    // For Flag/Env we mask the api_key the user supplied. For the
+    // CLI session path we mask the refresh_token — it's stable across
+    // commands (unlike the 5-min access_token), so the tail stays
+    // recognizable between runs.
+    let credential_tail = match profile_config.api_key_source {
+        ApiKeySource::Flag | ApiKeySource::Env => profile_config
+            .api_key
+            .as_deref()
+            .map(crate::util::mask_credential),
+        ApiKeySource::Config => crate::jwt::load_session()
+            .map(|s| crate::util::mask_credential(&s.refresh_token)),
+    };
+    let method_suffix = match credential_tail {
+        Some(tail) => format!(" - {method_label} [{tail}]"),
+        None => format!(" - {method_label}"),
     };
 
     match check_status(&profile_config) {
         AuthStatus::NotConfigured => {
             print_row("Authenticated", &"No".red().to_string());
-            print_row("API Key", &"Not configured".red().to_string());
         }
         AuthStatus::Authenticated => {
             print_row("API URL", &profile_config.api_url.cyan().to_string());
-            print_row("Authenticated", &"Yes".green().to_string());
-            print_row("API Key", &format!("{}{source_label}", "Valid".green()));
+            print_row(
+                "Authenticated",
+                &format!("{}{}", "Yes".green(), method_suffix.dark_grey()),
+            );
             match profile_config.workspaces.first() {
                 Some(w) => {
                     print_row("Workspace", &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()));
@@ -76,15 +108,11 @@ pub fn status(profile: &str) {
                 None => print_row("Current Workspace", &"None".dark_grey().to_string()),
             }
         }
-        AuthStatus::Invalid(code) => {
+        AuthStatus::Invalid(_) => {
             print_row("API URL", &profile_config.api_url.cyan().to_string());
-            print_row("Authenticated", &"No".red().to_string());
             print_row(
-                "API Key",
-                &format!(
-                    "{}{source_label}",
-                    format!("Invalid (HTTP {})", code).red()
-                ),
+                "Authenticated",
+                &format!("{}{}", "No".red(), method_suffix.dark_grey()),
             );
         }
         AuthStatus::ConnectionError(e) => {
@@ -94,75 +122,11 @@ pub fn status(profile: &str) {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum LoginResult {
-    Success { token: String, workspace: Option<config::WorkspaceEntry> },
-    Forbidden,
-    Failed(String),
-    ConnectionError(String),
-}
-
-#[derive(Deserialize)]
-struct TokenResponse {
-    token: String,
-}
-
 #[derive(Deserialize)]
 struct WsListResponse { workspaces: Vec<WsItem> }
 
 #[derive(Deserialize)]
 struct WsItem { public_id: String, name: String }
-
-/// Exchange an authorization code + PKCE verifier for an API token,
-/// then fetch available workspaces.
-fn exchange_and_save_token(api_url: &str, code: &str, code_verifier: &str) -> LoginResult {
-    let token_url = format!("{api_url}/auth/token");
-    let client = reqwest::blocking::Client::new();
-
-    let resp = match client
-        .post(&token_url)
-        .json(&serde_json::json!({ "code": code, "code_verifier": code_verifier }))
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) => return LoginResult::ConnectionError(e.to_string()),
-    };
-
-    if resp.status() == reqwest::StatusCode::FORBIDDEN {
-        return LoginResult::Forbidden;
-    }
-
-    if !resp.status().is_success() {
-        return LoginResult::Failed(format!("HTTP {}", resp.status()));
-    }
-
-    let body: TokenResponse = match resp.json() {
-        Ok(b) => b,
-        Err(e) => return LoginResult::Failed(format!("error parsing token response: {e}")),
-    };
-
-    // Save the token
-    if let Err(e) = config::save_api_key("default", &body.token) {
-        return LoginResult::Failed(format!("error saving token: {e}"));
-    }
-
-    // Fetch and cache workspaces
-    let ws_url = format!("{api_url}/workspaces");
-    let default_workspace = if let Ok(r) = client.get(&ws_url).header("Authorization", format!("Bearer {}", body.token)).send() {
-        if r.status().is_success() {
-            if let Ok(ws) = r.json::<WsListResponse>() {
-                let entries: Vec<config::WorkspaceEntry> = ws.workspaces.into_iter()
-                    .map(|w| config::WorkspaceEntry { public_id: w.public_id, name: w.name })
-                    .collect();
-                let first = entries.first().cloned();
-                let _ = config::save_workspaces("default", entries);
-                first
-            } else { None }
-        } else { None }
-    } else { None };
-
-    LoginResult::Success { token: body.token, workspace: default_workspace }
-}
 
 /// Wait for the browser callback, verify state, and extract the authorization code.
 fn receive_callback(server: &tiny_http::Server, expected_state: &str) -> Result<String, String> {
@@ -252,7 +216,6 @@ fn is_already_signed_in(profile_config: &config::ProfileConfig) -> bool {
 
 pub fn login() {
     let profile_config = config::load("default").unwrap_or_default();
-    let api_url = profile_config.api_url.to_string();
     let app_url = profile_config.app_url.to_string();
 
     // Check if already authenticated
@@ -272,13 +235,27 @@ pub fn login() {
     let code_challenge = generate_code_challenge(&code_verifier);
     let state = generate_random_string(32);
 
-    // Bind to port 0 so the OS picks an available port
+    // Bind to port 0 so the OS picks an available port. DOT's consent
+    // page will redirect here with `?code=...&state=...`.
     let server =
         tiny_http::Server::http("127.0.0.1:0").expect("failed to start local callback server");
     let port = server.server_addr().to_ip().unwrap().port();
+    let redirect_uri = format!("http://127.0.0.1:{port}/");
 
+    // DOT's `/o/authorize/` endpoint is mounted off the app URL (the
+    // browser-facing one; allauth session cookies live here). We send
+    // no `scope` parameter — the consent page picks permissions and
+    // workspace scope interactively, then composes the scope string
+    // server-side (see HotdataAllowForm).
     let login_url = format!(
-        "{app_url}/auth/cli-login?code_challenge={code_challenge}&code_challenge_method=S256&state={state}&callback_port={port}"
+        "{app_url}/o/authorize/\
+        ?client_id=hotdata-cli\
+        &response_type=code\
+        &redirect_uri={redirect_uri}\
+        &code_challenge={code_challenge}\
+        &code_challenge_method=S256\
+        &state={state}",
+        app_url = app_url.trim_end_matches('/'),
     );
 
     println!("Opening browser to log in...");
@@ -306,8 +283,11 @@ pub fn login() {
         }
     };
 
-    match exchange_and_save_token(&api_url, &code, &code_verifier) {
-        LoginResult::Success { workspace, .. } => {
+    match crate::jwt::mint_from_pkce_code(&profile_config, &code, &code_verifier, &redirect_uri) {
+        Ok(session) => {
+            if let Err(e) = crate::jwt::save_session(&session) {
+                eprintln!("warning: could not save session: {e}");
+            }
             stdout()
                 .execute(SetForegroundColor(Color::Green))
                 .unwrap()
@@ -316,7 +296,11 @@ pub fn login() {
                 .execute(ResetColor)
                 .unwrap();
 
-            match workspace {
+            // Best-effort workspace cache using the freshly minted JWT.
+            // Fall back to the existing on-disk list if the fetch fails.
+            let workspaces = cache_workspaces(&profile_config, &session.access_token)
+                .unwrap_or(profile_config.workspaces);
+            match workspaces.first() {
                 Some(w) => {
                     print_row("Workspace", &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()));
                     print_row("", &"use 'hotdata workspaces set' to switch workspaces".dark_grey().to_string());
@@ -324,19 +308,40 @@ pub fn login() {
                 None => print_row("Workspace", &"None".dark_grey().to_string()),
             }
         }
-        LoginResult::Forbidden => {
-            eprintln!("{}", "You are not authorized to create a new API token.".red());
-            std::process::exit(1);
-        }
-        LoginResult::Failed(msg) => {
-            eprintln!("token exchange failed: {msg}");
-            std::process::exit(1);
-        }
-        LoginResult::ConnectionError(e) => {
-            eprintln!("error connecting to API: {e}");
+        Err(msg) => {
+            eprintln!("{}", msg.red());
             std::process::exit(1);
         }
     }
+}
+
+/// Fetch workspaces with a freshly minted JWT and cache them in config.
+/// Returns the freshly fetched list so callers can display it without
+/// having to reload config from disk.
+fn cache_workspaces(
+    profile: &config::ProfileConfig,
+    access_token: &str,
+) -> Result<Vec<config::WorkspaceEntry>, String> {
+    let url = format!("{}/workspaces", profile.api_url);
+    let client = reqwest::blocking::Client::new();
+    let req = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {access_token}"));
+    let (status, body) = crate::util::send_debug(&client, req, None).map_err(|e| format!("{e}"))?;
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    let ws: WsListResponse = serde_json::from_str(&body).map_err(|e| format!("{e}"))?;
+    let entries: Vec<config::WorkspaceEntry> = ws
+        .workspaces
+        .into_iter()
+        .map(|w| config::WorkspaceEntry {
+            public_id: w.public_id,
+            name: w.name,
+        })
+        .collect();
+    config::save_workspaces("default", entries.clone())?;
+    Ok(entries)
 }
 
 fn generate_code_verifier() -> String {
@@ -370,74 +375,154 @@ fn parse_query_params(url: &str) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use config::{ApiUrl, ProfileConfig, test_helpers::with_temp_config_dir};
+    use config::{ApiUrl, AppUrl, ProfileConfig, test_helpers::with_temp_config_dir};
 
-    fn mock_profile(api_url: &str, api_key: Option<&str>) -> ProfileConfig {
+    fn mock_profile(url: &str, api_key: Option<&str>) -> ProfileConfig {
         ProfileConfig {
             api_key: api_key.map(String::from),
-            api_url: ApiUrl(Some(api_url.to_string())),
+            api_url: ApiUrl(Some(url.to_string())),
+            // Point app_url at the same server so any oauth path (e.g.
+            // ensure_access_token minting from an api_key) hits the
+            // mock instead of the real production app.
+            app_url: AppUrl(Some(url.to_string())),
             ..Default::default()
         }
+    }
+
+    /// Persist a fully-valid session so check_status can short-circuit
+    /// the JWT mint/refresh path and go straight to the /workspaces
+    /// probe — mirrors the on-disk state immediately after a PKCE login.
+    fn save_test_session(token: &str) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        crate::jwt::save_session(&crate::jwt::Session {
+            access_token: token.to_string(),
+            access_expires_at: now + 3600,
+            refresh_token: "r".into(),
+            refresh_expires_at: now + 86400,
+            source: "pkce".into(),
+        })
+        .unwrap();
     }
 
     // --- check_status tests ---
 
     #[test]
-    fn status_not_configured_when_no_key() {
+    fn status_not_configured_when_no_key_no_session() {
+        let (_tmp, _guard) = with_temp_config_dir();
         let profile = mock_profile("http://localhost", None);
         assert_eq!(check_status(&profile), AuthStatus::NotConfigured);
     }
 
     #[test]
-    fn status_not_configured_when_placeholder() {
+    fn status_not_configured_when_placeholder_no_session() {
+        let (_tmp, _guard) = with_temp_config_dir();
         let profile = mock_profile("http://localhost", Some("PLACEHOLDER"));
         assert_eq!(check_status(&profile), AuthStatus::NotConfigured);
     }
 
     #[test]
-    fn status_authenticated_with_valid_key() {
+    fn status_authenticated_with_valid_session() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_test_session("valid-jwt");
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/workspaces")
-            .match_header("Authorization", "Bearer valid-key")
+            .match_header("Authorization", "Bearer valid-jwt")
             .with_status(200)
             .with_body(r#"{"workspaces":[]}"#)
             .create();
 
-        let profile = mock_profile(&server.url(), Some("valid-key"));
+        let profile = mock_profile(&server.url(), None);
         assert_eq!(check_status(&profile), AuthStatus::Authenticated);
         mock.assert();
     }
 
     #[test]
-    fn status_invalid_with_bad_key() {
+    fn status_authenticated_via_api_token_fallback_when_no_session() {
+        // Realistic upgrade path: user has an api_key in config but no
+        // session.json yet. ensure_access_token must mint a JWT from
+        // the api_key, then check_status probes /workspaces with it.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let mint_mock = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "grant_type".into(),
+                "api_token".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"minted-jwt","expires_in":300,"refresh_token":"r"}"#)
+            .create();
+        let probe_mock = server
+            .mock("GET", "/workspaces")
+            .match_header("Authorization", "Bearer minted-jwt")
+            .with_status(200)
+            .with_body(r#"{"workspaces":[]}"#)
+            .create();
+
+        let profile = mock_profile(&server.url(), Some("hd_xyz"));
+        assert_eq!(check_status(&profile), AuthStatus::Authenticated);
+        mint_mock.assert();
+        probe_mock.assert();
+    }
+
+    #[test]
+    fn status_invalid_when_session_revoked_server_side() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_test_session("revoked-jwt");
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/workspaces")
             .with_status(401)
             .create();
 
-        let profile = mock_profile(&server.url(), Some("bad-key"));
+        let profile = mock_profile(&server.url(), None);
         assert_eq!(check_status(&profile), AuthStatus::Invalid(401));
         mock.assert();
     }
 
     #[test]
     fn status_invalid_with_forbidden() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_test_session("jwt");
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/workspaces")
             .with_status(403)
             .create();
 
-        let profile = mock_profile(&server.url(), Some("forbidden-key"));
+        let profile = mock_profile(&server.url(), None);
         assert_eq!(check_status(&profile), AuthStatus::Invalid(403));
         mock.assert();
     }
 
     #[test]
-    fn status_connection_error() {
-        let profile = mock_profile("http://127.0.0.1:1", Some("key"));
+    fn status_invalid_when_api_token_rejected_no_session() {
+        // No session, and the api_key fallback is rejected by the mint
+        // endpoint — collapse to Invalid(401) so `auth status` shows
+        // the user they need to re-auth.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/o/token/")
+            .with_status(401)
+            .create();
+
+        let profile = mock_profile(&server.url(), Some("hd_revoked"));
+        assert_eq!(check_status(&profile), AuthStatus::Invalid(401));
+        mock.assert();
+    }
+
+    #[test]
+    fn status_connection_error_during_probe() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_test_session("jwt");
+        let profile = mock_profile("http://127.0.0.1:1", None);
         match check_status(&profile) {
             AuthStatus::ConnectionError(_) => {}
             other => panic!("expected ConnectionError, got {:?}", other),
@@ -447,174 +532,42 @@ mod tests {
     // --- is_already_signed_in tests ---
 
     #[test]
-    fn already_signed_in_when_key_valid() {
+    fn already_signed_in_when_session_valid() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_test_session("session-jwt");
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/workspaces")
-            .match_header("Authorization", "Bearer existing-key")
+            .match_header("Authorization", "Bearer session-jwt")
             .with_status(200)
             .with_body(r#"{"workspaces":[]}"#)
             .create();
 
-        let profile = mock_profile(&server.url(), Some("existing-key"));
+        let profile = mock_profile(&server.url(), None);
         assert!(is_already_signed_in(&profile));
         mock.assert();
     }
 
     #[test]
-    fn not_signed_in_when_no_key() {
+    fn not_signed_in_when_no_key_no_session() {
+        let (_tmp, _guard) = with_temp_config_dir();
         let profile = mock_profile("http://localhost", None);
         assert!(!is_already_signed_in(&profile));
     }
 
     #[test]
-    fn not_signed_in_when_key_invalid() {
+    fn not_signed_in_when_session_invalid() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_test_session("expired-jwt");
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/workspaces")
             .with_status(401)
             .create();
 
-        let profile = mock_profile(&server.url(), Some("expired-key"));
+        let profile = mock_profile(&server.url(), None);
         assert!(!is_already_signed_in(&profile));
         mock.assert();
-    }
-
-    // --- exchange_and_save_token tests ---
-
-    #[test]
-    fn exchange_and_save_token_success() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-
-        let token_mock = server
-            .mock("POST", "/auth/token")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"token":"new-api-token-xyz"}"#)
-            .create();
-
-        let ws_mock = server
-            .mock("GET", "/workspaces")
-            .match_header("Authorization", "Bearer new-api-token-xyz")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"workspaces":[{"public_id":"ws-123","name":"My Workspace"}]}"#)
-            .create();
-
-        let result = exchange_and_save_token(&server.url(), "auth-code", "verifier");
-
-        token_mock.assert();
-        ws_mock.assert();
-
-        match result {
-            LoginResult::Success { token, workspace } => {
-                assert_eq!(token, "new-api-token-xyz");
-                let ws = workspace.expect("should have a workspace");
-                assert_eq!(ws.public_id, "ws-123");
-                assert_eq!(ws.name, "My Workspace");
-            }
-            other => panic!("expected Success, got {:?}", other),
-        }
-
-        // Verify token was saved to config
-        let profile = config::load("default").unwrap();
-        assert_eq!(profile.api_key, Some("new-api-token-xyz".to_string()));
-    }
-
-    #[test]
-    fn exchange_and_save_token_success_no_workspaces() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-
-        let token_mock = server
-            .mock("POST", "/auth/token")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"token":"token-no-ws"}"#)
-            .create();
-
-        let ws_mock = server
-            .mock("GET", "/workspaces")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"workspaces":[]}"#)
-            .create();
-
-        let result = exchange_and_save_token(&server.url(), "code", "verifier");
-
-        token_mock.assert();
-        ws_mock.assert();
-
-        match result {
-            LoginResult::Success { token, workspace } => {
-                assert_eq!(token, "token-no-ws");
-                assert!(workspace.is_none());
-            }
-            other => panic!("expected Success, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn exchange_and_save_token_forbidden() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-
-        let mock = server
-            .mock("POST", "/auth/token")
-            .with_status(403)
-            .create();
-
-        let result = exchange_and_save_token(&server.url(), "code", "verifier");
-        mock.assert();
-        assert_eq!(result, LoginResult::Forbidden);
-    }
-
-    #[test]
-    fn exchange_and_save_token_unauthorized() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-
-        let mock = server
-            .mock("POST", "/auth/token")
-            .with_status(401)
-            .create();
-
-        let result = exchange_and_save_token(&server.url(), "code", "verifier");
-        mock.assert();
-        match result {
-            LoginResult::Failed(msg) => assert!(msg.contains("401")),
-            other => panic!("expected Failed, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn exchange_and_save_token_server_error() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-
-        let mock = server
-            .mock("POST", "/auth/token")
-            .with_status(500)
-            .create();
-
-        let result = exchange_and_save_token(&server.url(), "code", "verifier");
-        mock.assert();
-        match result {
-            LoginResult::Failed(msg) => assert!(msg.contains("500")),
-            other => panic!("expected Failed, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn exchange_and_save_token_connection_error() {
-        let (_tmp, _guard) = with_temp_config_dir();
-
-        let result = exchange_and_save_token("http://127.0.0.1:1", "code", "verifier");
-        match result {
-            LoginResult::ConnectionError(_) => {}
-            other => panic!("expected ConnectionError, got {:?}", other),
-        }
     }
 
     // --- receive_callback tests ---
@@ -660,6 +613,69 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("state mismatch"));
+    }
+
+    // --- cache_workspaces tests ---
+
+    #[test]
+    fn cache_workspaces_persists_to_config() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/workspaces")
+            .match_header("Authorization", "Bearer jwt-xyz")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"workspaces":[{"public_id":"ws-1","name":"My WS"},{"public_id":"ws-2","name":"Other"}]}"#,
+            )
+            .create();
+
+        let profile = mock_profile(&server.url(), None);
+        let entries = cache_workspaces(&profile, "jwt-xyz").unwrap();
+        m.assert();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].public_id, "ws-1");
+        assert_eq!(entries[0].name, "My WS");
+
+        // Reload from disk and confirm the cache survived.
+        let loaded = config::load("default").unwrap();
+        assert_eq!(loaded.workspaces.len(), 2);
+        assert_eq!(loaded.workspaces[1].public_id, "ws-2");
+    }
+
+    #[test]
+    fn cache_workspaces_empty_list() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/workspaces")
+            .with_status(200)
+            .with_body(r#"{"workspaces":[]}"#)
+            .create();
+
+        let profile = mock_profile(&server.url(), None);
+        let entries = cache_workspaces(&profile, "jwt").unwrap();
+        m.assert();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn cache_workspaces_http_error() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server.mock("GET", "/workspaces").with_status(500).create();
+        let profile = mock_profile(&server.url(), None);
+        let err = cache_workspaces(&profile, "jwt").unwrap_err();
+        m.assert();
+        assert!(err.contains("500"), "got: {err}");
+    }
+
+    #[test]
+    fn cache_workspaces_connection_error() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let profile = mock_profile("http://127.0.0.1:1", None);
+        assert!(cache_workspaces(&profile, "jwt").is_err());
     }
 
     #[test]
