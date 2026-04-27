@@ -14,8 +14,9 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    /// Create a new API client. Loads config, validates auth.
-    /// Pass `workspace_id` for endpoints that require it, or `None` for workspace-less endpoints.
+    /// Create a new API client. Loads config, pre-flights a JWT session.
+    /// Pass `workspace_id` for endpoints that require it, or `None` for
+    /// workspace-less endpoints.
     pub fn new(workspace_id: Option<&str>) -> Self {
         let profile_config = match config::load("default") {
             Ok(c) => c,
@@ -25,17 +26,27 @@ impl ApiClient {
             }
         };
 
-        let api_key = match &profile_config.api_key {
-            Some(key) if key != "PLACEHOLDER" => key.clone(),
-            _ => {
-                eprintln!("error: not authenticated. Run 'hotdata auth login' (or 'hotdata auth') to log in.");
+        let api_key_fallback = profile_config
+            .api_key
+            .as_deref()
+            .filter(|k| !k.is_empty() && *k != "PLACEHOLDER");
+
+        // Pre-flight: return the cached JWT if valid, refresh it if
+        // close to expiry, or mint a new one from the API key. The
+        // returned string is a JWT — that's what we send on the wire.
+        let access_token = match crate::jwt::ensure_access_token(&profile_config, api_key_fallback)
+        {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{}", format!("error: {e}").red());
+                eprintln!("Run {} to log in, or pass --api-key.", "hotdata auth".cyan());
                 std::process::exit(1);
             }
         };
 
         Self {
             client: reqwest::blocking::Client::new(),
-            api_key,
+            api_key: access_token,
             api_url: profile_config.api_url.to_string(),
             workspace_id: workspace_id.map(String::from),
             sandbox_id: std::env::var("HOTDATA_SANDBOX").ok().or_else(|| {

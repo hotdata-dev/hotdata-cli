@@ -31,7 +31,7 @@ pub struct WorkspaceEntry {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct AppUrl(Option<String>);
+pub struct AppUrl(pub(crate) Option<String>);
 
 impl Default for AppUrl {
     fn default() -> Self {
@@ -123,6 +123,7 @@ fn write_config(config_path: &std::path::Path, content: &str) -> Result<(), Stri
     fs::write(config_path, content).map_err(|e| format!("error writing config file: {e}"))
 }
 
+#[cfg(test)]
 pub fn save_api_key(profile: &str, api_key: &str) -> Result<(), String> {
     let config_path = config_path()?;
 
