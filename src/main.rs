@@ -9,6 +9,7 @@ mod datasets;
 mod embedding;
 mod indexes;
 mod jobs;
+mod jwt;
 mod queries;
 mod query;
 mod results;
