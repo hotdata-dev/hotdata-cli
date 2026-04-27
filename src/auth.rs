@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::io::stdout;
 
 pub fn logout(profile: &str) {
-    if let Err(e) = config::remove_api_key(profile) {
+    crate::jwt::clear_session();
+    if let Err(e) = config::clear_workspaces(profile) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
@@ -44,14 +45,12 @@ pub fn check_status(profile_config: &config::ProfileConfig) -> AuthStatus {
 
     let url = format!("{}/workspaces", profile_config.api_url);
     let client = reqwest::blocking::Client::new();
-
-    match client
+    let req = client
         .get(&url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .send()
-    {
-        Ok(resp) if resp.status().is_success() => AuthStatus::Authenticated,
-        Ok(resp) => AuthStatus::Invalid(resp.status().as_u16()),
+        .header("Authorization", format!("Bearer {access_token}"));
+    match crate::util::send_debug(&client, req, None) {
+        Ok((status, _)) if status.is_success() => AuthStatus::Authenticated,
+        Ok((status, _)) => AuthStatus::Invalid(status.as_u16()),
         Err(e) => AuthStatus::ConnectionError(e.to_string()),
     }
 }
@@ -65,21 +64,42 @@ pub fn status(profile: &str) {
         }
     };
 
-    let source_label = if profile_config.api_key_source == ApiKeySource::Env {
-        " (env override)"
-    } else {
-        ""
+    // The credential the CLI is *about to use*. Note: even when an
+    // override is set, the wire credential is still a JWT (minted on
+    // demand from the override) — but we report the user-visible source.
+    let method_label = match profile_config.api_key_source {
+        ApiKeySource::Flag => "API Key flag",
+        ApiKeySource::Env => "API Key env",
+        ApiKeySource::Config => "CLI Session",
+    };
+
+    // For Flag/Env we mask the api_key the user supplied. For the
+    // CLI session path we mask the refresh_token — it's stable across
+    // commands (unlike the 5-min access_token), so the tail stays
+    // recognizable between runs.
+    let credential_tail = match profile_config.api_key_source {
+        ApiKeySource::Flag | ApiKeySource::Env => profile_config
+            .api_key
+            .as_deref()
+            .map(crate::util::mask_credential),
+        ApiKeySource::Config => crate::jwt::load_session()
+            .map(|s| crate::util::mask_credential(&s.refresh_token)),
+    };
+    let method_suffix = match credential_tail {
+        Some(tail) => format!(" - {method_label} [{tail}]"),
+        None => format!(" - {method_label}"),
     };
 
     match check_status(&profile_config) {
         AuthStatus::NotConfigured => {
             print_row("Authenticated", &"No".red().to_string());
-            print_row("API Key", &"Not configured".red().to_string());
         }
         AuthStatus::Authenticated => {
             print_row("API URL", &profile_config.api_url.cyan().to_string());
-            print_row("Authenticated", &"Yes".green().to_string());
-            print_row("API Key", &format!("{}{source_label}", "Valid".green()));
+            print_row(
+                "Authenticated",
+                &format!("{}{}", "Yes".green(), method_suffix.dark_grey()),
+            );
             match profile_config.workspaces.first() {
                 Some(w) => {
                     print_row("Workspace", &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()));
@@ -88,15 +108,11 @@ pub fn status(profile: &str) {
                 None => print_row("Current Workspace", &"None".dark_grey().to_string()),
             }
         }
-        AuthStatus::Invalid(code) => {
+        AuthStatus::Invalid(_) => {
             print_row("API URL", &profile_config.api_url.cyan().to_string());
-            print_row("Authenticated", &"No".red().to_string());
             print_row(
-                "API Key",
-                &format!(
-                    "{}{source_label}",
-                    format!("Invalid (HTTP {})", code).red()
-                ),
+                "Authenticated",
+                &format!("{}{}", "No".red(), method_suffix.dark_grey()),
             );
         }
         AuthStatus::ConnectionError(e) => {
@@ -308,15 +324,14 @@ fn cache_workspaces(
 ) -> Result<Vec<config::WorkspaceEntry>, String> {
     let url = format!("{}/workspaces", profile.api_url);
     let client = reqwest::blocking::Client::new();
-    let resp = client
+    let req = client
         .get(&url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .send()
-        .map_err(|e| format!("{e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        .header("Authorization", format!("Bearer {access_token}"));
+    let (status, body) = crate::util::send_debug(&client, req, None).map_err(|e| format!("{e}"))?;
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
     }
-    let ws: WsListResponse = resp.json().map_err(|e| format!("{e}"))?;
+    let ws: WsListResponse = serde_json::from_str(&body).map_err(|e| format!("{e}"))?;
     let entries: Vec<config::WorkspaceEntry> = ws
         .workspaces
         .into_iter()

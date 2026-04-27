@@ -76,32 +76,28 @@ pub fn openai_embed(text: &str, model: &str) -> Vec<f64> {
     });
 
     let client = reqwest::blocking::Client::new();
-    let resp = match client
+    let req = client
         .post("https://api.openai.com/v1/embeddings")
         .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-    {
-        Ok(r) => r,
+        .json(&body);
+    let (status, resp_body) = match crate::util::send_debug(&client, req, Some(&body)) {
+        Ok(pair) => pair,
         Err(e) => {
             eprintln!("error connecting to OpenAI API: {e}");
             std::process::exit(1);
         }
     };
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        let message = serde_json::from_str::<Value>(&body)
+    if !status.is_success() {
+        let message = serde_json::from_str::<Value>(&resp_body)
             .ok()
             .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-            .unwrap_or(body);
+            .unwrap_or(resp_body);
         eprintln!("error from OpenAI API ({status}): {message}");
         std::process::exit(1);
     }
 
-    let parsed: Value = match resp.json() {
+    let parsed: Value = match serde_json::from_str(&resp_body) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error parsing OpenAI response: {e}");

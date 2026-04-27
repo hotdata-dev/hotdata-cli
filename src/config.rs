@@ -98,6 +98,10 @@ impl<'de> Deserialize<'de> for ApiUrl {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ProfileConfig {
+    // Transient only: populated from `--api-key` and `HOTDATA_API_KEY`,
+    // never persisted to or read from YAML. Auth state on disk lives
+    // entirely in session.json.
+    #[serde(skip)]
     pub api_key: Option<String>,
     #[serde(skip)]
     pub api_url: ApiUrl,
@@ -123,33 +127,10 @@ fn write_config(config_path: &std::path::Path, content: &str) -> Result<(), Stri
     fs::write(config_path, content).map_err(|e| format!("error writing config file: {e}"))
 }
 
-#[cfg(test)]
-pub fn save_api_key(profile: &str, api_key: &str) -> Result<(), String> {
-    let config_path = config_path()?;
-
-    let mut config_file: ConfigFile = if config_path.exists() {
-        let content = fs::read_to_string(&config_path)
-            .map_err(|e| format!("error reading config file: {e}"))?;
-        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
-    } else {
-        ConfigFile {
-            profiles: HashMap::new(),
-        }
-    };
-
-    config_file
-        .profiles
-        .entry(profile.to_string())
-        .or_default()
-        .api_key = Some(api_key.to_string());
-
-    let content = serde_yaml::to_string(&config_file)
-        .map_err(|e| format!("error serializing config: {e}"))?;
-
-    write_config(&config_path, &content)
-}
-
-pub fn remove_api_key(profile: &str) -> Result<(), String> {
+/// Wipe the workspace cache for a profile. Paired with
+/// `jwt::clear_session()` in `auth::logout` — together they reset the
+/// on-disk state that login populates.
+pub fn clear_workspaces(profile: &str) -> Result<(), String> {
     let config_path = config_path()?;
 
     if !config_path.exists() {
@@ -162,7 +143,6 @@ pub fn remove_api_key(profile: &str) -> Result<(), String> {
         serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
 
     if let Some(entry) = config_file.profiles.get_mut(profile) {
-        entry.api_key = None;
         entry.workspaces.clear();
     }
 
@@ -340,66 +320,42 @@ mod tests {
     use super::*;
     use super::test_helpers::with_temp_config_dir;
 
-    #[test]
-    fn save_and_load_api_key() {
-        let (_tmp, _guard) = with_temp_config_dir();
-
-        save_api_key("default", "test-key-123").unwrap();
-        let profile = load("default").unwrap();
-        assert_eq!(profile.api_key, Some("test-key-123".to_string()));
+    fn ws(id: &str, name: &str) -> WorkspaceEntry {
+        WorkspaceEntry { public_id: id.into(), name: name.into() }
     }
 
     #[test]
-    fn save_api_key_creates_config_dir() {
+    fn save_workspaces_creates_config_dir() {
         let (_tmp, _guard) = with_temp_config_dir();
 
-        // Config file shouldn't exist yet
         let path = config_path().unwrap();
         assert!(!path.exists());
 
-        save_api_key("default", "key").unwrap();
+        save_workspaces("default", vec![ws("ws-1", "WS")]).unwrap();
         assert!(path.exists());
     }
 
     #[test]
-    fn remove_api_key_clears_key_and_workspaces() {
+    fn clear_workspaces_empties_the_list() {
         let (_tmp, _guard) = with_temp_config_dir();
+        save_workspaces("default", vec![ws("ws-1", "Test WS")]).unwrap();
 
-        save_api_key("default", "key-to-remove").unwrap();
-        save_workspaces(
-            "default",
-            vec![WorkspaceEntry {
-                public_id: "ws-1".into(),
-                name: "Test WS".into(),
-            }],
-        )
-        .unwrap();
-
-        remove_api_key("default").unwrap();
+        clear_workspaces("default").unwrap();
 
         let profile = load("default").unwrap();
-        assert_eq!(profile.api_key, None);
         assert!(profile.workspaces.is_empty());
     }
 
     #[test]
-    fn remove_api_key_noop_when_no_config() {
+    fn clear_workspaces_noop_when_no_config() {
         let (_tmp, _guard) = with_temp_config_dir();
-
-        // Should not error when config file doesn't exist
-        assert!(remove_api_key("default").is_ok());
+        assert!(clear_workspaces("default").is_ok());
     }
 
     #[test]
     fn save_and_load_workspaces() {
         let (_tmp, _guard) = with_temp_config_dir();
-
-        save_api_key("default", "key").unwrap();
-        let workspaces = vec![
-            WorkspaceEntry { public_id: "ws-1".into(), name: "First".into() },
-            WorkspaceEntry { public_id: "ws-2".into(), name: "Second".into() },
-        ];
-        save_workspaces("default", workspaces).unwrap();
+        save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
 
         let profile = load("default").unwrap();
         assert_eq!(profile.workspaces.len(), 2);
@@ -410,20 +366,10 @@ mod tests {
     #[test]
     fn save_default_workspace_moves_to_front() {
         let (_tmp, _guard) = with_temp_config_dir();
-
-        save_api_key("default", "key").unwrap();
-        let workspaces = vec![
-            WorkspaceEntry { public_id: "ws-1".into(), name: "First".into() },
-            WorkspaceEntry { public_id: "ws-2".into(), name: "Second".into() },
-        ];
-        save_workspaces("default", workspaces).unwrap();
+        save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
 
         // Set ws-2 as default — should move to front
-        save_default_workspace(
-            "default",
-            WorkspaceEntry { public_id: "ws-2".into(), name: "Second".into() },
-        )
-        .unwrap();
+        save_default_workspace("default", ws("ws-2", "Second")).unwrap();
 
         let profile = load("default").unwrap();
         assert_eq!(profile.workspaces[0].public_id, "ws-2");
@@ -433,8 +379,7 @@ mod tests {
     #[test]
     fn load_missing_profile_returns_default() {
         let (_tmp, _guard) = with_temp_config_dir();
-
-        save_api_key("default", "key").unwrap();
+        save_workspaces("default", vec![ws("ws-1", "WS")]).unwrap();
 
         let profile = load("nonexistent").unwrap();
         assert_eq!(profile.api_key, None);
@@ -450,16 +395,49 @@ mod tests {
     }
 
     #[test]
-    fn multiple_profiles() {
+    fn multiple_profiles_keep_independent_workspaces() {
         let (_tmp, _guard) = with_temp_config_dir();
-
-        save_api_key("default", "key-default").unwrap();
-        save_api_key("staging", "key-staging").unwrap();
+        save_workspaces("default", vec![ws("ws-default", "Default WS")]).unwrap();
+        save_workspaces("staging", vec![ws("ws-staging", "Staging WS")]).unwrap();
 
         let default = load("default").unwrap();
         let staging = load("staging").unwrap();
-        assert_eq!(default.api_key, Some("key-default".to_string()));
-        assert_eq!(staging.api_key, Some("key-staging".to_string()));
+        assert_eq!(default.workspaces[0].public_id, "ws-default");
+        assert_eq!(staging.workspaces[0].public_id, "ws-staging");
+    }
+
+    #[test]
+    fn legacy_api_key_in_yaml_is_ignored_on_load() {
+        // Older configs (pre-jwt-branch) had `api_key: hd_xxx` written
+        // to disk. After the migration, the api_key field is purely
+        // transient — `#[serde(skip)]` must drop any value present in
+        // YAML on load. This pins down the migration behavior so a
+        // stale entry can't silently reappear in profile.api_key.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let path = config_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "profiles:\n  default:\n    api_key: legacy-hd-token\n",
+        )
+        .unwrap();
+
+        let profile = load("default").unwrap();
+        assert_eq!(profile.api_key, None);
+    }
+
+    #[test]
+    fn save_does_not_persist_transient_api_key() {
+        // Even if api_key was set in-memory (e.g. via env var), saving
+        // workspaces must NOT round-trip api_key into YAML.
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_workspaces("default", vec![ws("ws-1", "WS")]).unwrap();
+
+        let yaml = fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(
+            !yaml.contains("api_key"),
+            "api_key must not appear in YAML, got:\n{yaml}"
+        );
     }
 
     #[test]

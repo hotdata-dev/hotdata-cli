@@ -71,29 +71,6 @@ impl ApiClient {
         }
     }
 
-    fn debug_headers(&self) -> Vec<(&str, String)> {
-        let masked = if self.api_key.len() > 4 {
-            format!("Bearer ...{}", &self.api_key[self.api_key.len()-4..])
-        } else {
-            "Bearer ***".to_string()
-        };
-        let mut headers = vec![("Authorization", masked)];
-        if let Some(ref ws) = self.workspace_id {
-            headers.push(("X-Workspace-Id", ws.clone()));
-        }
-        if let Some(ref sid) = self.sandbox_id {
-            // Send both headers during the session→sandbox migration window.
-            headers.push(("X-Session-Id", sid.clone()));
-            headers.push(("X-Sandbox-Id", sid.clone()));
-        }
-        headers
-    }
-
-    fn log_request(&self, method: &str, url: &str, body: Option<&serde_json::Value>) {
-        let headers = self.debug_headers();
-        let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        util::debug_request(method, url, &header_refs, body);
-    }
 
     /// Prints an error for a non-2xx response and exits. On 4xx, first re-probes
     /// the API key: if it's actually invalid, a clear re-auth hint is shown
@@ -122,6 +99,33 @@ impl ApiClient {
         req
     }
 
+    /// Send via `util::send_debug` and unwrap connection errors with the
+    /// CLI's standard "error connecting" exit. All public HTTP methods
+    /// route through here so debug logging is uniform.
+    fn send(
+        &self,
+        builder: reqwest::blocking::RequestBuilder,
+        body_for_log: Option<&serde_json::Value>,
+    ) -> (reqwest::StatusCode, String) {
+        match util::send_debug(&self.client, builder, body_for_log) {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("error connecting to API: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    fn parse_json<T: DeserializeOwned>(body: &str) -> T {
+        match serde_json::from_str(body) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error parsing response: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     /// GET request with query parameters, returns parsed response.
     /// Parameters with `None` values are omitted.
     pub fn get_with_params<T: DeserializeOwned>(&self, path: &str, params: &[(&str, Option<String>)]) -> T {
@@ -129,116 +133,49 @@ impl ApiClient {
             .filter_map(|(k, v)| v.as_ref().map(|val| (*k, val)))
             .collect();
         let url = format!("{}{path}", self.api_url);
-        self.log_request("GET", &url, None);
-
-        let resp = match self.build_request(reqwest::Method::GET, &url).query(&filtered).send() {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error connecting to API: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        let (status, body) = util::debug_response(resp);
+        let req = self.build_request(reqwest::Method::GET, &url).query(&filtered);
+        let (status, body) = self.send(req, None);
         if !status.is_success() {
             self.fail_response(status, body);
         }
-
-        match serde_json::from_str(&body) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("error parsing response: {e}");
-                std::process::exit(1);
-            }
-        }
+        Self::parse_json(&body)
     }
 
     /// GET request, returns parsed response.
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> T {
         let url = format!("{}{path}", self.api_url);
-        self.log_request("GET", &url, None);
-
-        let resp = match self.build_request(reqwest::Method::GET, &url).send() {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error connecting to API: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        let (status, body) = util::debug_response(resp);
+        let req = self.build_request(reqwest::Method::GET, &url);
+        let (status, body) = self.send(req, None);
         if !status.is_success() {
             self.fail_response(status, body);
         }
-
-        match serde_json::from_str(&body) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("error parsing response: {e}");
-                std::process::exit(1);
-            }
-        }
+        Self::parse_json(&body)
     }
 
     /// GET request; returns `None` on HTTP 404. Other status codes use the same handling as
     /// [`Self::get`]. Used when probing many paths where a missing resource is normal.
     pub fn get_none_if_not_found<T: DeserializeOwned>(&self, path: &str) -> Option<T> {
         let url = format!("{}{path}", self.api_url);
-        self.log_request("GET", &url, None);
-
-        let resp = match self.build_request(reqwest::Method::GET, &url).send() {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error connecting to API: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        let (status, body) = util::debug_response(resp);
+        let req = self.build_request(reqwest::Method::GET, &url);
+        let (status, body) = self.send(req, None);
         if status == reqwest::StatusCode::NOT_FOUND {
             return None;
         }
         if !status.is_success() {
             self.fail_response(status, body);
         }
-
-        match serde_json::from_str(&body) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                eprintln!("error parsing response: {e}");
-                std::process::exit(1);
-            }
-        }
+        Some(Self::parse_json(&body))
     }
 
     /// POST request with JSON body, returns parsed response.
     pub fn post<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> T {
         let url = format!("{}{path}", self.api_url);
-        self.log_request("POST", &url, Some(body));
-
-        let resp = match self.build_request(reqwest::Method::POST, &url)
-            .json(body)
-            .send()
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error connecting to API: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        let (status, resp_body) = util::debug_response(resp);
+        let req = self.build_request(reqwest::Method::POST, &url).json(body);
+        let (status, resp_body) = self.send(req, Some(body));
         if !status.is_success() {
             self.fail_response(status, resp_body);
         }
-
-        match serde_json::from_str(&resp_body) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("error parsing response: {e}");
-                std::process::exit(1);
-            }
-        }
+        Self::parse_json(&resp_body)
     }
 
     /// GET request, exits only on connection error, returns raw (status, body).
@@ -246,66 +183,26 @@ impl ApiClient {
     /// to handle non-2xx responses gracefully instead of aborting.
     pub fn get_raw(&self, path: &str) -> (reqwest::StatusCode, String) {
         let url = format!("{}{path}", self.api_url);
-        self.log_request("GET", &url, None);
-
-        let resp = match self.build_request(reqwest::Method::GET, &url).send() {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error connecting to API: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        util::debug_response(resp)
+        let req = self.build_request(reqwest::Method::GET, &url);
+        self.send(req, None)
     }
 
     /// POST request with JSON body, exits on error, returns raw (status, body).
     pub fn post_raw(&self, path: &str, body: &serde_json::Value) -> (reqwest::StatusCode, String) {
         let url = format!("{}{path}", self.api_url);
-        self.log_request("POST", &url, Some(body));
-
-        let resp = match self.build_request(reqwest::Method::POST, &url)
-            .json(body)
-            .send()
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error connecting to API: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        util::debug_response(resp)
+        let req = self.build_request(reqwest::Method::POST, &url).json(body);
+        self.send(req, Some(body))
     }
 
     /// PATCH request with JSON body, returns parsed response.
     pub fn patch<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> T {
         let url = format!("{}{path}", self.api_url);
-        self.log_request("PATCH", &url, Some(body));
-
-        let resp = match self.build_request(reqwest::Method::PATCH, &url)
-            .json(body)
-            .send()
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error connecting to API: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        let (status, resp_body) = util::debug_response(resp);
+        let req = self.build_request(reqwest::Method::PATCH, &url).json(body);
+        let (status, resp_body) = self.send(req, Some(body));
         if !status.is_success() {
             self.fail_response(status, resp_body);
         }
-
-        match serde_json::from_str(&resp_body) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("error parsing response: {e}");
-                std::process::exit(1);
-            }
-        }
+        Self::parse_json(&resp_body)
     }
 
     /// POST with a custom request body (for file uploads). Returns raw status and body.
@@ -317,24 +214,16 @@ impl ApiClient {
         content_length: Option<u64>,
     ) -> (reqwest::StatusCode, String) {
         let url = format!("{}{path}", self.api_url);
-        self.log_request("POST", &url, None);
-
         let mut req = self.build_request(reqwest::Method::POST, &url)
             .header("Content-Type", content_type);
-
         if let Some(len) = content_length {
             req = req.header("Content-Length", len);
         }
-
-        let resp = match req.body(reqwest::blocking::Body::new(reader)).send() {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error connecting to API: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        util::debug_response(resp)
+        let req = req.body(reqwest::blocking::Body::new(reader));
+        // Body is an opaque stream — nothing meaningful to print under
+        // --debug, so pass `None`. Headers (including the masked
+        // Authorization) still log.
+        self.send(req, None)
     }
 
 }

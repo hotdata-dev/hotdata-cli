@@ -19,6 +19,7 @@
 //! `HOTDATA_API_KEY` env var and is only used transiently to mint.
 
 use crate::config;
+use crate::util;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -127,6 +128,31 @@ fn oauth_base(profile: &config::ProfileConfig) -> String {
     profile.app_url.to_string().trim_end_matches('/').to_string()
 }
 
+/// Build a redacted JSON view of a form body for `--debug` printing.
+/// `util::send_debug` takes the printable body separately from the
+/// wire body, so we hand it this masked view while the actual `.form()`
+/// payload sends real values.
+fn redacted_form_body(params: &[(&str, &str)]) -> serde_json::Value {
+    let masked: serde_json::Map<String, serde_json::Value> = params
+        .iter()
+        .map(|(k, v)| {
+            let display = match *k {
+                "code" | "code_verifier" | "api_token" | "refresh_token" => {
+                    util::mask_credential(v)
+                }
+                _ => v.to_string(),
+            };
+            (k.to_string(), serde_json::Value::String(display))
+        })
+        .collect();
+    serde_json::Value::Object(masked)
+}
+
+/// Token-endpoint responses contain the access + refresh JWTs in
+/// plaintext. Mask both before printing, but return the unredacted
+/// body so the caller can still parse real values out of it.
+const TOKEN_REDACT_KEYS: &[&str] = &["access_token", "refresh_token"];
+
 /// Exchange a PKCE authorization code for a session.
 pub fn mint_from_pkce_code(
     profile: &config::ProfileConfig,
@@ -144,19 +170,19 @@ pub fn mint_from_pkce_code(
     ];
 
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(&url)
-        .form(&params)
-        .send()
-        .map_err(|e| format!("connection error: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        return Err(format!("token exchange failed: HTTP {status}: {body}"));
+    let req = client.post(&url).form(&params);
+    let body_log = redacted_form_body(&params);
+    let (status, body_text) = util::send_debug_with_redaction(
+        &client,
+        req,
+        Some(&body_log),
+        TOKEN_REDACT_KEYS,
+    )
+    .map_err(|e| format!("connection error: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("token exchange failed: HTTP {status}: {body_text}"));
     }
-    let body: TokenResponse = resp
-        .json()
+    let body: TokenResponse = serde_json::from_str(&body_text)
         .map_err(|e| format!("malformed token response: {e}"))?;
     Ok(session_from_response(body, None, "pkce"))
 }
@@ -174,19 +200,19 @@ pub fn mint_from_api_token(
     ];
 
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(&url)
-        .form(&params)
-        .send()
-        .map_err(|e| format!("connection error: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        return Err(format!("api_token exchange failed: HTTP {status}: {body}"));
+    let req = client.post(&url).form(&params);
+    let body_log = redacted_form_body(&params);
+    let (status, body_text) = util::send_debug_with_redaction(
+        &client,
+        req,
+        Some(&body_log),
+        TOKEN_REDACT_KEYS,
+    )
+    .map_err(|e| format!("connection error: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("api_token exchange failed: HTTP {status}: {body_text}"));
     }
-    let body: TokenResponse = resp
-        .json()
+    let body: TokenResponse = serde_json::from_str(&body_text)
         .map_err(|e| format!("malformed token response: {e}"))?;
     Ok(session_from_response(body, None, "api_token"))
 }
@@ -201,19 +227,19 @@ pub fn refresh(profile: &config::ProfileConfig, session: &Session) -> Result<Ses
     ];
 
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(&url)
-        .form(&params)
-        .send()
-        .map_err(|e| format!("connection error: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        return Err(format!("refresh failed: HTTP {status}: {body}"));
+    let req = client.post(&url).form(&params);
+    let body_log = redacted_form_body(&params);
+    let (status, body_text) = util::send_debug_with_redaction(
+        &client,
+        req,
+        Some(&body_log),
+        TOKEN_REDACT_KEYS,
+    )
+    .map_err(|e| format!("connection error: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("refresh failed: HTTP {status}: {body_text}"));
     }
-    let body: TokenResponse = resp
-        .json()
+    let body: TokenResponse = serde_json::from_str(&body_text)
         .map_err(|e| format!("malformed token response: {e}"))?;
     Ok(session_from_response(
         body,
@@ -235,6 +261,28 @@ pub fn ensure_access_token(
     profile: &config::ProfileConfig,
     api_key_fallback: Option<&str>,
 ) -> Result<String, String> {
+    // 0) An explicit identity override (`--api-key`, `HOTDATA_API_KEY`,
+    // or `.env`) is asserting a specific identity for *this invocation*.
+    // The on-disk session may belong to a completely different user
+    // from a prior `hotdata auth` and must not be reused. Mint fresh
+    // and deliberately skip persisting so we don't clobber the
+    // interactive session. Surface the real mint error here too — if
+    // the override key is bad, "HTTP 401" is more useful than the
+    // generic "session expired" message the cache-fallthrough returns.
+    //
+    // Only `ApiKeySource::Config` continues to honor the cache: that's
+    // a stable identity persisted in config.yml, paired with a session
+    // minted from that same identity.
+    if matches!(
+        profile.api_key_source,
+        config::ApiKeySource::Flag | config::ApiKeySource::Env
+    ) {
+        if let Some(api_key) = api_key_fallback {
+            let session = mint_from_api_token(profile, api_key)?;
+            return Ok(session.access_token);
+        }
+    }
+
     let now = now_unix();
 
     // 1) Cached session is still good.
@@ -748,6 +796,129 @@ mod tests {
         // HTTP status is suppressed so api.rs can append a clean
         // re-auth hint.
         assert!(err.contains("session"), "got: {err}");
+    }
+
+    // --- ensure_access_token: --api-key (Flag source) overrides cache ---
+
+    #[test]
+    fn ensure_with_flag_source_bypasses_valid_cached_session() {
+        // A perfectly valid PKCE session is on disk, but the user
+        // passed --api-key — we must mint a fresh JWT from that key
+        // instead of reusing the cached session.
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_session(&cached_session(3600, 7 * 24 * 3600)).unwrap();
+
+        let mut server = mockito::Server::new();
+        let mint_mock = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("grant_type".into(), "api_token".into()),
+                mockito::Matcher::UrlEncoded("api_token".into(), "hd_flag_token".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"flag-jwt","expires_in":300,"refresh_token":"r"}"#)
+            .create();
+
+        let mut profile = mock_profile(&server.url());
+        profile.api_key_source = config::ApiKeySource::Flag;
+        let token = ensure_access_token(&profile, Some("hd_flag_token")).unwrap();
+        mint_mock.assert();
+        assert_eq!(token, "flag-jwt");
+    }
+
+    #[test]
+    fn ensure_with_flag_source_does_not_overwrite_cached_session() {
+        // Flag-driven mints are for one-shot CLI invocations; persisting
+        // them would silently log the interactive user out.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let original = cached_session(3600, 7 * 24 * 3600);
+        save_session(&original).unwrap();
+
+        let mut server = mockito::Server::new();
+        let _mint = server
+            .mock("POST", "/o/token/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"flag-jwt","expires_in":300,"refresh_token":"r"}"#)
+            .create();
+
+        let mut profile = mock_profile(&server.url());
+        profile.api_key_source = config::ApiKeySource::Flag;
+        ensure_access_token(&profile, Some("hd_flag_token")).unwrap();
+
+        // session.json must still hold the original PKCE session.
+        let after = load_session().unwrap();
+        assert_eq!(after.access_token, original.access_token);
+        assert_eq!(after.refresh_token, original.refresh_token);
+    }
+
+    #[test]
+    fn ensure_with_flag_source_surfaces_mint_error() {
+        // When --api-key was passed explicitly, the user wants the real
+        // failure reason, not the generic "session expired or revoked"
+        // message that the cache-fall-through path returns.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/o/token/")
+            .with_status(401)
+            .with_body("invalid api token")
+            .create();
+
+        let mut profile = mock_profile(&server.url());
+        profile.api_key_source = config::ApiKeySource::Flag;
+        let err = ensure_access_token(&profile, Some("bad")).unwrap_err();
+        m.assert();
+        assert!(err.contains("401"), "got: {err}");
+    }
+
+    #[test]
+    fn ensure_with_env_source_bypasses_valid_cached_session() {
+        // HOTDATA_API_KEY (whether exported in the shell or loaded
+        // from .env) must override a cached session for the same
+        // reason --api-key does: the env var asserts a specific
+        // identity for this invocation.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let original = cached_session(3600, 7 * 24 * 3600);
+        save_session(&original).unwrap();
+
+        let mut server = mockito::Server::new();
+        let mint_mock = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("grant_type".into(), "api_token".into()),
+                mockito::Matcher::UrlEncoded("api_token".into(), "hd_env_token".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"env-jwt","expires_in":300,"refresh_token":"r"}"#)
+            .create();
+
+        let mut profile = mock_profile(&server.url());
+        profile.api_key_source = config::ApiKeySource::Env;
+        let token = ensure_access_token(&profile, Some("hd_env_token")).unwrap();
+        mint_mock.assert();
+        assert_eq!(token, "env-jwt");
+
+        // Cached session must remain untouched — same no-clobber
+        // guarantee as the Flag path.
+        let after = load_session().unwrap();
+        assert_eq!(after.access_token, original.access_token);
+    }
+
+    #[test]
+    fn ensure_with_config_source_still_uses_cached_session() {
+        // Regression guard: api_key_source = Config (the default) must
+        // continue to short-circuit on a valid cache, not mint.
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_session(&cached_session(3600, 7 * 24 * 3600)).unwrap();
+
+        let profile = mock_profile("http://127.0.0.1:1");
+        // Config source — even with an api_key fallback, the cache wins.
+        assert_eq!(profile.api_key_source, config::ApiKeySource::Config);
+        let token = ensure_access_token(&profile, Some("hd_config_key")).unwrap();
+        assert_eq!(token, "cached-jwt");
     }
 
     #[test]
