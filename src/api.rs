@@ -4,6 +4,7 @@ use crate::util;
 use crossterm::style::Stylize;
 use serde::de::DeserializeOwned;
 
+#[derive(Clone)]
 pub struct ApiClient {
     client: reqwest::blocking::Client,
     api_key: String,
@@ -149,6 +150,37 @@ impl ApiClient {
 
         match serde_json::from_str(&body) {
             Ok(v) => v,
+            Err(e) => {
+                eprintln!("error parsing response: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    /// GET request; returns `None` on HTTP 404. Other status codes use the same handling as
+    /// [`Self::get`]. Used when probing many paths where a missing resource is normal.
+    pub fn get_none_if_not_found<T: DeserializeOwned>(&self, path: &str) -> Option<T> {
+        let url = format!("{}{path}", self.api_url);
+        self.log_request("GET", &url, None);
+
+        let resp = match self.build_request(reqwest::Method::GET, &url).send() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error connecting to API: {e}");
+                std::process::exit(1);
+            }
+        };
+
+        let (status, body) = util::debug_response(resp);
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return None;
+        }
+        if !status.is_success() {
+            self.fail_response(status, body);
+        }
+
+        match serde_json::from_str(&body) {
+            Ok(v) => Some(v),
             Err(e) => {
                 eprintln!("error parsing response: {e}");
                 std::process::exit(1);

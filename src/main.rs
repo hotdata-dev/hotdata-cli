@@ -251,7 +251,13 @@ fn main() {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
                     IndexesCommands::List { connection_id, schema, table, output } => {
-                        indexes::list(&workspace_id, &connection_id, &schema, &table, &output)
+                        indexes::list(
+                            &workspace_id,
+                            connection_id.as_deref(),
+                            schema.as_deref(),
+                            table.as_deref(),
+                            &output,
+                        )
                     }
                     IndexesCommands::Create { connection_id, schema, table, name, columns, r#type, metric, r#async } => {
                         indexes::create(&workspace_id, &connection_id, &schema, &table, &name, &columns, &r#type, metric.as_deref(), r#async)
