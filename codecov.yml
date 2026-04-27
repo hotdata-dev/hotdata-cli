@@ -1,0 +1,9 @@
+# https://docs.codecov.com/docs/codecovyaml
+coverage:
+  status:
+    patch:
+      default:
+        # Patch % only measures lines touched in the PR. Release/version
+        # bumps, rustfmt, and refactors often edit large surface areas
+        # without new tests; do not fail CI on patch coverage alone.
+        informational: true
