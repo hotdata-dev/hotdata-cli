@@ -248,19 +248,19 @@ pub enum AuthCommands {
 
 #[derive(Subcommand)]
 pub enum IndexesCommands {
-    /// List indexes on a table
+    /// List indexes (defaults to the whole workspace; narrow with filters)
     List {
-        /// Connection ID
+        /// Filter by connection ID
         #[arg(long, short = 'c')]
-        connection_id: String,
+        connection_id: Option<String>,
 
-        /// Schema name
+        /// Filter by schema name
         #[arg(long)]
-        schema: String,
+        schema: Option<String>,
 
-        /// Table name
+        /// Filter by table name
         #[arg(long)]
-        table: String,
+        table: Option<String>,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
