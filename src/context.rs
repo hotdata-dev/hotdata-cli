@@ -89,12 +89,13 @@ pub fn validate_context_stem(name: &str) -> Result<(), String> {
     }
 
     let mut chars = name.chars();
-    if let Some(first) = chars.next() {
-        if !first.is_ascii_alphabetic() && first != '_' {
-            return Err(format!(
-                "name must start with a letter or underscore, got '{first}'"
-            ));
-        }
+    if let Some(first) = chars.next()
+        && !first.is_ascii_alphabetic()
+        && first != '_'
+    {
+        return Err(format!(
+            "name must start with a letter or underscore, got '{first}'"
+        ));
     }
 
     for c in chars {
@@ -121,7 +122,10 @@ fn local_md_path(name: &str) -> PathBuf {
         .join(format!("{name}.md"))
 }
 
-fn fetch_context(api: &ApiClient, name: &str) -> Result<WorkspaceContextEntry, reqwest::StatusCode> {
+fn fetch_context(
+    api: &ApiClient,
+    name: &str,
+) -> Result<WorkspaceContextEntry, reqwest::StatusCode> {
     let path = format!("/context/{name}");
     let (status, body) = api.get_raw(&path);
     if status == reqwest::StatusCode::NOT_FOUND {
@@ -215,7 +219,11 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
     if !dry_run && !force && path.exists() {
         eprintln!(
             "{}",
-            format!("error: {} already exists (use --force to overwrite)", path.display()).red()
+            format!(
+                "error: {} already exists (use --force to overwrite)",
+                path.display()
+            )
+            .red()
         );
         std::process::exit(1);
     }
@@ -253,8 +261,12 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
 
     println!(
         "{}",
-        format!("wrote {} (updated {})", path.display(), crate::util::format_date(&ctx.updated_at))
-            .green()
+        format!(
+            "wrote {} (updated {})",
+            path.display(),
+            crate::util::format_date(&ctx.updated_at)
+        )
+        .green()
     );
 }
 

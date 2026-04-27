@@ -28,7 +28,9 @@ impl ApiClient {
         let api_key = match &profile_config.api_key {
             Some(key) if key != "PLACEHOLDER" => key.clone(),
             _ => {
-                eprintln!("error: not authenticated. Run 'hotdata auth login' (or 'hotdata auth') to log in.");
+                eprintln!(
+                    "error: not authenticated. Run 'hotdata auth login' (or 'hotdata auth') to log in."
+                );
                 std::process::exit(1);
             }
         };
@@ -62,7 +64,7 @@ impl ApiClient {
 
     fn debug_headers(&self) -> Vec<(&str, String)> {
         let masked = if self.api_key.len() > 4 {
-            format!("Bearer ...{}", &self.api_key[self.api_key.len()-4..])
+            format!("Bearer ...{}", &self.api_key[self.api_key.len() - 4..])
         } else {
             "Bearer ***".to_string()
         };
@@ -80,7 +82,8 @@ impl ApiClient {
 
     fn log_request(&self, method: &str, url: &str, body: Option<&serde_json::Value>) {
         let headers = self.debug_headers();
-        let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let header_refs: Vec<(&str, &str)> =
+            headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
         util::debug_request(method, url, &header_refs, body);
     }
 
@@ -89,16 +92,27 @@ impl ApiClient {
     /// instead of whatever cryptic body the primary endpoint returned.
     fn fail_response(&self, status: reqwest::StatusCode, body: String) -> ! {
         let auth_status = if status.is_client_error() {
-            config::load("default").ok().map(|pc| auth::check_status(&pc))
+            config::load("default")
+                .ok()
+                .map(|pc| auth::check_status(&pc))
         } else {
             None
         };
-        eprintln!("{}", format_fail_message(status, &body, auth_status.as_ref()).red());
+        eprintln!(
+            "{}",
+            format_fail_message(status, &body, auth_status.as_ref()).red()
+        );
         std::process::exit(1);
     }
 
-    fn build_request(&self, method: reqwest::Method, url: &str) -> reqwest::blocking::RequestBuilder {
-        let mut req = self.client.request(method, url)
+    fn build_request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+    ) -> reqwest::blocking::RequestBuilder {
+        let mut req = self
+            .client
+            .request(method, url)
             .header("Authorization", format!("Bearer {}", self.api_key));
         if let Some(ref ws) = self.workspace_id {
             req = req.header("X-Workspace-Id", ws);
@@ -113,14 +127,23 @@ impl ApiClient {
 
     /// GET request with query parameters, returns parsed response.
     /// Parameters with `None` values are omitted.
-    pub fn get_with_params<T: DeserializeOwned>(&self, path: &str, params: &[(&str, Option<String>)]) -> T {
-        let filtered: Vec<(&str, &String)> = params.iter()
+    pub fn get_with_params<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        params: &[(&str, Option<String>)],
+    ) -> T {
+        let filtered: Vec<(&str, &String)> = params
+            .iter()
             .filter_map(|(k, v)| v.as_ref().map(|val| (*k, val)))
             .collect();
         let url = format!("{}{path}", self.api_url);
         self.log_request("GET", &url, None);
 
-        let resp = match self.build_request(reqwest::Method::GET, &url).query(&filtered).send() {
+        let resp = match self
+            .build_request(reqwest::Method::GET, &url)
+            .query(&filtered)
+            .send()
+        {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("error connecting to API: {e}");
@@ -205,7 +228,8 @@ impl ApiClient {
         let url = format!("{}{path}", self.api_url);
         self.log_request("POST", &url, Some(body));
 
-        let resp = match self.build_request(reqwest::Method::POST, &url)
+        let resp = match self
+            .build_request(reqwest::Method::POST, &url)
             .json(body)
             .send()
         {
@@ -253,7 +277,8 @@ impl ApiClient {
         let url = format!("{}{path}", self.api_url);
         self.log_request("POST", &url, Some(body));
 
-        let resp = match self.build_request(reqwest::Method::POST, &url)
+        let resp = match self
+            .build_request(reqwest::Method::POST, &url)
             .json(body)
             .send()
         {
@@ -272,7 +297,8 @@ impl ApiClient {
         let url = format!("{}{path}", self.api_url);
         self.log_request("PATCH", &url, Some(body));
 
-        let resp = match self.build_request(reqwest::Method::PATCH, &url)
+        let resp = match self
+            .build_request(reqwest::Method::PATCH, &url)
             .json(body)
             .send()
         {
@@ -308,7 +334,8 @@ impl ApiClient {
         let url = format!("{}{path}", self.api_url);
         self.log_request("POST", &url, None);
 
-        let mut req = self.build_request(reqwest::Method::POST, &url)
+        let mut req = self
+            .build_request(reqwest::Method::POST, &url)
             .header("Content-Type", content_type);
 
         if let Some(len) = content_length {
@@ -325,7 +352,6 @@ impl ApiClient {
 
         util::debug_response(resp)
     }
-
 }
 
 /// Decide what error text to print for a failed response. Pulled out as a pure
@@ -336,10 +362,10 @@ fn format_fail_message(
     body: &str,
     auth_status: Option<&auth::AuthStatus>,
 ) -> String {
-    if status.is_client_error() {
-        if let Some(auth::AuthStatus::Invalid(_)) = auth_status {
-            return "error: API key is invalid. Run 'hotdata auth login' (or 'hotdata auth') to re-authenticate.".to_string();
-        }
+    if status.is_client_error()
+        && let Some(auth::AuthStatus::Invalid(_)) = auth_status
+    {
+        return "error: API key is invalid. Run 'hotdata auth login' (or 'hotdata auth') to re-authenticate.".to_string();
     }
     util::api_error(body.to_string())
 }
@@ -465,11 +491,7 @@ mod tests {
     fn format_fail_message_4xx_no_probe_result_falls_through() {
         // Caller couldn't load config (None) — still surface the upstream error.
         let body = "plain body";
-        let msg = format_fail_message(
-            reqwest::StatusCode::NOT_FOUND,
-            body,
-            None,
-        );
+        let msg = format_fail_message(reqwest::StatusCode::NOT_FOUND, body, None);
         assert!(!msg.contains("API key is invalid"));
         assert_eq!(msg, "plain body");
     }

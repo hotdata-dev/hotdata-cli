@@ -6,10 +6,12 @@ use serde_json::Value;
 pub fn read_vector_from_stdin() -> Vec<f64> {
     use std::io::Read;
     let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input).unwrap_or_else(|e| {
-        eprintln!("error reading stdin: {e}");
-        std::process::exit(1);
-    });
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .unwrap_or_else(|e| {
+            eprintln!("error reading stdin: {e}");
+            std::process::exit(1);
+        });
 
     let input = input.trim();
     if input.is_empty() {
@@ -36,7 +38,8 @@ fn extract_vector(value: &Value) -> Vec<f64> {
     }
 
     // OpenAI response: {"data": [{"embedding": [...]}]}
-    if let Some(embedding) = value.get("data")
+    if let Some(embedding) = value
+        .get("data")
         .and_then(|d| d.get(0))
         .and_then(|d| d.get("embedding"))
         .and_then(|e| e.as_array())
@@ -114,5 +117,11 @@ pub fn openai_embed(text: &str, model: &str) -> Vec<f64> {
 
 /// Format a vector as a SQL ARRAY literal: ARRAY[0.1,-0.2,...]
 pub fn vector_to_sql(vec: &[f64]) -> String {
-    format!("ARRAY[{}]", vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","))
+    format!(
+        "ARRAY[{}]",
+        vec.iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }

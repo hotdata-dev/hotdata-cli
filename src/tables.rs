@@ -81,8 +81,13 @@ pub fn list(
     let next_cursor = body.next_cursor.clone();
 
     if connection_id.is_some() {
-        let out: Vec<TableWithColumns> = body.tables.into_iter()
-            .map(|t| TableWithColumns { table: t.full_name(), columns: t.columns })
+        let out: Vec<TableWithColumns> = body
+            .tables
+            .into_iter()
+            .map(|t| TableWithColumns {
+                table: t.full_name(),
+                columns: t.columns,
+            })
             .collect();
         match format {
             "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
@@ -92,19 +97,33 @@ pub fn list(
                     use crossterm::style::Stylize;
                     eprintln!("{}", "No tables found.".dark_grey());
                 } else {
-                    let rows: Vec<Vec<String>> = out.iter().flat_map(|t| {
-                        t.columns.iter().map(|col| vec![
-                            t.table.clone(), col.name.clone(), col.data_type.clone(), col.nullable.to_string(),
-                        ])
-                    }).collect();
+                    let rows: Vec<Vec<String>> = out
+                        .iter()
+                        .flat_map(|t| {
+                            t.columns.iter().map(|col| {
+                                vec![
+                                    t.table.clone(),
+                                    col.name.clone(),
+                                    col.data_type.clone(),
+                                    col.nullable.to_string(),
+                                ]
+                            })
+                        })
+                        .collect();
                     crate::table::print(&["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"], &rows);
                 }
             }
             _ => unreachable!(),
         }
     } else {
-        let mut out: Vec<TableRow> = body.tables.iter()
-            .map(|t| TableRow { table: t.full_name(), synced: t.synced, last_sync: t.last_sync.clone() })
+        let mut out: Vec<TableRow> = body
+            .tables
+            .iter()
+            .map(|t| TableRow {
+                table: t.full_name(),
+                synced: t.synced,
+                last_sync: t.last_sync.clone(),
+            })
             .collect();
         out.sort_by(|a, b| a.table.cmp(&b.table));
         match format {
@@ -115,11 +134,19 @@ pub fn list(
                     use crossterm::style::Stylize;
                     eprintln!("{}", "No tables found.".dark_grey());
                 } else {
-                    let rows: Vec<Vec<String>> = out.iter().map(|r| vec![
-                        r.table.clone(),
-                        r.synced.to_string(),
-                        r.last_sync.as_deref().map(crate::util::format_date).unwrap_or_else(|| "-".to_string()),
-                    ]).collect();
+                    let rows: Vec<Vec<String>> = out
+                        .iter()
+                        .map(|r| {
+                            vec![
+                                r.table.clone(),
+                                r.synced.to_string(),
+                                r.last_sync
+                                    .as_deref()
+                                    .map(crate::util::format_date)
+                                    .unwrap_or_else(|| "-".to_string()),
+                            ]
+                        })
+                        .collect();
                     crate::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &rows);
                 }
             }
@@ -129,6 +156,13 @@ pub fn list(
 
     if has_more {
         use crossterm::style::Stylize;
-        eprintln!("{}", format!("More results available. Use --cursor {} to fetch the next page.", next_cursor.as_deref().unwrap_or("")).dark_grey());
+        eprintln!(
+            "{}",
+            format!(
+                "More results available. Use --cursor {} to fetch the next page.",
+                next_cursor.as_deref().unwrap_or("")
+            )
+            .dark_grey()
+        );
     }
 }

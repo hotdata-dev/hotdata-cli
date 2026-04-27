@@ -30,14 +30,8 @@ pub struct WorkspaceEntry {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct AppUrl(Option<String>);
-
-impl Default for AppUrl {
-    fn default() -> Self {
-        AppUrl(None)
-    }
-}
 
 impl Deref for AppUrl {
     type Target = str;
@@ -67,14 +61,8 @@ pub enum ApiKeySource {
     Flag,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ApiUrl(pub(crate) Option<String>);
-
-impl Default for ApiUrl {
-    fn default() -> Self {
-        ApiUrl(None)
-    }
-}
 
 impl Deref for ApiUrl {
     type Target = str;
@@ -155,8 +143,8 @@ pub fn remove_api_key(profile: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let content = fs::read_to_string(&config_path)
-        .map_err(|e| format!("error reading config file: {e}"))?;
+    let content =
+        fs::read_to_string(&config_path).map_err(|e| format!("error reading config file: {e}"))?;
     let mut config_file: ConfigFile =
         serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
 
@@ -203,11 +191,15 @@ pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Resul
             .map_err(|e| format!("error reading config file: {e}"))?;
         serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
     } else {
-        ConfigFile { profiles: HashMap::new() }
+        ConfigFile {
+            profiles: HashMap::new(),
+        }
     };
 
     let entry = config_file.profiles.entry(profile.to_string()).or_default();
-    entry.workspaces.retain(|w| w.public_id != workspace.public_id);
+    entry
+        .workspaces
+        .retain(|w| w.public_id != workspace.public_id);
     entry.workspaces.insert(0, workspace);
 
     let content = serde_yaml::to_string(&config_file)
@@ -223,7 +215,9 @@ pub fn save_sandbox(profile: &str, sandbox_id: &str) -> Result<(), String> {
             .map_err(|e| format!("error reading config file: {e}"))?;
         serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
     } else {
-        ConfigFile { profiles: HashMap::new() }
+        ConfigFile {
+            profiles: HashMap::new(),
+        }
     };
 
     config_file
@@ -244,8 +238,8 @@ pub fn clear_sandbox(profile: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let content = fs::read_to_string(&config_path)
-        .map_err(|e| format!("error reading config file: {e}"))?;
+    let content =
+        fs::read_to_string(&config_path).map_err(|e| format!("error reading config file: {e}"))?;
     let mut config_file: ConfigFile =
         serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
 
@@ -258,7 +252,10 @@ pub fn clear_sandbox(profile: &str) -> Result<(), String> {
     write_config(&config_path, &content)
 }
 
-pub fn resolve_workspace_id(provided: Option<String>, profile_config: &ProfileConfig) -> Result<String, String> {
+pub fn resolve_workspace_id(
+    provided: Option<String>,
+    profile_config: &ProfileConfig,
+) -> Result<String, String> {
     if let Some(id) = provided {
         return Ok(id);
     }
@@ -281,14 +278,20 @@ pub fn load(profile: &str) -> Result<ProfileConfig, String> {
     let config_file = config_path()?;
 
     let mut profile_config = if config_file.exists() {
-        let content =
-            fs::read_to_string(&config_file).map_err(|e| format!("error reading config file: {e}"))?;
+        let content = fs::read_to_string(&config_file)
+            .map_err(|e| format!("error reading config file: {e}"))?;
         let config_file: ConfigFile = serde_yaml::from_str(&content).unwrap_or_else(|_| {
             eprintln!("{}", "error parsing config file.".red());
-            eprintln!("Run 'hotdata auth login' (or 'hotdata auth') to generate a new config file.");
+            eprintln!(
+                "Run 'hotdata auth login' (or 'hotdata auth') to generate a new config file."
+            );
             std::process::exit(1);
         });
-        config_file.profiles.get(profile).cloned().unwrap_or_default()
+        config_file
+            .profiles
+            .get(profile)
+            .cloned()
+            .unwrap_or_default()
     } else {
         ProfileConfig::default()
     };
@@ -336,8 +339,8 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_helpers::with_temp_config_dir;
+    use super::*;
 
     #[test]
     fn save_and_load_api_key() {
@@ -395,8 +398,14 @@ mod tests {
 
         save_api_key("default", "key").unwrap();
         let workspaces = vec![
-            WorkspaceEntry { public_id: "ws-1".into(), name: "First".into() },
-            WorkspaceEntry { public_id: "ws-2".into(), name: "Second".into() },
+            WorkspaceEntry {
+                public_id: "ws-1".into(),
+                name: "First".into(),
+            },
+            WorkspaceEntry {
+                public_id: "ws-2".into(),
+                name: "Second".into(),
+            },
         ];
         save_workspaces("default", workspaces).unwrap();
 
@@ -412,15 +421,24 @@ mod tests {
 
         save_api_key("default", "key").unwrap();
         let workspaces = vec![
-            WorkspaceEntry { public_id: "ws-1".into(), name: "First".into() },
-            WorkspaceEntry { public_id: "ws-2".into(), name: "Second".into() },
+            WorkspaceEntry {
+                public_id: "ws-1".into(),
+                name: "First".into(),
+            },
+            WorkspaceEntry {
+                public_id: "ws-2".into(),
+                name: "Second".into(),
+            },
         ];
         save_workspaces("default", workspaces).unwrap();
 
         // Set ws-2 as default — should move to front
         save_default_workspace(
             "default",
-            WorkspaceEntry { public_id: "ws-2".into(), name: "Second".into() },
+            WorkspaceEntry {
+                public_id: "ws-2".into(),
+                name: "Second".into(),
+            },
         )
         .unwrap();
 
@@ -464,7 +482,10 @@ mod tests {
     #[test]
     fn resolve_workspace_id_prefers_provided() {
         let profile = ProfileConfig {
-            workspaces: vec![WorkspaceEntry { public_id: "ws-1".into(), name: "WS".into() }],
+            workspaces: vec![WorkspaceEntry {
+                public_id: "ws-1".into(),
+                name: "WS".into(),
+            }],
             ..Default::default()
         };
         let result = resolve_workspace_id(Some("explicit-id".into()), &profile).unwrap();
@@ -474,7 +495,10 @@ mod tests {
     #[test]
     fn resolve_workspace_id_falls_back_to_first() {
         let profile = ProfileConfig {
-            workspaces: vec![WorkspaceEntry { public_id: "ws-1".into(), name: "WS".into() }],
+            workspaces: vec![WorkspaceEntry {
+                public_id: "ws-1".into(),
+                name: "WS".into(),
+            }],
             ..Default::default()
         };
         let result = resolve_workspace_id(None, &profile).unwrap();

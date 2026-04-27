@@ -32,17 +32,30 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No results found.".dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body.results.iter().map(|r| vec![
-                    r.id.clone(),
-                    r.status.clone(),
-                    crate::util::format_date(&r.created_at),
-                ]).collect();
+                let rows: Vec<Vec<String>> = body
+                    .results
+                    .iter()
+                    .map(|r| {
+                        vec![
+                            r.id.clone(),
+                            r.status.clone(),
+                            crate::util::format_date(&r.created_at),
+                        ]
+                    })
+                    .collect();
                 crate::table::print(&["ID", "STATUS", "CREATED AT"], &rows);
             }
             if body.has_more {
                 let next = offset.unwrap_or(0) + body.count as u32;
                 use crossterm::style::Stylize;
-                eprintln!("{}", format!("showing {} results — use --offset {next} for more", body.count).dark_grey());
+                eprintln!(
+                    "{}",
+                    format!(
+                        "showing {} results — use --offset {next} for more",
+                        body.count
+                    )
+                    .dark_grey()
+                );
             }
         }
         _ => unreachable!(),

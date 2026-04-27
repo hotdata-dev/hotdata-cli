@@ -5,9 +5,7 @@ use std::time::Duration;
 /// Writes to stderr so stdout (json/yaml output) stays clean.
 pub fn spinner(msg: &str) -> indicatif::ProgressBar {
     let pb = indicatif::ProgressBar::new_spinner();
-    pb.set_style(
-        indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap(),
-    );
+    pb.set_style(indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap());
     pb.set_message(msg.to_string());
     pb.enable_steady_tick(Duration::from_millis(80));
     pb
@@ -24,15 +22,25 @@ pub fn is_debug() -> bool {
 }
 
 /// Log request details when debug mode is enabled.
-pub fn debug_request(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&serde_json::Value>) {
-    if !is_debug() { return; }
+pub fn debug_request(
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: Option<&serde_json::Value>,
+) {
+    if !is_debug() {
+        return;
+    }
     use crossterm::style::Stylize;
     eprintln!("{}", format!(">>> {method} {url}").dark_cyan());
     for (k, v) in headers {
         eprintln!("{}", format!("  {k}: {v}").dark_grey());
     }
     if let Some(b) = body {
-        eprintln!("{}", colorize_json(&serde_json::to_string_pretty(b).unwrap()));
+        eprintln!(
+            "{}",
+            colorize_json(&serde_json::to_string_pretty(b).unwrap())
+        );
     }
 }
 
@@ -44,14 +52,21 @@ pub fn debug_response(resp: reqwest::blocking::Response) -> (reqwest::StatusCode
 
     if is_debug() {
         use crossterm::style::Stylize;
-        let status_str = format!("<<< {} {}", status.as_u16(), status.canonical_reason().unwrap_or(""));
+        let status_str = format!(
+            "<<< {} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("")
+        );
         if status.is_success() {
             eprintln!("{}", status_str.dark_green());
         } else {
             eprintln!("{}", status_str.dark_red());
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-            eprintln!("{}", colorize_json(&serde_json::to_string_pretty(&v).unwrap()));
+            eprintln!(
+                "{}",
+                colorize_json(&serde_json::to_string_pretty(&v).unwrap())
+            );
         } else if !body.is_empty() {
             eprintln!("{}", body.to_string().dark_grey());
         }
@@ -84,8 +99,10 @@ fn colorize_json(json: &str) -> String {
                 // String value in array
                 result.push_str(&line.yellow().to_string());
             }
-        } else if trimmed.starts_with('{') || trimmed.starts_with('}')
-            || trimmed.starts_with('[') || trimmed.starts_with(']')
+        } else if trimmed.starts_with('{')
+            || trimmed.starts_with('}')
+            || trimmed.starts_with('[')
+            || trimmed.starts_with(']')
         {
             result.push_str(&line.dark_grey().to_string());
         } else {
@@ -107,11 +124,16 @@ fn colorize_json(json: &str) -> String {
 /// Find the colon separating a JSON key from its value, skipping the key string.
 fn find_key_colon(s: &str) -> Option<usize> {
     // Expect: "key": value
-    if !s.starts_with('"') { return None; }
+    if !s.starts_with('"') {
+        return None;
+    }
     let mut i = 1;
     let bytes = s.as_bytes();
     while i < bytes.len() {
-        if bytes[i] == b'\\' { i += 2; continue; }
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
         if bytes[i] == b'"' {
             // Found end of key, look for ": "
             if s.get(i + 1..i + 3) == Some(": ") {
@@ -128,7 +150,11 @@ fn find_key_colon(s: &str) -> Option<usize> {
 fn colorize_json_value(v: &str) -> String {
     use crossterm::style::Stylize;
     let stripped = v.trim_end_matches(',');
-    let comma = if v.ends_with(',') { ",".dark_grey().to_string() } else { String::new() };
+    let comma = if v.ends_with(',') {
+        ",".dark_grey().to_string()
+    } else {
+        String::new()
+    };
 
     let colored = if stripped == "null" {
         stripped.dark_grey().to_string()

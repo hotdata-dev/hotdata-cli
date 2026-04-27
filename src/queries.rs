@@ -3,13 +3,12 @@ use crossterm::style::{Color, Stylize};
 use serde::{Deserialize, Serialize};
 
 const SQL_KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS",
-    "ON", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS",
-    "ORDER", "BY", "GROUP", "HAVING", "LIMIT", "OFFSET", "UNION", "ALL",
-    "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "DROP",
-    "ALTER", "TABLE", "INDEX", "VIEW", "WITH", "DISTINCT", "BETWEEN", "LIKE",
-    "CASE", "WHEN", "THEN", "ELSE", "END", "EXISTS", "ASC", "DESC", "TRUE", "FALSE",
-    "COUNT", "SUM", "AVG", "MIN", "MAX", "CAST", "COALESCE", "NULLIF",
+    "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON", "JOIN", "LEFT",
+    "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "ORDER", "BY", "GROUP", "HAVING", "LIMIT",
+    "OFFSET", "UNION", "ALL", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE",
+    "DROP", "ALTER", "TABLE", "INDEX", "VIEW", "WITH", "DISTINCT", "BETWEEN", "LIKE", "CASE",
+    "WHEN", "THEN", "ELSE", "END", "EXISTS", "ASC", "DESC", "TRUE", "FALSE", "COUNT", "SUM", "AVG",
+    "MIN", "MAX", "CAST", "COALESCE", "NULLIF",
 ];
 
 fn highlight_sql(sql: &str) -> String {
@@ -39,7 +38,9 @@ fn highlight_sql(sql: &str) -> String {
             while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
                 i += 1;
             }
-            if i + 1 < len { i += 2; }
+            if i + 1 < len {
+                i += 2;
+            }
             let comment: String = chars[start..i].iter().collect();
             result.push_str(&comment.dark_grey().to_string());
             continue;
@@ -50,7 +51,9 @@ fn highlight_sql(sql: &str) -> String {
             let start = i;
             i += 1;
             loop {
-                if i >= len { break; }
+                if i >= len {
+                    break;
+                }
                 if chars[i] == '\'' {
                     i += 1;
                     // '' is an escaped quote, continue the string
@@ -173,25 +176,48 @@ pub fn list(
     let body: ListResponse = api.get_with_params("/query-runs", &params);
 
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&body.query_runs).unwrap()),
+        "json" => println!(
+            "{}",
+            serde_json::to_string_pretty(&body.query_runs).unwrap()
+        ),
         "yaml" => print!("{}", serde_yaml::to_string(&body.query_runs).unwrap()),
         "table" => {
             if body.query_runs.is_empty() {
                 eprintln!("{}", "No query runs found.".dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body.query_runs.iter().map(|r| vec![
-                    r.id.clone(),
-                    color_status(&r.status),
-                    crate::util::format_date(&r.created_at),
-                    r.execution_time_ms.map(|ms| ms.to_string()).unwrap_or_else(|| "-".to_string()),
-                    r.row_count.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string()),
-                    truncate_sql(&r.sql_text, 60),
-                ]).collect();
-                crate::table::print(&["ID", "STATUS", "CREATED", "DURATION_MS", "ROWS", "SQL"], &rows);
+                let rows: Vec<Vec<String>> = body
+                    .query_runs
+                    .iter()
+                    .map(|r| {
+                        vec![
+                            r.id.clone(),
+                            color_status(&r.status),
+                            crate::util::format_date(&r.created_at),
+                            r.execution_time_ms
+                                .map(|ms| ms.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            r.row_count
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            truncate_sql(&r.sql_text, 60),
+                        ]
+                    })
+                    .collect();
+                crate::table::print(
+                    &["ID", "STATUS", "CREATED", "DURATION_MS", "ROWS", "SQL"],
+                    &rows,
+                );
             }
             if body.has_more {
                 let next = body.next_cursor.as_deref().unwrap_or("");
-                eprintln!("{}", format!("showing {} results — use --cursor {next} for more", body.count).dark_grey());
+                eprintln!(
+                    "{}",
+                    format!(
+                        "showing {} results — use --cursor {next} for more",
+                        body.count
+                    )
+                    .dark_grey()
+                );
             }
         }
         _ => unreachable!(),
@@ -213,7 +239,11 @@ fn print_detail(r: &QueryRun, format: &str) {
             let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
             println!("{}{}", label("id:"), r.id);
             println!("{}{}", label("status:"), color_status(&r.status));
-            println!("{}{}", label("created:"), crate::util::format_date(&r.created_at));
+            println!(
+                "{}{}",
+                label("created:"),
+                crate::util::format_date(&r.created_at)
+            );
             if let Some(ref c) = r.completed_at {
                 println!("{}{}", label("completed:"), crate::util::format_date(c));
             }
@@ -230,7 +260,10 @@ fn print_detail(r: &QueryRun, format: &str) {
                 println!("{}{}", label("result id:"), id);
             }
             if let Some(ref id) = r.saved_query_id {
-                let version = r.saved_query_version.map(|v| format!(" (v{v})")).unwrap_or_default();
+                let version = r
+                    .saved_query_version
+                    .map(|v| format!(" (v{v})"))
+                    .unwrap_or_default();
                 println!("{}{}{}", label("saved query:"), id, version);
             }
             println!("{}{}", label("snapshot:"), r.snapshot_id);

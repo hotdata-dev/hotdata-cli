@@ -128,7 +128,12 @@ fn list_one_table(api: &ApiClient, connection_id: &str, schema: &str, table: &st
     body.indexes
 }
 
-fn list_one_table_scan(api: &ApiClient, connection_id: &str, schema: &str, table: &str) -> Vec<Index> {
+fn list_one_table_scan(
+    api: &ApiClient,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
+) -> Vec<Index> {
     let path = format!("/connections/{connection_id}/tables/{schema}/{table}/indexes");
     match api.get_none_if_not_found::<ListResponse>(&path) {
         Some(body) => body.indexes,
@@ -210,13 +215,7 @@ pub fn list(
                     .collect();
                 crate::table::print(
                     &[
-                        "TABLE",
-                        "NAME",
-                        "TYPE",
-                        "COLUMNS",
-                        "METRIC",
-                        "STATUS",
-                        "CREATED",
+                        "TABLE", "NAME", "TYPE", "COLUMNS", "METRIC", "STATUS", "CREATED",
                     ],
                     &table_rows,
                 );
@@ -244,6 +243,7 @@ pub fn list(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     workspace_id: &str,
     connection_id: &str,
@@ -283,7 +283,10 @@ pub fn create(
         let job_id = parsed["job_id"].as_str().unwrap_or("unknown");
         println!("{}", "Index creation submitted.".green());
         println!("job_id: {}", job_id);
-        println!("{}", "Use 'hotdata jobs <job_id>' to check status.".dark_grey());
+        println!(
+            "{}",
+            "Use 'hotdata jobs <job_id>' to check status.".dark_grey()
+        );
     } else {
         println!("{}", "Index created.".green());
     }

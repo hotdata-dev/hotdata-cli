@@ -1,3 +1,12 @@
+## [0.1.14] - 2026-04-27
+
+### 🚀 Features
+
+- *(indexes)* Workspace-wide list with filters and parallel fetch
+
+### 🧪 Testing
+
+- Raise coverage for indexes list and get_none_if_not_found
 ## [0.1.13] - 2026-04-24
 
 ### 🚀 Features

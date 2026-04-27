@@ -70,8 +70,20 @@ pub fn status(profile: &str) {
             print_row("API Key", &format!("{}{source_label}", "Valid".green()));
             match profile_config.workspaces.first() {
                 Some(w) => {
-                    print_row("Workspace", &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()));
-                    print_row("", &"use 'hotdata workspaces set' to switch workspaces".dark_grey().to_string());
+                    print_row(
+                        "Workspace",
+                        &format!(
+                            "{} {}",
+                            w.name.as_str().cyan(),
+                            format!("({})", w.public_id).dark_grey()
+                        ),
+                    );
+                    print_row(
+                        "",
+                        &"use 'hotdata workspaces set' to switch workspaces"
+                            .dark_grey()
+                            .to_string(),
+                    );
                 }
                 None => print_row("Current Workspace", &"None".dark_grey().to_string()),
             }
@@ -81,10 +93,7 @@ pub fn status(profile: &str) {
             print_row("Authenticated", &"No".red().to_string());
             print_row(
                 "API Key",
-                &format!(
-                    "{}{source_label}",
-                    format!("Invalid (HTTP {})", code).red()
-                ),
+                &format!("{}{source_label}", format!("Invalid (HTTP {})", code).red()),
             );
         }
         AuthStatus::ConnectionError(e) => {
@@ -96,7 +105,10 @@ pub fn status(profile: &str) {
 
 #[derive(Debug, PartialEq)]
 pub enum LoginResult {
-    Success { token: String, workspace: Option<config::WorkspaceEntry> },
+    Success {
+        token: String,
+        workspace: Option<config::WorkspaceEntry>,
+    },
     Forbidden,
     Failed(String),
     ConnectionError(String),
@@ -108,10 +120,15 @@ struct TokenResponse {
 }
 
 #[derive(Deserialize)]
-struct WsListResponse { workspaces: Vec<WsItem> }
+struct WsListResponse {
+    workspaces: Vec<WsItem>,
+}
 
 #[derive(Deserialize)]
-struct WsItem { public_id: String, name: String }
+struct WsItem {
+    public_id: String,
+    name: String,
+}
 
 /// Exchange an authorization code + PKCE verifier for an API token,
 /// then fetch available workspaces.
@@ -148,30 +165,52 @@ fn exchange_and_save_token(api_url: &str, code: &str, code_verifier: &str) -> Lo
 
     // Fetch and cache workspaces
     let ws_url = format!("{api_url}/workspaces");
-    let default_workspace = if let Ok(r) = client.get(&ws_url).header("Authorization", format!("Bearer {}", body.token)).send() {
+    let default_workspace = if let Ok(r) = client
+        .get(&ws_url)
+        .header("Authorization", format!("Bearer {}", body.token))
+        .send()
+    {
         if r.status().is_success() {
             if let Ok(ws) = r.json::<WsListResponse>() {
-                let entries: Vec<config::WorkspaceEntry> = ws.workspaces.into_iter()
-                    .map(|w| config::WorkspaceEntry { public_id: w.public_id, name: w.name })
+                let entries: Vec<config::WorkspaceEntry> = ws
+                    .workspaces
+                    .into_iter()
+                    .map(|w| config::WorkspaceEntry {
+                        public_id: w.public_id,
+                        name: w.name,
+                    })
                     .collect();
                 let first = entries.first().cloned();
                 let _ = config::save_workspaces("default", entries);
                 first
-            } else { None }
-        } else { None }
-    } else { None };
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    LoginResult::Success { token: body.token, workspace: default_workspace }
+    LoginResult::Success {
+        token: body.token,
+        workspace: default_workspace,
+    }
 }
 
 /// Wait for the browser callback, verify state, and extract the authorization code.
 fn receive_callback(server: &tiny_http::Server, expected_state: &str) -> Result<String, String> {
-    let request = server.recv().map_err(|e| format!("failed to receive callback: {e}"))?;
+    let request = server
+        .recv()
+        .map_err(|e| format!("failed to receive callback: {e}"))?;
     let raw_url = request.url().to_string();
     let params = parse_query_params(&raw_url);
 
     if params.get("state").map(String::as_str) != Some(expected_state) {
-        let _ = request.respond(tiny_http::Response::from_string("Login failed: state mismatch"));
+        let _ = request.respond(tiny_http::Response::from_string(
+            "Login failed: state mismatch",
+        ));
         return Err("state mismatch — possible CSRF attack".into());
     }
 
@@ -318,14 +357,29 @@ pub fn login() {
 
             match workspace {
                 Some(w) => {
-                    print_row("Workspace", &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()));
-                    print_row("", &"use 'hotdata workspaces set' to switch workspaces".dark_grey().to_string());
+                    print_row(
+                        "Workspace",
+                        &format!(
+                            "{} {}",
+                            w.name.as_str().cyan(),
+                            format!("({})", w.public_id).dark_grey()
+                        ),
+                    );
+                    print_row(
+                        "",
+                        &"use 'hotdata workspaces set' to switch workspaces"
+                            .dark_grey()
+                            .to_string(),
+                    );
                 }
                 None => print_row("Workspace", &"None".dark_grey().to_string()),
             }
         }
         LoginResult::Forbidden => {
-            eprintln!("{}", "You are not authorized to create a new API token.".red());
+            eprintln!(
+                "{}",
+                "You are not authorized to create a new API token.".red()
+            );
             std::process::exit(1);
         }
         LoginResult::Failed(msg) => {
@@ -356,8 +410,8 @@ fn generate_code_challenge(verifier: &str) -> String {
 }
 
 fn parse_query_params(url: &str) -> HashMap<String, String> {
-    url.splitn(2, '?')
-        .nth(1)
+    url.split_once('?')
+        .map(|(_, q)| q)
         .unwrap_or("")
         .split('&')
         .filter_map(|pair| {
@@ -365,6 +419,25 @@ fn parse_query_params(url: &str) -> HashMap<String, String> {
             Some((parts.next()?.to_string(), parts.next()?.to_string()))
         })
         .collect()
+}
+
+fn print_row(label: &str, value: &str) {
+    stdout()
+        .execute(SetForegroundColor(Color::DarkGrey))
+        .unwrap()
+        .execute(Print(format!(
+            "{:<16}",
+            if label.is_empty() {
+                String::new()
+            } else {
+                format!("{label}:")
+            }
+        )))
+        .unwrap()
+        .execute(ResetColor)
+        .unwrap()
+        .execute(Print(format!("{value}\n")))
+        .unwrap();
 }
 
 #[cfg(test)]
@@ -412,10 +485,7 @@ mod tests {
     #[test]
     fn status_invalid_with_bad_key() {
         let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/workspaces")
-            .with_status(401)
-            .create();
+        let mock = server.mock("GET", "/workspaces").with_status(401).create();
 
         let profile = mock_profile(&server.url(), Some("bad-key"));
         assert_eq!(check_status(&profile), AuthStatus::Invalid(401));
@@ -425,10 +495,7 @@ mod tests {
     #[test]
     fn status_invalid_with_forbidden() {
         let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/workspaces")
-            .with_status(403)
-            .create();
+        let mock = server.mock("GET", "/workspaces").with_status(403).create();
 
         let profile = mock_profile(&server.url(), Some("forbidden-key"));
         assert_eq!(check_status(&profile), AuthStatus::Invalid(403));
@@ -470,10 +537,7 @@ mod tests {
     #[test]
     fn not_signed_in_when_key_invalid() {
         let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/workspaces")
-            .with_status(401)
-            .create();
+        let mock = server.mock("GET", "/workspaces").with_status(401).create();
 
         let profile = mock_profile(&server.url(), Some("expired-key"));
         assert!(!is_already_signed_in(&profile));
@@ -560,10 +624,7 @@ mod tests {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
 
-        let mock = server
-            .mock("POST", "/auth/token")
-            .with_status(403)
-            .create();
+        let mock = server.mock("POST", "/auth/token").with_status(403).create();
 
         let result = exchange_and_save_token(&server.url(), "code", "verifier");
         mock.assert();
@@ -575,10 +636,7 @@ mod tests {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
 
-        let mock = server
-            .mock("POST", "/auth/token")
-            .with_status(401)
-            .create();
+        let mock = server.mock("POST", "/auth/token").with_status(401).create();
 
         let result = exchange_and_save_token(&server.url(), "code", "verifier");
         mock.assert();
@@ -593,10 +651,7 @@ mod tests {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
 
-        let mock = server
-            .mock("POST", "/auth/token")
-            .with_status(500)
-            .create();
+        let mock = server.mock("POST", "/auth/token").with_status(500).create();
 
         let result = exchange_and_save_token(&server.url(), "code", "verifier");
         mock.assert();
@@ -682,16 +737,4 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("no authorization code"));
     }
-}
-
-fn print_row(label: &str, value: &str) {
-    stdout()
-        .execute(SetForegroundColor(Color::DarkGrey))
-        .unwrap()
-        .execute(Print(format!("{:<16}", if label.is_empty() { String::new() } else { format!("{label}:") })))
-        .unwrap()
-        .execute(ResetColor)
-        .unwrap()
-        .execute(Print(format!("{value}\n")))
-        .unwrap();
 }

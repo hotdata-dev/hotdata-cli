@@ -165,15 +165,13 @@ fn ensure_symlink_or_copy(src: &PathBuf, link_path: &PathBuf) -> Result<bool, St
 
     // Try symlink first, fall back to copy
     #[cfg(unix)]
-    match std::os::unix::fs::symlink(src, link_path) {
-        Ok(_) => return Ok(true),
-        Err(_) => {}
+    if std::os::unix::fs::symlink(src, link_path).is_ok() {
+        return Ok(true);
     }
 
     #[cfg(windows)]
-    match std::os::windows::fs::symlink_dir(src, link_path) {
-        Ok(_) => return Ok(true),
-        Err(_) => {}
+    if std::os::windows::fs::symlink_dir(src, link_path).is_ok() {
+        return Ok(true);
     }
 
     copy_dir_recursive(src, link_path)?;
@@ -255,7 +253,11 @@ pub fn install_project() {
         "{}",
         format!("Skill installed to project (v{current}).").green()
     );
-    println!("{:<20}{}", "Location:", rel_agents.display().to_string().cyan());
+    println!(
+        "{:<20}{}",
+        "Location:",
+        rel_agents.display().to_string().cyan()
+    );
 
     // For .claude and .pi in cwd: symlink (fallback copy) from .agents/skills/hotdata
     for root in AGENT_ROOTS {
@@ -264,8 +266,16 @@ pub fn install_project() {
             let link_path = root_path.join("skills").join(SKILL_NAME);
             let rel_link = link_path.strip_prefix(&cwd).unwrap_or(&link_path);
             match ensure_symlink_or_copy(&project_agents, &link_path) {
-                Ok(true) => println!("{:<20}{}", format!("./{root}:"), rel_link.display().to_string().cyan()),
-                Ok(false) => println!("{:<20}{} (copied)", format!("./{root}:"), rel_link.display().to_string().cyan()),
+                Ok(true) => println!(
+                    "{:<20}{}",
+                    format!("./{root}:"),
+                    rel_link.display().to_string().cyan()
+                ),
+                Ok(false) => println!(
+                    "{:<20}{} (copied)",
+                    format!("./{root}:"),
+                    rel_link.display().to_string().cyan()
+                ),
                 Err(e) => eprintln!("{}", format!("./{root}: failed: {e}").red()),
             }
         }
@@ -311,11 +321,9 @@ pub fn install() {
         }
     };
 
-    if needs_download {
-        if let Err(e) = download_and_extract() {
-            eprintln!("{}", e.red());
-            std::process::exit(1);
-        }
+    if needs_download && let Err(e) = download_and_extract() {
+        eprintln!("{}", e.red());
+        std::process::exit(1);
     }
 
     let symlinks = ensure_symlinks();
@@ -394,7 +402,7 @@ pub fn status() {
         );
     }
 
-    if installed_version.map_or(false, |v| v < current) {
+    if installed_version.is_some_and(|v| v < current) {
         println!("\nRun 'hotdata skills install' to update.");
     }
 }
