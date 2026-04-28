@@ -480,3 +480,42 @@ pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
         _ => unreachable!(),
     }
 }
+
+pub fn update(
+    dataset_id: &str,
+    workspace_id: &str,
+    label: Option<&str>,
+    table_name: Option<&str>,
+    format: &str,
+) {
+    if label.is_none() && table_name.is_none() {
+        eprintln!("error: provide at least one of --label or --table-name.");
+        std::process::exit(1);
+    }
+
+    let api = ApiClient::new(Some(workspace_id));
+
+    let mut body = json!({});
+    if let Some(l) = label {
+        body["label"] = json!(l);
+    }
+    if let Some(tn) = table_name {
+        body["table_name"] = json!(tn);
+    }
+
+    let d: DatasetDetail = api.put(&format!("/datasets/{dataset_id}"), &body);
+
+    use crossterm::style::Stylize;
+    eprintln!("{}", "Dataset updated".green());
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&d).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&d).unwrap()),
+        "table" => {
+            println!("id:          {}", d.id);
+            println!("label:       {}", d.label);
+            println!("full_name:   datasets.{}.{}", d.schema_name, d.table_name);
+            println!("updated_at:  {}", crate::util::format_date(&d.updated_at));
+        }
+        _ => unreachable!(),
+    }
+}
