@@ -54,6 +54,20 @@ struct DatasetDetail {
     columns: Vec<Column>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct UpdateResponse {
+    id: String,
+    label: String,
+    #[serde(default = "default_schema")]
+    schema_name: String,
+    table_name: String,
+    #[serde(default)]
+    latest_version: Option<i32>,
+    #[serde(default)]
+    pinned_version: Option<i32>,
+    updated_at: String,
+}
+
 struct FileType {
     content_type: &'static str,
     format: &'static str,
@@ -503,7 +517,7 @@ pub fn update(
         body["table_name"] = json!(tn);
     }
 
-    let d: DatasetDetail = api.put(&format!("/datasets/{dataset_id}"), &body);
+    let d: UpdateResponse = api.put(&format!("/datasets/{dataset_id}"), &body);
 
     use crossterm::style::Stylize;
     eprintln!("{}", "Dataset updated".green());
@@ -517,5 +531,59 @@ pub fn update(
             println!("updated_at:  {}", crate::util::format_date(&d.updated_at));
         }
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mirrors runtimedb's `UpdateDatasetResponse` (see runtimedb/src/http/models.rs).
+    /// The CLI must deserialize this exact shape — schema_name, source_type,
+    /// created_at, and columns are NOT in the response. If runtimedb's response
+    /// gains or loses fields, update this fixture in lockstep.
+    #[test]
+    fn update_response_deserializes_runtimedb_payload() {
+        let body = serde_json::json!({
+            "id": "ds_abc123",
+            "label": "url_test",
+            "table_name": "url_test",
+            "latest_version": 3,
+            "updated_at": "2026-04-28T18:30:00Z",
+        });
+        let resp: UpdateResponse = serde_json::from_value(body).unwrap();
+        assert_eq!(resp.id, "ds_abc123");
+        assert_eq!(resp.label, "url_test");
+        assert_eq!(resp.table_name, "url_test");
+        assert_eq!(resp.schema_name, "main"); // defaulted
+        assert_eq!(resp.latest_version, Some(3));
+        assert!(resp.pinned_version.is_none());
+    }
+
+    #[test]
+    fn update_response_handles_pinned_version() {
+        let body = serde_json::json!({
+            "id": "ds_abc123",
+            "label": "x",
+            "table_name": "x",
+            "latest_version": 5,
+            "pinned_version": 2,
+            "updated_at": "2026-04-28T18:30:00Z",
+        });
+        let resp: UpdateResponse = serde_json::from_value(body).unwrap();
+        assert_eq!(resp.pinned_version, Some(2));
+    }
+
+    #[test]
+    fn update_response_tolerates_missing_latest_version() {
+        // Defensive: treat latest_version as optional in case the server omits it.
+        let body = serde_json::json!({
+            "id": "ds_abc123",
+            "label": "x",
+            "table_name": "x",
+            "updated_at": "2026-04-28T18:30:00Z",
+        });
+        let resp: UpdateResponse = serde_json::from_value(body).unwrap();
+        assert!(resp.latest_version.is_none());
     }
 }

@@ -66,7 +66,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `workspaces` | `list`, `set` | Manage workspaces |
 | `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
 | `tables` | `list` | List tables and columns |
-| `datasets` | `list`, `create` | Manage uploaded datasets |
+| `datasets` | `list`, `create`, `update` | Manage uploaded datasets |
 | `context` | `list`, `show`, `pull`, `push` | Workspace Markdown context (e.g. data model `DATAMODEL`) via the context API |
 | `query` | | Execute a SQL query |
 | `queries` | `list` | Inspect query run history |
@@ -142,6 +142,7 @@ hotdata datasets <dataset_id> [--workspace-id <id>] [--format table|json|yaml]
 hotdata datasets create --file data.csv [--label "My Dataset"] [--table-name my_dataset]
 hotdata datasets create --sql "SELECT ..." --label "My Dataset"
 hotdata datasets create --url "https://example.com/data.parquet" --label "My Dataset"
+hotdata datasets update <dataset_id> [--label "New Label"] [--table-name new_table]
 ```
 
 - Datasets are queryable as `datasets.main.<table_name>`.
