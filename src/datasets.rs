@@ -58,8 +58,12 @@ struct DatasetDetail {
 struct UpdateResponse {
     id: String,
     label: String,
-    #[serde(default = "default_schema")]
-    schema_name: String,
+    // Not currently in runtimedb's UpdateDatasetResponse; kept Optional so we
+    // print `full_name` only when the server actually returns the schema.
+    // Synthesizing "main" is wrong for sandbox-scoped datasets where
+    // schema_name == sandbox_id.
+    #[serde(default)]
+    schema_name: Option<String>,
     table_name: String,
     #[serde(default)]
     latest_version: Option<i32>,
@@ -527,7 +531,23 @@ pub fn update(
         "table" => {
             println!("id:          {}", d.id);
             println!("label:       {}", d.label);
-            println!("full_name:   datasets.{}.{}", d.schema_name, d.table_name);
+            match &d.schema_name {
+                Some(schema) => {
+                    println!("full_name:   datasets.{}.{}", schema, d.table_name);
+                }
+                None => {
+                    println!("table_name:  {}", d.table_name);
+                    use crossterm::style::Stylize;
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "(run `hotdata datasets {}` to see the qualified name)",
+                            d.id
+                        )
+                        .dark_grey()
+                    );
+                }
+            }
             println!("updated_at:  {}", crate::util::format_date(&d.updated_at));
         }
         _ => unreachable!(),
@@ -555,9 +575,26 @@ mod tests {
         assert_eq!(resp.id, "ds_abc123");
         assert_eq!(resp.label, "url_test");
         assert_eq!(resp.table_name, "url_test");
-        assert_eq!(resp.schema_name, "main"); // defaulted
+        // The server doesn't currently send schema_name, so we don't synthesize
+        // one — sandbox-scoped datasets live under datasets.<sandbox_id>.<table>,
+        // not datasets.main.*, and a fabricated "main" would mislead users.
+        assert!(resp.schema_name.is_none());
         assert_eq!(resp.latest_version, Some(3));
         assert!(resp.pinned_version.is_none());
+    }
+
+    #[test]
+    fn update_response_uses_schema_name_when_server_supplies_it() {
+        // Forward-compat: if runtimedb later includes schema_name, we use it.
+        let body = serde_json::json!({
+            "id": "ds_abc123",
+            "label": "x",
+            "schema_name": "sandbox_xyz",
+            "table_name": "x",
+            "updated_at": "2026-04-28T18:30:00Z",
+        });
+        let resp: UpdateResponse = serde_json::from_value(body).unwrap();
+        assert_eq!(resp.schema_name.as_deref(), Some("sandbox_xyz"));
     }
 
     #[test]
