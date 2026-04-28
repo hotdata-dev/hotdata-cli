@@ -386,7 +386,6 @@ pub enum DatasetsCommands {
     },
 }
 
-
 #[derive(Subcommand)]
 pub enum WorkspaceCommands {
     /// List all workspaces

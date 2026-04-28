@@ -1,5 +1,5 @@
-use inquire::{Confirm, Password, Select, Text};
 use inquire::validator::Validation;
+use inquire::{Confirm, Password, Select, Text};
 use serde_json::{Map, Number, Value};
 
 use crate::api::ApiClient;
@@ -34,8 +34,16 @@ fn fetch_types(api: &ApiClient) -> Vec<ConnectionTypeSummary> {
 fn fetch_detail(api: &ApiClient, name: &str) -> ConnectionTypeDetail {
     let body: Value = api.get(&format!("/connection-types/{name}"));
     ConnectionTypeDetail {
-        config_schema: if body["config_schema"].is_null() { None } else { Some(body["config_schema"].clone()) },
-        auth: if body["auth"].is_null() { None } else { Some(body["auth"].clone()) },
+        config_schema: if body["config_schema"].is_null() {
+            None
+        } else {
+            Some(body["config_schema"].clone())
+        },
+        auth: if body["auth"].is_null() {
+            None
+        } else {
+            Some(body["auth"].clone())
+        },
     }
 }
 
@@ -49,7 +57,9 @@ fn walk_properties(schema: &Value) -> Map<String, Value> {
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
-    let Some(props) = schema["properties"].as_object() else { return out };
+    let Some(props) = schema["properties"].as_object() else {
+        return out;
+    };
 
     for (key, field) in props {
         let is_required = required.contains(&key.as_str());
@@ -68,7 +78,9 @@ fn walk_variant(schema: &Value) -> Map<String, Value> {
         .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
-    let Some(props) = schema["properties"].as_object() else { return out };
+    let Some(props) = schema["properties"].as_object() else {
+        return out;
+    };
 
     for (key, field) in props {
         // Auto-inject const fields without prompting
@@ -111,7 +123,11 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
                 p = p.with_help_message(opt_hint);
             }
             let val = p.prompt().unwrap_or_else(|_| std::process::exit(0));
-            if val.is_empty() && !is_required { None } else { Some(Value::String(val)) }
+            if val.is_empty() && !is_required {
+                None
+            } else {
+                Some(Value::String(val))
+            }
         }
 
         ("string", _) => {
@@ -124,25 +140,28 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
                 t = t.with_help_message(opt_hint);
             }
             let val = t.prompt().unwrap_or_else(|_| std::process::exit(0));
-            if val.is_empty() && !is_required { None } else { Some(Value::String(val)) }
+            if val.is_empty() && !is_required {
+                None
+            } else {
+                Some(Value::String(val))
+            }
         }
 
         ("integer", _) => {
             let label = format!("{key}:");
-            let t = Text::new(&label)
-                .with_validator(move |input: &str| {
-                    if input.is_empty() {
-                        if is_required {
-                            return Ok(Validation::Invalid("This field is required".into()));
-                        }
-                        return Ok(Validation::Valid);
+            let t = Text::new(&label).with_validator(move |input: &str| {
+                if input.is_empty() {
+                    if is_required {
+                        return Ok(Validation::Invalid("This field is required".into()));
                     }
-                    if input.parse::<i64>().is_ok() {
-                        Ok(Validation::Valid)
-                    } else {
-                        Ok(Validation::Invalid("Must be a whole number".into()))
-                    }
-                });
+                    return Ok(Validation::Valid);
+                }
+                if input.parse::<i64>().is_ok() {
+                    Ok(Validation::Valid)
+                } else {
+                    Ok(Validation::Invalid("Must be a whole number".into()))
+                }
+            });
             let help_t;
             let t = if !is_required {
                 help_t = t.with_help_message(opt_hint);
@@ -154,7 +173,9 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
             if val.is_empty() && !is_required {
                 None
             } else {
-                val.parse::<i64>().ok().map(|n| Value::Number(Number::from(n)))
+                val.parse::<i64>()
+                    .ok()
+                    .map(|n| Value::Number(Number::from(n)))
             }
         }
 
@@ -223,13 +244,19 @@ pub fn run(workspace_id: &str) {
         eprintln!("error: no connection types available");
         std::process::exit(1);
     }
-    let displays: Vec<String> = types.iter().map(|t| format!("{} ({})", t.label, t.name)).collect();
+    let displays: Vec<String> = types
+        .iter()
+        .map(|t| format!("{} ({})", t.label, t.name))
+        .collect();
     let names: Vec<String> = types.iter().map(|t| t.name.clone()).collect();
 
     let selected_display = Select::new("Connection type:", displays.clone())
         .prompt()
         .unwrap_or_else(|_| std::process::exit(0));
-    let idx = displays.iter().position(|d| d == &selected_display).unwrap();
+    let idx = displays
+        .iter()
+        .position(|d| d == &selected_display)
+        .unwrap();
     let source_type = &names[idx];
 
     // Phase 2: Fetch schema for selected type
@@ -320,8 +347,13 @@ pub fn run(workspace_id: &str) {
     println!("tables_discovered: {}", result.tables_discovered);
     let status = match result.discovery_status.as_str() {
         "success" => result.discovery_status.green().to_string(),
-        "failed"  => result.discovery_error.as_deref().unwrap_or("failed").red().to_string(),
-        _         => result.discovery_status.yellow().to_string(),
+        "failed" => result
+            .discovery_error
+            .as_deref()
+            .unwrap_or("failed")
+            .red()
+            .to_string(),
+        _ => result.discovery_status.yellow().to_string(),
     };
     println!("discovery_status:  {status}");
     let health_str = match &health {

@@ -1,7 +1,7 @@
 ---
 name: hotdata
 description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, inspect query run history, search tables, manage indexes, manage sandboxes, manage workspace context and stored docs such as context:DATAMODEL via the context API (`hotdata context`), or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list query runs", "list past queries", "query history", "list sandboxes", "create a sandbox", "run a sandbox", "workspace context", "pull context", "push context", "data model", "context:DATAMODEL", or asks you to use the hotdata CLI.
-version: 0.1.13
+version: 0.1.14
 ---
 
 # Hotdata CLI Skill

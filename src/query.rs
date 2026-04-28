@@ -71,9 +71,19 @@ pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: 
             }
         };
         use crossterm::style::Stylize;
-        eprintln!("{}", format!("query still running (status: {})", async_resp.status).yellow());
+        eprintln!(
+            "{}",
+            format!("query still running (status: {})", async_resp.status).yellow()
+        );
         eprintln!("query_run_id: {}", async_resp.query_run_id);
-        eprintln!("{}", format!("Poll with: hotdata query status {}", async_resp.query_run_id).dark_grey());
+        eprintln!(
+            "{}",
+            format!(
+                "Poll with: hotdata query status {}",
+                async_resp.query_run_id
+            )
+            .dark_grey()
+        );
         std::process::exit(2);
     }
 
@@ -105,18 +115,16 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
     let run: QueryRunResponse = api.get(&format!("/query-runs/{query_run_id}"));
 
     match run.status.as_str() {
-        "succeeded" => {
-            match run.result_id {
-                Some(ref result_id) => {
-                    let result: QueryResponse = api.get(&format!("/results/{result_id}"));
-                    print_result(&result, format);
-                }
-                None => {
-                    use crossterm::style::Stylize;
-                    println!("{}", "Query succeeded but no result available.".yellow());
-                }
+        "succeeded" => match run.result_id {
+            Some(ref result_id) => {
+                let result: QueryResponse = api.get(&format!("/results/{result_id}"));
+                print_result(&result, format);
             }
-        }
+            None => {
+                use crossterm::style::Stylize;
+                println!("{}", "Query succeeded but no result available.".yellow());
+            }
+        },
         "failed" => {
             use crossterm::style::Stylize;
             let err = run.error.as_deref().unwrap_or("unknown error");
@@ -127,7 +135,10 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
             use crossterm::style::Stylize;
             eprintln!("{}", format!("query status: {status}").yellow());
             eprintln!("query_run_id: {}", run.id);
-            eprintln!("{}", format!("Poll again with: hotdata query status {}", run.id).dark_grey());
+            eprintln!(
+                "{}",
+                format!("Poll again with: hotdata query status {}", run.id).dark_grey()
+            );
             std::process::exit(2);
         }
     }
@@ -152,22 +163,39 @@ pub fn print_result(result: &QueryResponse, format: &str) {
         "csv" => {
             println!("{}", result.columns.join(","));
             for row in &result.rows {
-                let cells: Vec<String> = row.iter().map(|v| {
-                    let s = value_to_string(v);
-                    if s.contains(',') || s.contains('"') || s.contains('\n') {
-                        format!("\"{}\"", s.replace('"', "\"\""))
-                    } else {
-                        s
-                    }
-                }).collect();
+                let cells: Vec<String> = row
+                    .iter()
+                    .map(|v| {
+                        let s = value_to_string(v);
+                        if s.contains(',') || s.contains('"') || s.contains('\n') {
+                            format!("\"{}\"", s.replace('"', "\"\""))
+                        } else {
+                            s
+                        }
+                    })
+                    .collect();
                 println!("{}", cells.join(","));
             }
         }
         "table" => {
             crate::table::print_json(&result.columns, &result.rows);
             use crossterm::style::Stylize;
-            let id_part = result.result_id.as_deref().map(|id| format!(" [result-id: {id}]")).unwrap_or_default();
-            eprintln!("{}", format!("\n{} row{} ({} ms){}", result.row_count, if result.row_count == 1 { "" } else { "s" }, result.execution_time_ms, id_part).dark_grey());
+            let id_part = result
+                .result_id
+                .as_deref()
+                .map(|id| format!(" [result-id: {id}]"))
+                .unwrap_or_default();
+            eprintln!(
+                "{}",
+                format!(
+                    "\n{} row{} ({} ms){}",
+                    result.row_count,
+                    if result.row_count == 1 { "" } else { "s" },
+                    result.execution_time_ms,
+                    id_part
+                )
+                .dark_grey()
+            );
         }
         _ => unreachable!(),
     }

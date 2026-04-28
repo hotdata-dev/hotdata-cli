@@ -276,11 +276,10 @@ pub fn ensure_access_token(
     if matches!(
         profile.api_key_source,
         config::ApiKeySource::Flag | config::ApiKeySource::Env
-    ) {
-        if let Some(api_key) = api_key_fallback {
-            let session = mint_from_api_token(profile, api_key)?;
-            return Ok(session.access_token);
-        }
+    ) && let Some(api_key) = api_key_fallback
+    {
+        let session = mint_from_api_token(profile, api_key)?;
+        return Ok(session.access_token);
     }
 
     let now = now_unix();
@@ -443,7 +442,7 @@ mod tests {
         assert!(session.access_expires_at > now_unix());
         // PKCE-origin sessions get the 7-day refresh TTL hint.
         let ttl = session.refresh_expires_at.saturating_sub(now_unix());
-        assert!(ttl >= 7 * 24 * 60 * 60 - 5 && ttl <= 7 * 24 * 60 * 60 + 5);
+        assert!((7 * 24 * 60 * 60 - 5..=7 * 24 * 60 * 60 + 5).contains(&ttl));
     }
 
     #[test]
@@ -527,7 +526,7 @@ mod tests {
         assert_eq!(session.source, "api_token");
         // api_token-origin sessions get the shorter 36h refresh TTL hint.
         let ttl = session.refresh_expires_at.saturating_sub(now_unix());
-        assert!(ttl >= 36 * 60 * 60 - 5 && ttl <= 36 * 60 * 60 + 5);
+        assert!((36 * 60 * 60 - 5..=36 * 60 * 60 + 5).contains(&ttl));
     }
 
     #[test]

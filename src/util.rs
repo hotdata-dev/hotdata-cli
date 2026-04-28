@@ -277,6 +277,19 @@ pub fn format_date(s: &str) -> String {
     s.chars().take(16).collect()
 }
 
+pub fn api_error(body: String) -> String {
+    serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| {
+            if body.trim_start().starts_with('<') {
+                "unexpected server error".to_string()
+            } else {
+                body
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,17 +352,4 @@ mod tests {
         assert_eq!(v["access_token"], serde_json::Value::Null);
         assert_eq!(v["refresh_token"], 123);
     }
-}
-
-pub fn api_error(body: String) -> String {
-    serde_json::from_str::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-        .unwrap_or_else(|| {
-            if body.trim_start().starts_with('<') {
-                "unexpected server error".to_string()
-            } else {
-                body
-            }
-        })
 }

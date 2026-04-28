@@ -61,20 +61,38 @@ struct FileType {
 
 fn detect_from_bytes(bytes: &[u8]) -> FileType {
     if bytes.starts_with(b"PAR1") {
-        return FileType { content_type: "application/octet-stream", format: "parquet" };
+        return FileType {
+            content_type: "application/octet-stream",
+            format: "parquet",
+        };
     }
     let first = bytes.iter().find(|&&b| !b.is_ascii_whitespace()).copied();
     if matches!(first, Some(b'{') | Some(b'[')) {
-        return FileType { content_type: "application/json", format: "json" };
+        return FileType {
+            content_type: "application/json",
+            format: "json",
+        };
     }
-    FileType { content_type: "text/csv", format: "csv" }
+    FileType {
+        content_type: "text/csv",
+        format: "csv",
+    }
 }
 
 fn detect_from_path(path: &str) -> Option<FileType> {
     match Path::new(path).extension().and_then(|e| e.to_str()) {
-        Some("csv") => Some(FileType { content_type: "text/csv", format: "csv" }),
-        Some("json") => Some(FileType { content_type: "application/json", format: "json" }),
-        Some("parquet") => Some(FileType { content_type: "application/octet-stream", format: "parquet" }),
+        Some("csv") => Some(FileType {
+            content_type: "text/csv",
+            format: "csv",
+        }),
+        Some("json") => Some(FileType {
+            content_type: "application/json",
+            format: "json",
+        }),
+        Some("parquet") => Some(FileType {
+            content_type: "application/octet-stream",
+            format: "parquet",
+        }),
         _ => None,
     }
 }
@@ -90,8 +108,8 @@ fn stdin_redirect_filename() -> Option<String> {
     }
     #[cfg(target_os = "macos")]
     {
+        use nix::fcntl::{FcntlArg, fcntl};
         use std::os::unix::io::AsRawFd;
-        use nix::fcntl::{fcntl, FcntlArg};
         let fd = std::io::stdin().as_raw_fd();
         let mut path = std::path::PathBuf::new();
         match fcntl(fd, FcntlArg::F_GETPATH(&mut path)) {
@@ -104,7 +122,6 @@ fn stdin_redirect_filename() -> Option<String> {
         None
     }
 }
-
 
 fn make_progress_bar(total: u64) -> ProgressBar {
     let pb = ProgressBar::new(total);
@@ -153,10 +170,7 @@ fn do_upload<R: std::io::Read + Send + 'static>(
 }
 
 // Returns (upload_id, format)
-fn upload_from_file(
-    api: &ApiClient,
-    path: &str,
-) -> (String, &'static str) {
+fn upload_from_file(api: &ApiClient, path: &str) -> (String, &'static str) {
     let mut f = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
@@ -182,9 +196,7 @@ fn upload_from_file(
 }
 
 // Returns (upload_id, format)
-fn upload_from_stdin(
-    api: &ApiClient,
-) -> (String, &'static str) {
+fn upload_from_stdin(api: &ApiClient) -> (String, &'static str) {
     use std::io::Read;
     let mut probe = [0u8; 512];
     let n = std::io::stdin().read(&mut probe).unwrap_or(0);
@@ -194,8 +206,7 @@ fn upload_from_stdin(
 
     let pb = ProgressBar::new_spinner();
     pb.set_style(
-        ProgressStyle::with_template("{spinner:.green} {bytes} uploaded ({elapsed})")
-            .unwrap(),
+        ProgressStyle::with_template("{spinner:.green} {bytes} uploaded ({elapsed})").unwrap(),
     );
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
     let reader = pb.wrap_read(reader);
@@ -239,7 +250,10 @@ fn create_dataset(
     println!("{}", "Dataset created".green());
     println!("id:         {}", dataset.id);
     println!("label:      {}", dataset.label);
-    println!("full_name:  datasets.{}.{}", dataset.schema_name, dataset.table_name);
+    println!(
+        "full_name:  datasets.{}.{}",
+        dataset.schema_name, dataset.table_name
+    );
 }
 
 pub fn create_from_upload(
@@ -283,7 +297,9 @@ pub fn create_from_upload(
         },
     };
 
-    let (upload_id, format, upload_id_was_uploaded): (String, &str, bool) = if let Some(id) = upload_id {
+    let (upload_id, format, upload_id_was_uploaded): (String, &str, bool) = if let Some(id) =
+        upload_id
+    {
         (id.to_string(), source_format, false)
     } else {
         let (id, fmt) = match file {
@@ -291,7 +307,9 @@ pub fn create_from_upload(
             None => {
                 use std::io::IsTerminal;
                 if std::io::stdin().is_terminal() {
-                    eprintln!("error: no input data. Use --file <path>, --upload-id <id>, or pipe data via stdin.");
+                    eprintln!(
+                        "error: no input data. Use --file <path>, --upload-id <id>, or pipe data via stdin."
+                    );
                     std::process::exit(1);
                 }
                 upload_from_stdin(&api)
@@ -308,7 +326,10 @@ pub fn create_from_upload(
             use crossterm::style::Stylize;
             eprintln!(
                 "{}",
-                format!("Resume dataset creation without re-uploading by passing --upload-id {uid}").yellow()
+                format!(
+                    "Resume dataset creation without re-uploading by passing --upload-id {uid}"
+                )
+                .yellow()
             );
         }))
     } else {
@@ -366,7 +387,13 @@ pub fn create_from_saved_query(
         }
     };
     let api = ApiClient::new(Some(workspace_id));
-    create_dataset(&api, label, table_name, json!({ "saved_query_id": query_id }), None);
+    create_dataset(
+        &api,
+        label,
+        table_name,
+        json!({ "saved_query_id": query_id }),
+        None,
+    );
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
@@ -386,18 +413,31 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No datasets found.".dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body.datasets.iter().map(|d| vec![
-                    d.id.clone(),
-                    d.label.clone(),
-                    format!("datasets.{}.{}", d.schema_name, d.table_name),
-                    crate::util::format_date(&d.created_at),
-                ]).collect();
+                let rows: Vec<Vec<String>> = body
+                    .datasets
+                    .iter()
+                    .map(|d| {
+                        vec![
+                            d.id.clone(),
+                            d.label.clone(),
+                            format!("datasets.{}.{}", d.schema_name, d.table_name),
+                            crate::util::format_date(&d.created_at),
+                        ]
+                    })
+                    .collect();
                 crate::table::print(&["ID", "LABEL", "FULL NAME", "CREATED AT"], &rows);
             }
             if body.has_more {
                 let next = offset.unwrap_or(0) + body.count as u32;
                 use crossterm::style::Stylize;
-                eprintln!("{}", format!("showing {} results — use --offset {next} for more", body.count).dark_grey());
+                eprintln!(
+                    "{}",
+                    format!(
+                        "showing {} results — use --offset {next} for more",
+                        body.count
+                    )
+                    .dark_grey()
+                );
             }
         }
         _ => unreachable!(),
@@ -423,9 +463,17 @@ pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
             println!("updated_at:  {updated_at}");
             if !d.columns.is_empty() {
                 println!();
-                let rows: Vec<Vec<String>> = d.columns.iter().map(|col| vec![
-                    col.name.clone(), col.data_type.clone(), col.nullable.to_string(),
-                ]).collect();
+                let rows: Vec<Vec<String>> = d
+                    .columns
+                    .iter()
+                    .map(|col| {
+                        vec![
+                            col.name.clone(),
+                            col.data_type.clone(),
+                            col.nullable.to_string(),
+                        ]
+                    })
+                    .collect();
                 crate::table::print(&["COLUMN", "DATA TYPE", "NULLABLE"], &rows);
             }
         }

@@ -37,15 +37,23 @@ pub fn list(workspace_id: &str, format: &str) {
             if body.sandboxes.is_empty() {
                 eprintln!("{}", "No sandboxes found.".dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body.sandboxes.iter().map(|s| {
-                    let marker = if current_sandbox.as_deref() == Some(&s.public_id) { "*" } else { "" };
-                    vec![
-                        marker.to_string(),
-                        s.public_id.clone(),
-                        s.name.clone(),
-                        crate::util::format_date(&s.updated_at),
-                    ]
-                }).collect();
+                let rows: Vec<Vec<String>> = body
+                    .sandboxes
+                    .iter()
+                    .map(|s| {
+                        let marker = if current_sandbox.as_deref() == Some(&s.public_id) {
+                            "*"
+                        } else {
+                            ""
+                        };
+                        vec![
+                            marker.to_string(),
+                            s.public_id.clone(),
+                            s.name.clone(),
+                            crate::util::format_date(&s.updated_at),
+                        ]
+                    })
+                    .collect();
                 crate::table::print(&["ACTIVE", "ID", "NAME", "UPDATED"], &rows);
             }
         }
@@ -66,8 +74,16 @@ pub fn get(sandbox_id: &str, workspace_id: &str, format: &str) {
             let label = |l: &str| format!("{:<12}", l).dark_grey().to_string();
             println!("{}{}", label("id:"), s.public_id);
             println!("{}{}", label("name:"), s.name);
-            println!("{}{}", label("created:"), crate::util::format_date(&s.created_at));
-            println!("{}{}", label("updated:"), crate::util::format_date(&s.updated_at));
+            println!(
+                "{}{}",
+                label("created:"),
+                crate::util::format_date(&s.created_at)
+            );
+            println!(
+                "{}{}",
+                label("updated:"),
+                crate::util::format_date(&s.updated_at)
+            );
             if !s.markdown.is_empty() {
                 println!();
                 println!("{}", "Markdown:".dark_grey());
@@ -105,9 +121,8 @@ fn find_sandbox_run_ancestor_inner() -> Option<sysinfo::Pid> {
     use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
     let sys = System::new_with_specifics(
-        RefreshKind::nothing().with_processes(
-            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
-        ),
+        RefreshKind::nothing()
+            .with_processes(ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always)),
     );
 
     let current_pid = sysinfo::get_current_pid().ok()?;
@@ -116,12 +131,11 @@ fn find_sandbox_run_ancestor_inner() -> Option<sysinfo::Pid> {
     for _ in 0..64 {
         let proc = sys.process(pid)?;
         let name = proc.name().to_string_lossy();
-        if name == "hotdata" {
-            if proc.cmd().iter().any(|a| a == "sandbox")
-                && proc.cmd().iter().any(|a| a == "run")
-            {
-                return Some(pid);
-            }
+        if name == "hotdata"
+            && proc.cmd().iter().any(|a| a == "sandbox")
+            && proc.cmd().iter().any(|a| a == "run")
+        {
+            return Some(pid);
         }
         pid = proc.parent()?;
     }
@@ -159,7 +173,13 @@ pub fn new(workspace_id: &str, name: Option<&str>, format: &str) {
     }
 }
 
-pub fn update(workspace_id: &str, sandbox_id: &str, name: Option<&str>, markdown: Option<&str>, format: &str) {
+pub fn update(
+    workspace_id: &str,
+    sandbox_id: &str,
+    name: Option<&str>,
+    markdown: Option<&str>,
+    format: &str,
+) {
     if name.is_none() && markdown.is_none() {
         eprintln!("error: provide at least one of --name or --markdown.");
         std::process::exit(1);
@@ -168,8 +188,12 @@ pub fn update(workspace_id: &str, sandbox_id: &str, name: Option<&str>, markdown
     let api = ApiClient::new(Some(workspace_id));
 
     let mut body = serde_json::json!({});
-    if let Some(n) = name { body["name"] = serde_json::json!(n); }
-    if let Some(m) = markdown { body["markdown"] = serde_json::json!(m); }
+    if let Some(n) = name {
+        body["name"] = serde_json::json!(n);
+    }
+    if let Some(m) = markdown {
+        body["markdown"] = serde_json::json!(m);
+    }
 
     let path = format!("/sandboxes/{sandbox_id}");
     let resp: DetailResponse = api.patch(&path, &body);
@@ -183,7 +207,11 @@ pub fn update(workspace_id: &str, sandbox_id: &str, name: Option<&str>, markdown
             let label = |l: &str| format!("{:<12}", l).dark_grey().to_string();
             println!("{}{}", label("id:"), s.public_id);
             println!("{}{}", label("name:"), s.name);
-            println!("{}{}", label("updated:"), crate::util::format_date(&s.updated_at));
+            println!(
+                "{}{}",
+                label("updated:"),
+                crate::util::format_date(&s.updated_at)
+            );
         }
         _ => unreachable!(),
     }
@@ -229,23 +257,6 @@ pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn find_sandbox_run_ancestor_returns_none_in_test() {
-        // No `hotdata sandbox run` ancestor exists in the test runner
-        assert!(find_sandbox_run_ancestor_inner().is_none());
-    }
-
-    #[test]
-    fn find_sandbox_run_ancestor_cached_matches_inner() {
-        // The cached version should agree with the inner function
-        assert_eq!(find_sandbox_run_ancestor(), find_sandbox_run_ancestor_inner());
-    }
-}
-
 pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
     check_sandbox_lock();
     match sandbox_id {
@@ -270,5 +281,25 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
             }
             println!("{}", "Active sandbox cleared".green());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_sandbox_run_ancestor_returns_none_in_test() {
+        // No `hotdata sandbox run` ancestor exists in the test runner
+        assert!(find_sandbox_run_ancestor_inner().is_none());
+    }
+
+    #[test]
+    fn find_sandbox_run_ancestor_cached_matches_inner() {
+        // The cached version should agree with the inner function
+        assert_eq!(
+            find_sandbox_run_ancestor(),
+            find_sandbox_run_ancestor_inner()
+        );
     }
 }

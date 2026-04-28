@@ -38,16 +38,35 @@ pub fn get(job_id: &str, workspace_id: &str, format: &str) {
             println!("{}{}", label("id:"), job.id);
             println!("{}{}", label("type:"), job.job_type);
             println!("{}{}", label("status:"), status_colored);
-            println!("{}{}", label("attempts:"), job.attempts.to_string().dark_cyan());
-            println!("{}{}", label("created:"), crate::util::format_date(&job.created_at));
-            println!("{}{}", label("completed:"), job.completed_at.as_deref().map(crate::util::format_date).unwrap_or_else(|| "-".dark_grey().to_string()));
+            println!(
+                "{}{}",
+                label("attempts:"),
+                job.attempts.to_string().dark_cyan()
+            );
+            println!(
+                "{}{}",
+                label("created:"),
+                crate::util::format_date(&job.created_at)
+            );
+            println!(
+                "{}{}",
+                label("completed:"),
+                job.completed_at
+                    .as_deref()
+                    .map(crate::util::format_date)
+                    .unwrap_or_else(|| "-".dark_grey().to_string())
+            );
             if let Some(err) = &job.error_message {
                 println!("{}{}", label("error:"), err.as_str().red());
             }
-            if let Some(result) = &job.result {
-                if !result.is_null() {
-                    println!("{}{}", label("result:"), serde_json::to_string_pretty(result).unwrap());
-                }
+            if let Some(result) = &job.result
+                && !result.is_null()
+            {
+                println!(
+                    "{}{}",
+                    label("result:"),
+                    serde_json::to_string_pretty(result).unwrap()
+                );
             }
         }
         _ => unreachable!(),
@@ -97,18 +116,34 @@ pub fn list(
         "table" => {
             if body.jobs.is_empty() {
                 use crossterm::style::Stylize;
-                let msg = if !all && status.is_none() { "No active jobs found." } else { "No jobs found." };
+                let msg = if !all && status.is_none() {
+                    "No active jobs found."
+                } else {
+                    "No jobs found."
+                };
                 eprintln!("{}", msg.dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body.jobs.iter().map(|j| vec![
-                    j.id.clone(),
-                    j.job_type.clone(),
-                    j.status.clone(),
-                    j.attempts.to_string(),
-                    crate::util::format_date(&j.created_at),
-                    j.completed_at.as_deref().map(crate::util::format_date).unwrap_or_else(|| "-".to_string()),
-                ]).collect();
-                crate::table::print(&["ID", "TYPE", "STATUS", "ATTEMPTS", "CREATED", "COMPLETED"], &rows);
+                let rows: Vec<Vec<String>> = body
+                    .jobs
+                    .iter()
+                    .map(|j| {
+                        vec![
+                            j.id.clone(),
+                            j.job_type.clone(),
+                            j.status.clone(),
+                            j.attempts.to_string(),
+                            crate::util::format_date(&j.created_at),
+                            j.completed_at
+                                .as_deref()
+                                .map(crate::util::format_date)
+                                .unwrap_or_else(|| "-".to_string()),
+                        ]
+                    })
+                    .collect();
+                crate::table::print(
+                    &["ID", "TYPE", "STATUS", "ATTEMPTS", "CREATED", "COMPLETED"],
+                    &rows,
+                );
             }
         }
         _ => unreachable!(),

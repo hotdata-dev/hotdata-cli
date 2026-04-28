@@ -30,14 +30,8 @@ pub struct WorkspaceEntry {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct AppUrl(pub(crate) Option<String>);
-
-impl Default for AppUrl {
-    fn default() -> Self {
-        AppUrl(None)
-    }
-}
 
 impl Deref for AppUrl {
     type Target = str;
@@ -67,14 +61,8 @@ pub enum ApiKeySource {
     Flag,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ApiUrl(pub(crate) Option<String>);
-
-impl Default for ApiUrl {
-    fn default() -> Self {
-        ApiUrl(None)
-    }
-}
 
 impl Deref for ApiUrl {
     type Target = str;

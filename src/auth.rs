@@ -361,8 +361,8 @@ fn generate_code_challenge(verifier: &str) -> String {
 }
 
 fn parse_query_params(url: &str) -> HashMap<String, String> {
-    url.splitn(2, '?')
-        .nth(1)
+    url.split_once('?')
+        .map(|(_, q)| q)
         .unwrap_or("")
         .split('&')
         .filter_map(|pair| {
@@ -370,6 +370,25 @@ fn parse_query_params(url: &str) -> HashMap<String, String> {
             Some((parts.next()?.to_string(), parts.next()?.to_string()))
         })
         .collect()
+}
+
+fn print_row(label: &str, value: &str) {
+    stdout()
+        .execute(SetForegroundColor(Color::DarkGrey))
+        .unwrap()
+        .execute(Print(format!(
+            "{:<16}",
+            if label.is_empty() {
+                String::new()
+            } else {
+                format!("{label}:")
+            }
+        )))
+        .unwrap()
+        .execute(ResetColor)
+        .unwrap()
+        .execute(Print(format!("{value}\n")))
+        .unwrap();
 }
 
 #[cfg(test)]
@@ -698,16 +717,4 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("no authorization code"));
     }
-}
-
-fn print_row(label: &str, value: &str) {
-    stdout()
-        .execute(SetForegroundColor(Color::DarkGrey))
-        .unwrap()
-        .execute(Print(format!("{:<16}", if label.is_empty() { String::new() } else { format!("{label}:") })))
-        .unwrap()
-        .execute(ResetColor)
-        .unwrap()
-        .execute(Print(format!("{value}\n")))
-        .unwrap();
 }

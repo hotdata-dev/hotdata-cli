@@ -10,10 +10,22 @@ use tabled::settings::{
 pub fn truncate_array(arr: &[serde_json::Value]) -> (String, Option<usize>) {
     if arr.len() > 6 {
         let head: Vec<String> = arr[..3].iter().map(|v| v.to_string()).collect();
-        let tail: Vec<String> = arr[arr.len()-3..].iter().map(|v| v.to_string()).collect();
-        (format!("[{}, ..., {}]", head.join(", "), tail.join(", ")), Some(arr.len()))
+        let tail: Vec<String> = arr[arr.len() - 3..].iter().map(|v| v.to_string()).collect();
+        (
+            format!("[{}, ..., {}]", head.join(", "), tail.join(", ")),
+            Some(arr.len()),
+        )
     } else {
-        (format!("[{}]", arr.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")), None)
+        (
+            format!(
+                "[{}]",
+                arr.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            None,
+        )
     }
 }
 
@@ -54,7 +66,12 @@ fn first_row_width(rows: &[Vec<String>], col: usize) -> usize {
         .unwrap_or(0)
 }
 
-fn style_table(table: &mut tabled::Table, num_cols: usize, id_col_indices: &[usize], id_widths: &[usize]) {
+fn style_table(
+    table: &mut tabled::Table,
+    num_cols: usize,
+    id_col_indices: &[usize],
+    id_widths: &[usize],
+) {
     let tw = term_width();
 
     // Calculate how much space ID columns need (content + 3 for cell padding/borders)
@@ -64,7 +81,11 @@ fn style_table(table: &mut tabled::Table, num_cols: usize, id_col_indices: &[usi
     let non_id_count = num_cols - id_col_indices.len();
     let overhead = 1; // final border character
     let remaining = tw.saturating_sub(id_total + overhead);
-    let non_id_width = if non_id_count > 0 { remaining / non_id_count } else { 0 };
+    let non_id_width = if non_id_count > 0 {
+        remaining / non_id_count
+    } else {
+        0
+    };
 
     table.with(Style::modern_rounded());
 
@@ -73,7 +94,9 @@ fn style_table(table: &mut tabled::Table, num_cols: usize, id_col_indices: &[usi
         if id_col_indices.contains(&col) {
             continue;
         }
-        table.with(Modify::new(Columns::new(col..=col)).with(Width::wrap(non_id_width).keep_words(true)));
+        table.with(
+            Modify::new(Columns::new(col..=col)).with(Width::wrap(non_id_width).keep_words(true)),
+        );
     }
 
     table
@@ -116,23 +139,24 @@ pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
         let string_row: Vec<String> = row
             .iter()
             .enumerate()
-            .map(|(ci, v)| {
-                match v {
-                    serde_json::Value::Number(n) => {
-                        colored_cells.push((ri + 1, ci, Color::FG_CYAN));
-                        n.to_string()
-                    }
-                    serde_json::Value::Null => {
-                        colored_cells.push((ri + 1, ci, Color::FG_BRIGHT_BLACK));
-                        String::new()
-                    }
-                    serde_json::Value::Bool(b) => {
-                        colored_cells.push((ri + 1, ci, Color::FG_YELLOW));
-                        b.to_string()
-                    }
-                    serde_json::Value::Array(arr) => format_array(arr),
-                    _ => v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()),
+            .map(|(ci, v)| match v {
+                serde_json::Value::Number(n) => {
+                    colored_cells.push((ri + 1, ci, Color::FG_CYAN));
+                    n.to_string()
                 }
+                serde_json::Value::Null => {
+                    colored_cells.push((ri + 1, ci, Color::FG_BRIGHT_BLACK));
+                    String::new()
+                }
+                serde_json::Value::Bool(b) => {
+                    colored_cells.push((ri + 1, ci, Color::FG_YELLOW));
+                    b.to_string()
+                }
+                serde_json::Value::Array(arr) => format_array(arr),
+                _ => v
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string()),
             })
             .collect();
         builder.push_record(&string_row);
@@ -164,24 +188,34 @@ pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
 /// Distribute terminal width fairly across columns.
 /// Each column gets at least its natural width (header or content), up to
 /// an equal share. Surplus from narrow columns is redistributed to wider ones.
-fn fair_column_widths(headers: &[String], rows: &[Vec<String>], ncols: usize, tw: usize) -> Vec<usize> {
-    if ncols == 0 { return vec![]; }
+fn fair_column_widths(
+    headers: &[String],
+    rows: &[Vec<String>],
+    ncols: usize,
+    tw: usize,
+) -> Vec<usize> {
+    if ncols == 0 {
+        return vec![];
+    }
 
     // borders + padding: 1 left border + (3 per column: pad+border) => ncols*3 + 1
     let overhead = ncols * 3 + 1;
     let available = tw.saturating_sub(overhead);
 
     // Natural width based on content, with header allowed to add up to 3 extra chars
-    let natural: Vec<usize> = (0..ncols).map(|i| {
-        let content_w = rows.iter()
-            .filter_map(|r| r.get(i))
-            .map(|s| s.len())
-            .max()
-            .unwrap_or(1);
-        let header_w = headers.get(i).map(|h| h.len()).unwrap_or(0);
-        let header_cap = content_w + 3;
-        content_w.max(header_w.min(header_cap))
-    }).collect();
+    let natural: Vec<usize> = (0..ncols)
+        .map(|i| {
+            let content_w = rows
+                .iter()
+                .filter_map(|r| r.get(i))
+                .map(|s| s.len())
+                .max()
+                .unwrap_or(1);
+            let header_w = headers.get(i).map(|h| h.len()).unwrap_or(0);
+            let header_cap = content_w + 3;
+            content_w.max(header_w.min(header_cap))
+        })
+        .collect();
 
     // Iteratively distribute: cap at fair share, give surplus to remaining columns
     let mut widths = vec![0usize; ncols];
@@ -215,7 +249,9 @@ fn fair_column_widths(headers: &[String], rows: &[Vec<String>], ncols: usize, tw
 
     // Ensure minimum width of 1
     for w in &mut widths {
-        if *w == 0 { *w = 1; }
+        if *w == 0 {
+            *w = 1;
+        }
     }
 
     widths

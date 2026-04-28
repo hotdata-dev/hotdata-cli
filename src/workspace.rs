@@ -17,7 +17,9 @@ struct ListResponse {
 }
 
 pub fn set(workspace_id: Option<&str>) {
-    if std::env::var("HOTDATA_WORKSPACE").is_ok() || crate::sandbox::find_sandbox_run_ancestor().is_some() {
+    if std::env::var("HOTDATA_WORKSPACE").is_ok()
+        || crate::sandbox::find_sandbox_run_ancestor().is_some()
+    {
         eprintln!("error: workspace is locked");
         std::process::exit(1);
     }
@@ -26,30 +28,36 @@ pub fn set(workspace_id: Option<&str>) {
     let workspaces = body.workspaces;
 
     let chosen = match workspace_id {
-        Some(id) => {
-            match workspaces.iter().find(|w| w.public_id == id) {
-                Some(w) => config::WorkspaceEntry { public_id: w.public_id.clone(), name: w.name.clone() },
-                None => {
-                    eprintln!("error: workspace '{id}' not found or you don't have access to it.");
-                    std::process::exit(1);
-                }
+        Some(id) => match workspaces.iter().find(|w| w.public_id == id) {
+            Some(w) => config::WorkspaceEntry {
+                public_id: w.public_id.clone(),
+                name: w.name.clone(),
+            },
+            None => {
+                eprintln!("error: workspace '{id}' not found or you don't have access to it.");
+                std::process::exit(1);
             }
-        }
+        },
         None => {
             if workspaces.is_empty() {
                 eprintln!("error: no workspaces available.");
                 std::process::exit(1);
             }
-            let options: Vec<String> = workspaces.iter()
+            let options: Vec<String> = workspaces
+                .iter()
                 .map(|w| format!("{} ({})", w.name, w.public_id))
                 .collect();
-            let selection = match inquire::Select::new("Select default workspace:", options.clone()).prompt() {
-                Ok(s) => s,
-                Err(_) => std::process::exit(1),
-            };
+            let selection =
+                match inquire::Select::new("Select default workspace:", options.clone()).prompt() {
+                    Ok(s) => s,
+                    Err(_) => std::process::exit(1),
+                };
             let idx = options.iter().position(|o| o == &selection).unwrap();
             let w = &workspaces[idx];
-            config::WorkspaceEntry { public_id: w.public_id.clone(), name: w.name.clone() }
+            config::WorkspaceEntry {
+                public_id: w.public_id.clone(),
+                name: w.name.clone(),
+            }
         }
     };
 
@@ -72,15 +80,23 @@ pub fn list(format: &str) {
             std::process::exit(1);
         }
     };
-    let default_id = std::env::var("HOTDATA_WORKSPACE")
-        .unwrap_or_else(|_| profile_config.workspaces.first().map(|w| w.public_id.clone()).unwrap_or_default());
+    let default_id = std::env::var("HOTDATA_WORKSPACE").unwrap_or_else(|_| {
+        profile_config
+            .workspaces
+            .first()
+            .map(|w| w.public_id.clone())
+            .unwrap_or_default()
+    });
 
     let api = ApiClient::new(None);
     let body: ListResponse = api.get("/workspaces");
 
     match format {
         "json" => {
-            println!("{}", serde_json::to_string_pretty(&body.workspaces).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&body.workspaces).unwrap()
+            );
         }
         "yaml" => {
             print!("{}", serde_yaml::to_string(&body.workspaces).unwrap());
@@ -90,10 +106,19 @@ pub fn list(format: &str) {
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No workspaces found.".dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body.workspaces.iter().map(|w| {
-                    let marker = if w.public_id == default_id { "*" } else { "" };
-                    vec![marker.to_string(), w.public_id.clone(), w.name.clone(), w.provision_status.clone()]
-                }).collect();
+                let rows: Vec<Vec<String>> = body
+                    .workspaces
+                    .iter()
+                    .map(|w| {
+                        let marker = if w.public_id == default_id { "*" } else { "" };
+                        vec![
+                            marker.to_string(),
+                            w.public_id.clone(),
+                            w.name.clone(),
+                            w.provision_status.clone(),
+                        ]
+                    })
+                    .collect();
                 crate::table::print(&["DEFAULT", "PUBLIC_ID", "NAME", "PROVISION_STATUS"], &rows);
             }
         }

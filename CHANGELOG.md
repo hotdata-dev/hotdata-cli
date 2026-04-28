@@ -1,3 +1,17 @@
+## [0.1.14] - 2026-04-28
+
+### 🚀 Features
+
+- *(auth)* Add CLI auth session support (JWT access tokens, refresh, PKCE login)
+- *(indexes)* Workspace-wide list with filters and parallel fetch
+
+### 💼 Other
+
+- *(codecov)* Treat patch coverage as informational
+
+### 🧪 Testing
+
+- Raise coverage for indexes list and get_none_if_not_found
 ## [0.1.13] - 2026-04-24
 
 ### 🚀 Features

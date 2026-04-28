@@ -236,10 +236,10 @@ fn format_fail_message(
     body: &str,
     auth_status: Option<&auth::AuthStatus>,
 ) -> String {
-    if status.is_client_error() {
-        if let Some(auth::AuthStatus::Invalid(_)) = auth_status {
-            return "error: API key is invalid. Run 'hotdata auth login' (or 'hotdata auth') to re-authenticate.".to_string();
-        }
+    if status.is_client_error()
+        && let Some(auth::AuthStatus::Invalid(_)) = auth_status
+    {
+        return "error: API key is invalid. Run 'hotdata auth login' (or 'hotdata auth') to re-authenticate.".to_string();
     }
     util::api_error(body.to_string())
 }
