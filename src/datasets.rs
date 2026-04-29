@@ -553,6 +553,47 @@ pub fn update(
     }
 }
 
+pub fn refresh(workspace_id: &str, dataset_id: &str, async_mode: bool) {
+    use crossterm::style::Stylize;
+
+    let mut body = json!({
+        "dataset_id": dataset_id,
+    });
+    if async_mode {
+        body["async"] = json!(true);
+    }
+
+    let api = ApiClient::new(Some(workspace_id));
+    let (status, resp_body) = api.post_raw("/refresh", &body);
+
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp_body).red());
+        std::process::exit(1);
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(&resp_body).unwrap_or_default();
+
+    if async_mode {
+        let job_id = parsed["id"].as_str().unwrap_or("unknown");
+        println!("{}", "Dataset refresh submitted.".green());
+        println!("job_id: {}", job_id);
+        println!(
+            "{}",
+            format!("Use 'hotdata jobs {}' to check status.", job_id).dark_grey()
+        );
+        return;
+    }
+
+    let id = parsed["id"].as_str().unwrap_or("unknown");
+    let version = parsed["version"].as_i64().unwrap_or(0);
+    let dataset_status = parsed["status"].as_str().unwrap_or("");
+    println!("{}", "Dataset refresh completed.".green());
+    println!(
+        "{}",
+        format!("  id: {id}, version: {version}, status: {dataset_status}").dark_grey()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

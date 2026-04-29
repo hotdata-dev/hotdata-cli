@@ -344,21 +344,122 @@ pub fn list(workspace_id: &str, format: &str) {
     }
 }
 
-pub fn refresh(workspace_id: &str, connection_id: &str) {
-    let body = serde_json::json!({
+pub fn refresh(
+    workspace_id: &str,
+    connection_id: &str,
+    data: bool,
+    schema: Option<&str>,
+    table: Option<&str>,
+    async_mode: bool,
+    include_uncached: bool,
+) {
+    use crossterm::style::Stylize;
+
+    if async_mode && !data {
+        eprintln!(
+            "{}",
+            "--async only valid with --data (schema refresh is always synchronous)".red()
+        );
+        std::process::exit(1);
+    }
+    if include_uncached && !data {
+        eprintln!("{}", "--include-uncached only valid with --data".red());
+        std::process::exit(1);
+    }
+    if include_uncached && table.is_some() {
+        eprintln!(
+            "{}",
+            "--include-uncached cannot be combined with --table (it only applies to connection-wide refresh)".red()
+        );
+        std::process::exit(1);
+    }
+    if table.is_some() && schema.is_none() {
+        eprintln!("{}", "--table requires --schema".red());
+        std::process::exit(1);
+    }
+    if data && schema.is_some() && table.is_none() {
+        eprintln!(
+            "{}",
+            "--schema requires --table for data refresh (no schema-scoped data refresh)".red()
+        );
+        std::process::exit(1);
+    }
+
+    let mut body = serde_json::json!({
         "connection_id": connection_id,
-        "data": false,
+        "data": data,
     });
+    if let Some(s) = schema {
+        body["schema_name"] = serde_json::Value::String(s.to_string());
+    }
+    if let Some(t) = table {
+        body["table_name"] = serde_json::Value::String(t.to_string());
+    }
+    if async_mode {
+        body["async"] = serde_json::Value::Bool(true);
+    }
+    if include_uncached {
+        body["include_uncached"] = serde_json::Value::Bool(true);
+    }
 
     let api = ApiClient::new(Some(workspace_id));
     let (status, resp_body) = api.post_raw("/refresh", &body);
 
     if !status.is_success() {
-        use crossterm::style::Stylize;
         eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
     }
 
-    use crossterm::style::Stylize;
-    println!("{}", "Schema refresh completed.".green());
+    let parsed: serde_json::Value = serde_json::from_str(&resp_body).unwrap_or_default();
+
+    if async_mode {
+        let job_id = parsed["id"].as_str().unwrap_or("unknown");
+        println!("{}", "Data refresh submitted.".green());
+        println!("job_id: {}", job_id);
+        println!(
+            "{}",
+            format!("Use 'hotdata jobs {}' to check status.", job_id).dark_grey()
+        );
+        return;
+    }
+
+    if !data {
+        let discovered = parsed["tables_discovered"].as_u64().unwrap_or(0);
+        let added = parsed["tables_added"].as_u64().unwrap_or(0);
+        let modified = parsed["tables_modified"].as_u64().unwrap_or(0);
+        println!("{}", "Schema refresh completed.".green());
+        println!(
+            "{}",
+            format!("  tables: {discovered} discovered, {added} added, {modified} modified")
+                .dark_grey()
+        );
+        return;
+    }
+
+    if let Some(rows) = parsed["rows_synced"].as_u64() {
+        let dur = parsed["duration_ms"].as_u64().unwrap_or(0);
+        println!("{}", "Data refresh completed.".green());
+        println!("{}", format!("  {rows} rows synced ({dur} ms)").dark_grey());
+    } else {
+        let refreshed = parsed["tables_refreshed"].as_u64().unwrap_or(0);
+        let failed = parsed["tables_failed"].as_u64().unwrap_or(0);
+        let total = parsed["total_rows"].as_u64().unwrap_or(0);
+        let dur = parsed["duration_ms"].as_u64().unwrap_or(0);
+        println!("{}", "Data refresh completed.".green());
+        println!(
+            "{}",
+            format!(
+                "  {refreshed} tables refreshed, {failed} failed, {total} total rows ({dur} ms)"
+            )
+            .dark_grey()
+        );
+        if let Some(errors) = parsed["errors"].as_array() {
+            if !errors.is_empty() {
+                eprintln!("{}", format!("  {} error(s):", errors.len()).yellow());
+                for err in errors {
+                    eprintln!("    {}", err);
+                }
+            }
+        }
+    }
 }

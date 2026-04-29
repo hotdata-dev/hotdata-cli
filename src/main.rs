@@ -6,7 +6,7 @@ mod connections;
 mod connections_new;
 mod context;
 mod datasets;
-mod embedding;
+mod embedding_providers;
 mod indexes;
 mod jobs;
 mod jwt;
@@ -24,8 +24,9 @@ use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
 use command::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
-    DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, QueryCommands,
-    ResultsCommands, SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands,
+    DatasetsCommands, EmbeddingProvidersCommands, IndexesCommands, JobsCommands, QueriesCommands,
+    QueryCommands, ResultsCommands, SandboxCommands, SkillCommands, TablesCommands,
+    WorkspaceCommands,
 };
 
 #[derive(Parser)]
@@ -173,6 +174,9 @@ fn main() {
                             table_name.as_deref(),
                             &output,
                         ),
+                        Some(DatasetsCommands::Refresh { id, r#async }) => {
+                            datasets::refresh(&workspace_id, &id, r#async)
+                        }
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
@@ -270,9 +274,22 @@ fn main() {
                                 )
                             }
                         },
-                        Some(ConnectionsCommands::Refresh { connection_id }) => {
-                            connections::refresh(&workspace_id, &connection_id)
-                        }
+                        Some(ConnectionsCommands::Refresh {
+                            connection_id,
+                            data,
+                            schema,
+                            table,
+                            r#async,
+                            include_uncached,
+                        }) => connections::refresh(
+                            &workspace_id,
+                            &connection_id,
+                            data,
+                            schema.as_deref(),
+                            table.as_deref(),
+                            r#async,
+                            include_uncached,
+                        ),
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
@@ -393,92 +410,186 @@ fn main() {
                         connection_id,
                         schema,
                         table,
+                        dataset_id,
                         output,
                     } => indexes::list(
                         &workspace_id,
                         connection_id.as_deref(),
                         schema.as_deref(),
                         table.as_deref(),
+                        dataset_id.as_deref(),
                         &output,
                     ),
                     IndexesCommands::Create {
                         connection_id,
                         schema,
                         table,
+                        dataset_id,
                         name,
                         columns,
                         r#type,
                         metric,
                         r#async,
-                    } => indexes::create(
+                        embedding_provider_id,
+                        dimensions,
+                        output_column,
+                        description,
+                    } => {
+                        let scope = match (
+                            dataset_id.as_deref(),
+                            connection_id.as_deref(),
+                            schema.as_deref(),
+                            table.as_deref(),
+                        ) {
+                            (Some(did), _, _, _) => indexes::IndexScope::Dataset { dataset_id: did },
+                            (None, Some(cid), Some(sch), Some(tbl)) => {
+                                indexes::IndexScope::Connection {
+                                    connection_id: cid,
+                                    schema: sch,
+                                    table: tbl,
+                                }
+                            }
+                            _ => {
+                                eprintln!(
+                                    "error: provide either --dataset-id or all three of --connection-id, --schema, --table"
+                                );
+                                std::process::exit(1);
+                            }
+                        };
+                        indexes::create(
+                            &workspace_id,
+                            scope,
+                            &name,
+                            &columns,
+                            &r#type,
+                            metric.as_deref(),
+                            r#async,
+                            embedding_provider_id.as_deref(),
+                            dimensions,
+                            output_column.as_deref(),
+                            description.as_deref(),
+                        )
+                    }
+                    IndexesCommands::Delete {
+                        connection_id,
+                        schema,
+                        table,
+                        dataset_id,
+                        name,
+                    } => {
+                        let scope = match (
+                            dataset_id.as_deref(),
+                            connection_id.as_deref(),
+                            schema.as_deref(),
+                            table.as_deref(),
+                        ) {
+                            (Some(did), _, _, _) => indexes::IndexScope::Dataset { dataset_id: did },
+                            (None, Some(cid), Some(sch), Some(tbl)) => {
+                                indexes::IndexScope::Connection {
+                                    connection_id: cid,
+                                    schema: sch,
+                                    table: tbl,
+                                }
+                            }
+                            _ => {
+                                eprintln!(
+                                    "error: provide either --dataset-id or all three of --connection-id, --schema, --table"
+                                );
+                                std::process::exit(1);
+                            }
+                        };
+                        indexes::delete(&workspace_id, scope, &name);
+                    }
+                }
+            }
+            Commands::EmbeddingProviders {
+                workspace_id,
+                command,
+            } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                match command {
+                    EmbeddingProvidersCommands::List { output } => {
+                        embedding_providers::list(&workspace_id, &output)
+                    }
+                    EmbeddingProvidersCommands::Get { id, output } => {
+                        embedding_providers::get(&workspace_id, &id, &output)
+                    }
+                    EmbeddingProvidersCommands::Create {
+                        name,
+                        provider_type,
+                        config,
+                        provider_api_key,
+                        secret_name,
+                        output,
+                    } => embedding_providers::create(
                         &workspace_id,
-                        &connection_id,
-                        &schema,
-                        &table,
                         &name,
-                        &columns,
-                        &r#type,
-                        metric.as_deref(),
-                        r#async,
+                        &provider_type,
+                        config.as_deref(),
+                        provider_api_key.as_deref(),
+                        secret_name.as_deref(),
+                        &output,
                     ),
+                    EmbeddingProvidersCommands::Update {
+                        id,
+                        name,
+                        config,
+                        provider_api_key,
+                        secret_name,
+                        output,
+                    } => embedding_providers::update(
+                        &workspace_id,
+                        &id,
+                        name.as_deref(),
+                        config.as_deref(),
+                        provider_api_key.as_deref(),
+                        secret_name.as_deref(),
+                        &output,
+                    ),
+                    EmbeddingProvidersCommands::Delete { id } => {
+                        embedding_providers::delete(&workspace_id, &id)
+                    }
                 }
             }
             Commands::Search {
                 query,
+                r#type,
                 table,
                 column,
                 select,
                 limit,
-                model,
                 workspace_id,
                 output,
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 let select_cols = select.as_deref().unwrap_or("*");
 
-                // Determine search mode:
-                // 1. --model flag: embed the query text via the model provider
-                // 2. No query + piped stdin: read vector from stdin
-                // 3. Query text without --model: BM25 text search
-                let sql = if let Some(ref model_name) = model {
-                    let query_text = match query {
-                        Some(ref q) => q.as_str(),
-                        None => {
-                            eprintln!("error: --model requires a search query text");
-                            std::process::exit(1);
-                        }
-                    };
-                    let vec = embedding::openai_embed(query_text, model_name);
-                    let vec_str = embedding::vector_to_sql(&vec);
-                    format!(
-                        "SELECT {}, l2_distance({}, {}) as dist FROM {} ORDER BY dist LIMIT {}",
-                        select_cols, column, vec_str, table, limit,
-                    )
-                } else if let Some(q) = query.as_ref() {
-                    let bm25_columns = match select.as_deref() {
-                        Some(cols) => format!("{}, score", cols),
-                        None => "*".to_string(),
-                    };
-                    format!(
-                        "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
-                        bm25_columns,
-                        table.replace('\'', "''"),
-                        column.replace('\'', "''"),
-                        q.replace('\'', "''"),
-                        limit,
-                    )
-                } else {
-                    use std::io::IsTerminal;
-                    if std::io::stdin().is_terminal() {
-                        eprintln!("error: provide a search query or pipe a vector via stdin");
-                        std::process::exit(1);
+                let sql = match r#type.as_str() {
+                    "bm25" => {
+                        let bm25_columns = match select.as_deref() {
+                            Some(cols) => format!("{}, score", cols),
+                            None => "*".to_string(),
+                        };
+                        format!(
+                            "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
+                            bm25_columns,
+                            table.replace('\'', "''"),
+                            column.replace('\'', "''"),
+                            query.replace('\'', "''"),
+                            limit,
+                        )
                     }
-                    let vec = embedding::read_vector_from_stdin();
-                    let vec_str = embedding::vector_to_sql(&vec);
-                    format!(
-                        "SELECT {}, l2_distance({}, {}) as dist FROM {} ORDER BY dist LIMIT {}",
-                        select_cols, column, vec_str, table, limit,
-                    )
+                    // Server-side vector_distance: resolves the embedding column, model,
+                    // and metric from the index metadata. The user names the source text column.
+                    "vector" => format!(
+                        "SELECT {}, vector_distance({}, '{}') AS dist FROM {} ORDER BY dist LIMIT {}",
+                        select_cols,
+                        column,
+                        query.replace('\'', "''"),
+                        table,
+                        limit,
+                    ),
+                    _ => unreachable!(),
                 };
                 query::execute(&sql, &workspace_id, None, &output)
             }

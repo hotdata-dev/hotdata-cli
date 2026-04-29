@@ -128,6 +128,12 @@ fn list_one_table(api: &ApiClient, connection_id: &str, schema: &str, table: &st
     body.indexes
 }
 
+fn list_one_dataset(api: &ApiClient, dataset_id: &str) -> Vec<Index> {
+    let path = format!("/datasets/{dataset_id}/indexes");
+    let body: ListResponse = api.get(&path);
+    body.indexes
+}
+
 fn list_one_table_scan(
     api: &ApiClient,
     connection_id: &str,
@@ -146,12 +152,24 @@ pub fn list(
     connection_id: Option<&str>,
     schema: Option<&str>,
     table: Option<&str>,
+    dataset_id: Option<&str>,
     format: &str,
 ) {
     let api = ApiClient::new(Some(workspace_id));
 
-    let (rows, multi_table) = match (connection_id, schema, table) {
-        (Some(cid), Some(sch), Some(tbl)) => {
+    let (rows, multi_table) = match (dataset_id, connection_id, schema, table) {
+        (Some(did), _, _, _) => {
+            let indexes = list_one_dataset(&api, did);
+            let rows: Vec<IndexRow> = indexes
+                .into_iter()
+                .map(|i| IndexRow {
+                    inner: i,
+                    table: None,
+                })
+                .collect();
+            (rows, false)
+        }
+        (None, Some(cid), Some(sch), Some(tbl)) => {
             let indexes = list_one_table(&api, cid, sch, tbl);
             let rows: Vec<IndexRow> = indexes
                 .into_iter()
@@ -243,21 +261,85 @@ pub fn list(
     }
 }
 
+/// Where an index is being created or deleted.
+pub enum IndexScope<'a> {
+    Connection {
+        connection_id: &'a str,
+        schema: &'a str,
+        table: &'a str,
+    },
+    Dataset {
+        dataset_id: &'a str,
+    },
+}
+
+impl IndexScope<'_> {
+    fn create_path(&self) -> String {
+        match self {
+            IndexScope::Connection {
+                connection_id,
+                schema,
+                table,
+            } => format!("/connections/{connection_id}/tables/{schema}/{table}/indexes"),
+            IndexScope::Dataset { dataset_id } => format!("/datasets/{dataset_id}/indexes"),
+        }
+    }
+
+    fn delete_path(&self, index_name: &str) -> String {
+        match self {
+            IndexScope::Connection {
+                connection_id,
+                schema,
+                table,
+            } => format!(
+                "/connections/{connection_id}/tables/{schema}/{table}/indexes/{index_name}"
+            ),
+            IndexScope::Dataset { dataset_id } => {
+                format!("/datasets/{dataset_id}/indexes/{index_name}")
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn create(
     workspace_id: &str,
-    connection_id: &str,
-    schema: &str,
-    table: &str,
+    scope: IndexScope<'_>,
     name: &str,
     columns: &str,
     index_type: &str,
     metric: Option<&str>,
     async_mode: bool,
+    embedding_provider_id: Option<&str>,
+    dimensions: Option<u32>,
+    output_column: Option<&str>,
+    description: Option<&str>,
 ) {
-    let api = ApiClient::new(Some(workspace_id));
+    use crossterm::style::Stylize;
 
     let cols: Vec<&str> = columns.split(',').map(str::trim).collect();
+
+    let auto_embed_set = embedding_provider_id.is_some()
+        || dimensions.is_some()
+        || output_column.is_some()
+        || description.is_some();
+    if auto_embed_set && index_type != "vector" {
+        eprintln!(
+            "{}",
+            "--embedding-provider-id, --dimensions, --output-column, and --description are only valid with --type vector".red()
+        );
+        std::process::exit(1);
+    }
+    if index_type == "vector" && cols.len() != 1 {
+        eprintln!(
+            "{}",
+            "--type vector requires exactly one column in --columns".red()
+        );
+        std::process::exit(1);
+    }
+
+    let api = ApiClient::new(Some(workspace_id));
+
     let mut body = serde_json::json!({
         "index_name": name,
         "columns": cols,
@@ -267,29 +349,52 @@ pub fn create(
     if let Some(m) = metric {
         body["metric"] = serde_json::json!(m);
     }
+    if let Some(p) = embedding_provider_id {
+        body["embedding_provider_id"] = serde_json::json!(p);
+    }
+    if let Some(d) = dimensions {
+        body["dimensions"] = serde_json::json!(d);
+    }
+    if let Some(o) = output_column {
+        body["output_column"] = serde_json::json!(o);
+    }
+    if let Some(d) = description {
+        body["description"] = serde_json::json!(d);
+    }
 
-    let path = format!("/connections/{connection_id}/tables/{schema}/{table}/indexes");
-    let (status, resp_body) = api.post_raw(&path, &body);
+    let (status, resp_body) = api.post_raw(&scope.create_path(), &body);
 
     if !status.is_success() {
-        use crossterm::style::Stylize;
         eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
     }
 
-    use crossterm::style::Stylize;
     if async_mode {
         let parsed: serde_json::Value = serde_json::from_str(&resp_body).unwrap_or_default();
-        let job_id = parsed["job_id"].as_str().unwrap_or("unknown");
+        let job_id = parsed["id"].as_str().unwrap_or("unknown");
         println!("{}", "Index creation submitted.".green());
         println!("job_id: {}", job_id);
         println!(
             "{}",
-            "Use 'hotdata jobs <job_id>' to check status.".dark_grey()
+            format!("Use 'hotdata jobs {}' to check status.", job_id).dark_grey()
         );
     } else {
         println!("{}", "Index created.".green());
     }
+}
+
+pub fn delete(workspace_id: &str, scope: IndexScope<'_>, index_name: &str) {
+    use crossterm::style::Stylize;
+
+    let api = ApiClient::new(Some(workspace_id));
+    let (status, resp_body) = api.delete_raw(&scope.delete_path(index_name));
+
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp_body).red());
+        std::process::exit(1);
+    }
+
+    println!("{}", format!("Index '{}' deleted.", index_name).green());
 }
 
 #[cfg(test)]
@@ -302,6 +407,35 @@ mod tests {
             information_schema_followup(false, Some("c".into())),
             ControlFlow::Break(())
         ));
+    }
+
+    #[test]
+    fn index_scope_connection_paths() {
+        let scope = IndexScope::Connection {
+            connection_id: "conn1",
+            schema: "public",
+            table: "users",
+        };
+        assert_eq!(
+            scope.create_path(),
+            "/connections/conn1/tables/public/users/indexes"
+        );
+        assert_eq!(
+            scope.delete_path("idx_email"),
+            "/connections/conn1/tables/public/users/indexes/idx_email"
+        );
+    }
+
+    #[test]
+    fn index_scope_dataset_paths() {
+        let scope = IndexScope::Dataset {
+            dataset_id: "data_xyz",
+        };
+        assert_eq!(scope.create_path(), "/datasets/data_xyz/indexes");
+        assert_eq!(
+            scope.delete_path("idx_title"),
+            "/datasets/data_xyz/indexes/idx_title"
+        );
     }
 
     #[test]

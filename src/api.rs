@@ -214,6 +214,13 @@ impl ApiClient {
         self.send(req, Some(body))
     }
 
+    /// DELETE request, exits on connection error, returns raw (status, body).
+    pub fn delete_raw(&self, path: &str) -> (reqwest::StatusCode, String) {
+        let url = format!("{}{path}", self.api_url);
+        let req = self.build_request(reqwest::Method::DELETE, &url);
+        self.send(req, None)
+    }
+
     /// PATCH request with JSON body, returns parsed response.
     pub fn patch<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> T {
         let url = format!("{}{path}", self.api_url);
@@ -298,6 +305,39 @@ mod tests {
         let api = ApiClient::test_new(&server.url(), "test-key", None);
         let got: Option<Probe> = api.get_none_if_not_found("/missing");
         assert!(got.is_none());
+        mock.assert();
+    }
+
+    #[test]
+    fn delete_raw_returns_status_and_body() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("DELETE", "/widgets/abc")
+            .match_header("Authorization", "Bearer test-key")
+            .with_status(204)
+            .with_body("")
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "test-key", None);
+        let (status, body) = api.delete_raw("/widgets/abc");
+        assert_eq!(status.as_u16(), 204);
+        assert!(body.is_empty());
+        mock.assert();
+    }
+
+    #[test]
+    fn delete_raw_surfaces_error_body_on_4xx() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("DELETE", "/widgets/missing")
+            .with_status(404)
+            .with_body(r#"{"error":{"message":"not found"}}"#)
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "test-key", None);
+        let (status, body) = api.delete_raw("/widgets/missing");
+        assert_eq!(status.as_u16(), 404);
+        assert!(body.contains("not found"));
         mock.assert();
     }
 

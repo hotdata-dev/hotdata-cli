@@ -125,16 +125,38 @@ pub enum Commands {
         command: IndexesCommands,
     },
 
+    /// Manage embedding providers (OpenAI, local, etc.) used by vector indexes
+    #[command(name = "embedding-providers")]
+    EmbeddingProviders {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w', global = true)]
+        workspace_id: Option<String>,
+
+        #[command(subcommand)]
+        command: EmbeddingProvidersCommands,
+    },
+
     /// Full-text or vector search across a table column
     Search {
-        /// Search query text (omit to read a vector from stdin for vector search)
-        query: Option<String>,
+        /// Search query text — required for both --type bm25 and --type vector
+        query: String,
+
+        /// Search type — required (no default; choose deliberately)
+        ///
+        /// `vector` runs server-side `vector_distance(col, 'text')` — the server resolves the
+        /// embedding column, model, and metric from the index metadata.
+        ///
+        /// `bm25` runs server-side `bm25_search(table, col, 'text')` and requires a BM25 index
+        /// on the column.
+        #[arg(long, value_parser = ["vector", "bm25"])]
+        r#type: String,
 
         /// Table to search (connection.schema.table)
         #[arg(long)]
         table: String,
 
-        /// Column to search
+        /// Column to search. For `--type vector`, name the source text column — the server
+        /// resolves the embedding column from the index metadata.
         #[arg(long)]
         column: String,
 
@@ -145,10 +167,6 @@ pub enum Commands {
         /// Maximum number of results
         #[arg(long, default_value = "10")]
         limit: u32,
-
-        /// Embedding model to generate a vector from the query text (e.g. text-embedding-3-small)
-        #[arg(long, value_parser = ["text-embedding-3-small", "text-embedding-3-large"])]
-        model: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long, short = 'w')]
@@ -248,49 +266,60 @@ pub enum AuthCommands {
 
 #[derive(Subcommand)]
 pub enum IndexesCommands {
-    /// List indexes (defaults to the whole workspace; narrow with filters)
+    /// List indexes (defaults to the whole workspace; narrow with filters or pass --dataset-id)
     List {
         /// Filter by connection ID
-        #[arg(long, short = 'c')]
+        #[arg(long, short = 'c', conflicts_with = "dataset_id")]
         connection_id: Option<String>,
 
         /// Filter by schema name
-        #[arg(long)]
+        #[arg(long, conflicts_with = "dataset_id")]
         schema: Option<String>,
 
         /// Filter by table name
-        #[arg(long)]
+        #[arg(long, conflicts_with = "dataset_id")]
         table: Option<String>,
+
+        /// List indexes for a specific dataset (alternative scope to --connection-id)
+        #[arg(long)]
+        dataset_id: Option<String>,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
     },
 
-    /// Create an index on a table
+    /// Create an index on a table or dataset
+    ///
+    /// Pass either connection scope (--connection-id + --schema + --table) OR
+    /// dataset scope (--dataset-id), not both.
     Create {
-        /// Connection ID
-        #[arg(long, short = 'c')]
-        connection_id: String,
+        /// Connection ID (use with --schema and --table)
+        #[arg(long, short = 'c', conflicts_with = "dataset_id", requires_all = ["schema", "table"])]
+        connection_id: Option<String>,
 
-        /// Schema name
-        #[arg(long)]
-        schema: String,
+        /// Schema name (requires --connection-id)
+        #[arg(long, requires = "connection_id")]
+        schema: Option<String>,
 
-        /// Table name
-        #[arg(long)]
-        table: String,
+        /// Table name (requires --connection-id)
+        #[arg(long, requires = "connection_id")]
+        table: Option<String>,
+
+        /// Dataset ID (alternative scope to --connection-id)
+        #[arg(long, conflicts_with_all = ["connection_id", "schema", "table"])]
+        dataset_id: Option<String>,
 
         /// Index name
         #[arg(long)]
         name: String,
 
-        /// Columns to index (comma-separated)
+        /// Columns to index (comma-separated). Vector indexes accept exactly one column.
         #[arg(long)]
         columns: String,
 
-        /// Index type
-        #[arg(long, default_value = "sorted", value_parser = ["sorted", "bm25", "vector"])]
+        /// Index type — required (no default; choose deliberately)
+        #[arg(long, value_parser = ["sorted", "bm25", "vector"])]
         r#type: String,
 
         /// Distance metric for vector indexes
@@ -300,6 +329,49 @@ pub enum IndexesCommands {
         /// Create as a background job
         #[arg(long)]
         r#async: bool,
+
+        /// Embedding provider ID — when set on a vector index over a text column,
+        /// embeddings are generated automatically. Defaults to first system provider if omitted.
+        #[arg(long = "embedding-provider-id")]
+        embedding_provider_id: Option<String>,
+
+        /// Override embedding output dimensions (vector indexes with auto-embedding only)
+        #[arg(long)]
+        dimensions: Option<u32>,
+
+        /// Custom name for the generated embedding column (defaults to `{column}_embedding`)
+        #[arg(long = "output-column")]
+        output_column: Option<String>,
+
+        /// Human-readable description of the embedding (e.g. "product titles")
+        #[arg(long)]
+        description: Option<String>,
+    },
+
+    /// Delete an index from a table or dataset
+    ///
+    /// Pass either connection scope (--connection-id + --schema + --table) OR
+    /// dataset scope (--dataset-id), not both.
+    Delete {
+        /// Connection ID (use with --schema and --table)
+        #[arg(long, short = 'c', conflicts_with = "dataset_id", requires_all = ["schema", "table"])]
+        connection_id: Option<String>,
+
+        /// Schema name (requires --connection-id)
+        #[arg(long, requires = "connection_id")]
+        schema: Option<String>,
+
+        /// Table name (requires --connection-id)
+        #[arg(long, requires = "connection_id")]
+        table: Option<String>,
+
+        /// Dataset ID (alternative scope to --connection-id)
+        #[arg(long, conflicts_with_all = ["connection_id", "schema", "table"])]
+        dataset_id: Option<String>,
+
+        /// Index name
+        #[arg(long)]
+        name: String,
     },
 }
 
@@ -308,7 +380,7 @@ pub enum JobsCommands {
     /// List background jobs (shows active jobs by default)
     List {
         /// Filter by job type
-        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "create_index"])]
+        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "dataset_refresh", "create_index", "create_dataset_index"])]
         job_type: Option<String>,
 
         /// Filter by status
@@ -402,6 +474,16 @@ pub enum DatasetsCommands {
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
     },
+
+    /// Refresh a dataset by re-running its source (URL fetch or saved query) and creating a new version
+    Refresh {
+        /// Dataset ID
+        id: String,
+
+        /// Submit as a background job
+        #[arg(long)]
+        r#async: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -467,10 +549,30 @@ pub enum ConnectionsCommands {
         output: String,
     },
 
-    /// Refresh a connection's schema
+    /// Refresh a connection's schema or data
     Refresh {
         /// Connection ID
         connection_id: String,
+
+        /// Refresh data instead of schema metadata
+        #[arg(long)]
+        data: bool,
+
+        /// Narrow refresh to a specific schema (requires --table for data refresh)
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Narrow refresh to a specific table (requires --schema)
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Submit as a background job (only valid with --data)
+        #[arg(long)]
+        r#async: bool,
+
+        /// Include uncached tables in connection-wide data refresh (only with --data, no --table)
+        #[arg(long = "include-uncached")]
+        include_uncached: bool,
     },
 }
 
@@ -662,5 +764,88 @@ pub enum TablesCommands {
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum EmbeddingProvidersCommands {
+    /// List embedding providers
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Show details for a specific embedding provider
+    Get {
+        /// Provider ID
+        id: String,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Create a new embedding provider
+    Create {
+        /// Provider name (must be unique within the workspace)
+        #[arg(long)]
+        name: String,
+
+        /// Provider type ("local" or "service")
+        #[arg(long, value_parser = ["local", "service"])]
+        provider_type: String,
+
+        /// Provider-specific config as a JSON string (model, base_url, dimensions, etc.)
+        #[arg(long)]
+        config: Option<String>,
+
+        /// The provider's own API key (e.g. an OpenAI sk-... key). Auto-creates a
+        /// managed secret. Mutually exclusive with --secret-name. Named
+        /// `--provider-api-key` to pair with `--provider-type` and to avoid colliding
+        /// with the global `--api-key` (Hotdata auth) flag.
+        #[arg(long = "provider-api-key", conflicts_with = "secret_name")]
+        provider_api_key: Option<String>,
+
+        /// Reference an existing secret by name (for service providers)
+        #[arg(long)]
+        secret_name: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Update an embedding provider's name, config, or secret
+    Update {
+        /// Provider ID
+        id: String,
+
+        /// New name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// New config as a JSON string
+        #[arg(long)]
+        config: Option<String>,
+
+        /// New provider API key (replaces or creates the managed secret).
+        /// See `embedding-providers create --provider-api-key` for naming rationale.
+        #[arg(long = "provider-api-key", conflicts_with = "secret_name")]
+        provider_api_key: Option<String>,
+
+        /// New secret name to reference
+        #[arg(long)]
+        secret_name: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Delete an embedding provider
+    Delete {
+        /// Provider ID
+        id: String,
     },
 }

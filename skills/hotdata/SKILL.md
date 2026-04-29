@@ -94,12 +94,15 @@ hotdata connections <connection_id> [--workspace-id <workspace_id>] [--output ta
 - `list` returns `id`, `name`, `source_type` for each connection.
 - Pass a connection ID to view details (id, name, source type, table counts).
 
-### Refresh connection schema
+### Refresh connection schema or data
 ```
-hotdata connections refresh <connection_id> [--workspace-id <workspace_id>]
+hotdata connections refresh <connection_id> [--workspace-id <workspace_id>] [--data] [--schema <name> --table <name>] [--async] [--include-uncached]
 ```
-- Refreshes the connection’s catalog so new or changed tables and columns appear in `hotdata tables list` and queries.
-- Use after DDL or other changes in the source database when the workspace view is stale.
+- Default (no flags) refreshes the connection’s catalog so new or changed tables and columns appear in `hotdata tables list` and queries. Use after DDL or other changes in the source database when the workspace view is stale.
+- `--data` re-syncs cached row data from the source instead of refreshing the catalog.
+- `--schema` and `--table` narrow a data refresh to a single table (must be supplied together).
+- `--async` submits a data refresh as a background job and returns a job ID; poll with `hotdata jobs <job_id>`. Only valid with `--data` — schema refresh is always synchronous.
+- `--include-uncached` includes tables that haven't been cached yet in a connection-wide data refresh. Only valid with `--data` and no `--table`.
 
 ### Create a Connection
 
@@ -212,6 +215,14 @@ hotdata datasets create --label "My Dataset" --upload-id <upload_id> [--format c
 - `--table-name` is optional — derived from the label if omitted.
 - After **`datasets create`**, the CLI prints a **`full_name`** line (for example `datasets.main.my_table` or `datasets.s_ufmblmvq.tac_csat`). **Always use that `full_name` in SQL**—do not assume `datasets.main`.
 
+#### Refresh a dataset
+```
+hotdata datasets refresh <dataset_id> [--workspace-id <workspace_id>] [--async]
+```
+- Re-runs the dataset's source (URL fetch or saved query) and creates a **new version**. Use after the upstream source has changed.
+- **Not supported for upload-source datasets** — those have no remote source to re-pull from. The CLI surfaces the server's `400` directly.
+- `--async` submits the refresh as a background job and returns a `job_id`; poll with **`hotdata jobs <job_id>`**.
+
 #### Querying datasets
 
 Qualified dataset tables are **`datasets.<schema>.<table_name>`**: **`main`** for workspace-scoped datasets (created outside a sandbox), or the **sandbox id** for sandbox-created data (e.g. `datasets.s_ufmblmvq.tac_csat`). The create output’s **`full_name`** is authoritative—copy it into `FROM` / `JOIN` clauses instead of guessing `datasets.main.…`.
@@ -286,32 +297,59 @@ These commands use the **active workspace only** (the `queries` command has no `
 To create a dataset from a **saved query** still registered for the workspace, use **`hotdata datasets create --query-id <saved_query_id>`** (this CLI does not expose separate saved-query create/run subcommands).
 
 ### Search
-```
-# BM25 full-text search
-hotdata search "query text" --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [--output table|json|csv]
 
-# Vector search with --model (calls OpenAI to embed the query)
-hotdata search "query text" --table <table> --column <vector_column> --model text-embedding-3-small [--limit <n>]
+`--type` is **required**. Pass `vector` or `bm25`. Both run entirely server-side.
 
-# Vector search with piped embedding
-echo '[0.1, -0.2, ...]' | hotdata search --table <table> --column <vector_column> [--limit <n>]
 ```
-- Without `--model` and with query text: BM25 full-text search. Requires a BM25 index on the target column.
-- With `--model`: generates an embedding via OpenAI and performs vector search using `l2_distance`. Requires `OPENAI_API_KEY` env var. Supported models: `text-embedding-3-small`, `text-embedding-3-large`.
-- Without query text and with piped stdin: reads a vector (raw JSON array or OpenAI embedding response) and performs vector search.
-- BM25 results are ordered by relevance score (descending). Vector results are ordered by distance (ascending).
+# BM25 full-text search (requires BM25 index on the column)
+hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [--output table|json|csv]
+
+# Vector similarity search via server-side auto-embed (requires a vector index on the column)
+hotdata search "<query>" --type vector --table <table> --column <source_text_column> [--limit <n>]
+```
+- **`--type vector`** — pass the query as **plain text** and name the **source text column** (e.g. `title`). The server embeds the query at the same time, using the same provider that auto-embedded the column when the index was built — distance metric, model, and dimensions match automatically. No client-side embedding, no `OPENAI_API_KEY` required. Generated SQL: `vector_distance(col, 'text')`.
+- **`--type bm25`** generates `bm25_search(table, col, 'text')` server-side; requires a BM25 index on the column.
+- **No vector index on the column, or want a different embedding model?** `hotdata search` won't help — drop down to raw SQL via `hotdata query` (e.g. `SELECT *, cosine_distance(col, [<vec>]) FROM ...`). See the SQL reference for available distance functions and table UDFs.
+- BM25 results sort by score (descending). Vector results sort by distance (ascending).
 - `--select` specifies which columns to return (comma-separated, defaults to all).
 - Default limit is 10.
-- **For BM25 search, create a BM25 index on the target column first. For vector search, create a vector index.**
+- **For BM25 search, create a BM25 index on the target column first (`hotdata indexes create ... --type bm25`). For vector search, create a vector index, optionally with auto-embedding on a text column.**
+- The earlier `--model` flag and stdin-piped-vector path have both been removed. They hardcoded `l2_distance` regardless of the index's metric (silently wrong on cosine indexes). For client-side embedding or precomputed-vector workflows, use raw SQL via `hotdata query`.
 
 ### Indexes
+
+Indexes attach to either a connection-table (`--connection-id` + `--schema` + `--table`) or a dataset (`--dataset-id`) — the two scopes are mutually exclusive. `--type` is required (no default).
+
 ```
-hotdata indexes list --connection-id <connection_id> --schema <schema> --table <table> [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata indexes create --connection-id <connection_id> --schema <schema> --table <table> --name <name> --columns <cols> [--workspace-id <workspace_id>] [--type sorted|bm25|vector] [--metric l2|cosine|dot] [--async]
+# Connection-table scope
+hotdata indexes list   --connection-id <connection_id> --schema <schema> --table <table> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata indexes create --connection-id <connection_id> --schema <schema> --table <table> \
+  --name <name> --columns <cols> --type sorted|bm25|vector \
+  [--metric l2|cosine|dot] [--async] \
+  [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+hotdata indexes delete --connection-id <connection_id> --schema <schema> --table <table> --name <name>
+
+# Dataset scope (positional dataset_id replaced by --dataset-id flag)
+hotdata indexes list   --dataset-id <dataset_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata indexes create --dataset-id <dataset_id> --name <name> --columns <cols> --type sorted|bm25|vector ...
+hotdata indexes delete --dataset-id <dataset_id> --name <name>
 ```
-- `list` shows indexes on a table with name, type, columns, status, and creation date.
-- `create` creates an index. Use `--type bm25` for full-text search, `--type vector` for vector search (requires `--metric`).
-- `--async` submits index creation as a background job. Use `hotdata jobs <job_id>` to check status.
+- `--type` accepts `sorted` (B-tree-like; range/exact lookups), `bm25` (full-text), or `vector` (similarity). It is **required**.
+- `--type vector` requires exactly one column.
+- `--async` submits index creation as a background job; poll with `hotdata jobs <job_id>`.
+- **Auto-embedding:** with `--type vector` on a **text** column, the server generates embeddings automatically. Pass `--embedding-provider-id` to pick a specific provider; if omitted, the first system provider is used. The generated column defaults to `{column}_embedding` (override with `--output-column`).
+
+### Embedding providers
+```
+hotdata embedding-providers list [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata embedding-providers get <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata embedding-providers create --name <name> --provider-type service|local \
+  [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>]
+hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--provider-api-key <key> | --secret-name <name>]
+hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
+```
+- System providers (e.g. `sys_emb_openai`) come pre-configured. `list` shows IDs to pass to `--embedding-provider-id`.
+- `--provider-api-key` (the embedding service's own key, e.g. an OpenAI `sk-...`) auto-creates a managed secret. Pairs with `--provider-type`; named to avoid colliding with the global `--api-key` (Hotdata auth). `--secret-name` references an existing secret. Mutually exclusive.
 
 ### Jobs
 ```
@@ -319,7 +357,7 @@ hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status 
 hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
-- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`.
+- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`, `create_dataset_index`.
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 
