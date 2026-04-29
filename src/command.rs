@@ -308,7 +308,7 @@ pub enum JobsCommands {
     /// List background jobs (shows active jobs by default)
     List {
         /// Filter by job type
-        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "create_index"])]
+        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "dataset_refresh", "create_index"])]
         job_type: Option<String>,
 
         /// Filter by status
@@ -467,10 +467,30 @@ pub enum ConnectionsCommands {
         output: String,
     },
 
-    /// Refresh a connection's schema
+    /// Refresh a connection's schema or data
     Refresh {
         /// Connection ID
         connection_id: String,
+
+        /// Refresh data instead of schema metadata
+        #[arg(long)]
+        data: bool,
+
+        /// Narrow refresh to a specific schema (requires --table for data refresh)
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Narrow refresh to a specific table (requires --schema)
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Submit as a background job (only valid with --data)
+        #[arg(long)]
+        r#async: bool,
+
+        /// Include uncached tables in connection-wide data refresh (only with --data, no --table)
+        #[arg(long = "include-uncached")]
+        include_uncached: bool,
     },
 }
 

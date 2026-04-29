@@ -270,9 +270,22 @@ fn main() {
                                 )
                             }
                         },
-                        Some(ConnectionsCommands::Refresh { connection_id }) => {
-                            connections::refresh(&workspace_id, &connection_id)
-                        }
+                        Some(ConnectionsCommands::Refresh {
+                            connection_id,
+                            data,
+                            schema,
+                            table,
+                            r#async,
+                            include_uncached,
+                        }) => connections::refresh(
+                            &workspace_id,
+                            &connection_id,
+                            data,
+                            schema.as_deref(),
+                            table.as_deref(),
+                            r#async,
+                            include_uncached,
+                        ),
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
