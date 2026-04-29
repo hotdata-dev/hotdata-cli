@@ -537,7 +537,6 @@ pub fn update(
                 }
                 None => {
                     println!("table_name:  {}", d.table_name);
-                    use crossterm::style::Stylize;
                     eprintln!(
                         "{}",
                         format!(
