@@ -524,7 +524,7 @@ pub fn update(
     let d: UpdateResponse = api.put(&format!("/datasets/{dataset_id}"), &body);
 
     use crossterm::style::Stylize;
-    println!("{}", "Dataset updated".green());
+    eprintln!("{}", "Dataset updated".green());
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&d).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&d).unwrap()),
