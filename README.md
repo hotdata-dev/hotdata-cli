@@ -71,7 +71,8 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `query` | | Execute a SQL query |
 | `queries` | `list` | Inspect query run history |
 | `search` | | Full-text search across a table column |
-| `indexes` | `list`, `create` | Manage indexes on a table |
+| `indexes` | `list`, `create`, `delete` | Manage indexes on a table or dataset |
+| `embedding-providers` | `list`, `get`, `create`, `update`, `delete` | Manage embedding providers used by vector indexes |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
 | `sandbox` | `list`, `new`, `set`, `read`, `update`, `run` | Manage sandboxes |
@@ -219,14 +220,43 @@ echo '[0.1, -0.2, ...]' | hotdata search --table <table> --column <vector_column
 
 ## Indexes
 
+Indexes attach to either a connection-table (`--connection-id` + `--schema` + `--table`) or a dataset (`--dataset-id`). The two scopes are mutually exclusive.
+
 ```sh
-hotdata indexes list --connection-id <id> --schema <schema> --table <table> [--workspace-id <id>] [--format table|json|yaml]
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> --name <name> --columns <cols> [--type sorted|bm25|vector] [--metric l2|cosine|dot] [--async]
+# Connection-table scope
+hotdata indexes list   --connection-id <id> --schema <schema> --table <table> [-o table|json|yaml]
+hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
+  --name <name> --columns <cols> --type sorted|bm25|vector \
+  [--metric l2|cosine|dot] [--async] \
+  [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
+
+# Dataset scope
+hotdata indexes list   --dataset-id <id> [-o table|json|yaml]
+hotdata indexes create --dataset-id <id> --name <name> --columns <cols> --type sorted|bm25|vector ...
+hotdata indexes delete --dataset-id <id> --name <name>
 ```
 
-- `list` shows indexes on a table with name, type, columns, status, and creation date.
-- `create` creates an index. Use `--type bm25` for full-text search, `--type vector` for vector search (requires `--metric`).
-- `--async` submits index creation as a background job.
+- `--type` is **required** — choose `sorted` (B-tree-like), `bm25` (full-text), or `vector` (similarity).
+- `--type vector` requires exactly one column.
+- `--async` submits index creation as a background job and returns a job ID; poll with `hotdata jobs <job_id>`.
+- **Auto-embedding (text → vector):** when `--type vector` is used on a text column, embeddings are generated automatically. The embedding provider can be specified with `--embedding-provider-id`; if omitted, the first system provider is used. The generated column defaults to `{column}_embedding` and can be overridden with `--output-column`.
+
+## Embedding providers
+
+```sh
+hotdata embedding-providers list [-o table|json|yaml]
+hotdata embedding-providers get <id> [-o table|json|yaml]
+hotdata embedding-providers create --name <name> --provider-type service|local \
+  [--config '<json>'] [--inline-api-key <key> | --secret-name <name>]
+hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] \
+  [--inline-api-key <key> | --secret-name <name>]
+hotdata embedding-providers delete <id>
+```
+
+- `list`/`get` show registered providers (system providers like `sys_emb_openai` come pre-configured).
+- `--inline-api-key` auto-creates a managed secret for the provider; `--secret-name` references an existing secret. They are mutually exclusive.
+- The flag is `--inline-api-key` (not `--api-key`) to avoid colliding with the global `--api-key` auth flag.
 
 ## Results
 
@@ -245,7 +275,7 @@ hotdata jobs <job_id> [--workspace-id <id>] [--format table|json|yaml]
 ```
 
 - `list` shows only active jobs (`pending` and `running`) by default. Use `--all` to see all jobs.
-- `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`.
+- `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`, `create_dataset_index`.
 - `--status` accepts: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 
 ## Sandboxes

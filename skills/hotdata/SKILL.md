@@ -316,13 +316,39 @@ echo '[0.1, -0.2, ...]' | hotdata search --table <table> --column <vector_column
 - **For BM25 search, create a BM25 index on the target column first. For vector search, create a vector index.**
 
 ### Indexes
+
+Indexes attach to either a connection-table (`--connection-id` + `--schema` + `--table`) or a dataset (`--dataset-id`) — the two scopes are mutually exclusive. `--type` is required (no default).
+
 ```
-hotdata indexes list --connection-id <connection_id> --schema <schema> --table <table> [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata indexes create --connection-id <connection_id> --schema <schema> --table <table> --name <name> --columns <cols> [--workspace-id <workspace_id>] [--type sorted|bm25|vector] [--metric l2|cosine|dot] [--async]
+# Connection-table scope
+hotdata indexes list   --connection-id <connection_id> --schema <schema> --table <table> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata indexes create --connection-id <connection_id> --schema <schema> --table <table> \
+  --name <name> --columns <cols> --type sorted|bm25|vector \
+  [--metric l2|cosine|dot] [--async] \
+  [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+hotdata indexes delete --connection-id <connection_id> --schema <schema> --table <table> --name <name>
+
+# Dataset scope (positional dataset_id replaced by --dataset-id flag)
+hotdata indexes list   --dataset-id <dataset_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata indexes create --dataset-id <dataset_id> --name <name> --columns <cols> --type sorted|bm25|vector ...
+hotdata indexes delete --dataset-id <dataset_id> --name <name>
 ```
-- `list` shows indexes on a table with name, type, columns, status, and creation date.
-- `create` creates an index. Use `--type bm25` for full-text search, `--type vector` for vector search (requires `--metric`).
-- `--async` submits index creation as a background job. Use `hotdata jobs <job_id>` to check status.
+- `--type` accepts `sorted` (B-tree-like; range/exact lookups), `bm25` (full-text), or `vector` (similarity). It is **required**.
+- `--type vector` requires exactly one column.
+- `--async` submits index creation as a background job; poll with `hotdata jobs <job_id>`.
+- **Auto-embedding:** with `--type vector` on a **text** column, the server generates embeddings automatically. Pass `--embedding-provider-id` to pick a specific provider; if omitted, the first system provider is used. The generated column defaults to `{column}_embedding` (override with `--output-column`).
+
+### Embedding providers
+```
+hotdata embedding-providers list [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata embedding-providers get <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata embedding-providers create --name <name> --provider-type service|local \
+  [--config '<json>'] [--inline-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>]
+hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--inline-api-key <key> | --secret-name <name>]
+hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
+```
+- System providers (e.g. `sys_emb_openai`) come pre-configured. `list` shows IDs to pass to `--embedding-provider-id`.
+- `--inline-api-key` (not `--api-key`, to avoid the global auth flag) auto-creates a managed secret. `--secret-name` references an existing secret. Mutually exclusive.
 
 ### Jobs
 ```
@@ -330,7 +356,7 @@ hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status 
 hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
-- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`.
+- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`, `create_dataset_index`.
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 
