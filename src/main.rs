@@ -92,6 +92,12 @@ fn main() {
         util::set_debug(true);
     }
 
+    let skip_skill_auto_update =
+        cli.command.is_none() || matches!(&cli.command, Some(Commands::Skills { .. }));
+    if !skip_skill_auto_update {
+        skill::maybe_auto_update_after_cli_upgrade();
+    }
+
     match cli.command {
         None => {
             use clap::CommandFactory;
