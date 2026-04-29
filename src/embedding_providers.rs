@@ -155,7 +155,7 @@ pub fn update(
     if name.is_none() && config.is_none() && api_key.is_none() && secret_name.is_none() {
         eprintln!(
             "{}",
-            "error: provide at least one of --name, --config, --api-key, --secret-name.".red()
+            "error: provide at least one of --name, --config, --provider-api-key, --secret-name.".red()
         );
         std::process::exit(1);
     }
