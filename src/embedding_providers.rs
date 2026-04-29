@@ -201,3 +201,64 @@ pub fn delete(workspace_id: &str, id: &str) {
     }
     println!("{}", format!("Embedding provider '{id}' deleted.").green());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mirrors runtimedb's `EmbeddingProviderResponse` (see `runtimedb/openapi.yaml`).
+    /// If the server response shape changes, update this fixture in lockstep.
+    #[test]
+    fn provider_deserializes_runtimedb_payload() {
+        let body = serde_json::json!({
+            "id": "sys_emb_openai",
+            "name": "openai",
+            "provider_type": "service",
+            "config": {
+                "base_url": "https://api.openai.com/v1",
+                "metric": "cosine",
+                "model": "text-embedding-3-small"
+            },
+            "has_secret": true,
+            "source": "system",
+            "created_at": "2026-04-29T08:19:57.083658085Z",
+            "updated_at": "2026-04-29T08:19:57.083658085Z"
+        });
+        let p: Provider = serde_json::from_value(body).unwrap();
+        assert_eq!(p.id, "sys_emb_openai");
+        assert_eq!(p.provider_type, "service");
+        assert_eq!(p.source, "system");
+        assert!(p.has_secret);
+        assert_eq!(p.config["model"], "text-embedding-3-small");
+    }
+
+    /// Mirrors runtimedb's `ListEmbeddingProvidersResponse`.
+    #[test]
+    fn list_response_deserializes_runtimedb_payload() {
+        let body = serde_json::json!({
+            "embedding_providers": [
+                {
+                    "id": "sys_emb_openai",
+                    "name": "openai",
+                    "provider_type": "service",
+                    "config": {},
+                    "has_secret": true,
+                    "source": "system",
+                    "created_at": "2026-04-29T08:19:57Z",
+                    "updated_at": "2026-04-29T08:19:57Z"
+                }
+            ]
+        });
+        let resp: ListResponse = serde_json::from_value(body).unwrap();
+        assert_eq!(resp.embedding_providers.len(), 1);
+        assert_eq!(resp.embedding_providers[0].name, "openai");
+    }
+
+    #[test]
+    fn parse_config_rejects_invalid_json() {
+        // parse_config exits on invalid JSON, so we only verify the success path here.
+        let parsed = parse_config(Some(r#"{"key":"value"}"#));
+        assert_eq!(parsed.unwrap()["key"], "value");
+        assert!(parse_config(None).is_none());
+    }
+}

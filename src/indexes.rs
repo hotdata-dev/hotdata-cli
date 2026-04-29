@@ -410,6 +410,35 @@ mod tests {
     }
 
     #[test]
+    fn index_scope_connection_paths() {
+        let scope = IndexScope::Connection {
+            connection_id: "conn1",
+            schema: "public",
+            table: "users",
+        };
+        assert_eq!(
+            scope.create_path(),
+            "/connections/conn1/tables/public/users/indexes"
+        );
+        assert_eq!(
+            scope.delete_path("idx_email"),
+            "/connections/conn1/tables/public/users/indexes/idx_email"
+        );
+    }
+
+    #[test]
+    fn index_scope_dataset_paths() {
+        let scope = IndexScope::Dataset {
+            dataset_id: "data_xyz",
+        };
+        assert_eq!(scope.create_path(), "/datasets/data_xyz/indexes");
+        assert_eq!(
+            scope.delete_path("idx_title"),
+            "/datasets/data_xyz/indexes/idx_title"
+        );
+    }
+
+    #[test]
     fn information_schema_followup_breaks_when_more_but_no_cursor() {
         assert!(matches!(
             information_schema_followup(true, None),

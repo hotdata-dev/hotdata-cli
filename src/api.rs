@@ -309,6 +309,39 @@ mod tests {
     }
 
     #[test]
+    fn delete_raw_returns_status_and_body() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("DELETE", "/widgets/abc")
+            .match_header("Authorization", "Bearer test-key")
+            .with_status(204)
+            .with_body("")
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "test-key", None);
+        let (status, body) = api.delete_raw("/widgets/abc");
+        assert_eq!(status.as_u16(), 204);
+        assert!(body.is_empty());
+        mock.assert();
+    }
+
+    #[test]
+    fn delete_raw_surfaces_error_body_on_4xx() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("DELETE", "/widgets/missing")
+            .with_status(404)
+            .with_body(r#"{"error":{"message":"not found"}}"#)
+            .create();
+
+        let api = ApiClient::test_new(&server.url(), "test-key", None);
+        let (status, body) = api.delete_raw("/widgets/missing");
+        assert_eq!(status.as_u16(), 404);
+        assert!(body.contains("not found"));
+        mock.assert();
+    }
+
+    #[test]
     fn get_none_if_not_found_returns_some_on_200() {
         let mut server = mockito::Server::new();
         let mock = server
