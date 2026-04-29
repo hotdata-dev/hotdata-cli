@@ -1,8 +1,36 @@
+## [0.2.0] - 2026-04-29
+
+### 🚀 Features
+
+- *(datasets)* Add update subcommand to rename label or table_name
+- Data/dataset refresh + indexes auto-embedding + embedding providers (#67)
+- *(skills)* Add optional geospatial agent skill
+- *(skills)* Auto-update bundled agent skills after CLI upgrade
+
+### 🐛 Bug Fixes
+
+- *(datasets)* Match runtimedb response shape on update
+- *(datasets)* Drop synthetic schema_name on update output
+- *(datasets)* Restore eprintln for "Dataset updated" status line
+- *(skills)* Complete partial installs and improve status output
+- *(skills)* Show Installed: No when no skill store exists
+- *(skills)* Stop repeat auto-downloads (parse SKILL.md, stale tarball guard)
+
+### 💼 Other
+
+- *(release)* Bump geospatial skill version on release
+
+### 🚜 Refactor
+
+- *(skills)* Always auto-update skills when eligible (remove env opt-out)
+
+### 🎨 Styling
+
+- *(datasets)* Drop redundant Stylize import in update path
 ## [0.1.14] - 2026-04-28
 
 ### 🚀 Features
 
-- *(auth)* Add CLI auth session support (JWT access tokens, refresh, PKCE login)
 - *(indexes)* Workspace-wide list with filters and parallel fetch
 
 ### 💼 Other
