@@ -94,12 +94,15 @@ hotdata connections <connection_id> [--workspace-id <workspace_id>] [--output ta
 - `list` returns `id`, `name`, `source_type` for each connection.
 - Pass a connection ID to view details (id, name, source type, table counts).
 
-### Refresh connection schema
+### Refresh connection schema or data
 ```
-hotdata connections refresh <connection_id> [--workspace-id <workspace_id>]
+hotdata connections refresh <connection_id> [--workspace-id <workspace_id>] [--data] [--schema <name> --table <name>] [--async] [--include-uncached]
 ```
-- Refreshes the connection’s catalog so new or changed tables and columns appear in `hotdata tables list` and queries.
-- Use after DDL or other changes in the source database when the workspace view is stale.
+- Default (no flags) refreshes the connection’s catalog so new or changed tables and columns appear in `hotdata tables list` and queries. Use after DDL or other changes in the source database when the workspace view is stale.
+- `--data` re-syncs cached row data from the source instead of refreshing the catalog.
+- `--schema` and `--table` narrow a data refresh to a single table (must be supplied together).
+- `--async` submits a data refresh as a background job and returns a job ID; poll with `hotdata jobs <job_id>`. Only valid with `--data` — schema refresh is always synchronous.
+- `--include-uncached` includes tables that haven't been cached yet in a connection-wide data refresh. Only valid with `--data` and no `--table`.
 
 ### Create a Connection
 
@@ -319,7 +322,7 @@ hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status 
 hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
-- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`.
+- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`.
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 

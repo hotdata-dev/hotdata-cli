@@ -101,13 +101,16 @@ hotdata workspaces set [<workspace_id>]
 ```sh
 hotdata connections list [-w <id>] [-o table|json|yaml]
 hotdata connections <connection_id> [-w <id>] [-o table|json|yaml]
-hotdata connections refresh <connection_id> [-w <id>]
+hotdata connections refresh <connection_id> [-w <id>] [--data] [--schema <name> --table <name>] [--async] [--include-uncached]
 hotdata connections new [-w <id>]
 ```
 
 - `list` returns `id`, `name`, `source_type` for each connection.
 - Pass a connection ID to view details (id, name, source type, table counts).
-- `refresh` triggers a schema refresh for a connection.
+- `refresh` triggers a schema refresh by default. Pass `--data` to refresh cached row data instead.
+- `--schema` and `--table` narrow a data refresh to a single table (must be supplied together).
+- `--async` submits a data refresh as a background job and returns a job ID; poll with `hotdata jobs <job_id>`. Only valid with `--data` — schema refresh is always synchronous.
+- `--include-uncached` includes tables that haven't been cached yet in a connection-wide data refresh. Only valid with `--data` and no `--table`.
 - `new` launches an interactive connection creation wizard.
 
 ### Create a connection
@@ -239,7 +242,7 @@ hotdata jobs <job_id> [--workspace-id <id>] [--format table|json|yaml]
 ```
 
 - `list` shows only active jobs (`pending` and `running`) by default. Use `--all` to see all jobs.
-- `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `create_index`.
+- `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`.
 - `--status` accepts: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 
 ## Sandboxes
