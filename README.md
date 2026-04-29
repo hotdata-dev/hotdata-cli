@@ -248,15 +248,15 @@ hotdata indexes delete --dataset-id <id> --name <name>
 hotdata embedding-providers list [-o table|json|yaml]
 hotdata embedding-providers get <id> [-o table|json|yaml]
 hotdata embedding-providers create --name <name> --provider-type service|local \
-  [--config '<json>'] [--inline-api-key <key> | --secret-name <name>]
+  [--config '<json>'] [--provider-api-key <key> | --secret-name <name>]
 hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] \
-  [--inline-api-key <key> | --secret-name <name>]
+  [--provider-api-key <key> | --secret-name <name>]
 hotdata embedding-providers delete <id>
 ```
 
 - `list`/`get` show registered providers (system providers like `sys_emb_openai` come pre-configured).
-- `--inline-api-key` auto-creates a managed secret for the provider; `--secret-name` references an existing secret. They are mutually exclusive.
-- The flag is `--inline-api-key` (not `--api-key`) to avoid colliding with the global `--api-key` auth flag.
+- `--provider-api-key` auto-creates a managed secret for the provider; `--secret-name` references an existing secret. They are mutually exclusive.
+- `--provider-api-key` pairs with `--provider-type` and avoids colliding with the global `--api-key` (Hotdata auth).
 
 ## Results
 

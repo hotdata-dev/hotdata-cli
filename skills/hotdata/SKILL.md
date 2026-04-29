@@ -343,12 +343,12 @@ hotdata indexes delete --dataset-id <dataset_id> --name <name>
 hotdata embedding-providers list [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata embedding-providers get <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata embedding-providers create --name <name> --provider-type service|local \
-  [--config '<json>'] [--inline-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>]
-hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--inline-api-key <key> | --secret-name <name>]
+  [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>]
+hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--provider-api-key <key> | --secret-name <name>]
 hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
 ```
 - System providers (e.g. `sys_emb_openai`) come pre-configured. `list` shows IDs to pass to `--embedding-provider-id`.
-- `--inline-api-key` (not `--api-key`, to avoid the global auth flag) auto-creates a managed secret. `--secret-name` references an existing secret. Mutually exclusive.
+- `--provider-api-key` (the embedding service's own key, e.g. an OpenAI `sk-...`) auto-creates a managed secret. Pairs with `--provider-type`; named to avoid colliding with the global `--api-key` (Hotdata auth). `--secret-name` references an existing secret. Mutually exclusive.
 
 ### Jobs
 ```

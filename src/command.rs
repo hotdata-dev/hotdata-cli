@@ -793,11 +793,12 @@ pub enum EmbeddingProvidersCommands {
         #[arg(long)]
         config: Option<String>,
 
-        /// Inline API key (auto-creates a managed secret). Mutually exclusive with --secret-name.
-        /// Named `--inline-api-key` (and field `inline_api_key`) to avoid collision with the
-        /// global `--api-key` / `Cli::api_key` auth flag.
-        #[arg(long = "inline-api-key", conflicts_with = "secret_name")]
-        inline_api_key: Option<String>,
+        /// The provider's own API key (e.g. an OpenAI sk-... key). Auto-creates a
+        /// managed secret. Mutually exclusive with --secret-name. Named
+        /// `--provider-api-key` to pair with `--provider-type` and to avoid colliding
+        /// with the global `--api-key` (Hotdata auth) flag.
+        #[arg(long = "provider-api-key", conflicts_with = "secret_name")]
+        provider_api_key: Option<String>,
 
         /// Reference an existing secret by name (for service providers)
         #[arg(long)]
@@ -821,11 +822,10 @@ pub enum EmbeddingProvidersCommands {
         #[arg(long)]
         config: Option<String>,
 
-        /// New inline API key (replaces or creates the managed secret).
-        /// Named `--inline-api-key` (and field `inline_api_key`) to avoid collision with the
-        /// global `--api-key` / `Cli::api_key` auth flag.
-        #[arg(long = "inline-api-key", conflicts_with = "secret_name")]
-        inline_api_key: Option<String>,
+        /// New provider API key (replaces or creates the managed secret).
+        /// See `embedding-providers create --provider-api-key` for naming rationale.
+        #[arg(long = "provider-api-key", conflicts_with = "secret_name")]
+        provider_api_key: Option<String>,
 
         /// New secret name to reference
         #[arg(long)]
