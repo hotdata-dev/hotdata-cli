@@ -297,23 +297,23 @@ These commands use the **active workspace only** (the `queries` command has no `
 To create a dataset from a **saved query** still registered for the workspace, use **`hotdata datasets create --query-id <saved_query_id>`** (this CLI does not expose separate saved-query create/run subcommands).
 
 ### Search
-```
-# BM25 full-text search
-hotdata search "query text" --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [--output table|json|csv]
 
-# Vector search with --model (calls OpenAI to embed the query)
-hotdata search "query text" --table <table> --column <vector_column> --model text-embedding-3-small [--limit <n>]
+`--type` is **required**. Pass `vector` or `bm25`. Both run entirely server-side.
 
-# Vector search with piped embedding
-echo '[0.1, -0.2, ...]' | hotdata search --table <table> --column <vector_column> [--limit <n>]
 ```
-- Without `--model` and with query text: BM25 full-text search. Requires a BM25 index on the target column.
-- With `--model`: generates an embedding via OpenAI and performs vector search using `l2_distance`. Requires `OPENAI_API_KEY` env var. Supported models: `text-embedding-3-small`, `text-embedding-3-large`.
-- Without query text and with piped stdin: reads a vector (raw JSON array or OpenAI embedding response) and performs vector search.
-- BM25 results are ordered by relevance score (descending). Vector results are ordered by distance (ascending).
+# BM25 full-text search (requires BM25 index on the column)
+hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [--output table|json|csv]
+
+# Vector similarity search via server-side auto-embed (requires a vector index on the column)
+hotdata search "<query>" --type vector --table <table> --column <source_text_column> [--limit <n>]
+```
+- **`--type vector`** generates `vector_distance(col, 'text')` server-side. The server resolves the embedding column, model, and metric from the index metadata. Name the **source text column** (e.g. `title`), not the auto-generated `_embedding` column. No client-side embedding, no `OPENAI_API_KEY` required.
+- **`--type bm25`** generates `bm25_search(table, col, 'text')` server-side; requires a BM25 index on the column.
+- BM25 results sort by score (descending). Vector results sort by distance (ascending).
 - `--select` specifies which columns to return (comma-separated, defaults to all).
 - Default limit is 10.
-- **For BM25 search, create a BM25 index on the target column first. For vector search, create a vector index.**
+- **For BM25 search, create a BM25 index on the target column first (`hotdata indexes create ... --type bm25`). For vector search, create a vector index, optionally with auto-embedding on a text column.**
+- The earlier `--model` flag and stdin-piped-vector path have both been removed. They hardcoded `l2_distance` regardless of the index's metric (silently wrong on cosine indexes). For client-side embedding or precomputed-vector workflows, use raw SQL via `hotdata query`.
 
 ### Indexes
 

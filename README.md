@@ -201,22 +201,21 @@ hotdata queries <query_run_id> [-o table|json|yaml]
 
 ## Search
 
+`--type` is **required** — no default. Pass either `vector` (similarity search via the index's embedding provider) or `bm25` (full-text search). Both run entirely server-side.
+
 ```sh
-# BM25 full-text search
-hotdata search "query text" --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [-o table|json|csv]
+# BM25 full-text search (requires a BM25 index on the column)
+hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [-o table|json|csv]
 
-# Vector search with --model (calls OpenAI to embed the query)
-hotdata search "query text" --table <table> --column <vector_column> --model text-embedding-3-small [--limit <n>]
-
-# Vector search with piped embedding
-echo '[0.1, -0.2, ...]' | hotdata search --table <table> --column <vector_column> [--limit <n>]
+# Vector search (requires a vector index with auto-embedding on the column)
+hotdata search "<query>" --type vector --table <table> --column <source_text_column> [--limit <n>]
 ```
 
-- Without `--model` and with query text: BM25 full-text search. Requires a BM25 index on the target column.
-- With `--model`: generates an embedding via OpenAI and performs vector search using `l2_distance`. Requires `OPENAI_API_KEY` env var.
-- Without query text and with piped stdin: reads a vector (raw JSON array or OpenAI embedding response) and performs vector search.
-- BM25 results are ordered by relevance score (descending). Vector results are ordered by distance (ascending).
+- **`--type vector`** runs server-side `vector_distance(col, 'query')`. The server resolves the embedding column, model, dimensions, and metric from the index metadata. Name the **source text column** (e.g. `title`), not the auto-generated `_embedding` column. No `OPENAI_API_KEY` required.
+- **`--type bm25`** runs `bm25_search(table, col, 'query')` — requires a BM25 index on the column.
+- BM25 results sort by score (descending). Vector results sort by distance (ascending).
 - `--select` specifies which columns to return (comma-separated, defaults to all).
+- The previous `--model` flag and stdin-piped-vector path are **removed** — both hardcoded `l2_distance` regardless of the index's actual metric, which silently produced wrong rankings on cosine indexes. For client-side embedding or precomputed-vector workflows, use raw SQL via `hotdata query` (e.g. `SELECT *, cosine_distance(col, [<vec>]) ...`).
 
 ## Indexes
 

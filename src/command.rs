@@ -138,14 +138,25 @@ pub enum Commands {
 
     /// Full-text or vector search across a table column
     Search {
-        /// Search query text (omit to read a vector from stdin for vector search)
-        query: Option<String>,
+        /// Search query text — required for both --type bm25 and --type vector
+        query: String,
+
+        /// Search type — required (no default; choose deliberately)
+        ///
+        /// `vector` runs server-side `vector_distance(col, 'text')` — the server resolves the
+        /// embedding column, model, and metric from the index metadata.
+        ///
+        /// `bm25` runs server-side `bm25_search(table, col, 'text')` and requires a BM25 index
+        /// on the column.
+        #[arg(long, value_parser = ["vector", "bm25"])]
+        r#type: String,
 
         /// Table to search (connection.schema.table)
         #[arg(long)]
         table: String,
 
-        /// Column to search
+        /// Column to search. For `--type vector`, name the source text column — the server
+        /// resolves the embedding column from the index metadata.
         #[arg(long)]
         column: String,
 
@@ -156,10 +167,6 @@ pub enum Commands {
         /// Maximum number of results
         #[arg(long, default_value = "10")]
         limit: u32,
-
-        /// Embedding model to generate a vector from the query text (e.g. text-embedding-3-small)
-        #[arg(long, value_parser = ["text-embedding-3-small", "text-embedding-3-large"])]
-        model: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long, short = 'w')]

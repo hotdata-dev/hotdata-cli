@@ -6,7 +6,6 @@ mod connections;
 mod connections_new;
 mod context;
 mod datasets;
-mod embedding;
 mod embedding_providers;
 mod indexes;
 mod jobs;
@@ -554,60 +553,43 @@ fn main() {
             }
             Commands::Search {
                 query,
+                r#type,
                 table,
                 column,
                 select,
                 limit,
-                model,
                 workspace_id,
                 output,
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 let select_cols = select.as_deref().unwrap_or("*");
 
-                // Determine search mode:
-                // 1. --model flag: embed the query text via the model provider
-                // 2. No query + piped stdin: read vector from stdin
-                // 3. Query text without --model: BM25 text search
-                let sql = if let Some(ref model_name) = model {
-                    let query_text = match query {
-                        Some(ref q) => q.as_str(),
-                        None => {
-                            eprintln!("error: --model requires a search query text");
-                            std::process::exit(1);
-                        }
-                    };
-                    let vec = embedding::openai_embed(query_text, model_name);
-                    let vec_str = embedding::vector_to_sql(&vec);
-                    format!(
-                        "SELECT {}, l2_distance({}, {}) as dist FROM {} ORDER BY dist LIMIT {}",
-                        select_cols, column, vec_str, table, limit,
-                    )
-                } else if let Some(q) = query.as_ref() {
-                    let bm25_columns = match select.as_deref() {
-                        Some(cols) => format!("{}, score", cols),
-                        None => "*".to_string(),
-                    };
-                    format!(
-                        "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
-                        bm25_columns,
-                        table.replace('\'', "''"),
-                        column.replace('\'', "''"),
-                        q.replace('\'', "''"),
-                        limit,
-                    )
-                } else {
-                    use std::io::IsTerminal;
-                    if std::io::stdin().is_terminal() {
-                        eprintln!("error: provide a search query or pipe a vector via stdin");
-                        std::process::exit(1);
+                let sql = match r#type.as_str() {
+                    "bm25" => {
+                        let bm25_columns = match select.as_deref() {
+                            Some(cols) => format!("{}, score", cols),
+                            None => "*".to_string(),
+                        };
+                        format!(
+                            "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
+                            bm25_columns,
+                            table.replace('\'', "''"),
+                            column.replace('\'', "''"),
+                            query.replace('\'', "''"),
+                            limit,
+                        )
                     }
-                    let vec = embedding::read_vector_from_stdin();
-                    let vec_str = embedding::vector_to_sql(&vec);
-                    format!(
-                        "SELECT {}, l2_distance({}, {}) as dist FROM {} ORDER BY dist LIMIT {}",
-                        select_cols, column, vec_str, table, limit,
-                    )
+                    // Server-side vector_distance: resolves the embedding column, model,
+                    // and metric from the index metadata. The user names the source text column.
+                    "vector" => format!(
+                        "SELECT {}, vector_distance({}, '{}') AS dist FROM {} ORDER BY dist LIMIT {}",
+                        select_cols,
+                        column,
+                        query.replace('\'', "''"),
+                        table,
+                        limit,
+                    ),
+                    _ => unreachable!(),
                 };
                 query::execute(&sql, &workspace_id, None, &output)
             }
