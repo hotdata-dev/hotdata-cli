@@ -61,10 +61,19 @@ fn detected_agent_skill_paths(skill_name: &str) -> Vec<(String, PathBuf)> {
 }
 
 fn parse_version_from_skill_md(content: &str) -> Option<Version> {
-    let inner = content.strip_prefix("---\n")?.split("\n---").next()?;
-    for line in inner.lines() {
-        if let Some(v) = line.strip_prefix("version:") {
-            return Version::parse(v.trim()).ok();
+    let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
+    let rest = content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))?;
+    let inner = rest.split("\n---").next()?;
+    for raw_line in inner.lines() {
+        let line = raw_line.trim();
+        let Some(ver_raw) = line.strip_prefix("version:") else {
+            continue;
+        };
+        let ver_str = ver_raw.trim().trim_start_matches('v').trim();
+        if let Ok(v) = Version::parse(ver_str) {
+            return Some(v);
         }
     }
     None
@@ -79,6 +88,32 @@ fn all_skill_stores_present() -> bool {
     SKILL_NAMES
         .iter()
         .all(|name| skill_store_path(name).exists())
+}
+
+fn skill_auto_update_suppress_path() -> PathBuf {
+    home_dir()
+        .join(".hotdata")
+        .join("skills")
+        .join(".skill_auto_update_suppressed_for_cli")
+}
+
+fn skill_auto_update_suppressed_for_this_cli() -> bool {
+    let Ok(s) = fs::read_to_string(skill_auto_update_suppress_path()) else {
+        return false;
+    };
+    s.trim() == CURRENT_VERSION
+}
+
+fn suppress_skill_auto_update_for_this_cli() {
+    let path = skill_auto_update_suppress_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, format!("{CURRENT_VERSION}\n"));
+}
+
+fn clear_skill_auto_update_suppression() {
+    let _ = fs::remove_file(skill_auto_update_suppress_path());
 }
 
 /// If the user has previously installed agent skills (`~/.hotdata/skills/hotdata` exists) but the on-disk
@@ -99,6 +134,11 @@ pub fn maybe_auto_update_after_cli_upgrade() {
         _ => true,
     };
     if !needs_refresh {
+        clear_skill_auto_update_suppression();
+        return;
+    }
+
+    if skill_auto_update_suppressed_for_this_cli() {
         return;
     }
 
@@ -112,6 +152,25 @@ pub fn maybe_auto_update_after_cli_upgrade() {
 
     let _symlinks = ensure_symlinks();
 
+    let still_needed = match read_installed_version() {
+        Some(v) if v >= current && all_skill_stores_present() => false,
+        _ => true,
+    };
+
+    if still_needed {
+        suppress_skill_auto_update_for_this_cli();
+        eprintln!(
+            "{}",
+            format!(
+                "warning: agent skills still do not match this CLI after download (release tarball may lag the binary). Automatic refresh is suppressed for CLI v{CURRENT_VERSION}; remove {} to retry, or run `hotdata skills install`.",
+                skill_auto_update_suppress_path().display()
+            )
+            .yellow()
+        );
+        return;
+    }
+
+    clear_skill_auto_update_suppression();
     eprintln!(
         "{}",
         format!("Agent skills updated to v{current}.").green()
@@ -257,6 +316,7 @@ fn ensure_symlinks() -> Vec<(String, PathBuf, Result<bool, String>)> {
 }
 
 pub fn install_project() {
+    clear_skill_auto_update_suppression();
     let current = Version::parse(CURRENT_VERSION).expect("invalid package version");
 
     // Ensure skill files exist locally first
@@ -366,6 +426,7 @@ pub fn install_project() {
 }
 
 pub fn install() {
+    clear_skill_auto_update_suppression();
     let current = Version::parse(CURRENT_VERSION).expect("invalid package version");
 
     let needs_download = if is_managed_by_skills_agent() {
@@ -532,5 +593,46 @@ pub fn status() {
         println!("\nRun 'hotdata skills install' to install.");
     } else if installed_version.is_some_and(|v| v < current) {
         println!("\nRun 'hotdata skills install' to update.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_skill_md_accepts_lf_frontmatter() {
+        let s = "---\nname: hotdata\nversion: 0.1.14\n---\n";
+        assert_eq!(
+            parse_version_from_skill_md(s),
+            Some(Version::parse("0.1.14").unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_skill_md_accepts_crlf_opening() {
+        let s = "---\r\nname: hotdata\r\nversion: 0.1.14\r\n---\r\n";
+        assert_eq!(
+            parse_version_from_skill_md(s),
+            Some(Version::parse("0.1.14").unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_skill_md_accepts_bom() {
+        let s = "\u{FEFF}---\nname: hotdata\nversion: 0.1.14\n---\n";
+        assert_eq!(
+            parse_version_from_skill_md(s),
+            Some(Version::parse("0.1.14").unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_skill_md_accepts_v_prefix() {
+        let s = "---\nname: hotdata\nversion: v0.1.14\n---\n";
+        assert_eq!(
+            parse_version_from_skill_md(s),
+            Some(Version::parse("0.1.14").unwrap())
+        );
     }
 }
