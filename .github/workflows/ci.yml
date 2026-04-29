@@ -7,6 +7,20 @@ on:
     branches: [main]
 
 jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+      - name: Validate released changelog sections
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch origin "$BASE_REF"
+          python3 scripts/validate-changelog.py "origin/$BASE_REF"
+
   test:
     runs-on: ubuntu-latest
     steps:
