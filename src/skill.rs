@@ -462,9 +462,18 @@ pub fn status() {
         println!("{:<20}{}", format!("{label}:"), value);
     }
 
+    let any_exist = SKILL_NAMES
+        .iter()
+        .any(|name| skill_store_path(name).exists());
     let all_exist = SKILL_NAMES
         .iter()
         .all(|name| skill_store_path(name).exists());
+
+    if !any_exist {
+        row("Installed", &"No".red().to_string());
+        println!("\nRun 'hotdata skills install' to install.");
+        return;
+    }
 
     if !all_exist {
         row("Installed", &"Partial".yellow().to_string());
