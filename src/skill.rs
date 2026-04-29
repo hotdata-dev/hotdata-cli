@@ -81,25 +81,12 @@ fn all_skill_stores_present() -> bool {
         .all(|name| skill_store_path(name).exists())
 }
 
-/// When unset or non-zero: allow automatic skill refresh after CLI upgrade (`maybe_auto_update_after_cli_upgrade`).
-/// Set to `0`, `false`, or `no` to disable.
-fn skills_auto_update_env_enabled() -> bool {
-    match std::env::var("HOTDATA_SKILLS_AUTO_UPDATE") {
-        Ok(s) if s.trim().is_empty() => true,
-        Ok(s) => !matches!(
-            s.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no"
-        ),
-        Err(_) => true,
-    }
-}
-
 /// If the user has previously installed agent skills (`~/.hotdata/skills/hotdata` exists) but the on-disk
 /// bundle is older than this CLI or incomplete, download the matching release tarball and refresh symlinks.
-/// Does nothing when skills were never installed, when [`is_managed_by_skills_agent`] is true, or when
-/// [`skills_auto_update_env_enabled`] is false. Download failures print a warning and do not exit.
+/// Does nothing when skills were never installed or when [`is_managed_by_skills_agent`] is true.
+/// Download failures print a warning and do not exit.
 pub fn maybe_auto_update_after_cli_upgrade() {
-    if !skills_auto_update_env_enabled() || is_managed_by_skills_agent() {
+    if is_managed_by_skills_agent() {
         return;
     }
     if !skill_store_path(PRIMARY_SKILL_NAME).exists() {
