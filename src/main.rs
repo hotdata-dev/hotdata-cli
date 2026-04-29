@@ -7,6 +7,7 @@ mod connections_new;
 mod context;
 mod datasets;
 mod embedding;
+mod embedding_providers;
 mod indexes;
 mod jobs;
 mod jwt;
@@ -24,8 +25,9 @@ use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
 use command::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
-    DatasetsCommands, IndexesCommands, JobsCommands, QueriesCommands, QueryCommands,
-    ResultsCommands, SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands,
+    DatasetsCommands, EmbeddingProvidersCommands, IndexesCommands, JobsCommands, QueriesCommands,
+    QueryCommands, ResultsCommands, SandboxCommands, SkillCommands, TablesCommands,
+    WorkspaceCommands,
 };
 
 #[derive(Parser)]
@@ -409,34 +411,145 @@ fn main() {
                         connection_id,
                         schema,
                         table,
+                        dataset_id,
                         output,
                     } => indexes::list(
                         &workspace_id,
                         connection_id.as_deref(),
                         schema.as_deref(),
                         table.as_deref(),
+                        dataset_id.as_deref(),
                         &output,
                     ),
                     IndexesCommands::Create {
                         connection_id,
                         schema,
                         table,
+                        dataset_id,
                         name,
                         columns,
                         r#type,
                         metric,
                         r#async,
-                    } => indexes::create(
+                        embedding_provider_id,
+                        dimensions,
+                        output_column,
+                        description,
+                    } => {
+                        let scope = match (
+                            dataset_id.as_deref(),
+                            connection_id.as_deref(),
+                            schema.as_deref(),
+                            table.as_deref(),
+                        ) {
+                            (Some(did), _, _, _) => indexes::IndexScope::Dataset { dataset_id: did },
+                            (None, Some(cid), Some(sch), Some(tbl)) => {
+                                indexes::IndexScope::Connection {
+                                    connection_id: cid,
+                                    schema: sch,
+                                    table: tbl,
+                                }
+                            }
+                            _ => {
+                                eprintln!(
+                                    "error: provide either --dataset-id or all three of --connection-id, --schema, --table"
+                                );
+                                std::process::exit(1);
+                            }
+                        };
+                        indexes::create(
+                            &workspace_id,
+                            scope,
+                            &name,
+                            &columns,
+                            &r#type,
+                            metric.as_deref(),
+                            r#async,
+                            embedding_provider_id.as_deref(),
+                            dimensions,
+                            output_column.as_deref(),
+                            description.as_deref(),
+                        )
+                    }
+                    IndexesCommands::Delete {
+                        connection_id,
+                        schema,
+                        table,
+                        dataset_id,
+                        name,
+                    } => {
+                        let scope = match (
+                            dataset_id.as_deref(),
+                            connection_id.as_deref(),
+                            schema.as_deref(),
+                            table.as_deref(),
+                        ) {
+                            (Some(did), _, _, _) => indexes::IndexScope::Dataset { dataset_id: did },
+                            (None, Some(cid), Some(sch), Some(tbl)) => {
+                                indexes::IndexScope::Connection {
+                                    connection_id: cid,
+                                    schema: sch,
+                                    table: tbl,
+                                }
+                            }
+                            _ => {
+                                eprintln!(
+                                    "error: provide either --dataset-id or all three of --connection-id, --schema, --table"
+                                );
+                                std::process::exit(1);
+                            }
+                        };
+                        indexes::delete(&workspace_id, scope, &name);
+                    }
+                }
+            }
+            Commands::EmbeddingProviders {
+                workspace_id,
+                command,
+            } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                match command {
+                    EmbeddingProvidersCommands::List { output } => {
+                        embedding_providers::list(&workspace_id, &output)
+                    }
+                    EmbeddingProvidersCommands::Get { id, output } => {
+                        embedding_providers::get(&workspace_id, &id, &output)
+                    }
+                    EmbeddingProvidersCommands::Create {
+                        name,
+                        provider_type,
+                        config,
+                        inline_api_key,
+                        secret_name,
+                        output,
+                    } => embedding_providers::create(
                         &workspace_id,
-                        &connection_id,
-                        &schema,
-                        &table,
                         &name,
-                        &columns,
-                        &r#type,
-                        metric.as_deref(),
-                        r#async,
+                        &provider_type,
+                        config.as_deref(),
+                        inline_api_key.as_deref(),
+                        secret_name.as_deref(),
+                        &output,
                     ),
+                    EmbeddingProvidersCommands::Update {
+                        id,
+                        name,
+                        config,
+                        inline_api_key,
+                        secret_name,
+                        output,
+                    } => embedding_providers::update(
+                        &workspace_id,
+                        &id,
+                        name.as_deref(),
+                        config.as_deref(),
+                        inline_api_key.as_deref(),
+                        secret_name.as_deref(),
+                        &output,
+                    ),
+                    EmbeddingProvidersCommands::Delete { id } => {
+                        embedding_providers::delete(&workspace_id, &id)
+                    }
                 }
             }
             Commands::Search {

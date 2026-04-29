@@ -214,6 +214,13 @@ impl ApiClient {
         self.send(req, Some(body))
     }
 
+    /// DELETE request, exits on connection error, returns raw (status, body).
+    pub fn delete_raw(&self, path: &str) -> (reqwest::StatusCode, String) {
+        let url = format!("{}{path}", self.api_url);
+        let req = self.build_request(reqwest::Method::DELETE, &url);
+        self.send(req, None)
+    }
+
     /// PATCH request with JSON body, returns parsed response.
     pub fn patch<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> T {
         let url = format!("{}{path}", self.api_url);
