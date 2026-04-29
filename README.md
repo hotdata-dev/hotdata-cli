@@ -146,6 +146,7 @@ hotdata datasets create --file data.csv [--label "My Dataset"] [--table-name my_
 hotdata datasets create --sql "SELECT ..." --label "My Dataset"
 hotdata datasets create --url "https://example.com/data.parquet" --label "My Dataset"
 hotdata datasets update <dataset_id> [--label "New Label"] [--table-name new_table]
+hotdata datasets refresh <dataset_id> [--workspace-id <id>] [--async]
 ```
 
 - Datasets are queryable as `datasets.main.<table_name>`.
@@ -153,6 +154,8 @@ hotdata datasets update <dataset_id> [--label "New Label"] [--table-name new_tab
 - `--url` imports data directly from a URL (supports csv, json, parquet).
 - Format is auto-detected from file extension or content.
 - Piped stdin is supported: `cat data.csv | hotdata datasets create --label "My Dataset"`
+- `refresh` re-runs the dataset's source (URL fetch or saved query) and creates a new version. Not supported for upload-source datasets.
+- `--async` submits the refresh as a background job and returns a job ID; poll with `hotdata jobs <job_id>`.
 
 ## Workspace context
 

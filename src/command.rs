@@ -402,6 +402,16 @@ pub enum DatasetsCommands {
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
     },
+
+    /// Refresh a dataset by re-running its source (URL fetch or saved query) and creating a new version
+    Refresh {
+        /// Dataset ID
+        id: String,
+
+        /// Submit as a background job
+        #[arg(long)]
+        r#async: bool,
+    },
 }
 
 #[derive(Subcommand)]

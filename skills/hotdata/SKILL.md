@@ -215,6 +215,14 @@ hotdata datasets create --label "My Dataset" --upload-id <upload_id> [--format c
 - `--table-name` is optional — derived from the label if omitted.
 - After **`datasets create`**, the CLI prints a **`full_name`** line (for example `datasets.main.my_table` or `datasets.s_ufmblmvq.tac_csat`). **Always use that `full_name` in SQL**—do not assume `datasets.main`.
 
+#### Refresh a dataset
+```
+hotdata datasets refresh <dataset_id> [--workspace-id <workspace_id>] [--async]
+```
+- Re-runs the dataset's source (URL fetch or saved query) and creates a **new version**. Use after the upstream source has changed.
+- **Not supported for upload-source datasets** — those have no remote source to re-pull from. The CLI surfaces the server's `400` directly.
+- `--async` submits the refresh as a background job and returns a `job_id`; poll with **`hotdata jobs <job_id>`**.
+
 #### Querying datasets
 
 Qualified dataset tables are **`datasets.<schema>.<table_name>`**: **`main`** for workspace-scoped datasets (created outside a sandbox), or the **sandbox id** for sandbox-created data (e.g. `datasets.s_ufmblmvq.tac_csat`). The create output’s **`full_name`** is authoritative—copy it into `FROM` / `JOIN` clauses instead of guessing `datasets.main.…`.

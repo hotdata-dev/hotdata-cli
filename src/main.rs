@@ -173,6 +173,9 @@ fn main() {
                             table_name.as_deref(),
                             &output,
                         ),
+                        Some(DatasetsCommands::Refresh { id, r#async }) => {
+                            datasets::refresh(&workspace_id, &id, r#async)
+                        }
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
