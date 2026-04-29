@@ -31,6 +31,7 @@
 
 ### 🚀 Features
 
+- *(auth)* Add CLI auth session support (JWT access tokens, refresh, PKCE login)
 - *(indexes)* Workspace-wide list with filters and parallel fetch
 
 ### 💼 Other
