@@ -211,8 +211,9 @@ hotdata search "<query>" --type bm25 --table <connection.schema.table> --column 
 hotdata search "<query>" --type vector --table <table> --column <source_text_column> [--limit <n>]
 ```
 
-- **`--type vector`** runs server-side `vector_distance(col, 'query')`. The server resolves the embedding column, model, dimensions, and metric from the index metadata. Name the **source text column** (e.g. `title`), not the auto-generated `_embedding` column. No `OPENAI_API_KEY` required.
+- **`--type vector`** — pass your query as **plain text**, name the **source text column** (e.g. `title`). The server embeds the query at the same time, using the same provider that auto-embedded the column when the index was built — so distance metric, model, and dimensions all match automatically. No `OPENAI_API_KEY`, no client-side embedding, no need to know about the auto-generated `_embedding` column. Generated SQL: `vector_distance(col, 'query')` server-side.
 - **`--type bm25`** runs `bm25_search(table, col, 'query')` — requires a BM25 index on the column.
+- **No vector index, or want to use a different model than the index?** Skip `hotdata search` and use raw SQL via `hotdata query` (e.g. `SELECT *, cosine_distance(col, [<your_vec>]) FROM ...`). The SQL reference covers the available distance functions and table UDFs.
 - BM25 results sort by score (descending). Vector results sort by distance (ascending).
 - `--select` specifies which columns to return (comma-separated, defaults to all).
 - The previous `--model` flag and stdin-piped-vector path are **removed** — both hardcoded `l2_distance` regardless of the index's actual metric, which silently produced wrong rankings on cosine indexes. For client-side embedding or precomputed-vector workflows, use raw SQL via `hotdata query` (e.g. `SELECT *, cosine_distance(col, [<vec>]) ...`).

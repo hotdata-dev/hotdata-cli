@@ -307,8 +307,9 @@ hotdata search "<query>" --type bm25 --table <connection.schema.table> --column 
 # Vector similarity search via server-side auto-embed (requires a vector index on the column)
 hotdata search "<query>" --type vector --table <table> --column <source_text_column> [--limit <n>]
 ```
-- **`--type vector`** generates `vector_distance(col, 'text')` server-side. The server resolves the embedding column, model, and metric from the index metadata. Name the **source text column** (e.g. `title`), not the auto-generated `_embedding` column. No client-side embedding, no `OPENAI_API_KEY` required.
+- **`--type vector`** — pass the query as **plain text** and name the **source text column** (e.g. `title`). The server embeds the query at the same time, using the same provider that auto-embedded the column when the index was built — distance metric, model, and dimensions match automatically. No client-side embedding, no `OPENAI_API_KEY` required. Generated SQL: `vector_distance(col, 'text')`.
 - **`--type bm25`** generates `bm25_search(table, col, 'text')` server-side; requires a BM25 index on the column.
+- **No vector index on the column, or want a different embedding model?** `hotdata search` won't help — drop down to raw SQL via `hotdata query` (e.g. `SELECT *, cosine_distance(col, [<vec>]) FROM ...`). See the SQL reference for available distance functions and table UDFs.
 - BM25 results sort by score (descending). Vector results sort by distance (ascending).
 - `--select` specifies which columns to return (comma-separated, defaults to all).
 - Default limit is 10.
