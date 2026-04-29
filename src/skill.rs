@@ -75,6 +75,12 @@ fn read_installed_version() -> Option<Version> {
     parse_version_from_skill_md(&content)
 }
 
+fn all_skill_stores_present() -> bool {
+    SKILL_NAMES
+        .iter()
+        .all(|name| skill_store_path(name).exists())
+}
+
 fn is_managed_by_skills_agent() -> bool {
     let content = match fs::read_to_string(agents_lock_path()) {
         Ok(c) => c,
@@ -218,7 +224,18 @@ pub fn install_project() {
 
     // Ensure skill files exist locally first
     match read_installed_version() {
-        Some(ref v) if *v >= current => {}
+        Some(ref v) if *v >= current && all_skill_stores_present() => {}
+        Some(ref v) if *v >= current => {
+            println!(
+                "{}",
+                format!("Incomplete skills in ~/.hotdata/skills, downloading v{current}...")
+                    .yellow()
+            );
+            if let Err(e) = download_and_extract() {
+                eprintln!("{}", e.red());
+                std::process::exit(1);
+            }
+        }
         Some(ref v) => {
             println!(
                 "{}",
@@ -316,9 +333,17 @@ pub fn install() {
 
     let needs_download = if is_managed_by_skills_agent() {
         match read_installed_version() {
-            Some(ref v) if *v >= current => {
+            Some(ref v) if *v >= current && all_skill_stores_present() => {
                 println!("Managed by skills agent — already up to date (v{v}).");
                 false
+            }
+            Some(ref v) if *v >= current => {
+                println!(
+                    "{}",
+                    format!("Managed by skills agent — completing skill install (v{current})...")
+                        .yellow()
+                );
+                true
             }
             Some(ref v) => {
                 println!(
@@ -335,9 +360,16 @@ pub fn install() {
         }
     } else {
         match read_installed_version() {
-            Some(ref v) if *v >= current => {
+            Some(ref v) if *v >= current && all_skill_stores_present() => {
                 println!("Already up to date (v{v}).");
                 false
+            }
+            Some(ref v) if *v >= current => {
+                println!(
+                    "{}",
+                    format!("Completing skill install (v{current})...").yellow()
+                );
+                true
             }
             Some(ref v) => {
                 println!("Updating from v{v} to v{current}...");
@@ -408,28 +440,31 @@ pub fn status() {
             };
             row(&format!("{skill_name}"), &status);
         }
-        println!("\nRun 'hotdata skills install' to install.");
-        return;
-    }
+    } else {
+        row("Installed", &"Yes".green().to_string());
 
-    row("Installed", &"Yes".green().to_string());
-
-    match &installed_version {
-        Some(v) if *v < current => {
-            row(
-                "Version",
-                &format!(
-                    "{} (outdated, current is v{current})",
-                    v.to_string().yellow()
-                ),
-            );
+        match &installed_version {
+            Some(v) if *v < current => {
+                row(
+                    "Version",
+                    &format!(
+                        "{} (outdated, current is v{current})",
+                        v.to_string().yellow()
+                    ),
+                );
+            }
+            Some(v) => row("Version", &v.to_string().green().to_string()),
+            None => row("Version", &"unknown".dark_grey().to_string()),
         }
-        Some(v) => row("Version", &v.to_string().green().to_string()),
-        None => row("Version", &"unknown".dark_grey().to_string()),
     }
 
     let home = home_dir();
     for skill_name in SKILL_NAMES {
+        let label = format!("Agent Skills ({skill_name})");
+        if !skill_store_path(skill_name).exists() {
+            row(&label, &"—".dark_grey().to_string());
+            continue;
+        }
         let mut installed_agents: Vec<String> = Vec::new();
         if agents_skill_path(skill_name).exists() {
             installed_agents.push("~/.agents".to_string());
@@ -440,7 +475,6 @@ pub fn status() {
                 installed_agents.push(format!("~/{root}"));
             }
         }
-        let label = format!("Agent Skills ({skill_name})");
         if installed_agents.is_empty() {
             row(&label, &"none".dark_grey().to_string());
         } else {
@@ -448,7 +482,9 @@ pub fn status() {
         }
     }
 
-    if installed_version.is_some_and(|v| v < current) {
+    if !all_exist {
+        println!("\nRun 'hotdata skills install' to install.");
+    } else if installed_version.is_some_and(|v| v < current) {
         println!("\nRun 'hotdata skills install' to update.");
     }
 }
