@@ -161,6 +161,18 @@ fn main() {
                                 )
                             }
                         }
+                        Some(DatasetsCommands::Update {
+                            id,
+                            label,
+                            table_name,
+                            output,
+                        }) => datasets::update(
+                            &id,
+                            &workspace_id,
+                            label.as_deref(),
+                            table_name.as_deref(),
+                            &output,
+                        ),
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();

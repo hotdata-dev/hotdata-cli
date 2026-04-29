@@ -384,6 +384,24 @@ pub enum DatasetsCommands {
         #[arg(long, conflicts_with_all = ["file", "upload_id", "sql", "query_id"])]
         url: Option<String>,
     },
+
+    /// Update a dataset's label and/or table name
+    Update {
+        /// Dataset ID
+        id: String,
+
+        /// New display label
+        #[arg(long)]
+        label: Option<String>,
+
+        /// New SQL table name (must be a valid identifier)
+        #[arg(long)]
+        table_name: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
 }
 
 #[derive(Subcommand)]
