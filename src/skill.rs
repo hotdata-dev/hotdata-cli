@@ -81,6 +81,56 @@ fn all_skill_stores_present() -> bool {
         .all(|name| skill_store_path(name).exists())
 }
 
+/// When unset or non-zero: allow automatic skill refresh after CLI upgrade (`maybe_auto_update_after_cli_upgrade`).
+/// Set to `0`, `false`, or `no` to disable.
+fn skills_auto_update_env_enabled() -> bool {
+    match std::env::var("HOTDATA_SKILLS_AUTO_UPDATE") {
+        Ok(s) if s.trim().is_empty() => true,
+        Ok(s) => !matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// If the user has previously installed agent skills (`~/.hotdata/skills/hotdata` exists) but the on-disk
+/// bundle is older than this CLI or incomplete, download the matching release tarball and refresh symlinks.
+/// Does nothing when skills were never installed, when [`is_managed_by_skills_agent`] is true, or when
+/// [`skills_auto_update_env_enabled`] is false. Download failures print a warning and do not exit.
+pub fn maybe_auto_update_after_cli_upgrade() {
+    if !skills_auto_update_env_enabled() || is_managed_by_skills_agent() {
+        return;
+    }
+    if !skill_store_path(PRIMARY_SKILL_NAME).exists() {
+        return;
+    }
+
+    let current = Version::parse(CURRENT_VERSION).expect("invalid package version");
+    let needs_refresh = match read_installed_version() {
+        Some(v) if v >= current && all_skill_stores_present() => false,
+        _ => true,
+    };
+    if !needs_refresh {
+        return;
+    }
+
+    if let Err(e) = download_and_extract() {
+        eprintln!(
+            "{}",
+            format!("warning: could not auto-update agent skills: {e}").yellow()
+        );
+        return;
+    }
+
+    let _symlinks = ensure_symlinks();
+
+    eprintln!(
+        "{}",
+        format!("Agent skills updated to v{current}.").green()
+    );
+}
+
 fn is_managed_by_skills_agent() -> bool {
     let content = match fs::read_to_string(agents_lock_path()) {
         Ok(c) => c,
@@ -95,7 +145,7 @@ fn is_managed_by_skills_agent() -> bool {
 
 fn download_and_extract() -> Result<(), String> {
     let url = download_url();
-    println!("Downloading skill...");
+    eprintln!("Downloading skill...");
 
     // Binary download — can't route through `send_debug` (which calls
     // `resp.text()` and would corrupt the gzip stream). Log the
