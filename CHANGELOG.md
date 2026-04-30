@@ -1,3 +1,9 @@
+## [0.2.1] - 2026-04-30
+
+### 📚 Documentation
+
+- *(skill)* Align hotdata skill with CLI behavior
+
 ## [0.2.0] - 2026-04-29
 
 ### 🚀 Features
