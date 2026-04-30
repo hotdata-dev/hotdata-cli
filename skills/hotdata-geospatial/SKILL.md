@@ -1,7 +1,7 @@
 ---
 name: hotdata-geospatial
 description: Use this skill only when the user is working with geospatial data in Hotdata (PostGIS-style SQL like ST_* functions, geometry/WKB, bbox filtering, point-in-polygon, distance/area, lat/lon, spatial joins, “geospatial”, “GIS”, “PostGIS”). Do not load this skill for non-geospatial SQL or general Hotdata usage.
-version: 0.2.0
+version: 0.2.1
 ---
 
 # Hotdata Geospatial Skill

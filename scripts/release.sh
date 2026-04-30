@@ -42,6 +42,8 @@ case "$COMMAND" in
         # step 2: bump versions, commit, push branch
         echo ""
         echo "→ Running cargo release (no publish, no tag)..."
+        # git-cliff (pre-release hook) is often installed via cargo install
+        export PATH="${HOME}/.cargo/bin:${PATH}"
         cargo release --no-publish --no-tag --no-confirm --allow-branch="$BRANCH" --execute "$VERSION"
 
         echo ""
@@ -79,6 +81,7 @@ case "$COMMAND" in
 
         echo ""
         echo "→ Running cargo release (tagging release)..."
+        export PATH="${HOME}/.cargo/bin:${PATH}"
         cargo release --no-confirm --execute
 
         echo ""
