@@ -79,11 +79,20 @@ For **small** schemas (e.g. ≤5 tables in a domain), a short **ASCII diagram** 
 
 ## 5. Search and index awareness
 
-For tables you care about:
+Inventory indexes on connection tables (whole workspace or filtered):
+
+```bash
+hotdata indexes list [-w <workspace_id>]
+hotdata indexes list -c <connection_id> [--schema <schema>] [--table <table>] [-w <workspace_id>]
+```
+
+Per table when you only need one:
 
 ```bash
 hotdata indexes list -c <connection_id> --schema <schema> --table <table> [-w <workspace_id>]
 ```
+
+For dataset-backed indexes: `hotdata indexes list --dataset-id <dataset_id>` (not merged into the workspace-wide connection-table list).
 
 Note:
 
