@@ -58,7 +58,7 @@ Document safe join paths and caveats (fan-out, timing, different refresh cadence
 |-------|--------|--------------------------|--------------|-------|
 | | | | | |
 
-_Use `hotdata indexes list -c <connection_id> --schema <schema> --table <table>` per table as needed._
+_Use `hotdata indexes list` for connection tables across the workspace (add `-c` / `--schema` / `--table` to narrow), or per table with all three set; use `hotdata indexes list --dataset-id <id>` for uploaded datasets._
 
 ## Datasets (uploaded)
 

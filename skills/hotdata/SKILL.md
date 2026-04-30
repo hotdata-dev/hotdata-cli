@@ -1,7 +1,7 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, inspect query run history, search tables, manage indexes, manage sandboxes, manage workspace context and stored docs such as context:DATAMODEL via the context API (`hotdata context`), or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list query runs", "list past queries", "query history", "list sandboxes", "create a sandbox", "run a sandbox", "workspace context", "pull context", "push context", "data model", "context:DATAMODEL", or asks you to use the hotdata CLI.
-version: 0.2.0
+description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, inspect query run history, search tables, manage indexes, manage sandboxes, manage workspace context and stored docs such as context:DATAMODEL via the context API (`hotdata context`), install or update the bundled agent skills (`hotdata skills`), generate shell completions (`hotdata completions`), or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list query runs", "list past queries", "query history", "list sandboxes", "create a sandbox", "run a sandbox", "workspace context", "pull context", "push context", "data model", "context:DATAMODEL", or asks you to use the hotdata CLI.
+version: 0.2.1
 ---
 
 # Hotdata CLI Skill
@@ -80,6 +80,10 @@ Full step-by-step procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md)
 
 ## Available Commands
 
+Top-level subcommands (each detailed below): **`auth`**, **`datasets`**, **`query`**, **`workspaces`**, **`connections`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`sandbox`**, **`context`**, **`completions`**.
+
+Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**. Hidden developer flag: **`--debug`** (verbose HTTP logs).
+
 ### List Workspaces
 ```
 hotdata workspaces list [--output table|json|yaml]
@@ -127,7 +131,7 @@ hotdata connections create \
   --name "my-connection" \
   --type <source_type> \
   --config '<json object>' \
-  [--workspace-id <workspace_id>]
+  [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 
 The `--config` JSON object must contain all **required** fields from `config` plus the **auth fields** merged in at the top level. Auth fields are not nested — they sit alongside config fields in the same object.
@@ -195,6 +199,12 @@ hotdata datasets <dataset_id> [--workspace-id <workspace_id>] [--output table|js
 - Shows dataset metadata and a full column listing with `name`, `data_type`, `nullable`.
 - Use this to inspect schema before querying.
 - For the **qualified SQL name**, prefer **`FULL NAME` from `datasets list`** or the **`full_name` printed by `datasets create`**—especially for sandbox datasets, where the schema is **`datasets.<sandbox_id>`**, not `datasets.main`.
+
+#### Update a dataset
+```
+hotdata datasets update <dataset_id> [--label <label>] [--table-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+```
+- The CLI requires **at least one** of **`--label`** or **`--table-name`**.
 
 #### Create a dataset
 ```
@@ -302,10 +312,12 @@ To create a dataset from a **saved query** still registered for the workspace, u
 
 ```
 # BM25 full-text search (requires BM25 index on the column)
-hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [--output table|json|csv]
+hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> \
+  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 
 # Vector similarity search via server-side auto-embed (requires a vector index on the column)
-hotdata search "<query>" --type vector --table <table> --column <source_text_column> [--limit <n>]
+hotdata search "<query>" --type vector --table <connection.schema.table> --column <source_text_column> \
+  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 ```
 - **`--type vector`** — pass the query as **plain text** and name the **source text column** (e.g. `title`). The server embeds the query at the same time, using the same provider that auto-embedded the column when the index was built — distance metric, model, and dimensions match automatically. No client-side embedding, no `OPENAI_API_KEY` required. Generated SQL: `vector_distance(col, 'text')`.
 - **`--type bm25`** generates `bm25_search(table, col, 'text')` server-side; requires a BM25 index on the column.
@@ -318,23 +330,30 @@ hotdata search "<query>" --type vector --table <table> --column <source_text_col
 
 ### Indexes
 
-Indexes attach to either a connection-table (`--connection-id` + `--schema` + `--table`) or a dataset (`--dataset-id`) — the two scopes are mutually exclusive. `--type` is required (no default).
+Indexes attach to either a connection-table (`--connection-id` + `--schema` + `--table`) or a dataset (`--dataset-id`) — the two scopes are mutually exclusive for **create** / **delete**. **`indexes list`** supports three ways to scope (below).
+
+For **create**, `--type` is required (no default).
 
 ```
-# Connection-table scope
-hotdata indexes list   --connection-id <connection_id> --schema <schema> --table <table> [--workspace-id <workspace_id>] [--output table|json|yaml]
+# List — default: all indexes on connection tables in the workspace (from information_schema; parallel fetch).
+# Narrow the scan with any subset of: --connection-id (-c), --schema, --table. With all three set, uses one table API call.
+# Dataset indexes are not included; use --dataset-id per dataset.
+hotdata indexes list [--connection-id <connection_id>] [--schema <schema>] [--table <table>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata indexes list --dataset-id <dataset_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+
+# Connection-table scope — create / delete
 hotdata indexes create --connection-id <connection_id> --schema <schema> --table <table> \
   --name <name> --columns <cols> --type sorted|bm25|vector \
   [--metric l2|cosine|dot] [--async] \
   [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 hotdata indexes delete --connection-id <connection_id> --schema <schema> --table <table> --name <name>
 
-# Dataset scope (positional dataset_id replaced by --dataset-id flag)
-hotdata indexes list   --dataset-id <dataset_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+# Dataset scope — create / delete (same --dataset-id flag)
 hotdata indexes create --dataset-id <dataset_id> --name <name> --columns <cols> --type sorted|bm25|vector ...
 hotdata indexes delete --dataset-id <dataset_id> --name <name>
 ```
-- `--type` accepts `sorted` (B-tree-like; range/exact lookups), `bm25` (full-text), or `vector` (similarity). It is **required**.
+- **`indexes list`:** With no `--dataset-id`, lists indexes on **connection** tables (workspace scan or filtered scan). **Dataset** indexes are listed only via `--dataset-id` (one dataset per invocation).
+- `--type` accepts `sorted` (B-tree-like; range/exact lookups), `bm25` (full-text), or `vector` (similarity). It is **required** for **create**.
 - `--type vector` requires exactly one column.
 - `--async` submits index creation as a background job; poll with `hotdata jobs <job_id>`.
 - **Auto-embedding:** with `--type vector` on a **text** column, the server generates embeddings automatically. Pass `--embedding-provider-id` to pick a specific provider; if omitted, the first system provider is used. The generated column defaults to `{column}_embedding` (override with `--output-column`).
@@ -345,7 +364,7 @@ hotdata embedding-providers list [--workspace-id <workspace_id>] [--output table
 hotdata embedding-providers get <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata embedding-providers create --name <name> --provider-type service|local \
   [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>]
-hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--provider-api-key <key> | --secret-name <name>]
+hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
 ```
 - System providers (e.g. `sys_emb_openai`) come pre-configured. `list` shows IDs to pass to `--embedding-provider-id`.
@@ -360,6 +379,26 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 - `--job-type`: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`, `create_dataset_index`.
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
+
+### Agent skills (`skills`)
+
+Bundled Markdown skills (**`hotdata`**, **`hotdata-geospatial`**) ship with the CLI release tarball.
+
+```
+hotdata skills install [--project]
+hotdata skills status
+```
+
+- **`install`** — Downloads and installs skills to **`~/.hotdata/skills/<skill>`**, then symlinks into **`~/.agents/skills`** and into **`~/.claude/skills`** / **`~/.pi/skills`** when those directories exist. **`--project`** instead copies into **`./.agents/skills/<skill>`** in the current directory (and links `./.claude` / `./.pi` when present). The CLI may auto-refresh skills after an upgrade when appropriate.
+- **`status`** — Reports installed vs current CLI version and where skills are linked.
+
+### Shell completions
+
+```
+hotdata completions <bash|zsh|fish>
+```
+
+Writes completion script for the chosen shell to stdout (redirect into your shell’s completion path as usual).
 
 ### Auth
 ```
@@ -437,7 +476,7 @@ Use a sandbox to explore tables and capture **analysis-oriented** notes in sandb
 5. Continue exploring and update the markdown as your **analysis picture** takes shape. Sandbox markdown is the living artifact for **that sandbox** only.
 6. When that picture should become **context:DATAMODEL** (outlive the sandbox or be shared with everyone), promote it: save consolidated Markdown as `./DATAMODEL.md` in the project directory and run `hotdata context push DATAMODEL` (if **context:DATAMODEL** already exists on the server, merge with `hotdata context show DATAMODEL` first—confirm `DATAMODEL` appears in `hotdata context list` before `show`).
 
-Other commands (not covered in detail above): `hotdata connections new` (interactive connection wizard), `hotdata skills install|status`, `hotdata completions <bash|zsh|fish>`.
+**Also available:** `hotdata connections new` — interactive connection wizard (no substitute for the programmatic **`connections create`** flow above).
 
 ## Workflow: Running a Query
 

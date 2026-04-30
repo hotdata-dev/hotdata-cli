@@ -161,11 +161,20 @@ High-cardinality **text** columns (`title`, `body`, `description`, …) may warr
 
 ### 2. Compare to existing indexes
 
-For each `connection.schema.table` you care about:
+Start broad, then narrow:
+
+```bash
+# All indexes on connection tables in the workspace (optional: -c / --schema / --table to filter)
+hotdata indexes list [--workspace-id <workspace_id>]
+```
+
+For a single table, or to avoid scanning the whole workspace:
 
 ```bash
 hotdata indexes list --connection-id <connection_id> --schema <schema> --table <table> [--workspace-id <workspace_id>]
 ```
+
+Indexes on **uploaded datasets** are not included in that workspace scan — use `hotdata indexes list --dataset-id <dataset_id>` per dataset.
 
 Skip creating a duplicate: same table + overlapping columns + same purpose (e.g. another bm25 on the same column).
 
