@@ -3,6 +3,27 @@ use crate::config;
 use crate::util;
 use crossterm::style::Stylize;
 use serde::de::DeserializeOwned;
+use std::time::Duration;
+
+/// Cap on any single HTTP request. Connection create + synchronous schema
+/// discovery against a slow remote catalog can take well over a minute, so
+/// this needs to be generous; 5 minutes leaves headroom while still bounding
+/// the worst case if the server genuinely hangs.
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// TCP keepalive cadence. Without this, macOS will drop a TCP connection
+/// that has been quiet (e.g. while the server is doing slow synchronous
+/// work) and reqwest surfaces it as "error sending request" even though the
+/// request itself completed server-side.
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+fn build_http_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .timeout(HTTP_REQUEST_TIMEOUT)
+        .tcp_keepalive(TCP_KEEPALIVE_INTERVAL)
+        .build()
+        .expect("reqwest blocking client should always build with these defaults")
+}
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -48,7 +69,7 @@ impl ApiClient {
         };
 
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: build_http_client(),
             api_key: access_token,
             api_url: profile_config.api_url.to_string(),
             workspace_id: workspace_id.map(String::from),
@@ -66,7 +87,7 @@ impl ApiClient {
     #[cfg(test)]
     pub(crate) fn test_new(api_url: &str, api_key: &str, workspace_id: Option<&str>) -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: build_http_client(),
             api_key: api_key.to_string(),
             api_url: api_url.to_string(),
             workspace_id: workspace_id.map(String::from),
