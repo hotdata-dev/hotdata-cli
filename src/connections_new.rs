@@ -113,14 +113,25 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
 
     let field_type = field["type"].as_str().unwrap_or("string");
     let format = field["format"].as_str().unwrap_or("");
+    let description = field["description"].as_str();
+    let example = field["examples"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|v| v.as_str());
     let opt_hint = "optional — press Enter to skip";
+    let help_message: Option<String> = match (description, is_required) {
+        (Some(d), true) => Some(d.to_string()),
+        (Some(d), false) => Some(format!("{d} ({opt_hint})")),
+        (None, true) => None,
+        (None, false) => Some(opt_hint.to_string()),
+    };
 
     match (field_type, format) {
         ("string", "password") => {
             let label = format!("{key}:");
             let mut p = Password::new(&label).without_confirmation();
-            if !is_required {
-                p = p.with_help_message(opt_hint);
+            if let Some(h) = &help_message {
+                p = p.with_help_message(h);
             }
             let val = p.prompt().unwrap_or_else(|_| std::process::exit(0));
             if val.is_empty() && !is_required {
@@ -133,11 +144,14 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
         ("string", _) => {
             let label = format!("{key}:");
             let mut t = Text::new(&label);
-            if let Some(default) = field["default"].as_str() {
-                t = t.with_default(default);
+            let default = field["default"].as_str();
+            if let Some(d) = default {
+                t = t.with_default(d);
+            } else if let Some(e) = example {
+                t = t.with_placeholder(e);
             }
-            if !is_required {
-                t = t.with_help_message(opt_hint);
+            if let Some(h) = &help_message {
+                t = t.with_help_message(h);
             }
             let val = t.prompt().unwrap_or_else(|_| std::process::exit(0));
             if val.is_empty() && !is_required {
@@ -149,7 +163,7 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
 
         ("integer", _) => {
             let label = format!("{key}:");
-            let t = Text::new(&label).with_validator(move |input: &str| {
+            let mut t = Text::new(&label).with_validator(move |input: &str| {
                 if input.is_empty() {
                     if is_required {
                         return Ok(Validation::Invalid("This field is required".into()));
@@ -162,13 +176,12 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
                     Ok(Validation::Invalid("Must be a whole number".into()))
                 }
             });
-            let help_t;
-            let t = if !is_required {
-                help_t = t.with_help_message(opt_hint);
-                help_t
-            } else {
-                t
-            };
+            if let Some(e) = example {
+                t = t.with_placeholder(e);
+            }
+            if let Some(h) = &help_message {
+                t = t.with_help_message(h);
+            }
             let val = t.prompt().unwrap_or_else(|_| std::process::exit(0));
             if val.is_empty() && !is_required {
                 None
@@ -182,23 +195,28 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
         ("boolean", _) => {
             let label = format!("{key}:");
             let default = field["default"].as_bool().unwrap_or(false);
-            let val = Confirm::new(&label)
-                .with_default(default)
-                .prompt()
-                .unwrap_or_else(|_| std::process::exit(0));
+            let mut c = Confirm::new(&label).with_default(default);
+            if let Some(h) = &help_message {
+                c = c.with_help_message(h);
+            }
+            let val = c.prompt().unwrap_or_else(|_| std::process::exit(0));
             Some(Value::Bool(val))
         }
 
         ("array", _) => {
             let label = format!("{key}:");
-            let help = if is_required {
+            let array_hint = if is_required {
                 "Enter values separated by commas"
             } else {
                 "Enter values separated by commas — optional, press Enter to skip"
             };
+            let help = match description {
+                Some(d) => format!("{d} — {array_hint}"),
+                None => array_hint.to_string(),
+            };
             let val = Text::new(&label)
-                .with_placeholder("value1, value2, ...")
-                .with_help_message(help)
+                .with_placeholder(example.unwrap_or("value1, value2, ..."))
+                .with_help_message(&help)
                 .prompt()
                 .unwrap_or_else(|_| std::process::exit(0));
             if val.is_empty() && !is_required {
