@@ -114,10 +114,16 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
     let field_type = field["type"].as_str().unwrap_or("string");
     let format = field["format"].as_str().unwrap_or("");
     let description = field["description"].as_str();
-    let example = field["examples"]
+    // Accept both string and integer examples — `as_str` alone would silently
+    // miss schemas like `"examples": [8080]` on integer fields.
+    let example: Option<String> = field["examples"]
         .as_array()
         .and_then(|a| a.first())
-        .and_then(|v| v.as_str());
+        .and_then(|v| {
+            v.as_str()
+                .map(str::to_owned)
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+        });
     let opt_hint = "optional — press Enter to skip";
     let help_message: Option<String> = match (description, is_required) {
         (Some(d), true) => Some(d.to_string()),
@@ -147,7 +153,7 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
             let default = field["default"].as_str();
             if let Some(d) = default {
                 t = t.with_default(d);
-            } else if let Some(e) = example {
+            } else if let Some(e) = example.as_deref() {
                 t = t.with_placeholder(e);
             }
             if let Some(h) = &help_message {
@@ -176,7 +182,7 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
                     Ok(Validation::Invalid("Must be a whole number".into()))
                 }
             });
-            if let Some(e) = example {
+            if let Some(e) = example.as_deref() {
                 t = t.with_placeholder(e);
             }
             if let Some(h) = &help_message {
@@ -215,7 +221,7 @@ fn prompt_field(key: &str, field: &Value, is_required: bool) -> Option<Value> {
                 None => array_hint.to_string(),
             };
             let val = Text::new(&label)
-                .with_placeholder(example.unwrap_or("value1, value2, ..."))
+                .with_placeholder(example.as_deref().unwrap_or("value1, value2, ..."))
                 .with_help_message(&help)
                 .prompt()
                 .unwrap_or_else(|_| std::process::exit(0));
