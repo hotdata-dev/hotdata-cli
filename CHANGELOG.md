@@ -1,3 +1,9 @@
+## [0.2.2] - 2026-05-04
+
+### 🚀 Features
+
+- *(wizard)* Render schema description, examples, defaults (#75)
+
 ## [0.2.1] - 2026-04-30
 
 ### 📚 Documentation
