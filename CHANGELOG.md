@@ -1,9 +1,17 @@
+## [0.2.2] - 2026-05-04
+
+### 🚀 Features
+
+- *(wizard)* Render schema description, examples, defaults (#75)
 ## [0.2.1] - 2026-04-30
+
+### 🐛 Bug Fixes
+
+- *(changelog)* Keep prior release sections identical to main
 
 ### 📚 Documentation
 
 - *(skill)* Align hotdata skill with CLI behavior
-
 ## [0.2.0] - 2026-04-29
 
 ### 🚀 Features
@@ -25,6 +33,8 @@
 ### 💼 Other
 
 - *(release)* Bump geospatial skill version on release
+- *(deps)* Bump rustls-webpki to 0.103.13
+- Validate CHANGELOG sections match base branch on PRs
 
 ### 🚜 Refactor
 
@@ -37,7 +47,6 @@
 
 ### 🚀 Features
 
-- *(auth)* Add CLI auth session support (JWT access tokens, refresh, PKCE login)
 - *(indexes)* Workspace-wide list with filters and parallel fetch
 
 ### 💼 Other
