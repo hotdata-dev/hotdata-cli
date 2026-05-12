@@ -18,6 +18,7 @@ mod sandbox_session;
 mod skill;
 mod table;
 mod tables;
+mod update;
 mod util;
 mod workspace;
 
@@ -146,6 +147,12 @@ fn main() {
         cli.command.is_none() || matches!(&cli.command, Some(Commands::Skills { .. }));
     if !skip_skill_auto_update {
         skill::maybe_auto_update_after_cli_upgrade();
+    }
+
+    // Quiet update-available notice. Skip during `hotdata update` itself so
+    // we don't talk over the updater's own output.
+    if !matches!(&cli.command, Some(Commands::Update)) {
+        update::maybe_print_update_notice();
     }
 
     match cli.command {
@@ -781,6 +788,7 @@ fn main() {
                 let mut cmd = Cli::command();
                 generate(shell, &mut cmd, "hotdata", &mut std::io::stdout());
             }
+            Commands::Update => update::run_update(),
         },
     }
 }
