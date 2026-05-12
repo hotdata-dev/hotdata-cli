@@ -46,6 +46,10 @@ struct Cli {
     #[arg(long, global = true, hide = true)]
     debug: bool,
 
+    /// Disable interactive prompts; commands that need input will error instead
+    #[arg(long = "no-input", global = true)]
+    no_input: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -133,6 +137,9 @@ fn main() {
     }
     if cli.debug {
         util::set_debug(true);
+    }
+    if cli.no_input {
+        util::set_no_input(true);
     }
 
     let skip_skill_auto_update =

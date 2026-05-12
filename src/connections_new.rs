@@ -260,6 +260,15 @@ fn walk_auth(schema: &Value) -> Map<String, Value> {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run(workspace_id: &str) {
+    if !crate::util::is_interactive() {
+        eprintln!(
+            "error: 'connections new' is interactive and stdin is not a TTY. \
+             Use 'hotdata connections create list' to discover types and their config schemas, \
+             then 'hotdata connections create --name <n> --type <t> --config '{{…}}''."
+        );
+        std::process::exit(1);
+    }
+
     let api = ApiClient::new(Some(workspace_id));
 
     // Phase 1: Select connection type

@@ -261,6 +261,9 @@ pub fn login() {
     // Check if already authenticated
     if is_already_signed_in(&profile_config) {
         println!("{}", "You are already signed in.".green());
+        if !crate::util::is_interactive() {
+            return;
+        }
         print!("Do you want to log in again? [y/N] ");
         use std::io::Write;
         std::io::stdout().flush().unwrap();
