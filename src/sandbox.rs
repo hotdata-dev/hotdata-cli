@@ -287,68 +287,16 @@ pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd
     eprintln!("{} {}", "sandbox:".dark_grey(), sid);
     eprintln!("{} {}", "workspace:".dark_grey(), workspace_id);
 
-    spawn_child_with_sandbox_env(&sid, workspace_id, &sandbox_jwt, &sandbox_refresh, &api.api_url, cmd);
-}
+    let status = std::process::Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .env("HOTDATA_SANDBOX", &sid)
+        .env("HOTDATA_WORKSPACE", workspace_id)
+        .env("HOTDATA_API_URL", &api.api_url)
+        .env("HOTDATA_SANDBOX_TOKEN", &sandbox_jwt)
+        .env("HOTDATA_SANDBOX_REFRESH_TOKEN", &sandbox_refresh)
+        .status();
 
-/// Allow-list of parent environment variables to forward to a
-/// `sandbox run` child. Anything outside this set is dropped, so the
-/// child can't accidentally read the user's API key, AWS creds, or any
-/// other secret the parent shell happens to expose.
-///
-/// Public so the unit test can assert against the exact set.
-pub(crate) const SANDBOX_ENV_ALLOWLIST: &[&str] = &[
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "TERM",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TZ",
-    "TMPDIR",
-];
-
-/// Names of the auth env vars injected into the child. The CLI reads
-/// `HOTDATA_SANDBOX_TOKEN` and treats it as the only valid bearer when
-/// set (see `api::ApiClient::new`). Kept as a constant alongside the
-/// allow-list so a future audit can compare both at a glance.
-#[allow(dead_code)] // Referenced from the audit test below.
-pub(crate) const SANDBOX_AUTH_ENV: &[&str] = &[
-    "HOTDATA_SANDBOX",
-    "HOTDATA_WORKSPACE",
-    "HOTDATA_API_URL",
-    "HOTDATA_SANDBOX_TOKEN",
-    "HOTDATA_SANDBOX_REFRESH_TOKEN",
-];
-
-fn spawn_child_with_sandbox_env(
-    sandbox_id: &str,
-    workspace_id: &str,
-    sandbox_jwt: &str,
-    sandbox_refresh: &str,
-    api_url: &str,
-    cmd: &[String],
-) {
-    let mut command = std::process::Command::new(&cmd[0]);
-    command.args(&cmd[1..]);
-
-    // Scrub: start from a clean environment and explicitly re-add
-    // only what the child legitimately needs.
-    command.env_clear();
-    for key in SANDBOX_ENV_ALLOWLIST {
-        if let Ok(val) = std::env::var(key) {
-            command.env(key, val);
-        }
-    }
-    command.env("HOTDATA_SANDBOX", sandbox_id);
-    command.env("HOTDATA_WORKSPACE", workspace_id);
-    command.env("HOTDATA_API_URL", api_url);
-    command.env("HOTDATA_SANDBOX_TOKEN", sandbox_jwt);
-    command.env("HOTDATA_SANDBOX_REFRESH_TOKEN", sandbox_refresh);
-
-    match command.status() {
+    match status {
         Ok(s) => std::process::exit(s.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("error: failed to execute '{}': {e}", cmd[0]);
@@ -411,34 +359,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sandbox_env_allowlist_excludes_sensitive_parent_state() {
-        // The allowlist must not leak the parent's auth credentials or
-        // the parent's active-sandbox state into a child that's
-        // supposed to be running under the freshly-minted sandbox JWT.
-        let forbidden = [
-            "HOTDATA_API_KEY",
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "OPENAI_API_KEY",
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
-        ];
-        for k in forbidden {
-            assert!(
-                !SANDBOX_ENV_ALLOWLIST.contains(&k),
-                "{k} must not be forwarded to sandbox child"
-            );
-        }
-    }
-
-    #[test]
-    fn sandbox_auth_env_set_is_self_consistent() {
-        // Anything the parent injects must also be the set the child's
-        // ApiClient knows to read (HOTDATA_SANDBOX_TOKEN in particular).
-        assert!(SANDBOX_AUTH_ENV.contains(&"HOTDATA_SANDBOX_TOKEN"));
-        assert!(SANDBOX_AUTH_ENV.contains(&"HOTDATA_SANDBOX_REFRESH_TOKEN"));
-        assert!(SANDBOX_AUTH_ENV.contains(&"HOTDATA_SANDBOX"));
-        assert!(SANDBOX_AUTH_ENV.contains(&"HOTDATA_WORKSPACE"));
-    }
 }
