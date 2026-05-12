@@ -14,6 +14,7 @@ mod queries;
 mod query;
 mod results;
 mod sandbox;
+mod sandbox_session;
 mod skill;
 mod table;
 mod tables;
@@ -81,7 +82,49 @@ fn resolve_workspace(provided: Option<String>) -> String {
     }
 }
 
+// libc::atexit (no extra crate needed — the symbol is linked by default).
+// Callbacks registered here fire even when subcommands call
+// `std::process::exit`, which Rust's `Drop` would otherwise miss.
+unsafe extern "C" {
+    fn atexit(callback: extern "C" fn()) -> i32;
+}
+
+/// Runs once at process exit. Prints a sandbox footer on stderr when
+/// the CLI is running under an on-disk sandbox session (i.e. the user
+/// ran `hotdata sandbox set <id>` to enter it from this shell). Stays
+/// silent when the sandbox comes from `HOTDATA_SANDBOX_TOKEN` in the
+/// environment: that means we're inside a `sandbox run` child, and
+/// the parent already announced the sandbox once at spawn time.
+/// Stderr keeps stdout clean for callers parsing JSON/YAML output.
+extern "C" fn print_sandbox_footer() {
+    use crossterm::style::Stylize;
+
+    // Inside a `sandbox run` child — parent printed the banner already.
+    if sandbox_session::sandbox_token_in_use().is_some() {
+        return;
+    }
+    let Some(session) = sandbox_session::load() else {
+        return;
+    };
+    if session.sandbox_id.is_empty() {
+        return;
+    }
+    eprintln!(
+        "{}",
+        format!(
+            "current sandbox: {} use 'hotdata sandbox set' to change",
+            session.sandbox_id
+        )
+        .dark_grey(),
+    );
+}
+
 fn main() {
+    // Register before `Cli::parse`, since `--help` / `--version` exit
+    // from inside the parser. Safety: `atexit` is async-signal-safe;
+    // the callback only reads env vars / files and writes to stderr.
+    unsafe { atexit(print_sandbox_footer) };
+
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 

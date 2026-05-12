@@ -1,7 +1,9 @@
 use crate::api::ApiClient;
 use crate::config;
+use crate::sandbox_session::{self, SandboxSession};
 use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Deserialize, Serialize)]
 struct Sandbox {
@@ -20,6 +22,38 @@ struct ListResponse {
 #[derive(Deserialize)]
 struct DetailResponse {
     sandbox: Sandbox,
+}
+
+/// Response shape of `/v1/auth/sandbox` and `/v1/auth/sandbox/<id>`.
+#[derive(Deserialize)]
+struct SandboxTokenResponse {
+    token: String,
+    refresh_token: String,
+    sandbox_id: String,
+    expires_in: u64,
+    refresh_expires_in: u64,
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn persist_sandbox_session(resp: SandboxTokenResponse, workspace_id: &str) {
+    let now = now_unix();
+    let session = SandboxSession {
+        access_token: resp.token,
+        refresh_token: resp.refresh_token,
+        sandbox_id: resp.sandbox_id,
+        workspace_id: workspace_id.to_string(),
+        access_expires_at: now + resp.expires_in,
+        refresh_expires_at: now + resp.refresh_expires_in,
+    };
+    if let Err(e) = sandbox_session::save(&session) {
+        eprintln!("warning: could not persist sandbox session: {e}");
+    }
 }
 
 pub fn list(workspace_id: &str, format: &str) {
@@ -151,22 +185,27 @@ pub fn new(workspace_id: &str, name: Option<&str>, format: &str) {
         body["name"] = serde_json::json!(n);
     }
 
-    let resp: DetailResponse = api.post("/sandboxes", &body);
-    let s = &resp.sandbox;
+    // POST /auth/sandbox creates the sandbox AND mints a sandbox-scoped
+    // JWT (+ refresh token) in one round-trip.
+    let resp: SandboxTokenResponse = api.post("/auth/sandbox", &body);
+    let sandbox_id = resp.sandbox_id.clone();
+    persist_sandbox_session(resp, workspace_id);
 
-    // Set as the active sandbox in config
-    if let Err(e) = config::save_sandbox("default", &s.public_id) {
+    if let Err(e) = config::save_sandbox("default", &sandbox_id) {
         eprintln!("warning: could not save sandbox to config: {e}");
     }
 
     println!("{}", "Sandbox created".green());
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(s).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(s).unwrap()),
+        "json" => println!("{}", serde_json::json!({"public_id": sandbox_id})),
+        "yaml" => print!(
+            "{}",
+            serde_yaml::to_string(&serde_json::json!({"public_id": sandbox_id})).unwrap()
+        ),
         "table" => {
-            println!("id:   {}", s.public_id);
-            if !s.name.is_empty() {
-                println!("name: {}", s.name);
+            println!("id:   {}", sandbox_id);
+            if let Some(n) = name {
+                println!("name: {}", n);
             }
         }
         _ => unreachable!(),
@@ -219,25 +258,31 @@ pub fn update(
 
 pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd: &[String]) {
     check_sandbox_lock();
-    let sid = match sandbox_id {
-        Some(id) => {
-            // Verify the sandbox exists
-            let api = ApiClient::new(Some(workspace_id));
-            let path = format!("/sandboxes/{id}");
-            let _: DetailResponse = api.get(&path);
-            id.to_string()
-        }
+    let api = ApiClient::new(Some(workspace_id));
+
+    // Mint (or re-mint, for an existing sandbox) a sandbox-scoped JWT
+    // by dispatching on grant_type at /auth/sandbox. Either way we
+    // end up with a fresh bundle persisted to sandbox_session.json
+    // before we spawn.
+    let body = match sandbox_id {
+        Some(id) => serde_json::json!({
+            "grant_type": "existing_sandbox",
+            "sandbox_id": id,
+        }),
         None => {
-            // Create a new sandbox
-            let api = ApiClient::new(Some(workspace_id));
-            let mut body = serde_json::json!({});
+            let mut b = serde_json::json!({});
             if let Some(n) = name {
-                body["name"] = serde_json::json!(n);
+                b["name"] = serde_json::json!(n);
             }
-            let resp: DetailResponse = api.post("/sandboxes", &body);
-            resp.sandbox.public_id
+            b
         }
     };
+    let resp: SandboxTokenResponse = api.post("/auth/sandbox", &body);
+
+    let sid = resp.sandbox_id.clone();
+    let sandbox_jwt = resp.token.clone();
+    let sandbox_refresh = resp.refresh_token.clone();
+    persist_sandbox_session(resp, workspace_id);
 
     eprintln!("{} {}", "sandbox:".dark_grey(), sid);
     eprintln!("{} {}", "workspace:".dark_grey(), workspace_id);
@@ -246,6 +291,9 @@ pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd
         .args(&cmd[1..])
         .env("HOTDATA_SANDBOX", &sid)
         .env("HOTDATA_WORKSPACE", workspace_id)
+        .env("HOTDATA_API_URL", &api.api_url)
+        .env("HOTDATA_SANDBOX_TOKEN", &sandbox_jwt)
+        .env("HOTDATA_SANDBOX_REFRESH_TOKEN", &sandbox_refresh)
         .status();
 
     match status {
@@ -261,10 +309,17 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
     check_sandbox_lock();
     match sandbox_id {
         Some(id) => {
-            // Verify the sandbox exists by fetching it
+            // Mint a sandbox-scoped JWT against this existing id via
+            // the grant_type=existing_sandbox dispatch. The call
+            // doubles as an existence + access check (404/403 if the
+            // user can't reach it).
             let api = ApiClient::new(Some(workspace_id));
-            let path = format!("/sandboxes/{id}");
-            let _: DetailResponse = api.get(&path);
+            let body = serde_json::json!({
+                "grant_type": "existing_sandbox",
+                "sandbox_id": id,
+            });
+            let resp: SandboxTokenResponse = api.post("/auth/sandbox", &body);
+            persist_sandbox_session(resp, workspace_id);
 
             if let Err(e) = config::save_sandbox("default", id) {
                 eprintln!("error saving config: {e}");
@@ -274,7 +329,8 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
             println!("id: {}", id);
         }
         None => {
-            // Clear the active sandbox
+            // Clear the active sandbox + its cached session.
+            sandbox_session::clear();
             if let Err(e) = config::clear_sandbox("default") {
                 eprintln!("error saving config: {e}");
                 std::process::exit(1);
@@ -302,4 +358,5 @@ mod tests {
             find_sandbox_run_ancestor_inner()
         );
     }
+
 }
