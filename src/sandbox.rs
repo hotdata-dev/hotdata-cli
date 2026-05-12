@@ -1,7 +1,9 @@
 use crate::api::ApiClient;
 use crate::config;
+use crate::sandbox_session::{self, SandboxSession};
 use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Deserialize, Serialize)]
 struct Sandbox {
@@ -20,6 +22,38 @@ struct ListResponse {
 #[derive(Deserialize)]
 struct DetailResponse {
     sandbox: Sandbox,
+}
+
+/// Response shape of `/v1/auth/sandbox` and `/v1/auth/sandbox/<id>`.
+#[derive(Deserialize)]
+struct SandboxTokenResponse {
+    token: String,
+    refresh_token: String,
+    sandbox_id: String,
+    expires_in: u64,
+    refresh_expires_in: u64,
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn persist_sandbox_session(resp: SandboxTokenResponse, workspace_id: &str) {
+    let now = now_unix();
+    let session = SandboxSession {
+        access_token: resp.token,
+        refresh_token: resp.refresh_token,
+        sandbox_id: resp.sandbox_id,
+        workspace_id: workspace_id.to_string(),
+        access_expires_at: now + resp.expires_in,
+        refresh_expires_at: now + resp.refresh_expires_in,
+    };
+    if let Err(e) = sandbox_session::save(&session) {
+        eprintln!("warning: could not persist sandbox session: {e}");
+    }
 }
 
 pub fn list(workspace_id: &str, format: &str) {
@@ -151,22 +185,27 @@ pub fn new(workspace_id: &str, name: Option<&str>, format: &str) {
         body["name"] = serde_json::json!(n);
     }
 
-    let resp: DetailResponse = api.post("/sandboxes", &body);
-    let s = &resp.sandbox;
+    // POST /auth/sandbox creates the sandbox AND mints a sandbox-scoped
+    // JWT (+ refresh token) in one round-trip.
+    let resp: SandboxTokenResponse = api.post("/auth/sandbox", &body);
+    let sandbox_id = resp.sandbox_id.clone();
+    persist_sandbox_session(resp, workspace_id);
 
-    // Set as the active sandbox in config
-    if let Err(e) = config::save_sandbox("default", &s.public_id) {
+    if let Err(e) = config::save_sandbox("default", &sandbox_id) {
         eprintln!("warning: could not save sandbox to config: {e}");
     }
 
     println!("{}", "Sandbox created".green());
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(s).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(s).unwrap()),
+        "json" => println!("{}", serde_json::json!({"public_id": sandbox_id})),
+        "yaml" => print!(
+            "{}",
+            serde_yaml::to_string(&serde_json::json!({"public_id": sandbox_id})).unwrap()
+        ),
         "table" => {
-            println!("id:   {}", s.public_id);
-            if !s.name.is_empty() {
-                println!("name: {}", s.name);
+            println!("id:   {}", sandbox_id);
+            if let Some(n) = name {
+                println!("name: {}", n);
             }
         }
         _ => unreachable!(),
@@ -219,36 +258,96 @@ pub fn update(
 
 pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd: &[String]) {
     check_sandbox_lock();
-    let sid = match sandbox_id {
+    let api = ApiClient::new(Some(workspace_id));
+
+    // Mint (or re-mint, for an existing sandbox) a sandbox-scoped JWT
+    // by hitting the auth endpoint. The same call creates a sandbox
+    // when no id is provided. Either way we end up with a fresh
+    // bundle persisted to sandbox_session.json before we spawn.
+    let resp: SandboxTokenResponse = match sandbox_id {
         Some(id) => {
-            // Verify the sandbox exists
-            let api = ApiClient::new(Some(workspace_id));
-            let path = format!("/sandboxes/{id}");
-            let _: DetailResponse = api.get(&path);
-            id.to_string()
+            let path = format!("/auth/sandbox/{id}");
+            api.post(&path, &serde_json::json!({}))
         }
         None => {
-            // Create a new sandbox
-            let api = ApiClient::new(Some(workspace_id));
             let mut body = serde_json::json!({});
             if let Some(n) = name {
                 body["name"] = serde_json::json!(n);
             }
-            let resp: DetailResponse = api.post("/sandboxes", &body);
-            resp.sandbox.public_id
+            api.post("/auth/sandbox", &body)
         }
     };
+
+    let sid = resp.sandbox_id.clone();
+    let sandbox_jwt = resp.token.clone();
+    let sandbox_refresh = resp.refresh_token.clone();
+    persist_sandbox_session(resp, workspace_id);
 
     eprintln!("{} {}", "sandbox:".dark_grey(), sid);
     eprintln!("{} {}", "workspace:".dark_grey(), workspace_id);
 
-    let status = std::process::Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .env("HOTDATA_SANDBOX", &sid)
-        .env("HOTDATA_WORKSPACE", workspace_id)
-        .status();
+    spawn_child_with_sandbox_env(&sid, workspace_id, &sandbox_jwt, &sandbox_refresh, &api.api_url, cmd);
+}
 
-    match status {
+/// Allow-list of parent environment variables to forward to a
+/// `sandbox run` child. Anything outside this set is dropped, so the
+/// child can't accidentally read the user's API key, AWS creds, or any
+/// other secret the parent shell happens to expose.
+///
+/// Public so the unit test can assert against the exact set.
+pub(crate) const SANDBOX_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "TMPDIR",
+];
+
+/// Names of the auth env vars injected into the child. The CLI reads
+/// `HOTDATA_SANDBOX_TOKEN` and treats it as the only valid bearer when
+/// set (see `api::ApiClient::new`). Kept as a constant alongside the
+/// allow-list so a future audit can compare both at a glance.
+#[allow(dead_code)] // Referenced from the audit test below.
+pub(crate) const SANDBOX_AUTH_ENV: &[&str] = &[
+    "HOTDATA_SANDBOX",
+    "HOTDATA_WORKSPACE",
+    "HOTDATA_API_URL",
+    "HOTDATA_SANDBOX_TOKEN",
+    "HOTDATA_SANDBOX_REFRESH_TOKEN",
+];
+
+fn spawn_child_with_sandbox_env(
+    sandbox_id: &str,
+    workspace_id: &str,
+    sandbox_jwt: &str,
+    sandbox_refresh: &str,
+    api_url: &str,
+    cmd: &[String],
+) {
+    let mut command = std::process::Command::new(&cmd[0]);
+    command.args(&cmd[1..]);
+
+    // Scrub: start from a clean environment and explicitly re-add
+    // only what the child legitimately needs.
+    command.env_clear();
+    for key in SANDBOX_ENV_ALLOWLIST {
+        if let Ok(val) = std::env::var(key) {
+            command.env(key, val);
+        }
+    }
+    command.env("HOTDATA_SANDBOX", sandbox_id);
+    command.env("HOTDATA_WORKSPACE", workspace_id);
+    command.env("HOTDATA_API_URL", api_url);
+    command.env("HOTDATA_SANDBOX_TOKEN", sandbox_jwt);
+    command.env("HOTDATA_SANDBOX_REFRESH_TOKEN", sandbox_refresh);
+
+    match command.status() {
         Ok(s) => std::process::exit(s.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("error: failed to execute '{}': {e}", cmd[0]);
@@ -261,10 +360,13 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
     check_sandbox_lock();
     match sandbox_id {
         Some(id) => {
-            // Verify the sandbox exists by fetching it
+            // Mint a sandbox-scoped JWT against this existing id. The
+            // call doubles as an existence + access check (404/403 if
+            // the user can't reach it).
             let api = ApiClient::new(Some(workspace_id));
-            let path = format!("/sandboxes/{id}");
-            let _: DetailResponse = api.get(&path);
+            let path = format!("/auth/sandbox/{id}");
+            let resp: SandboxTokenResponse = api.post(&path, &serde_json::json!({}));
+            persist_sandbox_session(resp, workspace_id);
 
             if let Err(e) = config::save_sandbox("default", id) {
                 eprintln!("error saving config: {e}");
@@ -274,7 +376,8 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
             println!("id: {}", id);
         }
         None => {
-            // Clear the active sandbox
+            // Clear the active sandbox + its cached session.
+            sandbox_session::clear();
             if let Err(e) = config::clear_sandbox("default") {
                 eprintln!("error saving config: {e}");
                 std::process::exit(1);
@@ -301,5 +404,36 @@ mod tests {
             find_sandbox_run_ancestor(),
             find_sandbox_run_ancestor_inner()
         );
+    }
+
+    #[test]
+    fn sandbox_env_allowlist_excludes_sensitive_parent_state() {
+        // The allowlist must not leak the parent's auth credentials or
+        // the parent's active-sandbox state into a child that's
+        // supposed to be running under the freshly-minted sandbox JWT.
+        let forbidden = [
+            "HOTDATA_API_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "OPENAI_API_KEY",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+        ];
+        for k in forbidden {
+            assert!(
+                !SANDBOX_ENV_ALLOWLIST.contains(&k),
+                "{k} must not be forwarded to sandbox child"
+            );
+        }
+    }
+
+    #[test]
+    fn sandbox_auth_env_set_is_self_consistent() {
+        // Anything the parent injects must also be the set the child's
+        // ApiClient knows to read (HOTDATA_SANDBOX_TOKEN in particular).
+        assert!(SANDBOX_AUTH_ENV.contains(&"HOTDATA_SANDBOX_TOKEN"));
+        assert!(SANDBOX_AUTH_ENV.contains(&"HOTDATA_SANDBOX_REFRESH_TOKEN"));
+        assert!(SANDBOX_AUTH_ENV.contains(&"HOTDATA_SANDBOX"));
+        assert!(SANDBOX_AUTH_ENV.contains(&"HOTDATA_WORKSPACE"));
     }
 }

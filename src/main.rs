@@ -14,6 +14,7 @@ mod queries;
 mod query;
 mod results;
 mod sandbox;
+mod sandbox_session;
 mod skill;
 mod table;
 mod tables;
@@ -81,7 +82,39 @@ fn resolve_workspace(provided: Option<String>) -> String {
     }
 }
 
+// libc::atexit (no extra crate needed — the symbol is linked by default).
+// Callbacks registered here fire even when subcommands call
+// `std::process::exit`, which Rust's `Drop` would otherwise miss.
+unsafe extern "C" {
+    fn atexit(callback: extern "C" fn()) -> i32;
+}
+
+/// Runs once at process exit. If the CLI was authenticating through a
+/// sandbox session (env var from `sandbox run`, or on-disk session
+/// from `sandbox set <id>`), emit a footer line on stderr so the user
+/// can tell at a glance which sandbox served the call. Stderr keeps
+/// stdout clean for callers that parse JSON/YAML output.
+extern "C" fn print_sandbox_footer() {
+    use crossterm::style::Stylize;
+
+    let sandbox_id = sandbox_session::sandbox_token_in_use()
+        .and_then(|(_, sid)| sid)
+        .or_else(|| {
+            sandbox_session::load()
+                .map(|s| s.sandbox_id)
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(sid) = sandbox_id {
+        eprintln!("{}", format!("sandbox: {sid}").dark_grey());
+    }
+}
+
 fn main() {
+    // Register before `Cli::parse`, since `--help` / `--version` exit
+    // from inside the parser. Safety: `atexit` is async-signal-safe;
+    // the callback only reads env vars / files and writes to stderr.
+    unsafe { atexit(print_sandbox_footer) };
+
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 

@@ -26,21 +26,37 @@ pub enum AuthStatus {
 }
 
 pub fn check_status(profile_config: &config::ProfileConfig) -> AuthStatus {
-    let api_key_fallback = profile_config
-        .api_key
-        .as_deref()
-        .filter(|k| !k.is_empty() && *k != "PLACEHOLDER");
+    // Same precedence as `ApiClient::new`:
+    // 1. `sandbox run` child via env var
+    // 2. on-disk sandbox session (sandbox set <id>)
+    // 3. user-scoped CLI session / api_key fallback
+    let api_url = profile_config.api_url.to_string();
+    let access_token = if let Some((sandbox_jwt, _)) =
+        crate::sandbox_session::sandbox_token_in_use()
+    {
+        sandbox_jwt
+    } else if crate::sandbox_session::load().is_some() {
+        match crate::sandbox_session::ensure_access_token(&api_url) {
+            Some(t) => t,
+            None => return AuthStatus::Invalid(401),
+        }
+    } else {
+        let api_key_fallback = profile_config
+            .api_key
+            .as_deref()
+            .filter(|k| !k.is_empty() && *k != "PLACEHOLDER");
 
-    // PKCE-origin sessions don't write an api_key, so absence of a key
-    // alone isn't "not configured" — only true if there's also no
-    // cached JWT session to validate.
-    if api_key_fallback.is_none() && crate::jwt::load_session().is_none() {
-        return AuthStatus::NotConfigured;
-    }
+        // PKCE-origin sessions don't write an api_key, so absence of a key
+        // alone isn't "not configured" — only true if there's also no
+        // cached JWT session to validate.
+        if api_key_fallback.is_none() && crate::jwt::load_session().is_none() {
+            return AuthStatus::NotConfigured;
+        }
 
-    let access_token = match crate::jwt::ensure_access_token(profile_config, api_key_fallback) {
-        Ok(t) => t,
-        Err(_) => return AuthStatus::Invalid(401),
+        match crate::jwt::ensure_access_token(profile_config, api_key_fallback) {
+            Ok(t) => t,
+            Err(_) => return AuthStatus::Invalid(401),
+        }
     };
 
     let url = format!("{}/workspaces", profile_config.api_url);
@@ -64,26 +80,50 @@ pub fn status(profile: &str) {
         }
     };
 
-    // The credential the CLI is *about to use*. Note: even when an
-    // override is set, the wire credential is still a JWT (minted on
-    // demand from the override) — but we report the user-visible source.
-    let method_label = match profile_config.api_key_source {
-        ApiKeySource::Flag => "API Key flag",
-        ApiKeySource::Env => "API Key env",
-        ApiKeySource::Config => "CLI Session",
+    // The credential the CLI is *about to use*. Precedence matches
+    // `ApiClient::new`: env-var sandbox token (sandbox run child) >
+    // on-disk sandbox session (sandbox set <id>) > user CLI session.
+    let env_sandbox = crate::sandbox_session::sandbox_token_in_use();
+    let disk_sandbox = if env_sandbox.is_none() {
+        crate::sandbox_session::load()
+    } else {
+        None
     };
-
-    // For Flag/Env we mask the api_key the user supplied. For the
-    // CLI session path we mask the refresh_token — it's stable across
-    // commands (unlike the 5-min access_token), so the tail stays
-    // recognizable between runs.
-    let credential_tail = match profile_config.api_key_source {
-        ApiKeySource::Flag | ApiKeySource::Env => profile_config
-            .api_key
-            .as_deref()
-            .map(crate::util::mask_credential),
-        ApiKeySource::Config => crate::jwt::load_session()
-            .map(|s| crate::util::mask_credential(&s.refresh_token)),
+    let (method_label, credential_tail) = if let Some((token, sandbox_id)) = &env_sandbox {
+        let label = match sandbox_id {
+            Some(id) => format!("Sandbox {id}"),
+            None => "Sandbox Session".to_string(),
+        };
+        (label, Some(crate::util::mask_credential(token)))
+    } else if let Some(s) = &disk_sandbox {
+        // Use the refresh token for the displayed tail — it's stable
+        // across refreshes (the access token rotates every 3 days), so
+        // the tail stays recognizable between runs.
+        let label = if s.sandbox_id.is_empty() {
+            "Sandbox Session".to_string()
+        } else {
+            format!("Sandbox {}", s.sandbox_id)
+        };
+        (label, Some(crate::util::mask_credential(&s.refresh_token)))
+    } else {
+        let label = match profile_config.api_key_source {
+            ApiKeySource::Flag => "API Key flag",
+            ApiKeySource::Env => "API Key env",
+            ApiKeySource::Config => "CLI Session",
+        };
+        // For Flag/Env we mask the api_key the user supplied. For
+        // the CLI session path we mask the refresh_token — it's
+        // stable across commands (unlike the 5-min access_token),
+        // so the tail stays recognizable between runs.
+        let tail = match profile_config.api_key_source {
+            ApiKeySource::Flag | ApiKeySource::Env => profile_config
+                .api_key
+                .as_deref()
+                .map(crate::util::mask_credential),
+            ApiKeySource::Config => crate::jwt::load_session()
+                .map(|s| crate::util::mask_credential(&s.refresh_token)),
+        };
+        (label.to_string(), tail)
     };
     let method_suffix = match credential_tail {
         Some(tail) => format!(" - {method_label} [{tail}]"),

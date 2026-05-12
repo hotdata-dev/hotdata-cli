@@ -74,10 +74,16 @@ pub fn debug_response_redacted(
     (status, body)
 }
 
-/// Mask a credential to its first 4 characters (`XXXX...`), or `***`
-/// if the value is too short to safely reveal a head.
+/// Mask a credential to its first + last 4 characters
+/// (`XXXX...YYYY`), or `***` if it's too short to reveal anything
+/// safely. The tail makes it easy to distinguish which token is on
+/// the wire (e.g. user JWT vs sandbox-scoped JWT vs opaque API token).
 pub fn mask_credential(s: &str) -> String {
-    if s.len() > 4 {
+    if s.len() >= 12 {
+        format!("{}...{}", &s[..4], &s[s.len() - 4..])
+    } else if s.len() > 4 {
+        // Short-ish — still better to show head than nothing, but
+        // don't double up on bytes by showing a tail.
         format!("{}...", &s[..4])
     } else {
         "***".into()
@@ -296,7 +302,16 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn mask_credential_long() {
+    fn mask_credential_long_shows_prefix_and_suffix() {
+        // 12+ chars: show both ends so the user can tell which token
+        // is on the wire (sandbox JWT vs user JWT vs opaque API token).
+        assert_eq!(mask_credential("abcdefghijkl"), "abcd...ijkl");
+        assert_eq!(mask_credential("eyJhMIDDLEYwxyz"), "eyJh...wxyz");
+    }
+
+    #[test]
+    fn mask_credential_medium_falls_back_to_head_only() {
+        // Between 5 and 11 chars: showing both ends would overlap.
         assert_eq!(mask_credential("abcdefgh"), "abcd...");
     }
 
@@ -314,8 +329,8 @@ mod tests {
             "refresh_token": "another-secret"
         });
         redact_json_fields(&mut v, &["access_token", "refresh_token"]);
-        assert_eq!(v["access_token"], "long...");
-        assert_eq!(v["refresh_token"], "anot...");
+        assert_eq!(v["access_token"], "long...oken");
+        assert_eq!(v["refresh_token"], "anot...cret");
         // Non-redacted keys untouched.
         assert_eq!(v["expires_in"], 300);
     }
@@ -331,8 +346,10 @@ mod tests {
             }
         });
         redact_json_fields(&mut v, &["access_token"]);
+        // "secret-1234" is 11 chars — falls into the head-only branch.
         assert_eq!(v["data"]["access_token"], "secr...");
-        assert_eq!(v["data"]["items"][0]["access_token"], "nest...");
+        // "nested-secret" is 13 chars — head + tail.
+        assert_eq!(v["data"]["items"][0]["access_token"], "nest...cret");
     }
 
     #[test]

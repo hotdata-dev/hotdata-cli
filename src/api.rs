@@ -47,24 +47,61 @@ impl ApiClient {
             }
         };
 
-        let api_key_fallback = profile_config
-            .api_key
-            .as_deref()
-            .filter(|k| !k.is_empty() && *k != "PLACEHOLDER");
+        // Auth source precedence:
+        //
+        // 1. `HOTDATA_SANDBOX_TOKEN` env var — a `sandbox run` child
+        //    is executing with the parent's credentials scrubbed.
+        //    Refresh in-memory via `HOTDATA_SANDBOX_REFRESH_TOKEN` if
+        //    the JWT is close to expiry; never write to disk (the
+        //    child's FS may not be writable).
+        // 2. `~/.hotdata/sandbox_session.json` — the user ran
+        //    `hotdata sandbox set <id>` (or `sandbox new` / `sandbox
+        //    run` in the parent shell). The sandbox JWT is the active
+        //    bearer for *every* command until `sandbox set` (with no
+        //    id) clears the file.
+        // 3. `~/.hotdata/session.json` + optional api_key fallback —
+        //    normal user-scoped CLI session.
+        let api_url = profile_config.api_url.to_string();
+        let access_token = if std::env::var("HOTDATA_SANDBOX_TOKEN").is_ok() {
+            match crate::sandbox_session::refresh_from_env(&api_url) {
+                Some(t) => t,
+                None => {
+                    eprintln!("{}", "error: HOTDATA_SANDBOX_TOKEN is empty".red());
+                    std::process::exit(1);
+                }
+            }
+        } else if crate::sandbox_session::load().is_some() {
+            match crate::sandbox_session::ensure_access_token(&api_url) {
+                Some(t) => t,
+                None => {
+                    eprintln!("{}", "error: sandbox session expired".red());
+                    eprintln!(
+                        "Run {} to clear it, or {} to re-mint.",
+                        "hotdata sandbox set".cyan(),
+                        "hotdata sandbox set <id>".cyan(),
+                    );
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            let api_key_fallback = profile_config
+                .api_key
+                .as_deref()
+                .filter(|k| !k.is_empty() && *k != "PLACEHOLDER");
 
-        // Pre-flight: return the cached JWT if valid, refresh it if
-        // close to expiry, or mint a new one from the API key. The
-        // returned string is a JWT — that's what we send on the wire.
-        let access_token = match crate::jwt::ensure_access_token(&profile_config, api_key_fallback)
-        {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("{}", format!("error: {e}").red());
-                eprintln!(
-                    "Run {} to log in, or pass --api-key.",
-                    "hotdata auth".cyan()
-                );
-                std::process::exit(1);
+            // Pre-flight: return the cached JWT if valid, refresh it if
+            // close to expiry, or mint a new one from the API key. The
+            // returned string is a JWT — that's what we send on the wire.
+            match crate::jwt::ensure_access_token(&profile_config, api_key_fallback) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("{}", format!("error: {e}").red());
+                    eprintln!(
+                        "Run {} to log in, or pass --api-key.",
+                        "hotdata auth".cyan()
+                    );
+                    std::process::exit(1);
+                }
             }
         };
 
