@@ -43,6 +43,14 @@ pub fn set(workspace_id: Option<&str>) {
                 eprintln!("error: no workspaces available.");
                 std::process::exit(1);
             }
+            if !crate::util::is_interactive() {
+                eprintln!(
+                    "error: stdin is not a TTY; cannot prompt for selection. \
+                     Run 'hotdata workspaces list' to see available IDs, \
+                     then 'hotdata workspaces set <workspace_id>'."
+                );
+                std::process::exit(1);
+            }
             let options: Vec<String> = workspaces
                 .iter()
                 .map(|w| format!("{} ({})", w.name, w.public_id))

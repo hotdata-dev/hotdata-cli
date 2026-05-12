@@ -13,6 +13,27 @@ pub fn spinner(msg: &str) -> indicatif::ProgressBar {
     pb
 }
 
+static NO_INPUT: AtomicBool = AtomicBool::new(false);
+
+pub fn set_no_input(enabled: bool) {
+    NO_INPUT.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns true if interactive prompts are usable. Returns false when:
+/// - the global `--no-input` flag was passed,
+/// - the `CI` env var is set (most CI runners set this),
+/// - stdin is not a TTY (piped, redirected, or invoked by an agent harness).
+pub fn is_interactive() -> bool {
+    if NO_INPUT.load(Ordering::Relaxed) {
+        return false;
+    }
+    if std::env::var_os("CI").is_some() {
+        return false;
+    }
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
+}
+
 static DEBUG: AtomicBool = AtomicBool::new(false);
 
 pub fn set_debug(enabled: bool) {
