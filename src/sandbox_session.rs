@@ -2,13 +2,16 @@
 //!
 //! Distinct from the user-scoped session in [`crate::jwt`]:
 //!
-//! * Minted by `/v1/auth/sandbox` (or `/v1/auth/sandbox/<id>`), not
-//!   `/o/token/`.
+//! * Minted by `POST /v1/auth/sandbox` (with no body, or
+//!   `grant_type=existing_sandbox` + `sandbox_id`), not `/o/token/`.
 //! * Bound to a single sandbox + workspace; the JWT carries only
 //!   workspace-read + sandbox-read/write scope.
-//! * Refreshed via `/v1/auth/sandbox/refresh`, which rotates the
-//!   refresh token (single-use). The user's own credentials are never
-//!   involved — possession of the sandbox refresh token is enough.
+//! * Refreshed via `POST /v1/auth/sandbox` with
+//!   `grant_type=refresh_token` — same endpoint as the new-mint path,
+//!   dispatched by body field (mirrors `POST /o/token/`). The server
+//!   does **not** rotate the refresh token. The user's own credentials
+//!   are never involved — possession of the sandbox refresh token is
+//!   enough.
 //!
 //! Stored at `~/.hotdata/sandbox_session.json` (mode 0600).
 
@@ -91,14 +94,22 @@ fn redact(s: &str) -> String {
     util::mask_credential(s)
 }
 
-/// Trade a refresh token for a fresh sandbox JWT (and a new refresh
-/// token). The server rotates: the old refresh token is dead after a
-/// successful call, so the new value must be persisted before the
-/// caller can recover from a crash.
+/// Trade a refresh token for a fresh sandbox JWT. The server does
+/// **not** rotate the refresh token (matches DOT's
+/// ``ROTATE_REFRESH_TOKEN=False``), so the same value is returned on
+/// every call. Same endpoint as the new-mint path —
+/// ``POST /v1/auth/sandbox`` with ``grant_type=refresh_token`` in the
+/// body, mirroring ``POST /o/token/``.
 pub fn refresh(api_url: &str, refresh_token: &str) -> Result<SandboxSession, String> {
-    let url = format!("{}/auth/sandbox/refresh", api_url.trim_end_matches('/'));
-    let body = serde_json::json!({"refresh_token": refresh_token});
-    let body_log = serde_json::json!({"refresh_token": redact(refresh_token)});
+    let url = format!("{}/auth/sandbox", api_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    });
+    let body_log = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": redact(refresh_token),
+    });
 
     let client = reqwest::blocking::Client::new();
     let req = client.post(&url).json(&body);
@@ -303,21 +314,28 @@ mod tests {
     }
 
     #[test]
-    fn refresh_success_rotates_tokens() {
+    fn refresh_posts_grant_type_to_sandbox_endpoint() {
         let mut server = mockito::Server::new();
         let m = server
-            .mock("POST", "/auth/sandbox/refresh")
+            .mock("POST", "/auth/sandbox")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::JsonString(
+                    r#"{"grant_type":"refresh_token","refresh_token":"stable-refresh"}"#
+                        .to_string(),
+                ),
+            ]))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"ok":true,"token":"new-jwt","refresh_token":"new-refresh","sandbox_id":"s_abc12345","expires_in":259200,"refresh_expires_in":2592000}"#,
+                // Server does not rotate — same refresh_token comes back.
+                r#"{"ok":true,"token":"new-jwt","refresh_token":"stable-refresh","sandbox_id":"s_abc12345","expires_in":300,"refresh_expires_in":259200}"#,
             )
             .create();
 
-        let s = refresh(&server.url(), "old-refresh").unwrap();
+        let s = refresh(&server.url(), "stable-refresh").unwrap();
         m.assert();
         assert_eq!(s.access_token, "new-jwt");
-        assert_eq!(s.refresh_token, "new-refresh");
+        assert_eq!(s.refresh_token, "stable-refresh");
         assert_eq!(s.sandbox_id, "s_abc12345");
     }
 
@@ -325,7 +343,7 @@ mod tests {
     fn refresh_http_error() {
         let mut server = mockito::Server::new();
         let m = server
-            .mock("POST", "/auth/sandbox/refresh")
+            .mock("POST", "/auth/sandbox")
             .with_status(401)
             .create();
         let err = refresh(&server.url(), "x").unwrap_err();
@@ -343,11 +361,11 @@ mod tests {
 
         let mut server = mockito::Server::new();
         let m = server
-            .mock("POST", "/auth/sandbox/refresh")
+            .mock("POST", "/auth/sandbox")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"ok":true,"token":"refreshed","refresh_token":"rotated","sandbox_id":"s_abc12345","expires_in":259200,"refresh_expires_in":2592000}"#,
+                r#"{"ok":true,"token":"refreshed","refresh_token":"cached-refresh","sandbox_id":"s_abc12345","expires_in":300,"refresh_expires_in":259200}"#,
             )
             .create();
         let tok = ensure_access_token(&server.url());
@@ -355,7 +373,8 @@ mod tests {
         assert_eq!(tok.as_deref(), Some("refreshed"));
         let after = load().unwrap();
         assert_eq!(after.access_token, "refreshed");
-        assert_eq!(after.refresh_token, "rotated");
+        // No rotation — same refresh_token as before.
+        assert_eq!(after.refresh_token, "cached-refresh");
         assert_eq!(after.workspace_id, "work_xyz");
     }
 }

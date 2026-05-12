@@ -89,24 +89,34 @@ unsafe extern "C" {
     fn atexit(callback: extern "C" fn()) -> i32;
 }
 
-/// Runs once at process exit. If the CLI was authenticating through a
-/// sandbox session (env var from `sandbox run`, or on-disk session
-/// from `sandbox set <id>`), emit a footer line on stderr so the user
-/// can tell at a glance which sandbox served the call. Stderr keeps
-/// stdout clean for callers that parse JSON/YAML output.
+/// Runs once at process exit. Prints a sandbox footer on stderr when
+/// the CLI is running under an on-disk sandbox session (i.e. the user
+/// ran `hotdata sandbox set <id>` to enter it from this shell). Stays
+/// silent when the sandbox comes from `HOTDATA_SANDBOX_TOKEN` in the
+/// environment: that means we're inside a `sandbox run` child, and
+/// the parent already announced the sandbox once at spawn time.
+/// Stderr keeps stdout clean for callers parsing JSON/YAML output.
 extern "C" fn print_sandbox_footer() {
     use crossterm::style::Stylize;
 
-    let sandbox_id = sandbox_session::sandbox_token_in_use()
-        .and_then(|(_, sid)| sid)
-        .or_else(|| {
-            sandbox_session::load()
-                .map(|s| s.sandbox_id)
-                .filter(|s| !s.is_empty())
-        });
-    if let Some(sid) = sandbox_id {
-        eprintln!("{}", format!("sandbox: {sid}").dark_grey());
+    // Inside a `sandbox run` child — parent printed the banner already.
+    if sandbox_session::sandbox_token_in_use().is_some() {
+        return;
     }
+    let Some(session) = sandbox_session::load() else {
+        return;
+    };
+    if session.sandbox_id.is_empty() {
+        return;
+    }
+    eprintln!(
+        "{}",
+        format!(
+            "current sandbox: {} use 'hotdata sandbox set' to change",
+            session.sandbox_id
+        )
+        .dark_grey(),
+    );
 }
 
 fn main() {

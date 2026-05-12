@@ -284,16 +284,34 @@ pub fn format_date(s: &str) -> String {
 }
 
 pub fn api_error(body: String) -> String {
-    serde_json::from_str::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-        .unwrap_or_else(|| {
-            if body.trim_start().starts_with('<') {
-                "unexpected server error".to_string()
-            } else {
-                body
-            }
-        })
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+        // Two shapes in the wild:
+        //   {"error": {"message": "..."}}   — RuntimeDB-style
+        //   {"error": "snake_case_code"}    — Django-style (e.g. sandbox endpoints)
+        if let Some(m) = v["error"]["message"].as_str() {
+            return m.to_string();
+        }
+        if let Some(code) = v["error"].as_str() {
+            return humanize_error_code(code);
+        }
+    }
+    if body.trim_start().starts_with('<') {
+        return "unexpected server error".to_string();
+    }
+    body
+}
+
+/// Turn a snake_case error code into a human-friendly sentence:
+/// ``sandbox_not_found`` → ``Sandbox not found``. Cheap heuristic — if
+/// a code reads badly after this, the server should be the one to fix
+/// it by returning a real message.
+fn humanize_error_code(code: &str) -> String {
+    let spaced = code.replace('_', " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -319,6 +337,33 @@ mod tests {
     fn mask_credential_short() {
         assert_eq!(mask_credential("abcd"), "***");
         assert_eq!(mask_credential(""), "***");
+    }
+
+    #[test]
+    fn api_error_humanizes_snake_case_code() {
+        // Django-style flat shape — `sandbox_not_found` should render
+        // as a readable sentence, not a raw JSON blob.
+        let body = r#"{"error": "sandbox_not_found"}"#.to_string();
+        assert_eq!(api_error(body), "Sandbox not found");
+    }
+
+    #[test]
+    fn api_error_prefers_nested_message_over_code() {
+        // RuntimeDB-style nested shape — use the human message verbatim.
+        let body = r#"{"error": {"message": "Query qrun_x not found"}}"#.to_string();
+        assert_eq!(api_error(body), "Query qrun_x not found");
+    }
+
+    #[test]
+    fn api_error_falls_through_for_plain_body() {
+        let body = "raw text body".to_string();
+        assert_eq!(api_error(body), "raw text body");
+    }
+
+    #[test]
+    fn api_error_handles_html_body() {
+        let body = "<html>500</html>".to_string();
+        assert_eq!(api_error(body), "unexpected server error");
     }
 
     #[test]

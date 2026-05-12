@@ -261,22 +261,23 @@ pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd
     let api = ApiClient::new(Some(workspace_id));
 
     // Mint (or re-mint, for an existing sandbox) a sandbox-scoped JWT
-    // by hitting the auth endpoint. The same call creates a sandbox
-    // when no id is provided. Either way we end up with a fresh
-    // bundle persisted to sandbox_session.json before we spawn.
-    let resp: SandboxTokenResponse = match sandbox_id {
-        Some(id) => {
-            let path = format!("/auth/sandbox/{id}");
-            api.post(&path, &serde_json::json!({}))
-        }
+    // by dispatching on grant_type at /auth/sandbox. Either way we
+    // end up with a fresh bundle persisted to sandbox_session.json
+    // before we spawn.
+    let body = match sandbox_id {
+        Some(id) => serde_json::json!({
+            "grant_type": "existing_sandbox",
+            "sandbox_id": id,
+        }),
         None => {
-            let mut body = serde_json::json!({});
+            let mut b = serde_json::json!({});
             if let Some(n) = name {
-                body["name"] = serde_json::json!(n);
+                b["name"] = serde_json::json!(n);
             }
-            api.post("/auth/sandbox", &body)
+            b
         }
     };
+    let resp: SandboxTokenResponse = api.post("/auth/sandbox", &body);
 
     let sid = resp.sandbox_id.clone();
     let sandbox_jwt = resp.token.clone();
@@ -360,12 +361,16 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
     check_sandbox_lock();
     match sandbox_id {
         Some(id) => {
-            // Mint a sandbox-scoped JWT against this existing id. The
-            // call doubles as an existence + access check (404/403 if
-            // the user can't reach it).
+            // Mint a sandbox-scoped JWT against this existing id via
+            // the grant_type=existing_sandbox dispatch. The call
+            // doubles as an existence + access check (404/403 if the
+            // user can't reach it).
             let api = ApiClient::new(Some(workspace_id));
-            let path = format!("/auth/sandbox/{id}");
-            let resp: SandboxTokenResponse = api.post(&path, &serde_json::json!({}));
+            let body = serde_json::json!({
+                "grant_type": "existing_sandbox",
+                "sandbox_id": id,
+            });
+            let resp: SandboxTokenResponse = api.post("/auth/sandbox", &body);
             persist_sandbox_session(resp, workspace_id);
 
             if let Err(e) = config::save_sandbox("default", id) {
