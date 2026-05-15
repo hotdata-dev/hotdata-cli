@@ -9,6 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const REPO_OWNER: &str = "hotdata-dev";
 const REPO_NAME: &str = "hotdata-cli";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Fully-qualified Homebrew formula (e.g. `hotdata-dev/tap/cli`). Pulled from
+/// `[package.metadata.hotdata]` in Cargo.toml via build.rs so the README,
+/// dist-workspace.toml, and this binary all agree on the same target.
+const HOMEBREW_FORMULA: &str = env!("HOTDATA_HOMEBREW_FORMULA");
 const CHECK_INTERVAL_SECS: u64 = 86_400;
 const NETWORK_TIMEOUT_SECS: u64 = 5;
 
@@ -134,8 +138,8 @@ pub fn maybe_print_update_notice() {
         return;
     };
     let how = match detect_install_method() {
-        InstallMethod::Homebrew => "Run: brew upgrade hotdata",
-        InstallMethod::Other => "Run: hotdata update",
+        InstallMethod::Homebrew => format!("Run: brew upgrade {HOMEBREW_FORMULA}"),
+        InstallMethod::Other => "Run: hotdata update".to_string(),
     };
     eprintln!(
         "{}",
@@ -151,7 +155,7 @@ pub fn run_update() {
 
     if detect_install_method() == InstallMethod::Homebrew {
         println!("hotdata was installed via Homebrew. Update with:");
-        println!("  {}", "brew upgrade hotdata".cyan());
+        println!("  {}", format!("brew upgrade {HOMEBREW_FORMULA}").cyan());
         return;
     }
 
@@ -222,23 +226,23 @@ fn perform_update(version: &Version) -> Result<(), String> {
     lzma_rs::xz_decompress(&mut std::io::Cursor::new(&xz_bytes[..]), &mut tar_bytes)
         .map_err(|e| format!("xz decompress: {e}"))?;
 
-    let tmp_dir = std::env::temp_dir().join(format!("hotdata-update-{}", std::process::id()));
-    if tmp_dir.exists() {
-        let _ = fs::remove_dir_all(&tmp_dir);
-    }
-    fs::create_dir_all(&tmp_dir).map_err(|e| format!("creating temp dir: {e}"))?;
+    // `tempfile::TempDir` creates a randomly-named directory with 0700
+    // permissions and removes it on drop. The random suffix prevents a
+    // local attacker on a shared system from pre-planting a symlink at a
+    // predictable path and redirecting the extraction to a directory
+    // they control.
+    let tmp_dir = tempfile::TempDir::new().map_err(|e| format!("creating temp dir: {e}"))?;
 
     let mut archive = tar::Archive::new(std::io::Cursor::new(&tar_bytes[..]));
     archive
-        .unpack(&tmp_dir)
+        .unpack(tmp_dir.path())
         .map_err(|e| format!("extract tar: {e}"))?;
 
     // cargo-dist lays out the tarball as `<asset-stem>/hotdata` (the binary
     // sits at the top of a single directory matching the asset name without
     // its extension).
-    let new_binary = tmp_dir.join(&asset_stem).join("hotdata");
+    let new_binary = tmp_dir.path().join(&asset_stem).join("hotdata");
     if !new_binary.exists() {
-        let _ = fs::remove_dir_all(&tmp_dir);
         return Err(format!(
             "binary not found in archive at {}",
             new_binary.display()
@@ -253,13 +257,10 @@ fn perform_update(version: &Version) -> Result<(), String> {
     let backup = current_exe.with_extension("old");
     let _ = fs::remove_file(&backup);
 
-    let result = self_update::Move::from_source(&new_binary)
+    self_update::Move::from_source(&new_binary)
         .replace_using_temp(&backup)
         .to_dest(&current_exe)
-        .map_err(|e| format!("replacing binary: {e}"));
-
-    let _ = fs::remove_dir_all(&tmp_dir);
-    result
+        .map_err(|e| format!("replacing binary: {e}"))
 }
 
 #[cfg(test)]
