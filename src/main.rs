@@ -412,6 +412,7 @@ fn main() {
                                 table,
                                 schema,
                                 file,
+                                url,
                                 upload_id,
                             } => databases::tables_load(
                                 &workspace_id,
@@ -419,6 +420,7 @@ fn main() {
                                 &table,
                                 Some(schema.as_str()),
                                 file.as_deref(),
+                                url.as_deref(),
                                 upload_id.as_deref(),
                             ),
                             DatabaseTablesCommands::Delete {

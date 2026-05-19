@@ -612,11 +612,15 @@ pub enum DatabaseTablesCommands {
         schema: String,
 
         /// Path to a local parquet file to upload and load
-        #[arg(long, conflicts_with = "upload_id")]
+        #[arg(long, conflicts_with_all = ["upload_id", "url"])]
         file: Option<String>,
 
+        /// URL of a remote parquet file to download and load
+        #[arg(long, conflicts_with_all = ["file", "upload_id"])]
+        url: Option<String>,
+
         /// Use a previously staged upload ID from `POST /v1/files` instead of uploading
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["file", "url"])]
         upload_id: Option<String>,
     },
 
