@@ -2,30 +2,33 @@
 
 ### 🚀 Features
 
-- *(wizard)* Render schema description, examples, defaults (#75)
+- *(databases)* Add managed databases CLI for parquet table loads (#82)
+- *(sandbox)* Add sandbox JWT support
 - *(tty)* Add no-input flag and tty checks for interactive commands
 
 ### 🐛 Bug Fixes
 
-- *(changelog)* Preserve released sections from main for CI validate
-- *(deps)* Bump openssl to 0.10.79 for CVE fixes
+- *(deps)* Bump openssl to 0.10.79 for CVE fixes (#77)
 
 ### 💼 Other
 
-- Ignore macOS metadata files
+- Ignore macOS metadata files (#81)
 
 ### 📚 Documentation
 
-- *(skill)* Document managed databases commands.
+- *(skill)* Document managed databases commands
+## [0.2.2] - 2026-05-04
+
+### 🚀 Features
+
+- *(wizard)* Render schema description, examples, defaults (#75)
+
 ## [0.2.1] - 2026-04-30
-
-### 🐛 Bug Fixes
-
-- *(changelog)* Keep prior release sections identical to main
 
 ### 📚 Documentation
 
 - *(skill)* Align hotdata skill with CLI behavior
+
 ## [0.2.0] - 2026-04-29
 
 ### 🚀 Features
@@ -47,8 +50,6 @@
 ### 💼 Other
 
 - *(release)* Bump geospatial skill version on release
-- *(deps)* Bump rustls-webpki to 0.103.13
-- Validate CHANGELOG sections match base branch on PRs
 
 ### 🚜 Refactor
 
@@ -61,6 +62,7 @@
 
 ### 🚀 Features
 
+- *(auth)* Add CLI auth session support (JWT access tokens, refresh, PKCE login)
 - *(indexes)* Workspace-wide list with filters and parallel fetch
 
 ### 💼 Other
