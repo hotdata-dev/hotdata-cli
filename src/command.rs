@@ -240,6 +240,9 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: ShellChoice,
     },
+
+    /// Update the hotdata CLI to the latest release
+    Update,
 }
 
 #[derive(Clone, clap::ValueEnum)]
