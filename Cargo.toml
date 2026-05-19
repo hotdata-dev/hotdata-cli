@@ -60,6 +60,8 @@ pre-release-hook = ["git-cliff", "-o", "CHANGELOG.md", "--tag", "v{{version}}" ]
 publish = false
 pre-release-replacements = [
   { file = "skills/hotdata/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
+  { file = "skills/hotdata-search/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
+  { file = "skills/hotdata-analytics/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   { file = "skills/hotdata-geospatial/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   { file = "README.md", search = "version-[0-9.]+-blue", replace = "version-{{version}}-blue", exactly = 1 },
 ]

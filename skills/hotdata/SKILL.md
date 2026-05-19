@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list or create managed databases, load parquet into database tables, list tables, manage datasets, execute SQL queries, inspect query run history, search tables, manage indexes, manage sandboxes, manage workspace context and stored docs such as context:DATAMODEL via the context API (`hotdata context`), install or update the bundled agent skills (`hotdata skills`), generate shell completions (`hotdata completions`), or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list databases", "create a database", "managed database", "load parquet", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list query runs", "list past queries", "query history", "list sandboxes", "create a sandbox", "run a sandbox", "workspace context", "pull context", "push context", "data model", "context:DATAMODEL", or asks you to use the hotdata CLI.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, datasets, tables, basic SQL query, sandboxes, workspace context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "list datasets", "create a dataset", "execute a query", "list sandboxes", "workspace context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
 version: 0.2.3
 ---
 
@@ -13,6 +13,17 @@ hotdata <command> [args]
 ```
 
 Or if installed on PATH: `hotdata <command> [args]`
+
+## Bundled sub-skills
+
+Install all skills with **`hotdata skills install`**. Load specialized skills only when the task needs them:
+
+| Skill | Use for |
+|-------|---------|
+| **`hotdata`** (this file) | Auth, workspaces, connections, databases, datasets, tables, basic `query`, context, sandboxes, jobs |
+| **`hotdata-search`** | BM25, vector search, `hotdata search`, bm25/vector indexes, embedding providers |
+| **`hotdata-analytics`** | OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes |
+| **`hotdata-geospatial`** | PostGIS-style `ST_*`, WKB, spatial joins |
 
 ## Authentication
 
@@ -67,20 +78,19 @@ Keep two layers separate:
 
 Use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [references/MODEL_BUILD.md](references/MODEL_BUILD.md) for **what to write inside** the Markdown you store under **context:** stems. Never put workspace-specific model text inside agent skill install paths—only in **workspace context** (and transient `./<NAME>.md` for push/pull when needed).
 
-## Multi-step workflows (Model, History, Chain, Indexes)
+## Multi-step workflows
 
 These are **patterns** built from the commands below—not separate CLI subcommands:
 
 - **Model (`context:DATAMODEL`)** — The **shared** Markdown semantic map of the workspace (entities, keys, joins across connections). **Store and read it only via workspace context** (`hotdata context list`, then `hotdata context show DATAMODEL` **only when listed**, `context push DATAMODEL`); refresh using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Contrast **analysis modeling** in sandboxes or chat (see [Analysis modeling vs context:DATAMODEL](#analysis-modeling-vs-contextdatamodel)).
-- **History** — Inspect prior activity via `hotdata queries list` (query runs) and `hotdata results list` / `results <id>` (row data).
-- **Chain** — Follow-ups via **`datasets create`** then `query` against `datasets.<schema>.<table>`, or via **`databases create`** + **`databases tables load`** (parquet) then `query` against `<database>.<schema>.<table>`.
-- **Indexes** — Review SQL and schema, compare to existing indexes, create **sorted**, **bm25**, or **vector** indexes when it clearly helps; see [references/WORKFLOWS.md](references/WORKFLOWS.md#indexes).
+- **History / Chain / OLAP SQL** — See **`hotdata-analytics`** and [references/WORKFLOWS.md](references/WORKFLOWS.md).
+- **Search / retrieval indexes** — See **`hotdata-search`**.
 
-Full step-by-step procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md).
+Catalog, skill decision tree, epic flows (onboard, chain, retrieval), datasets vs databases, and sandbox procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md).
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`datasets`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`sandbox`**, **`context`**, **`completions`**.
+Top-level subcommands (each detailed below): **`auth`**, **`datasets`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`sandbox`**, **`context`**, **`completions`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**. Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -300,112 +310,20 @@ hotdata context push <name> [--workspace-id <workspace_id>] [--dry-run]
 **Convention:** **context:DATAMODEL** is the primary workspace semantic map; **context:GLOSSARY** (or other **`context:<STEM>`** docs) for additional narrative context. Same identifier rules as SQL table names. CLI: `hotdata context show DATAMODEL` (bare stem).
 
 ### Execute SQL Query
+
 ```
 hotdata query "<sql>" [--workspace-id <workspace_id>] [--connection <connection_id>] [--output table|json|csv]
 hotdata query status <query_run_id> [--output table|json|csv]
 ```
-- Default output is `table`, which prints results with row count and execution time.
-- Use `--connection` to scope the query to a specific connection.
-- Use `hotdata tables list` to discover tables and columns — do not query `information_schema` directly.
-- **Always use PostgreSQL dialect SQL.** Column names that are **not** all-lowercase (e.g. from CSV headers like `CustomerName`) are **case-sensitive**; quote them with **double quotes** in SQL, e.g. `"CustomerName"`.
-- Long-running queries automatically fall back to async execution and return a `query_run_id`.
-- Use `hotdata query status <query_run_id>` to poll for results.
-- Exit codes for `query status`: `0` = succeeded, `1` = failed, `2` = still running (poll again).
-- **When a query returns a `query_run_id`, use `query status` to poll rather than re-running the query.**
 
-### Query results
-#### List stored results
-```
-hotdata results list [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--output table|json|yaml]
-```
-- Lists recent stored query results with `id`, `status`, and `created_at`.
-- Results are paginated; when more are available, the CLI prints a hint with the next `--offset`.
-- Use a row’s `id` with `hotdata results <result_id>` below.
+- Default output is `table` (row count and execution time).
+- Use `hotdata tables list` for discovery — not `information_schema` via `query`.
+- **PostgreSQL dialect.** Quote non-lowercase columns with double quotes.
+- Async runs return `query_run_id` → poll with `query status` (do not re-run the same heavy SQL).
+- **OLAP** (aggregations, history, Chain, sorted indexes): **`hotdata-analytics`** skill.
+- **Search** (BM25, vector): **`hotdata-search`** skill.
 
-#### Get result by ID
-```
-hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]
-```
-- Retrieves a previously executed query result by its result ID.
-- Query output also includes a `result-id` in the footer (e.g. `[result-id: rslt...]`).
-- **Always use `results list` / `results <id>` to retrieve past query results rather than re-running the same query.** Re-running queries wastes resources and may return different results.
-
-### Query Run History
-```
-hotdata queries list [--limit <int>] [--cursor <token>] [--status <csv>] [--output table|json|yaml]
-hotdata queries <query_run_id> [--output table|json|yaml]
-```
-These commands use the **active workspace only** (the `queries` command has no `--workspace-id` flag); set the default workspace with `workspaces set` if needed.
-- `list` shows query runs with status, creation time, duration, row count, and a truncated SQL preview (default limit 20).
-- `--status` filters by run status (comma-separated, e.g. `--status running,failed`).
-- View a run by ID to see full metadata (timings, `result_id`, snapshot, hashes) and the formatted, syntax-highlighted SQL.
-- If a run has a `result_id`, fetch its rows with `hotdata results <result_id>`.
-
-To create a dataset from a **saved query** still registered for the workspace, use **`hotdata datasets create --query-id <saved_query_id>`** (this CLI does not expose separate saved-query create/run subcommands).
-
-### Search
-
-`--type` is **required**. Pass `vector` or `bm25`. Both run entirely server-side.
-
-```
-# BM25 full-text search (requires BM25 index on the column)
-hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> \
-  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
-
-# Vector similarity search via server-side auto-embed (requires a vector index on the column)
-hotdata search "<query>" --type vector --table <connection.schema.table> --column <source_text_column> \
-  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
-```
-- **`--type vector`** — pass the query as **plain text** and name the **source text column** (e.g. `title`). The server embeds the query at the same time, using the same provider that auto-embedded the column when the index was built — distance metric, model, and dimensions match automatically. No client-side embedding, no `OPENAI_API_KEY` required. Generated SQL: `vector_distance(col, 'text')`.
-- **`--type bm25`** generates `bm25_search(table, col, 'text')` server-side; requires a BM25 index on the column.
-- **No vector index on the column, or want a different embedding model?** `hotdata search` won't help — drop down to raw SQL via `hotdata query` (e.g. `SELECT *, cosine_distance(col, [<vec>]) FROM ...`). See the SQL reference for available distance functions and table UDFs.
-- BM25 results sort by score (descending). Vector results sort by distance (ascending).
-- `--select` specifies which columns to return (comma-separated, defaults to all).
-- Default limit is 10.
-- **For BM25 search, create a BM25 index on the target column first (`hotdata indexes create ... --type bm25`). For vector search, create a vector index, optionally with auto-embedding on a text column.**
-- The earlier `--model` flag and stdin-piped-vector path have both been removed. They hardcoded `l2_distance` regardless of the index's metric (silently wrong on cosine indexes). For client-side embedding or precomputed-vector workflows, use raw SQL via `hotdata query`.
-
-### Indexes
-
-Indexes attach to either a connection-table (`--connection-id` + `--schema` + `--table`) or a dataset (`--dataset-id`) — the two scopes are mutually exclusive for **create** / **delete**. **`indexes list`** supports three ways to scope (below).
-
-For **create**, `--type` is required (no default).
-
-```
-# List — default: all indexes on connection tables in the workspace (from information_schema; parallel fetch).
-# Narrow the scan with any subset of: --connection-id (-c), --schema, --table. With all three set, uses one table API call.
-# Dataset indexes are not included; use --dataset-id per dataset.
-hotdata indexes list [--connection-id <connection_id>] [--schema <schema>] [--table <table>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata indexes list --dataset-id <dataset_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
-
-# Connection-table scope — create / delete
-hotdata indexes create --connection-id <connection_id> --schema <schema> --table <table> \
-  --name <name> --columns <cols> --type sorted|bm25|vector \
-  [--metric l2|cosine|dot] [--async] \
-  [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
-hotdata indexes delete --connection-id <connection_id> --schema <schema> --table <table> --name <name>
-
-# Dataset scope — create / delete (same --dataset-id flag)
-hotdata indexes create --dataset-id <dataset_id> --name <name> --columns <cols> --type sorted|bm25|vector ...
-hotdata indexes delete --dataset-id <dataset_id> --name <name>
-```
-- **`indexes list`:** With no `--dataset-id`, lists indexes on **connection** tables (workspace scan or filtered scan). **Dataset** indexes are listed only via `--dataset-id` (one dataset per invocation).
-- `--type` accepts `sorted` (B-tree-like; range/exact lookups), `bm25` (full-text), or `vector` (similarity). It is **required** for **create**.
-- `--type vector` requires exactly one column.
-- `--async` submits index creation as a background job; poll with `hotdata jobs <job_id>`.
-- **Auto-embedding:** with `--type vector` on a **text** column, the server generates embeddings automatically. Pass `--embedding-provider-id` to pick a specific provider; if omitted, the first system provider is used. The generated column defaults to `{column}_embedding` (override with `--output-column`).
-
-### Embedding providers
-```
-hotdata embedding-providers list [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata embedding-providers get <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata embedding-providers create --name <name> --provider-type service|local \
-  [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>]
-hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
-```
-- System providers (e.g. `sys_emb_openai`) come pre-configured. `list` shows IDs to pass to `--embedding-provider-id`.
-- `--provider-api-key` (the embedding service's own key, e.g. an OpenAI `sk-...`) auto-creates a managed secret. Pairs with `--provider-type`; named to avoid colliding with the global `--api-key` (Hotdata auth). `--secret-name` references an existing secret. Mutually exclusive.
+To create a dataset from a saved query: **`hotdata datasets create --query-id <saved_query_id>`**.
 
 ### Jobs
 ```
@@ -419,7 +337,7 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 
 ### Agent skills (`skills`)
 
-Bundled Markdown skills (**`hotdata`**, **`hotdata-geospatial`**) ship with the CLI release tarball.
+Bundled Markdown skills (**`hotdata`**, **`hotdata-search`**, **`hotdata-analytics`**, **`hotdata-geospatial`**) ship with the CLI release tarball.
 
 ```
 hotdata skills install [--project]

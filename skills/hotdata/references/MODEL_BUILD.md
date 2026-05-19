@@ -100,7 +100,7 @@ Note:
 - **Time** columns — event grain vs slowly changing dimensions.
 - **Facts vs dimensions** — for analytics-oriented workspaces.
 
-When suggesting a new index, use the same connection/schema/table/column names as in `tables list` and the main skill’s `indexes create` examples.
+When suggesting a new index, use the same connection/schema/table/column names as in `tables list` and **`hotdata-search`** / **`hotdata-analytics`** `indexes create` examples (bm25/vector vs sorted).
 
 ---
 

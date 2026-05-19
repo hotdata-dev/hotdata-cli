@@ -6,7 +6,12 @@ use std::path::PathBuf;
 
 const REPO: &str = "hotdata-dev/hotdata-cli";
 const PRIMARY_SKILL_NAME: &str = "hotdata";
-const SKILL_NAMES: &[&str] = &["hotdata", "hotdata-geospatial"];
+const SKILL_NAMES: &[&str] = &[
+    "hotdata",
+    "hotdata-search",
+    "hotdata-analytics",
+    "hotdata-geospatial",
+];
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Agent root directories to check for symlink installation.

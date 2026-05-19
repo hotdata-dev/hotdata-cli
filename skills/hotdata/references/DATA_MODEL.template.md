@@ -58,7 +58,7 @@ Document safe join paths and caveats (fan-out, timing, different refresh cadence
 |-------|--------|--------------------------|--------------|-------|
 | | | | | |
 
-_Use `hotdata indexes list` for connection tables across the workspace (add `-c` / `--schema` / `--table` to narrow), or per table with all three set; use `hotdata indexes list --dataset-id <id>` for uploaded datasets._
+_Use `hotdata indexes list` for connection tables (see **hotdata-search** skill). Record bm25/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
 
 ## Datasets (uploaded)
 

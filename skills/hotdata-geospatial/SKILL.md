@@ -8,6 +8,8 @@ version: 0.2.3
 
 Use this skill when working with geospatial data in Hotdata. Hotdata supports a subset of PostGIS-style functions using **PostgreSQL dialect SQL**. This reference is dataset-agnostic — apply it to any table with geometry columns.
 
+**Related skills:** **`hotdata`** (core CLI), **`hotdata-search`** (BM25/vector), **`hotdata-analytics`** (OLAP SQL).
+
 ---
 
 ## Geometry Columns

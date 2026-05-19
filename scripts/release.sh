@@ -2,8 +2,8 @@
 # release.sh — two-phase release wrapper around cargo-release
 #
 # Usage:
-#   scripts/release.sh prepare <version>   # steps 0-2: branch, bump, push PR
-#   scripts/release.sh finish              # step 4: tag, publish, trigger dist
+#   scripts/release.sh prepare <version>   # branch, bump, changelog PR
+#   scripts/release.sh finish              # tag only (main is branch-protected)
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ VERSION="${2:-}"
 usage() {
     echo "Usage:"
     echo "  scripts/release.sh prepare <version>   # create release branch and open PR"
-    echo "  scripts/release.sh finish               # tag and publish from main"
+    echo "  scripts/release.sh finish               # push v<version> tag from main (no main push)"
     exit 1
 }
 
@@ -22,6 +22,16 @@ require_clean_tree() {
         echo "error: working tree is not clean. Commit or stash your changes first."
         exit 1
     fi
+}
+
+read_crate_version() {
+    local ver
+    ver="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/^version = "([^"]+)".*/\1/')"
+    if [ -z "$ver" ]; then
+        echo "error: could not read version from Cargo.toml" >&2
+        exit 1
+    fi
+    printf '%s' "$ver"
 }
 
 case "$COMMAND" in
@@ -35,16 +45,20 @@ case "$COMMAND" in
 
         require_clean_tree
 
-        # step 0: create release branch
         echo "→ Creating branch $BRANCH"
         git checkout -b "$BRANCH"
 
-        # step 2: bump versions, commit, push branch
         echo ""
         echo "→ Running cargo release (no publish, no tag)..."
-        # git-cliff (pre-release hook) is often installed via cargo install
         export PATH="${HOME}/.cargo/bin:${PATH}"
         cargo release --no-publish --no-tag --no-confirm --allow-branch="$BRANCH" --execute "$VERSION"
+
+        if [ -f scripts/validate-changelog.py ]; then
+            echo ""
+            echo "→ Validating CHANGELOG.md against origin/main..."
+            git fetch origin main 2>/dev/null || true
+            python3 scripts/validate-changelog.py origin/main
+        fi
 
         echo ""
         echo "→ Opening pull request..."
@@ -77,15 +91,33 @@ case "$COMMAND" in
         fi
 
         echo "→ Pulling latest main..."
-        git pull
+        git pull origin main
+
+        VERSION="$(read_crate_version)"
+        TAG="v${VERSION}"
 
         echo ""
-        echo "→ Running cargo release (tagging release)..."
-        export PATH="${HOME}/.cargo/bin:${PATH}"
-        cargo release --no-confirm --execute
+        echo "→ Release version from Cargo.toml: $VERSION (tag $TAG)"
+
+        if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "error: tag $TAG already exists locally. Delete it or pick a new version." >&2
+            exit 1
+        fi
+
+        if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "error: tag $TAG already exists on origin." >&2
+            exit 1
+        fi
+
+        echo "→ Creating annotated tag $TAG (no commit to main)..."
+        git tag -a "$TAG" -m "Release hotdata-cli version $VERSION"
+
+        echo "→ Pushing tag to origin..."
+        git push origin "$TAG"
 
         echo ""
-        echo "✓ Release complete. Tag pushed and dist workflow triggered."
+        echo "✓ Tag $TAG pushed. Dist/release workflow should run on GitHub."
+        echo "  (main was not pushed — version bump must already be merged via release PR.)"
         ;;
 
     *)
