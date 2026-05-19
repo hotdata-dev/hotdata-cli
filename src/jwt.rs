@@ -153,6 +153,49 @@ fn redacted_form_body(params: &[(&str, &str)]) -> serde_json::Value {
 /// body so the caller can still parse real values out of it.
 const TOKEN_REDACT_KEYS: &[&str] = &["access_token", "refresh_token"];
 
+/// Exchange a CLI registration PKCE code for a session.
+///
+/// The `/auth/cli-register/` flow issues a short-lived `CLIAuthCode` (not a
+/// full OAuth code). This function POSTs it to `/v1/auth/token` to get an
+/// opaque API token, then immediately mints a full JWT session via
+/// `mint_from_api_token` so the on-disk state is identical to a normal login.
+pub fn exchange_cli_register_code(
+    profile: &config::ProfileConfig,
+    code: &str,
+    code_verifier: &str,
+) -> Result<Session, String> {
+    let url = format!("{}/v1/auth/token", oauth_base(profile));
+    let body = serde_json::json!({ "code": code, "code_verifier": code_verifier });
+    let body_log = serde_json::json!({
+        "code": util::mask_credential(code),
+        "code_verifier": util::mask_credential(code_verifier),
+    });
+
+    let client = reqwest::blocking::Client::new();
+    let req = client.post(&url).json(&body);
+    let (status, body_text) = util::send_debug_with_redaction(
+        &client,
+        req,
+        Some(&body_log),
+        &["token"],
+    )
+    .map_err(|e| format!("connection error: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "registration token exchange failed: HTTP {status}: {body_text}"
+        ));
+    }
+
+    #[derive(Deserialize)]
+    struct RegisterResponse {
+        token: String,
+    }
+    let resp: RegisterResponse = serde_json::from_str(&body_text)
+        .map_err(|e| format!("malformed token response: {e}"))?;
+
+    mint_from_api_token(profile, &resp.token)
+}
+
 /// Exchange a PKCE authorization code for a session.
 pub fn mint_from_pkce_code(
     profile: &config::ProfileConfig,

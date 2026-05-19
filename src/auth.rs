@@ -169,7 +169,13 @@ struct WsListResponse { workspaces: Vec<WsItem> }
 struct WsItem { public_id: String, name: String }
 
 /// Wait for the browser callback, verify state, and extract the authorization code.
-fn receive_callback(server: &tiny_http::Server, expected_state: &str) -> Result<String, String> {
+/// `success_title` and `success_body` are rendered in the browser tab on success.
+fn receive_callback(
+    server: &tiny_http::Server,
+    expected_state: &str,
+    success_title: &str,
+    success_body: &str,
+) -> Result<String, String> {
     let request = server.recv().map_err(|e| format!("failed to receive callback: {e}"))?;
     let raw_url = request.url().to_string();
     let params = parse_query_params(&raw_url);
@@ -187,15 +193,16 @@ fn receive_callback(server: &tiny_http::Server, expected_state: &str) -> Result<
         }
     };
 
-    let html = r#"<!DOCTYPE html>
+    let html = format!(
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Hotdata — Login Successful</title>
+  <title>Hotdata — {success_title}</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
       font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
       background: #111827;
       color: #e5e7eb;
@@ -203,8 +210,8 @@ fn receive_callback(server: &tiny_http::Server, expected_state: &str) -> Result<
       align-items: center;
       justify-content: center;
       min-height: 100vh;
-    }
-    .card {
+    }}
+    .card {{
       background: #1f2937;
       border: 1px solid #374151;
       border-radius: 0.5rem;
@@ -212,8 +219,8 @@ fn receive_callback(server: &tiny_http::Server, expected_state: &str) -> Result<
       max-width: 420px;
       width: 100%;
       text-align: center;
-    }
-    .icon {
+    }}
+    .icon {{
       width: 48px;
       height: 48px;
       background: #14532d;
@@ -222,10 +229,10 @@ fn receive_callback(server: &tiny_http::Server, expected_state: &str) -> Result<
       align-items: center;
       justify-content: center;
       margin: 0 auto 1.25rem;
-    }
-    .icon svg { width: 24px; height: 24px; stroke: #86efac; }
-    h1 { font-size: 1.25rem; font-weight: 600; color: #f3f4f6; margin-bottom: 0.5rem; }
-    p { font-size: 0.875rem; color: #9ca3af; line-height: 1.5; }
+    }}
+    .icon svg {{ width: 24px; height: 24px; stroke: #86efac; }}
+    h1 {{ font-size: 1.25rem; font-weight: 600; color: #f3f4f6; margin-bottom: 0.5rem; }}
+    p {{ font-size: 0.875rem; color: #9ca3af; line-height: 1.5; }}
   </style>
 </head>
 <body>
@@ -235,11 +242,12 @@ fn receive_callback(server: &tiny_http::Server, expected_state: &str) -> Result<
         <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
       </svg>
     </div>
-    <h1>Login successful</h1>
-    <p>You're now authenticated with Hotdata.<br/>You can close this tab and return to the terminal.</p>
+    <h1>{success_title}</h1>
+    <p>{success_body}</p>
   </div>
 </body>
-</html>"#;
+</html>"#
+    );
     let response = tiny_http::Response::from_string(html).with_header(
         "Content-Type: text/html"
             .parse::<tiny_http::Header>()
@@ -318,7 +326,12 @@ pub fn login() {
 
     println!("Waiting for login callback...");
 
-    let code = match receive_callback(&server, &state) {
+    let code = match receive_callback(
+        &server,
+        &state,
+        "Login successful",
+        "You're now authenticated with Hotdata.<br/>You can close this tab and return to the terminal.",
+    ) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
@@ -347,6 +360,107 @@ pub fn login() {
                 Some(w) => {
                     print_row("Workspace", &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()));
                     print_row("", &"use 'hotdata workspaces set' to switch workspaces".dark_grey().to_string());
+                }
+                None => print_row("Workspace", &"None".dark_grey().to_string()),
+            }
+        }
+        Err(msg) => {
+            eprintln!("{}", msg.red());
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn register() {
+    let profile_config = config::load("default").unwrap_or_default();
+    let app_url = profile_config.app_url.to_string();
+
+    if is_already_signed_in(&profile_config) {
+        println!(
+            "{}",
+            "You are already signed in. Use 'hotdata auth login' to log in with a different account.".green()
+        );
+        return;
+    }
+
+    let code_verifier = generate_code_verifier();
+    let code_challenge = generate_code_challenge(&code_verifier);
+    let state = generate_random_string(32);
+
+    let server =
+        tiny_http::Server::http("127.0.0.1:0").expect("failed to start local callback server");
+    let port = server.server_addr().to_ip().unwrap().port();
+
+    let register_url = format!(
+        "{app_url}/auth/cli-register/\
+        ?code_challenge={code_challenge}\
+        &code_challenge_method=S256\
+        &state={state}\
+        &callback_port={port}",
+        app_url = app_url.trim_end_matches('/'),
+    );
+
+    println!("Opening browser to create your account...");
+    stdout()
+        .execute(Print("If your browser does not open, visit:\n  "))
+        .unwrap()
+        .execute(SetForegroundColor(Color::DarkGrey))
+        .unwrap()
+        .execute(Print(format!("{register_url}\n")))
+        .unwrap()
+        .execute(ResetColor)
+        .unwrap();
+
+    if let Err(e) = open::that(&register_url) {
+        eprintln!("failed to open browser: {e}");
+    }
+
+    println!("Waiting for account setup to complete...");
+
+    let code = match receive_callback(
+        &server,
+        &state,
+        "Account created",
+        "Your Hotdata account is ready.<br/>You can close this tab and return to the terminal.",
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match crate::jwt::exchange_cli_register_code(&profile_config, &code, &code_verifier) {
+        Ok(session) => {
+            if let Err(e) = crate::jwt::save_session(&session) {
+                eprintln!("warning: could not save session: {e}");
+            }
+            stdout()
+                .execute(SetForegroundColor(Color::Green))
+                .unwrap()
+                .execute(Print("Account created and logged in.\n"))
+                .unwrap()
+                .execute(ResetColor)
+                .unwrap();
+
+            let workspaces = cache_workspaces(&profile_config, &session.access_token)
+                .unwrap_or(profile_config.workspaces);
+            match workspaces.first() {
+                Some(w) => {
+                    print_row(
+                        "Workspace",
+                        &format!(
+                            "{} {}",
+                            w.name.as_str().cyan(),
+                            format!("({})", w.public_id).dark_grey()
+                        ),
+                    );
+                    print_row(
+                        "",
+                        &"use 'hotdata workspaces set' to switch workspaces"
+                            .dark_grey()
+                            .to_string(),
+                    );
                 }
                 None => print_row("Workspace", &"None".dark_grey().to_string()),
             }
@@ -650,7 +764,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = receive_callback(&server, "expected-state");
+        let result = receive_callback(&server, "expected-state", "", "");
         handle.join().unwrap();
 
         assert_eq!(result.unwrap(), "test-auth-code");
@@ -670,7 +784,7 @@ mod tests {
                 .send();
         });
 
-        let result = receive_callback(&server, "expected-state");
+        let result = receive_callback(&server, "expected-state", "", "");
         handle.join().unwrap();
 
         assert!(result.is_err());
@@ -754,7 +868,7 @@ mod tests {
                 .send();
         });
 
-        let result = receive_callback(&server, "expected-state");
+        let result = receive_callback(&server, "expected-state", "", "");
         handle.join().unwrap();
 
         assert!(result.is_err());
