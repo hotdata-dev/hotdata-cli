@@ -1,3 +1,23 @@
+## [0.2.4] - 2026-05-19
+
+### 🚀 Features
+
+- *(auth)* Add `hotdata auth register` command (#85, #86)
+- *(auth)* Default register to GitHub; add `--email` flag
+- *(update)* Add `hotdata update` command
+- *(skills)* Split bundled skills into `hotdata-search` and `hotdata-analytics` (#84)
+
+### 🐛 Bug Fixes
+
+- *(auth)* Align CLI callback page colors with web app theme
+
+### 🚜 Refactor
+
+- *(auth)* Extract `run_browser_auth` helper; add tests for `exchange_cli_register_code`
+
+### 📚 Documentation
+
+- *(skill)* Epic flow checklists, datasets vs databases workflows, tag-only release finish (#84)
 ## [0.2.3] - 2026-05-19
 
 ### 🚀 Features
