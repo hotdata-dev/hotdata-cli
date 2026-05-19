@@ -23,6 +23,60 @@ Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when
 | **Sandboxes** | This file — [Sandboxes and datasets](#sandboxes-and-datasets) |
 | **History / Chain** | **`hotdata-analytics`** — [WORKFLOWS.md](../../hotdata-analytics/references/WORKFLOWS.md) |
 | **Search indexes** | **`hotdata-search`** — [INDEXES.md](../../hotdata-search/references/INDEXES.md) |
+| **Epic flows** | This file — [Epic flows](#epic-flows) |
+
+---
+
+## Epic flows
+
+End-to-end checklists. Use the linked sections for command detail and guardrails.
+
+### Onboard a workspace
+
+**Skill:** **`hotdata`** (optional **`hotdata-analytics`** for first queries)
+
+1. [ ] `hotdata auth login` (or `hotdata auth`)
+2. [ ] `hotdata workspaces list` → `hotdata workspaces set` if not on the right workspace
+3. [ ] `hotdata connections list` — note connection ids and names
+4. [ ] (Optional) `hotdata connections create …` — see **`hotdata`** skill **Create a Connection**
+5. [ ] `hotdata connections refresh <connection_id>` if catalog may be stale
+6. [ ] `hotdata tables list` and `hotdata tables list --connection-id <id>` for columns
+7. [ ] (Optional) `hotdata context list` — if `DATAMODEL` is listed, `hotdata context show DATAMODEL`; else skip `show`
+8. [ ] (Optional) Bootstrap **context:DATAMODEL** — [Model](#model), [DATA_MODEL.template.md](DATA_MODEL.template.md)
+
+**Next:** upload data ([Datasets vs managed databases](#datasets-vs-managed-databases)) or run analytics (**Chain** below).
+
+### Chain (materialize then query)
+
+**Skill:** **`hotdata-analytics`** (catalog via **`hotdata`**)
+
+1. [ ] Run base SQL: `hotdata query "SELECT …"` — poll `hotdata query status <id>` if async
+2. [ ] Materialize one way:
+   - [ ] **Dataset:** `hotdata datasets create --label "…" --sql "SELECT …" [--table-name …]`
+   - [ ] **Managed DB:** `hotdata databases create --name … --table …` then `hotdata databases tables load … --file ./….parquet`
+3. [ ] Copy **`full_name`** from create output (or `datasets list` **FULL NAME**)
+4. [ ] Chain: `hotdata query "SELECT … FROM <full_name> WHERE …"`
+5. [ ] (Sandbox) Use `datasets.<sandbox_id>.<table>` and active sandbox or `hotdata sandbox <id> run …`
+6. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
+
+**Detail:** [hotdata-analytics WORKFLOWS — Chain](../../hotdata-analytics/references/WORKFLOWS.md#chain)
+
+### Retrieval (index then search)
+
+**Skill:** **`hotdata-search`** (schema via **`hotdata`**)
+
+1. [ ] `hotdata tables list --connection-id <id>` — pick text column (BM25) or embedding/text column (vector)
+2. [ ] `hotdata indexes list` — avoid duplicate bm25/vector indexes on the same column
+3. [ ] Create index:
+   - [ ] **Keyword:** `hotdata indexes create … --type bm25 --columns <text_col>`
+   - [ ] **Semantic:** `hotdata indexes create … --type vector --columns <col> [--metric cosine|l2|dot]`
+   - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
+4. [ ] Search:
+   - [ ] `hotdata search "…" --type bm25 --table <connection.schema.table> --column <col>`
+   - [ ] `hotdata search "…" --type vector --table … --column <source_text_col>`
+5. [ ] (Optional) Note indexes in **context:DATAMODEL → Search & index summary**
+
+**Detail:** [hotdata-search INDEXES.md](../../hotdata-search/references/INDEXES.md)
 
 ---
 

@@ -86,7 +86,7 @@ These are **patterns** built from the commands below—not separate CLI subcomma
 - **History / Chain / OLAP SQL** — See **`hotdata-analytics`** and [references/WORKFLOWS.md](references/WORKFLOWS.md).
 - **Search / retrieval indexes** — See **`hotdata-search`**.
 
-Catalog, skill decision tree, datasets vs databases, and sandbox procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md).
+Catalog, skill decision tree, epic flows (onboard, chain, retrieval), datasets vs databases, and sandbox procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md).
 
 ## Available Commands
 
