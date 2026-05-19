@@ -207,7 +207,7 @@ fn receive_callback(
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
       font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
-      background: #111827;
+      background: #121212;
       color: #e5e7eb;
       display: flex;
       align-items: center;
@@ -215,8 +215,8 @@ fn receive_callback(
       min-height: 100vh;
     }}
     .card {{
-      background: #1f2937;
-      border: 1px solid #374151;
+      background: #1a1a1a;
+      border: 1px solid #333333;
       border-radius: 0.5rem;
       padding: 2.5rem;
       max-width: 420px;
