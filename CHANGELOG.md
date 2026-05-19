@@ -1,15 +1,31 @@
-## [0.2.2] - 2026-05-04
+## [0.2.3] - 2026-05-19
 
 ### 🚀 Features
 
 - *(wizard)* Render schema description, examples, defaults (#75)
+- *(tty)* Add no-input flag and tty checks for interactive commands
 
+### 🐛 Bug Fixes
+
+- *(changelog)* Preserve released sections from main for CI validate
+- *(deps)* Bump openssl to 0.10.79 for CVE fixes
+
+### 💼 Other
+
+- Ignore macOS metadata files
+
+### 📚 Documentation
+
+- *(skill)* Document managed databases commands.
 ## [0.2.1] - 2026-04-30
+
+### 🐛 Bug Fixes
+
+- *(changelog)* Keep prior release sections identical to main
 
 ### 📚 Documentation
 
 - *(skill)* Align hotdata skill with CLI behavior
-
 ## [0.2.0] - 2026-04-29
 
 ### 🚀 Features
@@ -31,6 +47,8 @@
 ### 💼 Other
 
 - *(release)* Bump geospatial skill version on release
+- *(deps)* Bump rustls-webpki to 0.103.13
+- Validate CHANGELOG sections match base branch on PRs
 
 ### 🚜 Refactor
 
@@ -43,7 +61,6 @@
 
 ### 🚀 Features
 
-- *(auth)* Add CLI auth session support (JWT access tokens, refresh, PKCE login)
 - *(indexes)* Workspace-wide list with filters and parallel fetch
 
 ### 💼 Other
