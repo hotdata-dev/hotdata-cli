@@ -5,6 +5,7 @@ mod config;
 mod connections;
 mod connections_new;
 mod context;
+mod databases;
 mod datasets;
 mod embedding_providers;
 mod indexes;
@@ -25,9 +26,9 @@ use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
 use command::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
-    DatasetsCommands, EmbeddingProvidersCommands, IndexesCommands, JobsCommands, QueriesCommands,
-    QueryCommands, ResultsCommands, SandboxCommands, SkillCommands, TablesCommands,
-    WorkspaceCommands,
+    DatabaseTablesCommands, DatabasesCommands, DatasetsCommands, EmbeddingProvidersCommands,
+    IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands,
+    SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands,
 };
 
 #[derive(Parser)]
@@ -351,6 +352,83 @@ fn main() {
                             let mut cmd = Cli::command();
                             cmd.build();
                             cmd.find_subcommand_mut("connections")
+                                .unwrap()
+                                .print_help()
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+            Commands::Databases {
+                name_or_id,
+                workspace_id,
+                output,
+                command,
+            } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                if let Some(name_or_id) = name_or_id {
+                    databases::get(&workspace_id, &name_or_id, &output);
+                } else {
+                    match command {
+                        Some(DatabasesCommands::List { output }) => {
+                            databases::list(&workspace_id, &output)
+                        }
+                        Some(DatabasesCommands::Create {
+                            name,
+                            schema,
+                            tables,
+                            output,
+                        }) => databases::create(
+                            &workspace_id,
+                            &name,
+                            &schema,
+                            &tables,
+                            &output,
+                        ),
+                        Some(DatabasesCommands::Delete { name_or_id }) => {
+                            databases::delete(&workspace_id, &name_or_id)
+                        }
+                        Some(DatabasesCommands::Tables { command }) => match command {
+                            DatabaseTablesCommands::List {
+                                database,
+                                schema,
+                                output,
+                            } => databases::tables_list(
+                                &workspace_id,
+                                &database,
+                                schema.as_deref(),
+                                &output,
+                            ),
+                            DatabaseTablesCommands::Load {
+                                database,
+                                table,
+                                schema,
+                                file,
+                                upload_id,
+                            } => databases::tables_load(
+                                &workspace_id,
+                                &database,
+                                &table,
+                                Some(schema.as_str()),
+                                file.as_deref(),
+                                upload_id.as_deref(),
+                            ),
+                            DatabaseTablesCommands::Delete {
+                                database,
+                                table,
+                                schema,
+                            } => databases::tables_delete(
+                                &workspace_id,
+                                &database,
+                                &table,
+                                Some(schema.as_str()),
+                            ),
+                        },
+                        None => {
+                            use clap::CommandFactory;
+                            let mut cmd = Cli::command();
+                            cmd.build();
+                            cmd.find_subcommand_mut("databases")
                                 .unwrap()
                                 .print_help()
                                 .unwrap();
