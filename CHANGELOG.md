@@ -1,54 +1,67 @@
+## [0.2.5] - 2026-05-19
+
+### 🚀 Features
+
+- *(databases)* Add --url flag to tables load for remote parquet files
 ## [0.2.4] - 2026-05-19
 
 ### 🚀 Features
 
-- *(auth)* Add `hotdata auth register` command (#85, #86)
-- *(auth)* Default register to GitHub; add `--email` flag
-- *(update)* Add `hotdata update` command
-- *(skills)* Split bundled skills into `hotdata-search` and `hotdata-analytics` (#84)
+- *(update)* Add update command
+- *(skills)* Split search and analytics sub-skills; improve workflows.
+- *(auth)* Add hotdata auth register command
+- *(auth)* Default register to GitHub, add --email flag
 
 ### 🐛 Bug Fixes
 
 - *(auth)* Align CLI callback page colors with web app theme
+- *(changelog)* Correct 0.2.4 section and preserve released history.
 
 ### 🚜 Refactor
 
-- *(auth)* Extract `run_browser_auth` helper; add tests for `exchange_cli_register_code`
+- *(auth)* Extract run_browser_auth helper; add tests for exchange_cli_register_code
 
 ### 📚 Documentation
 
-- *(skill)* Epic flow checklists, datasets vs databases workflows, tag-only release finish (#84)
+- *(skill)* Add epic flow checklists to core WORKFLOWS.
 ## [0.2.3] - 2026-05-19
 
 ### 🚀 Features
 
-- *(databases)* Add managed databases CLI for parquet table loads (#82)
 - *(sandbox)* Add sandbox JWT support
 - *(tty)* Add no-input flag and tty checks for interactive commands
+- *(databases)* Add managed databases CLI for parquet table loads for parquet table loads.
 
 ### 🐛 Bug Fixes
 
-- *(deps)* Bump openssl to 0.10.79 for CVE fixes (#77)
+- *(deps)* Bump openssl to 0.10.79 for CVE fixes
+- *(changelog)* Correct 0.2.3 section and preserve released history.
 
 ### 💼 Other
 
-- Ignore macOS metadata files (#81)
+- Ignore macOS metadata files
 
 ### 📚 Documentation
 
-- *(skill)* Document managed databases commands
+- *(skill)* Document managed databases commands.
 ## [0.2.2] - 2026-05-04
 
 ### 🚀 Features
 
 - *(wizard)* Render schema description, examples, defaults (#75)
 
+### 🐛 Bug Fixes
+
+- *(changelog)* Preserve released sections from main for CI validate
 ## [0.2.1] - 2026-04-30
+
+### 🐛 Bug Fixes
+
+- *(changelog)* Keep prior release sections identical to main
 
 ### 📚 Documentation
 
 - *(skill)* Align hotdata skill with CLI behavior
-
 ## [0.2.0] - 2026-04-29
 
 ### 🚀 Features
@@ -70,6 +83,8 @@
 ### 💼 Other
 
 - *(release)* Bump geospatial skill version on release
+- *(deps)* Bump rustls-webpki to 0.103.13
+- Validate CHANGELOG sections match base branch on PRs
 
 ### 🚜 Refactor
 
@@ -82,7 +97,6 @@
 
 ### 🚀 Features
 
-- *(auth)* Add CLI auth session support (JWT access tokens, refresh, PKCE login)
 - *(indexes)* Workspace-wide list with filters and parallel fetch
 
 ### 💼 Other
