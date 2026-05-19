@@ -1,3 +1,22 @@
+## [0.2.3] - 2026-05-19
+
+### 🚀 Features
+
+- *(databases)* Add managed databases CLI for parquet table loads (#82)
+- *(sandbox)* Add sandbox JWT support
+- *(tty)* Add no-input flag and tty checks for interactive commands
+
+### 🐛 Bug Fixes
+
+- *(deps)* Bump openssl to 0.10.79 for CVE fixes (#77)
+
+### 💼 Other
+
+- Ignore macOS metadata files (#81)
+
+### 📚 Documentation
+
+- *(skill)* Document managed databases commands
 ## [0.2.2] - 2026-05-04
 
 ### 🚀 Features

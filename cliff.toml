@@ -49,6 +49,8 @@ split_commits = false
 commit_preprocessors = [
     # Legacy non-conventional commit on main (pre–conventional-commit discipline).
     { pattern = "^change to sandbox api$", replace = "feat(sandbox): align CLI with updated sandbox API" },
+    { pattern = "^Add managed databases CLI", replace = "feat(databases): add managed databases CLI for parquet table loads" },
+    { pattern = "^Add sandbox JWT support$", replace = "feat(sandbox): add sandbox JWT support" },
     # Replace issue numbers with link templates to be updated in `changelog.postprocessors`.
     #{ pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](<REPO>/issues/${2}))"},
     # Check spelling of the commit message using https://github.com/crate-ci/typos.
