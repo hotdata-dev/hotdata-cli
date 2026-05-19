@@ -65,6 +65,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `auth` | `login`, `status`, `logout` | `login` or bare `auth` opens browser login; `status` / `logout` manage the saved profile |
 | `workspaces` | `list`, `set` | Manage workspaces |
 | `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
+| `databases` | `list`, `create`, `delete`, `tables` | Managed databases (create and load tables via parquet) |
 | `tables` | `list` | List tables and columns |
 | `datasets` | `list`, `create`, `update` | Manage uploaded datasets |
 | `context` | `list`, `show`, `pull`, `push` | Workspace Markdown context (e.g. data model `DATAMODEL`) via the context API |
@@ -125,6 +126,34 @@ hotdata connections create list <type_name> --format json
 
 # Create a connection
 hotdata connections create --name "my-conn" --type postgres --config '{"host":"...","port":5432,...}'
+```
+
+## Databases
+
+Managed databases are Hotdata-owned catalogs you create and populate yourself (no remote source to sync). Query them with SQL as `database_name.schema.table` — the database name is the connection name.
+
+```sh
+hotdata databases list [-w <id>] [-o table|json|yaml]
+hotdata databases create --name <name> [--table <table> ...] [--schema public] [-o table|json|yaml]
+hotdata databases <name_or_id> [-o table|json|yaml]
+hotdata databases delete <name_or_id>
+
+hotdata databases tables list <database> [--schema <name>] [-o table|json|yaml]
+hotdata databases tables load <database> <table> --file ./data.parquet [--schema public]
+hotdata databases tables load <database> <table> --upload-id <id> [--schema public]
+hotdata databases tables delete <database> <table> [--schema public]
+```
+
+- `create` registers a managed connection (`source_type: managed`) with no external credentials. Use `--table` to declare tables up front (required before `tables load` on the current API).
+- `tables load` uploads a **parquet** file (or uses a staged `upload_id` from `POST /v1/files`) and publishes it as the table generation (`replace` mode).
+- For CSV/JSON uploads without a managed database, use `hotdata datasets create` instead (`datasets.main.*`).
+
+Example:
+
+```sh
+hotdata databases create --name sales --table orders
+hotdata databases tables load sales orders --file ./orders.parquet
+hotdata query "SELECT count(*) FROM sales.public.orders"
 ```
 
 ## Tables

@@ -69,6 +69,23 @@ pub enum Commands {
         command: Option<ConnectionsCommands>,
     },
 
+    /// Managed databases you create and populate with tables (parquet uploads)
+    Databases {
+        /// Database name or connection ID (omit to use a subcommand)
+        name_or_id: Option<String>,
+
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w', global = true)]
+        workspace_id: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+
+        #[command(subcommand)]
+        command: Option<DatabasesCommands>,
+    },
+
     /// Manage tables in a workspace
     Tables {
         #[command(subcommand)]
@@ -512,6 +529,98 @@ pub enum ConnectionsCreateCommands {
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DatabasesCommands {
+    /// List managed databases in the workspace
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Create a new managed database
+    Create {
+        /// Database name (used as the connection name in SQL: `name.schema.table`)
+        #[arg(long)]
+        name: String,
+
+        /// Schema for tables declared at create time (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Table to declare up front (repeatable). Required before load on current API.
+        #[arg(long = "table")]
+        tables: Vec<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Delete a managed database and its tables
+    Delete {
+        /// Database name or connection ID
+        name_or_id: String,
+    },
+
+    /// Manage tables inside a managed database
+    Tables {
+        #[command(subcommand)]
+        command: DatabaseTablesCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DatabaseTablesCommands {
+    /// List tables in a managed database
+    List {
+        /// Database name or connection ID
+        database: String,
+
+        /// Filter by schema name
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Load a parquet file into a table (creates or replaces the table)
+    Load {
+        /// Database name or connection ID
+        database: String,
+
+        /// Table name
+        table: String,
+
+        /// Schema name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Path to a local parquet file to upload and load
+        #[arg(long, conflicts_with = "upload_id")]
+        file: Option<String>,
+
+        /// Use a previously staged upload ID from `POST /v1/files` instead of uploading
+        #[arg(long)]
+        upload_id: Option<String>,
+    },
+
+    /// Delete a table from a managed database
+    Delete {
+        /// Database name or connection ID
+        database: String,
+
+        /// Table name
+        table: String,
+
+        /// Schema name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
     },
 }
 
