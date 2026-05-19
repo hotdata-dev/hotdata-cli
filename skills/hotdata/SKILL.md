@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list tables, manage datasets, execute SQL queries, inspect query run history, search tables, manage indexes, manage sandboxes, manage workspace context and stored docs such as context:DATAMODEL via the context API (`hotdata context`), install or update the bundled agent skills (`hotdata skills`), generate shell completions (`hotdata completions`), or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list query runs", "list past queries", "query history", "list sandboxes", "create a sandbox", "run a sandbox", "workspace context", "pull context", "push context", "data model", "context:DATAMODEL", or asks you to use the hotdata CLI.
+description: Use this skill when the user wants to run hotdata CLI commands, query the Hotdata API, list workspaces, list connections, create connections, list or create managed databases, load parquet into database tables, list tables, manage datasets, execute SQL queries, inspect query run history, search tables, manage indexes, manage sandboxes, manage workspace context and stored docs such as context:DATAMODEL via the context API (`hotdata context`), install or update the bundled agent skills (`hotdata skills`), generate shell completions (`hotdata completions`), or interact with the hotdata service. Activate when the user says "run hotdata", "query hotdata", "list workspaces", "list connections", "create a connection", "list databases", "create a database", "managed database", "load parquet", "list tables", "list datasets", "create a dataset", "upload a dataset", "execute a query", "search a table", "list indexes", "create an index", "list query runs", "list past queries", "query history", "list sandboxes", "create a sandbox", "run a sandbox", "workspace context", "pull context", "push context", "data model", "context:DATAMODEL", or asks you to use the hotdata CLI.
 version: 0.2.2
 ---
 
@@ -73,14 +73,14 @@ These are **patterns** built from the commands below—not separate CLI subcomma
 
 - **Model (`context:DATAMODEL`)** — The **shared** Markdown semantic map of the workspace (entities, keys, joins across connections). **Store and read it only via workspace context** (`hotdata context list`, then `hotdata context show DATAMODEL` **only when listed**, `context push DATAMODEL`); refresh using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Contrast **analysis modeling** in sandboxes or chat (see [Analysis modeling vs context:DATAMODEL](#analysis-modeling-vs-contextdatamodel)).
 - **History** — Inspect prior activity via `hotdata queries list` (query runs) and `hotdata results list` / `results <id>` (row data).
-- **Chain** — Follow-ups via **`datasets create`** then `query` against `datasets.<schema>.<table>`.
+- **Chain** — Follow-ups via **`datasets create`** then `query` against `datasets.<schema>.<table>`, or via **`databases create`** + **`databases tables load`** (parquet) then `query` against `<database>.<schema>.<table>`.
 - **Indexes** — Review SQL and schema, compare to existing indexes, create **sorted**, **bm25**, or **vector** indexes when it clearly helps; see [references/WORKFLOWS.md](references/WORKFLOWS.md#indexes).
 
 Full step-by-step procedures: [references/WORKFLOWS.md](references/WORKFLOWS.md).
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`datasets`**, **`query`**, **`workspaces`**, **`connections`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`sandbox`**, **`context`**, **`completions`**.
+Top-level subcommands (each detailed below): **`auth`**, **`datasets`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`sandbox`**, **`context`**, **`completions`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**. Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -166,6 +166,43 @@ hotdata connections create \
 - Fields with `"type": "boolean"` must be JSON booleans (e.g. `"use_tls": true`).
 - Fields with `"type": "array"` must be JSON arrays (e.g. `"spreadsheet_ids": ["abc", "def"]`).
 - Nested `oneOf` fields must be a JSON object including a `"type"` discriminator field matching the chosen variant's `const` value.
+
+### Managed databases (`databases`)
+
+**Managed databases** are Hotdata-owned catalogs (`source_type: managed`) you create and populate yourself—no remote source to sync. Query them in SQL as **`<database_name>.<schema>.<table>`** (the database name is the connection name). Prefer **`hotdata databases`** over **`hotdata connections create --type managed`** for this workflow.
+
+**Parquet vs datasets:** `databases tables load` accepts **parquet only**. For CSV/JSON uploads without a managed database, use **`hotdata datasets create`**.
+
+**Declare tables at create time:** On the current API, each table must be declared with **`--table`** when creating the database before **`tables load`** will succeed. If load fails with *not declared*, recreate with `--table` or add declaration support when the API allows it.
+
+```
+hotdata databases list [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases create --name <name> [--table <table> ...] [--schema public] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases <name_or_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases delete <name_or_id> [--workspace-id <workspace_id>]
+
+hotdata databases tables list <database> [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases tables load <database> <table> --file ./data.parquet [--schema public] [--workspace-id <workspace_id>]
+hotdata databases tables load <database> <table> --upload-id <id> [--schema public] [--workspace-id <workspace_id>]
+hotdata databases tables delete <database> <table> [--schema public] [--workspace-id <workspace_id>]
+```
+
+- `list` — managed databases only (filters `source_type: managed` from connections).
+- `create` — registers a managed connection with optional `config.schemas[].tables[]` from repeated **`--table`**. Default schema is **`public`**.
+- `<name_or_id>` — inspect one database (name, id, table counts, SQL prefix hint).
+- `delete` — removes the managed database and its tables.
+- `tables list` — tables with `TABLE` (`<database>.<schema>.<table>`), `SYNCED`, `LAST_SYNC` (via `information_schema`).
+- `tables load` — uploads a local **parquet** file (or uses **`--upload-id`** from a prior `POST /v1/files` staging) and publishes with **`replace`** mode. **`--file`** and **`--upload-id`** are mutually exclusive.
+- `tables delete` — drops a table from the managed database.
+- Resolving by **name** or **connection id** works for all subcommands that take `<database>` or `<name_or_id>`. Non-managed connections error with a hint to use **`hotdata connections`**.
+
+Example:
+
+```
+hotdata databases create --name sales --table orders
+hotdata databases tables load sales orders --file ./orders.parquet
+hotdata query "SELECT count(*) FROM sales.public.orders"
+```
 
 ### List Tables and Columns
 ```
@@ -498,6 +535,24 @@ Use a sandbox to explore tables and capture **analysis-oriented** notes in sandb
    hotdata query "SELECT 1"
    hotdata query "SELECT \"CustomerName\" FROM datasets.main.my_csv LIMIT 10"
    ```
+
+## Workflow: Creating a managed database (parquet)
+
+1. Create the database and declare tables up front:
+   ```
+   hotdata databases create --name mydb --table events --table users
+   ```
+2. Load parquet into each table:
+   ```
+   hotdata databases tables load mydb events --file ./events.parquet
+   ```
+3. Confirm tables and query:
+   ```
+   hotdata databases tables list mydb
+   hotdata query "SELECT * FROM mydb.public.events LIMIT 10"
+   ```
+
+For CSV/JSON file uploads, use **`hotdata datasets create`** instead.
 
 ## Workflow: Creating a Connection
 
