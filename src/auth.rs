@@ -371,7 +371,7 @@ pub fn login() {
     }
 }
 
-pub fn register() {
+pub fn register(use_email: bool) {
     let profile_config = config::load("default").unwrap_or_default();
     let app_url = profile_config.app_url.to_string();
 
@@ -391,12 +391,14 @@ pub fn register() {
         tiny_http::Server::http("127.0.0.1:0").expect("failed to start local callback server");
     let port = server.server_addr().to_ip().unwrap().port();
 
+    let method = if use_email { "email" } else { "github" };
     let register_url = format!(
         "{app_url}/auth/cli-register/\
         ?code_challenge={code_challenge}\
         &code_challenge_method=S256\
         &state={state}\
-        &callback_port={port}",
+        &callback_port={port}\
+        &method={method}",
         app_url = app_url.trim_end_matches('/'),
     );
 
