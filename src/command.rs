@@ -277,6 +277,13 @@ pub enum AuthCommands {
     /// Log in via browser (same as `hotdata auth` with no subcommand)
     Login,
 
+    /// Create a new account via browser (defaults to GitHub OAuth)
+    Register {
+        /// Sign up with email and password instead of GitHub
+        #[arg(long)]
+        email: bool,
+    },
+
     /// Remove authentication for a profile
     Logout,
 

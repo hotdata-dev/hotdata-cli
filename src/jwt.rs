@@ -153,6 +153,49 @@ fn redacted_form_body(params: &[(&str, &str)]) -> serde_json::Value {
 /// body so the caller can still parse real values out of it.
 const TOKEN_REDACT_KEYS: &[&str] = &["access_token", "refresh_token"];
 
+/// Exchange a CLI registration PKCE code for a session.
+///
+/// The `/auth/cli-register/` flow issues a short-lived `CLIAuthCode` (not a
+/// full OAuth code). This function POSTs it to `/v1/auth/token` to get an
+/// opaque API token, then immediately mints a full JWT session via
+/// `mint_from_api_token` so the on-disk state is identical to a normal login.
+pub fn exchange_cli_register_code(
+    profile: &config::ProfileConfig,
+    code: &str,
+    code_verifier: &str,
+) -> Result<Session, String> {
+    let url = format!("{}/v1/auth/token", oauth_base(profile));
+    let body = serde_json::json!({ "code": code, "code_verifier": code_verifier });
+    let body_log = serde_json::json!({
+        "code": util::mask_credential(code),
+        "code_verifier": util::mask_credential(code_verifier),
+    });
+
+    let client = reqwest::blocking::Client::new();
+    let req = client.post(&url).json(&body);
+    let (status, body_text) = util::send_debug_with_redaction(
+        &client,
+        req,
+        Some(&body_log),
+        &["token"],
+    )
+    .map_err(|e| format!("connection error: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "registration token exchange failed: HTTP {status}: {body_text}"
+        ));
+    }
+
+    #[derive(Deserialize)]
+    struct RegisterResponse {
+        token: String,
+    }
+    let resp: RegisterResponse = serde_json::from_str(&body_text)
+        .map_err(|e| format!("malformed token response: {e}"))?;
+
+    mint_from_api_token(profile, &resp.token)
+}
+
 /// Exchange a PKCE authorization code for a session.
 pub fn mint_from_pkce_code(
     profile: &config::ProfileConfig,
@@ -498,6 +541,79 @@ mod tests {
     fn mint_from_pkce_code_connection_error() {
         let profile = mock_profile("http://127.0.0.1:1");
         let err = mint_from_pkce_code(&profile, "c", "v", "uri").unwrap_err();
+        assert!(err.contains("connection"), "got: {err}");
+    }
+
+    // --- exchange_cli_register_code ---
+
+    #[test]
+    fn exchange_cli_register_code_success() {
+        let mut server = mockito::Server::new();
+        // Step 1: exchange the PKCE code for an opaque API token.
+        let token_mock = server
+            .mock("POST", "/v1/auth/token")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "code": "reg-code",
+                "code_verifier": "verifier",
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"token":"hd_tok"}"#)
+            .create();
+        // Step 2: mint_from_api_token exchanges the opaque token for a JWT.
+        let mint_mock = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("grant_type".into(), "api_token".into()),
+                mockito::Matcher::UrlEncoded("api_token".into(), "hd_tok".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"jwt-abc","expires_in":300,"refresh_token":"r"}"#)
+            .create();
+
+        let profile = mock_profile(&server.url());
+        let session = exchange_cli_register_code(&profile, "reg-code", "verifier").unwrap();
+        token_mock.assert();
+        mint_mock.assert();
+        assert_eq!(session.access_token, "jwt-abc");
+        assert_eq!(session.source, "api_token");
+    }
+
+    #[test]
+    fn exchange_cli_register_code_http_error() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/v1/auth/token")
+            .with_status(401)
+            .with_body("invalid code")
+            .create();
+
+        let profile = mock_profile(&server.url());
+        let err = exchange_cli_register_code(&profile, "bad-code", "v").unwrap_err();
+        m.assert();
+        assert!(err.contains("401"), "got: {err}");
+    }
+
+    #[test]
+    fn exchange_cli_register_code_malformed_response() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/v1/auth/token")
+            .with_status(200)
+            .with_body("not json")
+            .create();
+
+        let profile = mock_profile(&server.url());
+        let err = exchange_cli_register_code(&profile, "code", "v").unwrap_err();
+        m.assert();
+        assert!(err.contains("malformed"), "got: {err}");
+    }
+
+    #[test]
+    fn exchange_cli_register_code_connection_error() {
+        let profile = mock_profile("http://127.0.0.1:1");
+        let err = exchange_cli_register_code(&profile, "code", "v").unwrap_err();
         assert!(err.contains("connection"), "got: {err}");
     }
 
