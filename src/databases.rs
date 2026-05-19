@@ -77,19 +77,6 @@ fn is_managed(db: &Database) -> bool {
     db.source_type == MANAGED_SOURCE_TYPE
 }
 
-fn fail_not_managed(name: &str, source_type: &str) -> ! {
-    use crossterm::style::Stylize;
-    eprintln!(
-        "{}",
-        format!(
-            "error: '{name}' is not a managed database (source_type: {source_type}). \
-             Use `hotdata connections` for remote sources."
-        )
-        .red()
-    );
-    std::process::exit(1);
-}
-
 pub fn try_resolve_database(api: &ApiClient, name_or_id: &str) -> Result<Database, String> {
     let body: ListConnectionsResponse = api.get("/connections");
     let by_id = body
@@ -191,14 +178,6 @@ fn table_rows_for_database(db_name: &str, tables: Vec<InfoTable>) -> Vec<TableRo
 }
 
 fn upload_parquet_file(api: &ApiClient, path: &str) -> String {
-    let f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("error opening file '{path}': {e}");
-            std::process::exit(1);
-        }
-    };
-
     if !is_parquet_path(path) {
         eprintln!(
             "error: managed table loads require a parquet file (got '{}'). \
@@ -207,6 +186,14 @@ fn upload_parquet_file(api: &ApiClient, path: &str) -> String {
         );
         std::process::exit(1);
     }
+
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error opening file '{path}': {e}");
+            std::process::exit(1);
+        }
+    };
 
     let file_size = f.metadata().map(|m| m.len()).unwrap_or(0);
     let pb = ProgressBar::new(file_size);
@@ -316,10 +303,6 @@ pub fn get(workspace_id: &str, name_or_id: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
     let db = resolve_database(&api, name_or_id);
     let detail: DatabaseDetail = api.get(&format!("/connections/{}", db.id));
-
-    if detail.source_type != MANAGED_SOURCE_TYPE {
-        fail_not_managed(&detail.name, &detail.source_type);
-    }
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&detail).unwrap()),
@@ -454,15 +437,11 @@ pub fn tables_load(
 ) {
     use crossterm::style::Stylize;
 
-    if file.is_some() && upload_id.is_some() {
-        eprintln!("error: pass either --file or --upload-id, not both");
-        std::process::exit(1);
-    }
-
     let api = ApiClient::new(Some(workspace_id));
     let db = resolve_database(&api, database);
     let schema = schema_name(schema);
 
+    // clap rejects `--file` and `--upload-id` together; the `(Some, Some)` arm is unreachable.
     let upload_id = match (upload_id, file) {
         (Some(id), None) => id.to_string(),
         (None, Some(path)) => upload_parquet_file(&api, path),
