@@ -1,3 +1,8 @@
+## [0.2.5] - 2026-05-19
+
+### 🚀 Features
+
+- *(databases)* Add `--url` flag to `tables load` for remote parquet files (#88)
 ## [0.2.4] - 2026-05-19
 
 ### 🚀 Features
