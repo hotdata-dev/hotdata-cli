@@ -169,7 +169,10 @@ struct WsListResponse { workspaces: Vec<WsItem> }
 struct WsItem { public_id: String, name: String }
 
 /// Wait for the browser callback, verify state, and extract the authorization code.
-/// `success_title` and `success_body` are rendered in the browser tab on success.
+///
+/// `success_title` and `success_body` are interpolated directly into HTML
+/// without escaping. Callers **must** pass static, trusted strings — never
+/// dynamic or user-supplied content.
 fn receive_callback(
     server: &tiny_http::Server,
     expected_state: &str,
@@ -262,11 +265,99 @@ fn is_already_signed_in(profile_config: &config::ProfileConfig) -> bool {
     check_status(profile_config) == AuthStatus::Authenticated
 }
 
+/// Shared PKCE browser-handoff loop used by both `login` and `register`.
+///
+/// 1. Generates PKCE params and starts the local loopback callback server.
+/// 2. Calls `build_url(app_url, code_challenge, state, port)` to construct
+///    the browser URL.
+/// 3. Opens the browser and waits for the OAuth/registration callback.
+/// 4. Calls `exchange(code, code_verifier, port)` to mint a JWT session.
+/// 5. Saves the session, prints `success_print`, and displays the workspace.
+fn run_browser_auth(
+    profile_config: &config::ProfileConfig,
+    opening_msg: &str,
+    waiting_msg: &str,
+    success_print: &str,
+    success_title: &str,
+    success_body: &str,
+    build_url: impl Fn(&str, &str, &str, u16) -> String,
+    exchange: impl Fn(&str, &str, u16) -> Result<crate::jwt::Session, String>,
+) {
+    let app_url = profile_config.app_url.to_string();
+    let code_verifier = generate_code_verifier();
+    let code_challenge = generate_code_challenge(&code_verifier);
+    let state = generate_random_string(32);
+
+    let server =
+        tiny_http::Server::http("127.0.0.1:0").expect("failed to start local callback server");
+    let port = server.server_addr().to_ip().unwrap().port();
+
+    let url = build_url(app_url.trim_end_matches('/'), &code_challenge, &state, port);
+
+    println!("{opening_msg}");
+    stdout()
+        .execute(Print("If your browser does not open, visit:\n  "))
+        .unwrap()
+        .execute(SetForegroundColor(Color::DarkGrey))
+        .unwrap()
+        .execute(Print(format!("{url}\n")))
+        .unwrap()
+        .execute(ResetColor)
+        .unwrap();
+
+    if let Err(e) = open::that(&url) {
+        eprintln!("failed to open browser: {e}");
+    }
+
+    println!("{waiting_msg}");
+
+    let code = match receive_callback(&server, &state, success_title, success_body) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match exchange(&code, &code_verifier, port) {
+        Ok(session) => {
+            if let Err(e) = crate::jwt::save_session(&session) {
+                eprintln!("warning: could not save session: {e}");
+            }
+            stdout()
+                .execute(SetForegroundColor(Color::Green))
+                .unwrap()
+                .execute(Print(format!("{success_print}\n")))
+                .unwrap()
+                .execute(ResetColor)
+                .unwrap();
+
+            let workspaces = cache_workspaces(profile_config, &session.access_token)
+                .unwrap_or_else(|_| profile_config.workspaces.clone());
+            match workspaces.first() {
+                Some(w) => {
+                    print_row(
+                        "Workspace",
+                        &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()),
+                    );
+                    print_row(
+                        "",
+                        &"use 'hotdata workspaces set' to switch workspaces".dark_grey().to_string(),
+                    );
+                }
+                None => print_row("Workspace", &"None".dark_grey().to_string()),
+            }
+        }
+        Err(msg) => {
+            eprintln!("{}", msg.red());
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn login() {
     let profile_config = config::load("default").unwrap_or_default();
-    let app_url = profile_config.app_url.to_string();
 
-    // Check if already authenticated
     if is_already_signed_in(&profile_config) {
         println!("{}", "You are already signed in.".green());
         if !crate::util::is_interactive() {
@@ -282,98 +373,39 @@ pub fn login() {
         }
     }
 
-    let code_verifier = generate_code_verifier();
-    let code_challenge = generate_code_challenge(&code_verifier);
-    let state = generate_random_string(32);
-
-    // Bind to port 0 so the OS picks an available port. DOT's consent
-    // page will redirect here with `?code=...&state=...`.
-    let server =
-        tiny_http::Server::http("127.0.0.1:0").expect("failed to start local callback server");
-    let port = server.server_addr().to_ip().unwrap().port();
-    let redirect_uri = format!("http://127.0.0.1:{port}/");
-
     // DOT's `/o/authorize/` endpoint is mounted off the app URL (the
     // browser-facing one; allauth session cookies live here). We send
     // no `scope` parameter — the consent page picks permissions and
     // workspace scope interactively, then composes the scope string
     // server-side (see HotdataAllowForm).
-    let login_url = format!(
-        "{app_url}/o/authorize/\
-        ?client_id=hotdata-cli\
-        &response_type=code\
-        &redirect_uri={redirect_uri}\
-        &code_challenge={code_challenge}\
-        &code_challenge_method=S256\
-        &state={state}",
-        app_url = app_url.trim_end_matches('/'),
-    );
-
-    println!("Opening browser to log in...");
-    stdout()
-        .execute(Print("If your browser does not open, visit:\n  "))
-        .unwrap()
-        .execute(SetForegroundColor(Color::DarkGrey))
-        .unwrap()
-        .execute(Print(format!("{login_url}\n")))
-        .unwrap()
-        .execute(ResetColor)
-        .unwrap();
-
-    if let Err(e) = open::that(&login_url) {
-        eprintln!("failed to open browser: {e}");
-    }
-
-    println!("Waiting for login callback...");
-
-    let code = match receive_callback(
-        &server,
-        &state,
+    run_browser_auth(
+        &profile_config,
+        "Opening browser to log in...",
+        "Waiting for login callback...",
+        "Logged in successfully.",
         "Login successful",
         "You're now authenticated with Hotdata.<br/>You can close this tab and return to the terminal.",
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    match crate::jwt::mint_from_pkce_code(&profile_config, &code, &code_verifier, &redirect_uri) {
-        Ok(session) => {
-            if let Err(e) = crate::jwt::save_session(&session) {
-                eprintln!("warning: could not save session: {e}");
-            }
-            stdout()
-                .execute(SetForegroundColor(Color::Green))
-                .unwrap()
-                .execute(Print("Logged in successfully.\n"))
-                .unwrap()
-                .execute(ResetColor)
-                .unwrap();
-
-            // Best-effort workspace cache using the freshly minted JWT.
-            // Fall back to the existing on-disk list if the fetch fails.
-            let workspaces = cache_workspaces(&profile_config, &session.access_token)
-                .unwrap_or(profile_config.workspaces);
-            match workspaces.first() {
-                Some(w) => {
-                    print_row("Workspace", &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()));
-                    print_row("", &"use 'hotdata workspaces set' to switch workspaces".dark_grey().to_string());
-                }
-                None => print_row("Workspace", &"None".dark_grey().to_string()),
-            }
-        }
-        Err(msg) => {
-            eprintln!("{}", msg.red());
-            std::process::exit(1);
-        }
-    }
+        |app_url, code_challenge, state, port| {
+            let redirect_uri = format!("http://127.0.0.1:{port}/");
+            format!(
+                "{app_url}/o/authorize/\
+                ?client_id=hotdata-cli\
+                &response_type=code\
+                &redirect_uri={redirect_uri}\
+                &code_challenge={code_challenge}\
+                &code_challenge_method=S256\
+                &state={state}"
+            )
+        },
+        |code, code_verifier, port| {
+            let redirect_uri = format!("http://127.0.0.1:{port}/");
+            crate::jwt::mint_from_pkce_code(&profile_config, code, code_verifier, &redirect_uri)
+        },
+    );
 }
 
 pub fn register(use_email: bool) {
     let profile_config = config::load("default").unwrap_or_default();
-    let app_url = profile_config.app_url.to_string();
 
     if is_already_signed_in(&profile_config) {
         println!(
@@ -383,95 +415,28 @@ pub fn register(use_email: bool) {
         return;
     }
 
-    let code_verifier = generate_code_verifier();
-    let code_challenge = generate_code_challenge(&code_verifier);
-    let state = generate_random_string(32);
-
-    let server =
-        tiny_http::Server::http("127.0.0.1:0").expect("failed to start local callback server");
-    let port = server.server_addr().to_ip().unwrap().port();
-
     let method = if use_email { "email" } else { "github" };
-    let register_url = format!(
-        "{app_url}/auth/cli-register/\
-        ?code_challenge={code_challenge}\
-        &code_challenge_method=S256\
-        &state={state}\
-        &callback_port={port}\
-        &method={method}",
-        app_url = app_url.trim_end_matches('/'),
-    );
-
-    println!("Opening browser to create your account...");
-    stdout()
-        .execute(Print("If your browser does not open, visit:\n  "))
-        .unwrap()
-        .execute(SetForegroundColor(Color::DarkGrey))
-        .unwrap()
-        .execute(Print(format!("{register_url}\n")))
-        .unwrap()
-        .execute(ResetColor)
-        .unwrap();
-
-    if let Err(e) = open::that(&register_url) {
-        eprintln!("failed to open browser: {e}");
-    }
-
-    println!("Waiting for account setup to complete...");
-
-    let code = match receive_callback(
-        &server,
-        &state,
+    run_browser_auth(
+        &profile_config,
+        "Opening browser to create your account...",
+        "Waiting for account setup to complete...",
+        "Account created and logged in.",
         "Account created",
         "Your Hotdata account is ready.<br/>You can close this tab and return to the terminal.",
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    match crate::jwt::exchange_cli_register_code(&profile_config, &code, &code_verifier) {
-        Ok(session) => {
-            if let Err(e) = crate::jwt::save_session(&session) {
-                eprintln!("warning: could not save session: {e}");
-            }
-            stdout()
-                .execute(SetForegroundColor(Color::Green))
-                .unwrap()
-                .execute(Print("Account created and logged in.\n"))
-                .unwrap()
-                .execute(ResetColor)
-                .unwrap();
-
-            let workspaces = cache_workspaces(&profile_config, &session.access_token)
-                .unwrap_or(profile_config.workspaces);
-            match workspaces.first() {
-                Some(w) => {
-                    print_row(
-                        "Workspace",
-                        &format!(
-                            "{} {}",
-                            w.name.as_str().cyan(),
-                            format!("({})", w.public_id).dark_grey()
-                        ),
-                    );
-                    print_row(
-                        "",
-                        &"use 'hotdata workspaces set' to switch workspaces"
-                            .dark_grey()
-                            .to_string(),
-                    );
-                }
-                None => print_row("Workspace", &"None".dark_grey().to_string()),
-            }
-        }
-        Err(msg) => {
-            eprintln!("{}", msg.red());
-            std::process::exit(1);
-        }
-    }
+        |app_url, code_challenge, state, port| {
+            format!(
+                "{app_url}/auth/cli-register/\
+                ?code_challenge={code_challenge}\
+                &code_challenge_method=S256\
+                &state={state}\
+                &callback_port={port}\
+                &method={method}"
+            )
+        },
+        |code, code_verifier, _port| {
+            crate::jwt::exchange_cli_register_code(&profile_config, code, code_verifier)
+        },
+    );
 }
 
 /// Fetch workspaces with a freshly minted JWT and cache them in config.
