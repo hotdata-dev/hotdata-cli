@@ -158,7 +158,8 @@ pub enum Commands {
         /// Search query text — required for both --type bm25 and --type vector
         query: String,
 
-        /// Search type — required (no default; choose deliberately)
+        /// Search type (`bm25` or `vector`). Inferred automatically when the table has exactly
+        /// one search index — required only when multiple indexes exist.
         ///
         /// `vector` runs server-side `vector_distance(col, 'text')` — the server resolves the
         /// embedding column, model, and metric from the index metadata.
@@ -166,16 +167,19 @@ pub enum Commands {
         /// `bm25` runs server-side `bm25_search(table, col, 'text')` and requires a BM25 index
         /// on the column.
         #[arg(long, value_parser = ["vector", "bm25"])]
-        r#type: String,
+        r#type: Option<String>,
 
-        /// Table to search (connection.schema.table)
+        /// Table to search (`connection.table` or `connection.schema.table`).
+        /// Schema defaults to `public` when omitted.
         #[arg(long)]
         table: String,
 
-        /// Column to search. For `--type vector`, name the source text column — the server
-        /// resolves the embedding column from the index metadata.
+        /// Column to search. Inferred automatically when the table has exactly one search index
+        /// of the resolved type — required only when multiple indexed columns exist.
+        /// For `--type vector`, name the source text column — the server resolves the embedding
+        /// column from the index metadata.
         #[arg(long)]
-        column: String,
+        column: Option<String>,
 
         /// Columns to display (comma-separated, defaults to all)
         #[arg(long)]

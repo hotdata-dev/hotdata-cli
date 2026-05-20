@@ -147,6 +147,91 @@ fn list_one_table_scan(
     }
 }
 
+/// Infers `(index_type, column)` for `hotdata search` when `--type` or `--column` are omitted.
+///
+/// Fetches the indexes on `connection_name.schema.table`, filters to searchable types
+/// (`bm25`, `vector`), and narrows further by `hint_type` / `hint_column` when provided.
+/// Exits with an error when the result is ambiguous (multiple matches) or no index exists.
+pub fn infer_for_search(
+    workspace_id: &str,
+    connection_name: &str,
+    schema: &str,
+    table: &str,
+    hint_type: Option<&str>,
+    hint_column: Option<&str>,
+) -> (String, String) {
+    use crossterm::style::Stylize;
+
+    let api = ApiClient::new(Some(workspace_id));
+
+    // Resolve connection name → ID
+    let conn_map = connection_lookup(&api);
+    let connection_id = match conn_map.get(connection_name) {
+        Some(id) => id.clone(),
+        None => {
+            eprintln!(
+                "{}",
+                format!("Connection '{}' not found.", connection_name).red()
+            );
+            std::process::exit(1);
+        }
+    };
+
+    // Fetch indexes for this table
+    let indexes = list_one_table(&api, &connection_id, schema, table);
+
+    // Filter to searchable indexes, honouring any hints
+    let matches: Vec<&Index> = indexes
+        .iter()
+        .filter(|i| {
+            let t = i.index_type.as_str();
+            (t == "bm25" || t == "vector")
+                && hint_type.map_or(true, |ht| ht == t)
+                && hint_column.map_or(true, |hc| i.columns.iter().any(|c| c == hc))
+        })
+        .collect();
+
+    match matches.as_slice() {
+        [] => {
+            let what = match hint_type {
+                Some(t) => format!("{} index", t),
+                None => "BM25 or vector index".to_string(),
+            };
+            eprintln!(
+                "{}",
+                format!(
+                    "No {} found on {}.{}.{} — run 'hotdata indexes create' first.",
+                    what, connection_name, schema, table
+                )
+                .red()
+            );
+            std::process::exit(1);
+        }
+        [one] => {
+            let index_type = one.index_type.clone();
+            let column = one.columns.first().cloned().unwrap_or_default();
+            (index_type, column)
+        }
+        _ => {
+            let types: Vec<&str> = matches.iter().map(|i| i.index_type.as_str()).collect();
+            let cols: Vec<String> = matches
+                .iter()
+                .flat_map(|i| i.columns.iter().cloned())
+                .collect();
+            eprintln!(
+                "{}",
+                format!(
+                    "Multiple search indexes found (types: {}, columns: {}) — specify --type and --column.",
+                    types.join(", "),
+                    cols.join(", ")
+                )
+                .red()
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn list(
     workspace_id: &str,
     connection_id: Option<&str>,

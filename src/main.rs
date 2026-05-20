@@ -706,9 +706,46 @@ fn main() {
                 output,
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
+
+                // Parse `connection.table` or `connection.schema.table`.
+                // Schema defaults to `public` when omitted.
+                let parts: Vec<&str> = table.splitn(4, '.').collect();
+                let (conn_name, schema, table_name) = match parts.as_slice() {
+                    [conn, schema, tbl] => {
+                        (conn.to_string(), schema.to_string(), tbl.to_string())
+                    }
+                    [conn, tbl] => (conn.to_string(), "public".to_string(), tbl.to_string()),
+                    _ => {
+                        eprintln!(
+                            "error: --table must be 'connection.table' or 'connection.schema.table'"
+                        );
+                        std::process::exit(1);
+                    }
+                };
+                let normalized_table = format!("{}.{}.{}", conn_name, schema, table_name);
+
+                // Infer --type and --column from the table's indexes when either is omitted.
+                let (resolved_type, resolved_column) =
+                    if r#type.is_some() && column.is_some() {
+                        (r#type.unwrap(), column.unwrap())
+                    } else {
+                        let (inferred_type, inferred_column) = indexes::infer_for_search(
+                            &workspace_id,
+                            &conn_name,
+                            &schema,
+                            &table_name,
+                            r#type.as_deref(),
+                            column.as_deref(),
+                        );
+                        (
+                            r#type.unwrap_or(inferred_type),
+                            column.unwrap_or(inferred_column),
+                        )
+                    };
+
                 let select_cols = select.as_deref().unwrap_or("*");
 
-                let sql = match r#type.as_str() {
+                let sql = match resolved_type.as_str() {
                     "bm25" => {
                         let bm25_columns = match select.as_deref() {
                             Some(cols) => format!("{}, score", cols),
@@ -717,8 +754,8 @@ fn main() {
                         format!(
                             "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
                             bm25_columns,
-                            table.replace('\'', "''"),
-                            column.replace('\'', "''"),
+                            normalized_table.replace('\'', "''"),
+                            resolved_column.replace('\'', "''"),
                             query.replace('\'', "''"),
                             limit,
                         )
@@ -728,9 +765,9 @@ fn main() {
                     "vector" => format!(
                         "SELECT {}, vector_distance({}, '{}') AS dist FROM {} ORDER BY dist LIMIT {}",
                         select_cols,
-                        column,
+                        resolved_column,
                         query.replace('\'', "''"),
-                        table,
+                        normalized_table,
                         limit,
                     ),
                     _ => unreachable!(),
