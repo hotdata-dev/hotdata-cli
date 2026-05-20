@@ -405,10 +405,6 @@ pub fn create(workspace_id: &str, name: &str, schema: &str, tables: &[String], f
             println!("{}", "Database created".green());
             println!("name: {}", result.name);
             println!("id:   {}", result.id);
-            println!(
-                "load: hotdata databases tables load {} <table> --file ./data.parquet",
-                result.name
-            );
         }
         _ => unreachable!(),
     }

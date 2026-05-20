@@ -396,6 +396,23 @@ fn main() {
                         Some(DatabasesCommands::Delete { name_or_id }) => {
                             databases::delete(&workspace_id, &name_or_id)
                         }
+                        Some(DatabasesCommands::Load {
+                            target,
+                            file,
+                            url,
+                            upload_id,
+                        }) => {
+                            let (database, schema, table) = parse_db_target(&target);
+                            databases::tables_load(
+                                &workspace_id,
+                                &database,
+                                &table,
+                                Some(schema.as_str()),
+                                file.as_deref(),
+                                url.as_deref(),
+                                upload_id.as_deref(),
+                            )
+                        }
                         Some(DatabasesCommands::Tables { command }) => match command {
                             DatabaseTablesCommands::List {
                                 database,
@@ -565,12 +582,10 @@ fn main() {
                         &output,
                     ),
                     IndexesCommands::Create {
-                        connection_id,
-                        schema,
-                        table,
+                        target,
                         dataset_id,
-                        name,
                         columns,
+                        name,
                         r#type,
                         metric,
                         r#async,
@@ -579,32 +594,68 @@ fn main() {
                         output_column,
                         description,
                     } => {
-                        let scope = match (
-                            dataset_id.as_deref(),
-                            connection_id.as_deref(),
-                            schema.as_deref(),
-                            table.as_deref(),
-                        ) {
-                            (Some(did), _, _, _) => indexes::IndexScope::Dataset { dataset_id: did },
-                            (None, Some(cid), Some(sch), Some(tbl)) => {
-                                indexes::IndexScope::Connection {
-                                    connection_id: cid,
-                                    schema: sch,
-                                    table: tbl,
+                        let api = api::ApiClient::new(Some(&workspace_id));
+                        let (scope, resolved_columns, auto_name) =
+                            match (target.as_deref(), dataset_id.as_deref()) {
+                                (Some(tgt), None) => {
+                                    let (conn_name, schema, table, cols) =
+                                        parse_index_target(tgt);
+                                    let conn_id =
+                                        connections::resolve_connection_id(&api, &conn_name);
+                                    let auto = format!(
+                                        "{table}_{cols}_{type}",
+                                        cols = cols.join("_"),
+                                        type = r#type
+                                    );
+                                    (
+                                        (conn_id, schema, table),
+                                        cols.join(","),
+                                        auto,
+                                    )
                                 }
-                            }
-                            _ => {
-                                eprintln!(
-                                    "error: provide either --dataset-id or all three of --connection-id, --schema, --table"
-                                );
-                                std::process::exit(1);
+                                (None, Some(did)) => {
+                                    let cols =
+                                        columns.as_deref().unwrap_or_else(|| {
+                                            eprintln!(
+                                                "error: --columns is required with --dataset-id"
+                                            );
+                                            std::process::exit(1);
+                                        });
+                                    let auto = format!(
+                                        "dataset_{cols}_{type}",
+                                        cols = cols.replace(',', "_"),
+                                        type = r#type
+                                    );
+                                    (
+                                        (did.to_string(), String::new(), String::new()),
+                                        cols.to_string(),
+                                        auto,
+                                    )
+                                }
+                                _ => {
+                                    eprintln!(
+                                        "error: provide either <target> (e.g. airbnb.listings[col1,col2]) or --dataset-id with --columns"
+                                    );
+                                    std::process::exit(1);
+                                }
+                            };
+                        let index_name = name.unwrap_or(auto_name);
+                        let is_dataset = dataset_id.is_some();
+                        let (conn_id, schema, table) = scope;
+                        let resolved_scope = if is_dataset {
+                            indexes::IndexScope::Dataset { dataset_id: &conn_id }
+                        } else {
+                            indexes::IndexScope::Connection {
+                                connection_id: &conn_id,
+                                schema: &schema,
+                                table: &table,
                             }
                         };
                         indexes::create(
                             &workspace_id,
-                            scope,
-                            &name,
-                            &columns,
+                            resolved_scope,
+                            &index_name,
+                            &resolved_columns,
                             &r#type,
                             metric.as_deref(),
                             r#async,
@@ -908,6 +959,123 @@ fn main() {
             }
             Commands::Update => update::run_update(),
         },
+    }
+}
+
+/// Parse a database target like `airbnb.listings` or `airbnb.public.listings`
+/// into `(database, schema, table)`. Schema defaults to `public`.
+fn parse_db_target(target: &str) -> (String, String, String) {
+    let parts: Vec<&str> = target.splitn(4, '.').collect();
+    match parts.as_slice() {
+        [db, tbl] => (db.to_string(), "public".to_string(), tbl.to_string()),
+        [db, schema, tbl] => (db.to_string(), schema.to_string(), tbl.to_string()),
+        _ => {
+            eprintln!(
+                "error: target must be 'database.table' or 'database.schema.table'"
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Parse an index target like `airbnb.listings[col1,col2]` or
+/// `airbnb.public.listings[col1,col2]` into `(conn_name, schema, table, columns)`.
+/// Schema defaults to `public` when only two dot-parts are given.
+fn parse_index_target(target: &str) -> (String, String, String, Vec<String>) {
+    let Some(bracket_pos) = target.find('[') else {
+        eprintln!(
+            "error: target must include columns in brackets, e.g. airbnb.listings[col1,col2]"
+        );
+        std::process::exit(1);
+    };
+    if !target.ends_with(']') {
+        eprintln!(
+            "error: target bracket is not closed — use e.g. 'airbnb.listings[col1,col2]'"
+        );
+        std::process::exit(1);
+    }
+    let table_part = &target[..bracket_pos];
+    let cols_raw = &target[bracket_pos + 1..target.len() - 1];
+
+    let parts: Vec<&str> = table_part.splitn(4, '.').collect();
+    let (conn, schema, table) = match parts.as_slice() {
+        [c, t] => (c.to_string(), "public".to_string(), t.to_string()),
+        [c, s, t] => (c.to_string(), s.to_string(), t.to_string()),
+        _ => {
+            eprintln!(
+                "error: target must be 'connection.table[cols]' or 'connection.schema.table[cols]'"
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let columns: Vec<String> = cols_raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if columns.is_empty() {
+        eprintln!("error: no columns specified in brackets");
+        std::process::exit(1);
+    }
+
+    (conn, schema, table, columns)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_db_target ---
+
+    #[test]
+    fn db_target_two_parts_defaults_schema_to_public() {
+        let (db, schema, table) = parse_db_target("airbnb.listings");
+        assert_eq!(db, "airbnb");
+        assert_eq!(schema, "public");
+        assert_eq!(table, "listings");
+    }
+
+    #[test]
+    fn db_target_three_parts_uses_explicit_schema() {
+        let (db, schema, table) = parse_db_target("airbnb.staging.listings");
+        assert_eq!(db, "airbnb");
+        assert_eq!(schema, "staging");
+        assert_eq!(table, "listings");
+    }
+
+    // --- parse_index_target ---
+
+    #[test]
+    fn index_target_two_parts_defaults_schema_to_public() {
+        let (conn, schema, table, cols) = parse_index_target("airbnb.listings[description]");
+        assert_eq!(conn, "airbnb");
+        assert_eq!(schema, "public");
+        assert_eq!(table, "listings");
+        assert_eq!(cols, vec!["description"]);
+    }
+
+    #[test]
+    fn index_target_three_parts_uses_explicit_schema() {
+        let (conn, schema, table, cols) =
+            parse_index_target("airbnb.public.listings[name,description]");
+        assert_eq!(conn, "airbnb");
+        assert_eq!(schema, "public");
+        assert_eq!(table, "listings");
+        assert_eq!(cols, vec!["name", "description"]);
+    }
+
+    #[test]
+    fn index_target_multiple_columns() {
+        let (_, _, _, cols) = parse_index_target("db.tbl[a,b,c]");
+        assert_eq!(cols, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn index_target_trims_column_whitespace() {
+        let (_, _, _, cols) = parse_index_target("db.tbl[a, b]");
+        assert_eq!(cols, vec!["a", "b"]);
     }
 }
 

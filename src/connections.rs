@@ -157,6 +157,38 @@ struct ListResponse {
     connections: Vec<Connection>,
 }
 
+/// Resolve a connection name or ID to a connection ID, exiting on failure.
+///
+/// If `name_or_id` looks like a raw connection ID (starts with "conn"), tries
+/// `GET /connections/{id}` directly first to avoid listing the full workspace.
+/// Falls back to listing and matching by name on a 404 or when given a plain name.
+pub fn resolve_connection_id(api: &ApiClient, name_or_id: &str) -> String {
+    use crossterm::style::Stylize;
+
+    if name_or_id.starts_with("conn") {
+        let (status, _) = api.get_raw(&format!("/connections/{name_or_id}"));
+        if status.is_success() {
+            return name_or_id.to_string();
+        }
+    }
+
+    let body: ListResponse = api.get("/connections");
+    match body
+        .connections
+        .iter()
+        .find(|c| c.id == name_or_id || c.name == name_or_id)
+    {
+        Some(conn) => conn.id.clone(),
+        None => {
+            eprintln!(
+                "{}",
+                format!("error: no connection named or with id '{name_or_id}'").red()
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
     let is_table = format == "table";
