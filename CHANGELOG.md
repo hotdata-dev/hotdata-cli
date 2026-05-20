@@ -1,3 +1,13 @@
+## [0.2.6] - 2026-05-19
+
+### 🚀 Features
+
+- *(search)* Infer `--type` and `--column` from table indexes; schema defaults to `public` (#90)
+
+### 🐛 Bug Fixes
+
+- *(search)* Explicit error when a search index has no columns (#90)
+
 ## [0.2.5] - 2026-05-19
 
 ### 🚀 Features
