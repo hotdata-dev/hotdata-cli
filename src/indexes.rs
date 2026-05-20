@@ -147,6 +147,61 @@ fn list_one_table_scan(
     }
 }
 
+/// Pure matching logic for search inference — extracted for testability.
+///
+/// Filters `indexes` to searchable types (`bm25`, `vector`), narrows by `hint_type` /
+/// `hint_column` when provided, and returns `Ok((index_type, column))` on an unambiguous
+/// match. Returns `Err(message)` on no match, multiple matches, or an index with no columns.
+/// `location` is used only in error messages (e.g. `"mydb.public.listings"`).
+fn resolve_search_params(
+    indexes: &[Index],
+    hint_type: Option<&str>,
+    hint_column: Option<&str>,
+    location: &str,
+) -> Result<(String, String), String> {
+    let matches: Vec<&Index> = indexes
+        .iter()
+        .filter(|i| {
+            let t = i.index_type.as_str();
+            (t == "bm25" || t == "vector")
+                && hint_type.map_or(true, |ht| ht == t)
+                && hint_column.map_or(true, |hc| i.columns.iter().any(|c| c == hc))
+        })
+        .collect();
+
+    match matches.as_slice() {
+        [] => {
+            let what = match hint_type {
+                Some(t) => format!("{} index", t),
+                None => "BM25 or vector index".to_string(),
+            };
+            Err(format!(
+                "No {} found on {} — run 'hotdata indexes create' first.",
+                what, location
+            ))
+        }
+        [one] => {
+            let index_type = one.index_type.clone();
+            let column = one.columns.first().cloned().ok_or_else(|| {
+                format!("Index '{}' has no columns.", one.index_name)
+            })?;
+            Ok((index_type, column))
+        }
+        _ => {
+            let types: Vec<&str> = matches.iter().map(|i| i.index_type.as_str()).collect();
+            let cols: Vec<String> = matches
+                .iter()
+                .flat_map(|i| i.columns.iter().cloned())
+                .collect();
+            Err(format!(
+                "Multiple search indexes found (types: {}, columns: {}) — specify --type and --column.",
+                types.join(", "),
+                cols.join(", ")
+            ))
+        }
+    }
+}
+
 /// Infers `(index_type, column)` for `hotdata search` when `--type` or `--column` are omitted.
 ///
 /// Fetches the indexes on `connection_name.schema.table`, filters to searchable types
@@ -180,53 +235,11 @@ pub fn infer_for_search(
     // Fetch indexes for this table
     let indexes = list_one_table(&api, &connection_id, schema, table);
 
-    // Filter to searchable indexes, honouring any hints
-    let matches: Vec<&Index> = indexes
-        .iter()
-        .filter(|i| {
-            let t = i.index_type.as_str();
-            (t == "bm25" || t == "vector")
-                && hint_type.map_or(true, |ht| ht == t)
-                && hint_column.map_or(true, |hc| i.columns.iter().any(|c| c == hc))
-        })
-        .collect();
-
-    match matches.as_slice() {
-        [] => {
-            let what = match hint_type {
-                Some(t) => format!("{} index", t),
-                None => "BM25 or vector index".to_string(),
-            };
-            eprintln!(
-                "{}",
-                format!(
-                    "No {} found on {}.{}.{} — run 'hotdata indexes create' first.",
-                    what, connection_name, schema, table
-                )
-                .red()
-            );
-            std::process::exit(1);
-        }
-        [one] => {
-            let index_type = one.index_type.clone();
-            let column = one.columns.first().cloned().unwrap_or_default();
-            (index_type, column)
-        }
-        _ => {
-            let types: Vec<&str> = matches.iter().map(|i| i.index_type.as_str()).collect();
-            let cols: Vec<String> = matches
-                .iter()
-                .flat_map(|i| i.columns.iter().cloned())
-                .collect();
-            eprintln!(
-                "{}",
-                format!(
-                    "Multiple search indexes found (types: {}, columns: {}) — specify --type and --column.",
-                    types.join(", "),
-                    cols.join(", ")
-                )
-                .red()
-            );
+    let location = format!("{}.{}.{}", connection_name, schema, table);
+    match resolve_search_params(&indexes, hint_type, hint_column, &location) {
+        Ok(result) => result,
+        Err(msg) => {
+            eprintln!("{}", msg.red());
             std::process::exit(1);
         }
     }
@@ -658,5 +671,96 @@ mod tests {
         let rows = list_one_table_scan(&api, "x", "s", "t");
         mock.assert();
         assert!(rows.is_empty());
+    }
+
+    fn make_index(name: &str, index_type: &str, columns: &[&str]) -> Index {
+        Index {
+            index_name: name.into(),
+            index_type: index_type.into(),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            metric: None,
+            status: "ready".into(),
+            created_at: "2020-01-01T00:00:00Z".into(),
+            updated_at: "2020-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn resolve_search_params_single_bm25_returns_type_and_column() {
+        let indexes = vec![make_index("fts", "bm25", &["description"])];
+        let result = resolve_search_params(&indexes, None, None, "db.public.t");
+        assert_eq!(result, Ok(("bm25".into(), "description".into())));
+    }
+
+    #[test]
+    fn resolve_search_params_single_vector_returns_type_and_column() {
+        let indexes = vec![make_index("vec", "vector", &["embedding"])];
+        let result = resolve_search_params(&indexes, None, None, "db.public.t");
+        assert_eq!(result, Ok(("vector".into(), "embedding".into())));
+    }
+
+    #[test]
+    fn resolve_search_params_non_search_indexes_ignored() {
+        let indexes = vec![
+            make_index("sorted_idx", "sorted", &["created_at"]),
+            make_index("fts", "bm25", &["body"]),
+        ];
+        let result = resolve_search_params(&indexes, None, None, "db.public.t");
+        assert_eq!(result, Ok(("bm25".into(), "body".into())));
+    }
+
+    #[test]
+    fn resolve_search_params_hint_type_narrows_to_single() {
+        let indexes = vec![
+            make_index("fts", "bm25", &["description"]),
+            make_index("vec", "vector", &["embedding"]),
+        ];
+        let result = resolve_search_params(&indexes, Some("bm25"), None, "db.public.t");
+        assert_eq!(result, Ok(("bm25".into(), "description".into())));
+    }
+
+    #[test]
+    fn resolve_search_params_hint_column_narrows_to_single() {
+        let indexes = vec![
+            make_index("fts_desc", "bm25", &["description"]),
+            make_index("fts_name", "bm25", &["name"]),
+        ];
+        let result = resolve_search_params(&indexes, None, Some("name"), "db.public.t");
+        assert_eq!(result, Ok(("bm25".into(), "name".into())));
+    }
+
+    #[test]
+    fn resolve_search_params_no_search_indexes_returns_error() {
+        let indexes = vec![make_index("sorted_idx", "sorted", &["id"])];
+        let result = resolve_search_params(&indexes, None, None, "db.public.t");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No BM25 or vector index found"));
+    }
+
+    #[test]
+    fn resolve_search_params_no_index_error_mentions_hint_type() {
+        let indexes = vec![make_index("fts", "bm25", &["description"])];
+        let result = resolve_search_params(&indexes, Some("vector"), None, "db.public.t");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("vector index"));
+    }
+
+    #[test]
+    fn resolve_search_params_multiple_matches_returns_error() {
+        let indexes = vec![
+            make_index("fts_desc", "bm25", &["description"]),
+            make_index("fts_name", "bm25", &["name"]),
+        ];
+        let result = resolve_search_params(&indexes, None, None, "db.public.t");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Multiple search indexes found"));
+    }
+
+    #[test]
+    fn resolve_search_params_index_with_no_columns_returns_error() {
+        let indexes = vec![make_index("fts", "bm25", &[])];
+        let result = resolve_search_params(&indexes, None, None, "db.public.t");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("has no columns"));
     }
 }
