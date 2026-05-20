@@ -1,3 +1,15 @@
+## [0.2.7] - 2026-05-20
+
+### 🚀 Features
+
+- *(indexes)* Dot-bracket notation for `indexes create`: `airbnb.listings[col1,col2]` replaces `--connection-id/--schema/--table/--columns` (#92)
+- *(databases)* Add `databases load <db.table>` shorthand replacing `databases tables load` (#92)
+- *(indexes)* Make `--name` optional on `indexes create`; auto-derived from table, columns, and type (#92)
+
+### 🐛 Bug Fixes
+
+- *(databases)* Remove `load:` hint from `databases create` success output (#92)
+
 ## [0.2.6] - 2026-05-19
 
 ### 🚀 Features
