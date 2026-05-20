@@ -157,6 +157,26 @@ struct ListResponse {
     connections: Vec<Connection>,
 }
 
+/// Resolve a connection name or ID to a connection ID, exiting on failure.
+pub fn resolve_connection_id(api: &ApiClient, name_or_id: &str) -> String {
+    let body: ListResponse = api.get("/connections");
+    match body
+        .connections
+        .iter()
+        .find(|c| c.id == name_or_id || c.name == name_or_id)
+    {
+        Some(conn) => conn.id.clone(),
+        None => {
+            use crossterm::style::Stylize;
+            eprintln!(
+                "{}",
+                format!("error: no connection named or with id '{name_or_id}'").red()
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
     let is_table = format == "table";

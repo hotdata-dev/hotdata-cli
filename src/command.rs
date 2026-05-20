@@ -320,34 +320,31 @@ pub enum IndexesCommands {
         output: String,
     },
 
-    /// Create an index on a table or dataset
+    /// Create an index on a table or dataset.
     ///
-    /// Pass either connection scope (--connection-id + --schema + --table) OR
-    /// dataset scope (--dataset-id), not both.
+    /// For connection-scoped indexes, pass the table and columns using bracket notation:
+    ///   `connection.table[col1,col2]` or `connection.schema.table[col1,col2]`
+    ///   (schema defaults to `public` when omitted)
+    ///
+    /// For dataset-scoped indexes, use `--dataset-id` with `--columns`.
     Create {
-        /// Connection ID (use with --schema and --table)
-        #[arg(long, short = 'c', conflicts_with = "dataset_id", requires_all = ["schema", "table"])]
-        connection_id: Option<String>,
+        /// Table and columns to index: `connection.table[col1,col2]`
+        /// or `connection.schema.table[col1,col2]`. Schema defaults to `public`.
+        #[arg(conflicts_with = "dataset_id")]
+        target: Option<String>,
 
-        /// Schema name (requires --connection-id)
-        #[arg(long, requires = "connection_id")]
-        schema: Option<String>,
-
-        /// Table name (requires --connection-id)
-        #[arg(long, requires = "connection_id")]
-        table: Option<String>,
-
-        /// Dataset ID (alternative scope to --connection-id)
-        #[arg(long, conflicts_with_all = ["connection_id", "schema", "table"])]
+        /// Dataset ID (alternative scope to the positional target)
+        #[arg(long, conflicts_with = "target")]
         dataset_id: Option<String>,
 
-        /// Index name
+        /// Columns to index (comma-separated). Required with --dataset-id;
+        /// for connection scope use bracket notation in the target instead.
         #[arg(long)]
-        name: String,
+        columns: Option<String>,
 
-        /// Columns to index (comma-separated). Vector indexes accept exactly one column.
+        /// Index name (derived from table, columns, and type if omitted)
         #[arg(long)]
-        columns: String,
+        name: Option<String>,
 
         /// Index type — required (no default; choose deliberately)
         #[arg(long, value_parser = ["sorted", "bm25", "vector"])]
@@ -578,6 +575,25 @@ pub enum DatabasesCommands {
     Delete {
         /// Database name or connection ID
         name_or_id: String,
+    },
+
+    /// Load a parquet file into a table using dot notation: `database.table` or `database.schema.table`
+    Load {
+        /// Table to load into: `database.table` or `database.schema.table`.
+        /// Schema defaults to `public` when omitted.
+        target: String,
+
+        /// Path to a local parquet file to upload and load
+        #[arg(long, conflicts_with_all = ["upload_id", "url"])]
+        file: Option<String>,
+
+        /// URL of a remote parquet file to download and load
+        #[arg(long, conflicts_with_all = ["file", "upload_id"])]
+        url: Option<String>,
+
+        /// Use a previously staged upload ID from `POST /v1/files` instead of uploading
+        #[arg(long, conflicts_with_all = ["file", "url"])]
+        upload_id: Option<String>,
     },
 
     /// Manage tables inside a managed database
