@@ -330,6 +330,9 @@ pub enum IndexesCommands {
     Create {
         /// Table and columns to index: `connection.table[col1,col2]`
         /// or `connection.schema.table[col1,col2]`. Schema defaults to `public`.
+        ///
+        /// Quote the argument to prevent shell glob expansion:
+        /// `hotdata indexes create 'airbnb.listings[description]' --type bm25`
         #[arg(conflicts_with = "dataset_id")]
         target: Option<String>,
 

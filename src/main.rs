@@ -621,7 +621,11 @@ fn main() {
                                             );
                                             std::process::exit(1);
                                         });
-                                    let auto = format!("dataset_{type}", type = r#type);
+                                    let auto = format!(
+                                        "dataset_{cols}_{type}",
+                                        cols = cols.replace(',', "_"),
+                                        type = r#type
+                                    );
                                     (
                                         (did.to_string(), String::new(), String::new()),
                                         cols.to_string(),
@@ -984,8 +988,14 @@ fn parse_index_target(target: &str) -> (String, String, String, Vec<String>) {
         );
         std::process::exit(1);
     };
+    if !target.ends_with(']') {
+        eprintln!(
+            "error: target bracket is not closed — use e.g. 'airbnb.listings[col1,col2]'"
+        );
+        std::process::exit(1);
+    }
     let table_part = &target[..bracket_pos];
-    let cols_raw = target[bracket_pos + 1..].trim_end_matches(']');
+    let cols_raw = &target[bracket_pos + 1..target.len() - 1];
 
     let parts: Vec<&str> = table_part.splitn(4, '.').collect();
     let (conn, schema, table) = match parts.as_slice() {
@@ -1011,6 +1021,62 @@ fn parse_index_target(target: &str) -> (String, String, String, Vec<String>) {
     }
 
     (conn, schema, table, columns)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_db_target ---
+
+    #[test]
+    fn db_target_two_parts_defaults_schema_to_public() {
+        let (db, schema, table) = parse_db_target("airbnb.listings");
+        assert_eq!(db, "airbnb");
+        assert_eq!(schema, "public");
+        assert_eq!(table, "listings");
+    }
+
+    #[test]
+    fn db_target_three_parts_uses_explicit_schema() {
+        let (db, schema, table) = parse_db_target("airbnb.staging.listings");
+        assert_eq!(db, "airbnb");
+        assert_eq!(schema, "staging");
+        assert_eq!(table, "listings");
+    }
+
+    // --- parse_index_target ---
+
+    #[test]
+    fn index_target_two_parts_defaults_schema_to_public() {
+        let (conn, schema, table, cols) = parse_index_target("airbnb.listings[description]");
+        assert_eq!(conn, "airbnb");
+        assert_eq!(schema, "public");
+        assert_eq!(table, "listings");
+        assert_eq!(cols, vec!["description"]);
+    }
+
+    #[test]
+    fn index_target_three_parts_uses_explicit_schema() {
+        let (conn, schema, table, cols) =
+            parse_index_target("airbnb.public.listings[name,description]");
+        assert_eq!(conn, "airbnb");
+        assert_eq!(schema, "public");
+        assert_eq!(table, "listings");
+        assert_eq!(cols, vec!["name", "description"]);
+    }
+
+    #[test]
+    fn index_target_multiple_columns() {
+        let (_, _, _, cols) = parse_index_target("db.tbl[a,b,c]");
+        assert_eq!(cols, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn index_target_trims_column_whitespace() {
+        let (_, _, _, cols) = parse_index_target("db.tbl[a, b]");
+        assert_eq!(cols, vec!["a", "b"]);
+    }
 }
 
 pub fn get_styles() -> clap::builder::Styles {
