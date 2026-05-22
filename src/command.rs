@@ -8,7 +8,7 @@ pub enum Commands {
         command: Option<AuthCommands>,
     },
 
-    /// Upload and query Parquet, CSV, and JSON files
+    /// Derived views — virtual SQL tables built from queries over your data
     Datasets {
         /// Dataset ID to show details
         id: Option<String>,
@@ -453,9 +453,9 @@ pub enum DatasetsCommands {
         output: String,
     },
 
-    /// Create a new dataset from a SQL query or saved query
+    /// Create a derived view from a SQL query or saved query
     Create {
-        /// SQL table name for the dataset
+        /// SQL table name the dataset is addressable as (e.g. default.public.my_view)
         #[arg(long)]
         name: String,
 
