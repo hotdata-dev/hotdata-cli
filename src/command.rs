@@ -558,6 +558,12 @@ pub enum DatabasesCommands {
         output: String,
     },
 
+    /// Set the current database (used by default when no database is specified)
+    Set {
+        /// Database id or description
+        id_or_description: String,
+    },
+
     /// Delete a managed database and its tables
     Delete {
         /// Database name or connection ID
@@ -594,8 +600,9 @@ pub enum DatabasesCommands {
 pub enum DatabaseTablesCommands {
     /// List tables in a managed database
     List {
-        /// Database name or connection ID
-        database: String,
+        /// Database id or description (defaults to current database)
+        #[arg(long)]
+        database: Option<String>,
 
         /// Filter by schema name
         #[arg(long)]
@@ -608,8 +615,9 @@ pub enum DatabaseTablesCommands {
 
     /// Load a parquet file into a table (creates or replaces the table)
     Load {
-        /// Database name or connection ID
-        database: String,
+        /// Database id or description (defaults to current database)
+        #[arg(long)]
+        database: Option<String>,
 
         /// Table name
         table: String,
@@ -633,8 +641,9 @@ pub enum DatabaseTablesCommands {
 
     /// Delete a table from a managed database
     Delete {
-        /// Database name or connection ID
-        database: String,
+        /// Database id or description (defaults to current database)
+        #[arg(long)]
+        database: Option<String>,
 
         /// Table name
         table: String,

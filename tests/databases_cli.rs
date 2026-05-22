@@ -52,7 +52,6 @@ fn databases_tables_load_rejects_both_file_and_upload_id_at_parse_time() {
             "databases",
             "tables",
             "load",
-            "mydb",
             "t1",
             "--file",
             "a.parquet",

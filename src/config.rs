@@ -101,6 +101,8 @@ pub struct ProfileConfig {
     pub workspaces: Vec<WorkspaceEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "session")]
     pub sandbox: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub current_databases: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -220,6 +222,60 @@ pub fn clear_sandbox(profile: &str) -> Result<(), String> {
 
     if let Some(entry) = config_file.profiles.get_mut(profile) {
         entry.sandbox = None;
+    }
+
+    let content = serde_yaml::to_string(&config_file)
+        .map_err(|e| format!("error serializing config: {e}"))?;
+    write_config(&config_path, &content)
+}
+
+pub fn save_current_database(profile: &str, workspace_id: &str, database_id: &str) -> Result<(), String> {
+    let config_path = config_path()?;
+
+    let mut config_file: ConfigFile = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("error reading config file: {e}"))?;
+        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
+    } else {
+        ConfigFile { profiles: HashMap::new() }
+    };
+
+    config_file
+        .profiles
+        .entry(profile.to_string())
+        .or_default()
+        .current_databases
+        .insert(workspace_id.to_string(), database_id.to_string());
+
+    let content = serde_yaml::to_string(&config_file)
+        .map_err(|e| format!("error serializing config: {e}"))?;
+    write_config(&config_path, &content)
+}
+
+pub fn load_current_database(profile: &str, workspace_id: &str) -> Option<String> {
+    let config_path = config_path().ok()?;
+    if !config_path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(&config_path).ok()?;
+    let config_file: ConfigFile = serde_yaml::from_str(&content).ok()?;
+    config_file.profiles.get(profile)?.current_databases.get(workspace_id).cloned()
+}
+
+pub fn clear_current_database(profile: &str, workspace_id: &str) -> Result<(), String> {
+    let config_path = config_path()?;
+
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| format!("error reading config file: {e}"))?;
+    let mut config_file: ConfigFile =
+        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
+
+    if let Some(entry) = config_file.profiles.get_mut(profile) {
+        entry.current_databases.remove(workspace_id);
     }
 
     let content = serde_yaml::to_string(&config_file)
