@@ -56,6 +56,10 @@ struct Cli {
     command: Option<Commands>,
 }
 
+/// Set once after workspace resolution so the database footer can reference it
+/// without re-doing config I/O.
+static ACTIVE_WORKSPACE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 fn resolve_workspace(provided: Option<String>) -> String {
     // HOTDATA_WORKSPACE env var takes priority and blocks --workspace-id flag
     if let Ok(ws) = std::env::var("HOTDATA_WORKSPACE") {
@@ -67,6 +71,7 @@ fn resolve_workspace(provided: Option<String>) -> String {
             );
             std::process::exit(1);
         }
+        let _ = ACTIVE_WORKSPACE_ID.set(ws.clone());
         return ws;
     }
     if sandbox::find_sandbox_run_ancestor().is_some() {
@@ -75,7 +80,10 @@ fn resolve_workspace(provided: Option<String>) -> String {
     }
     match config::load("default") {
         Ok(profile) => match config::resolve_workspace_id(provided, &profile) {
-            Ok(id) => id,
+            Ok(id) => {
+                let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
+                id
+            }
             Err(e) => {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -125,11 +133,25 @@ extern "C" fn print_sandbox_footer() {
     );
 }
 
+extern "C" fn print_database_footer() {
+    use crossterm::style::Stylize;
+    if let Some(ws_id) = ACTIVE_WORKSPACE_ID.get() {
+        if let Some(id) = config::load_current_database("default", ws_id) {
+            eprintln!(
+                "{}",
+                format!("current database: {id}  use 'hotdata databases set' to change")
+                    .dark_grey(),
+            );
+        }
+    }
+}
+
 fn main() {
     // Register before `Cli::parse`, since `--help` / `--version` exit
     // from inside the parser. Safety: `atexit` is async-signal-safe;
     // the callback only reads env vars / files and writes to stderr.
     unsafe { atexit(print_sandbox_footer) };
+    unsafe { atexit(print_database_footer) };
 
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
@@ -382,17 +404,20 @@ fn main() {
                             databases::list(&workspace_id, &output)
                         }
                         Some(DatabasesCommands::Create {
-                            name,
+                            description,
                             schema,
                             tables,
                             output,
                         }) => databases::create(
                             &workspace_id,
-                            &name,
+                            description.as_deref(),
                             &schema,
                             &tables,
                             &output,
                         ),
+                        Some(DatabasesCommands::Set { id_or_description }) => {
+                            databases::set(&workspace_id, &id_or_description)
+                        }
                         Some(DatabasesCommands::Delete { name_or_id }) => {
                             databases::delete(&workspace_id, &name_or_id)
                         }
@@ -405,7 +430,7 @@ fn main() {
                             let (database, schema, table) = parse_db_target(&target);
                             databases::tables_load(
                                 &workspace_id,
-                                &database,
+                                Some(database.as_str()),
                                 &table,
                                 Some(schema.as_str()),
                                 file.as_deref(),
@@ -420,7 +445,7 @@ fn main() {
                                 output,
                             } => databases::tables_list(
                                 &workspace_id,
-                                &database,
+                                database.as_deref(),
                                 schema.as_deref(),
                                 &output,
                             ),
@@ -433,7 +458,7 @@ fn main() {
                                 upload_id,
                             } => databases::tables_load(
                                 &workspace_id,
-                                &database,
+                                database.as_deref(),
                                 &table,
                                 Some(schema.as_str()),
                                 file.as_deref(),
@@ -446,7 +471,7 @@ fn main() {
                                 schema,
                             } => databases::tables_delete(
                                 &workspace_id,
-                                &database,
+                                database.as_deref(),
                                 &table,
                                 Some(schema.as_str()),
                             ),

@@ -28,7 +28,7 @@ fn databases_create_help_documents_table_flag() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("--table"));
-    assert!(help.contains("--name"));
+    assert!(help.contains("--description"));
 }
 
 #[test]
@@ -46,24 +46,12 @@ fn databases_tables_load_help_documents_file_and_upload_id() {
 }
 
 #[test]
-fn databases_create_requires_name() {
-    let output = hotdata().args(["databases", "create"]).output().unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--name") || stderr.contains("required"),
-        "stderr: {stderr}"
-    );
-}
-
-#[test]
 fn databases_tables_load_rejects_both_file_and_upload_id_at_parse_time() {
     let output = hotdata()
         .args([
             "databases",
             "tables",
             "load",
-            "mydb",
             "t1",
             "--file",
             "a.parquet",
