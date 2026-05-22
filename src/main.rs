@@ -223,7 +223,7 @@ fn main() {
                             } else {
                                 datasets::create_from_saved_query(
                                     &workspace_id,
-                                    &query_id.unwrap(),
+                                    query_id.as_deref().unwrap_or_else(|| unreachable!("clap enforces --sql or --query-id")),
                                     description.as_deref(),
                                     &name,
                                 )

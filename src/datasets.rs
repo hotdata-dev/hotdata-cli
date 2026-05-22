@@ -215,7 +215,7 @@ pub fn update(
     format: &str,
 ) {
     if label.is_none() && table_name.is_none() {
-        eprintln!("error: provide at least one of --label or --table-name.");
+        eprintln!("error: provide at least one of --description or --name.");
         std::process::exit(1);
     }
 
