@@ -3,30 +3,33 @@ use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-const MANAGED_SOURCE_TYPE: &str = "managed";
 const DEFAULT_SCHEMA: &str = "public";
 
+/// Summary row returned by `GET /databases` (no `default_connection_id`).
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct Database {
-    pub id: String,
-    pub name: String,
-    pub source_type: String,
+struct DatabaseSummary {
+    id: String,
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct ListConnectionsResponse {
-    connections: Vec<Database>,
+struct ListDatabasesResponse {
+    databases: Vec<DatabaseSummary>,
 }
 
-#[derive(Deserialize, Serialize)]
-struct DatabaseDetail {
-    id: String,
-    name: String,
-    source_type: String,
-    #[serde(default)]
-    table_count: u64,
-    #[serde(default)]
-    synced_table_count: u64,
+/// Full record returned by `GET /databases/{id}`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Database {
+    pub id: String,
+    pub description: Option<String>,
+    pub default_connection_id: String,
+    attachments: Vec<DatabaseAttachment>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct DatabaseAttachment {
+    connection_id: String,
+    alias: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -56,10 +59,10 @@ struct TableRow {
 }
 
 #[derive(Deserialize, Serialize)]
-struct CreateConnectionResponse {
+struct CreateDatabaseResponse {
     id: String,
-    name: String,
-    source_type: String,
+    description: Option<String>,
+    default_connection_id: String,
 }
 
 #[derive(Deserialize)]
@@ -73,43 +76,42 @@ struct LoadManagedTableResponse {
     arrow_schema_json: String,
 }
 
-fn is_managed(db: &Database) -> bool {
-    db.source_type == MANAGED_SOURCE_TYPE
+fn fetch_database(api: &ApiClient, id: &str) -> Database {
+    api.get(&format!("/databases/{id}"))
 }
 
-pub fn try_resolve_database(api: &ApiClient, name_or_id: &str) -> Result<Database, String> {
-    let body: ListConnectionsResponse = api.get("/connections");
-    let by_id = body
-        .connections
+pub fn try_resolve_database(api: &ApiClient, id_or_description: &str) -> Result<Database, String> {
+    // Try a direct id lookup first — avoids the list round-trip for the common case.
+    if let Some(db) = api.get_none_if_not_found(&format!("/databases/{id_or_description}")) {
+        return Ok(db);
+    }
+
+    // Fall back to listing and matching by description.
+    let body: ListDatabasesResponse = api.get("/databases");
+    let desc_matches: Vec<&DatabaseSummary> = body
+        .databases
         .iter()
-        .find(|c| c.id == name_or_id)
-        .cloned();
-    let found = by_id.or_else(|| {
-        body.connections
-            .iter()
-            .find(|c| c.name == name_or_id)
-            .cloned()
-    });
-    match found {
-        Some(db) if is_managed(&db) => Ok(db),
-        Some(db) => Err(format!(
-            "'{}' is not a managed database (source_type: {})",
-            db.name, db.source_type
+        .filter(|d| d.description.as_deref() == Some(id_or_description))
+        .collect();
+
+    match desc_matches.len() {
+        0 => Err(format!(
+            "no database with id or description '{id_or_description}'"
         )),
-        None => Err(format!("no database named or with id '{name_or_id}'")),
+        1 => Ok(fetch_database(api, &desc_matches[0].id)),
+        _ => Err(format!(
+            "multiple databases have description '{}' — use the database id instead",
+            id_or_description
+        )),
     }
 }
 
-pub fn resolve_database(api: &ApiClient, name_or_id: &str) -> Database {
-    match try_resolve_database(api, name_or_id) {
+pub fn resolve_database(api: &ApiClient, id_or_description: &str) -> Database {
+    match try_resolve_database(api, id_or_description) {
         Ok(db) => db,
         Err(e) => {
             use crossterm::style::Stylize;
-            if e.contains("not a managed database") {
-                eprintln!("{}", format!("error: {e}. Use `hotdata connections` for remote sources.").red());
-            } else {
-                eprintln!("{}", format!("error: {e}").red());
-            }
+            eprintln!("{}", format!("error: {e}").red());
             std::process::exit(1);
         }
     }
@@ -119,28 +121,33 @@ fn schema_name(schema: Option<&str>) -> &str {
     schema.unwrap_or(DEFAULT_SCHEMA)
 }
 
-/// Build managed-connection `config` with declared schemas/tables.
-pub fn build_managed_config(schema: &str, tables: &[String]) -> serde_json::Value {
-    if tables.is_empty() {
-        return serde_json::json!({});
-    }
-    let table_objs: Vec<serde_json::Value> = tables
-        .iter()
-        .map(|t| serde_json::json!({ "name": t }))
-        .collect();
-    serde_json::json!({
-        "schemas": [{ "name": schema, "tables": table_objs }]
-    })
-}
+/// Build the request body for `POST /v1/databases`.
+pub fn create_database_request(
+    description: Option<&str>,
+    schema: &str,
+    tables: &[String],
+) -> serde_json::Value {
+    let mut req = serde_json::Map::new();
 
-/// Request body for `POST /v1/connections` when creating a managed database.
-pub fn create_connection_request(name: &str, schema: &str, tables: &[String]) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "source_type": MANAGED_SOURCE_TYPE,
-        "config": build_managed_config(schema, tables),
-        "skip_discovery": true,
-    })
+    if let Some(desc) = description {
+        req.insert(
+            "description".to_string(),
+            serde_json::Value::String(desc.to_string()),
+        );
+    }
+
+    if !tables.is_empty() {
+        let table_objs: Vec<serde_json::Value> = tables
+            .iter()
+            .map(|t| serde_json::json!({ "name": t }))
+            .collect();
+        req.insert(
+            "schemas".to_string(),
+            serde_json::json!([{ "name": schema, "tables": table_objs }]),
+        );
+    }
+
+    serde_json::Value::Object(req)
 }
 
 pub fn managed_table_load_path(connection_id: &str, schema: &str, table: &str) -> String {
@@ -164,11 +171,11 @@ pub fn is_parquet_path(path: &str) -> bool {
         || Path::new(path).extension().and_then(|e| e.to_str()) == Some("parquet")
 }
 
-fn table_rows_for_database(db_name: &str, tables: Vec<InfoTable>) -> Vec<TableRow> {
+fn table_rows(tables: Vec<InfoTable>) -> Vec<TableRow> {
     tables
         .into_iter()
         .map(|t| TableRow {
-            full_name: format!("{}.{}.{}", db_name, t.schema, t.table),
+            full_name: format!("default.{}.{}", t.schema, t.table),
             schema: t.schema,
             table: t.table,
             synced: t.synced,
@@ -177,7 +184,12 @@ fn table_rows_for_database(db_name: &str, tables: Vec<InfoTable>) -> Vec<TableRo
         .collect()
 }
 
-fn finish_upload(api: &ApiClient, reader: impl std::io::Read + Send + 'static, size: Option<u64>, pb: &ProgressBar) -> String {
+fn finish_upload(
+    api: &ApiClient,
+    reader: impl std::io::Read + Send + 'static,
+    size: Option<u64>,
+    pb: &ProgressBar,
+) -> String {
     let (status, resp_body) = api.post_body("/files", "application/octet-stream", reader, size);
     pb.finish_and_clear();
 
@@ -251,7 +263,10 @@ fn upload_parquet_url(api: &ApiClient, url: &str) -> String {
     };
 
     if !resp.status().is_success() {
-        eprintln!("error: remote server returned {} for '{url}'", resp.status());
+        eprintln!(
+            "error: remote server returned {} for '{url}'",
+            resp.status()
+        );
         std::process::exit(1);
     }
 
@@ -285,9 +300,8 @@ fn collect_tables(api: &ApiClient, connection_id: &str, schema: Option<&str>) ->
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let mut params: Vec<(&str, Option<String>)> = vec![
-            ("connection_id", Some(connection_id.to_string())),
-        ];
+        let mut params: Vec<(&str, Option<String>)> =
+            vec![("connection_id", Some(connection_id.to_string()))];
         if let Some(s) = schema {
             params.push(("schema", Some(s.to_string())));
         }
@@ -314,73 +328,97 @@ fn collect_tables(api: &ApiClient, connection_id: &str, schema: Option<&str>) ->
 
 pub fn list(workspace_id: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    let body: ListConnectionsResponse = api.get("/connections");
-    let databases: Vec<&Database> = body
-        .connections
-        .iter()
-        .filter(|c| is_managed(c))
-        .collect();
+    let body: ListDatabasesResponse = api.get("/databases");
 
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&databases).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&databases).unwrap()),
+        "json" => println!("{}", serde_json::to_string_pretty(&body.databases).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&body.databases).unwrap()),
         "table" => {
-            if databases.is_empty() {
+            if body.databases.is_empty() {
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No databases found.".dark_grey());
                 eprintln!(
                     "{}",
-                    "Create one with: hotdata databases create --name <name>".dark_grey()
+                    "Create one with: hotdata databases create".dark_grey()
                 );
             } else {
-                let rows: Vec<Vec<String>> = databases
+                let rows: Vec<Vec<String>> = body
+                    .databases
                     .iter()
-                    .map(|d| vec![d.name.clone(), d.id.clone()])
+                    .map(|d| {
+                        vec![
+                            d.description.as_deref().unwrap_or("-").to_string(),
+                            d.id.clone(),
+                        ]
+                    })
                     .collect();
-                crate::table::print(&["NAME", "ID"], &rows);
+                crate::table::print(&["DESCRIPTION", "ID"], &rows);
             }
         }
         _ => unreachable!(),
     }
 }
 
-pub fn get(workspace_id: &str, name_or_id: &str, format: &str) {
+pub fn get(workspace_id: &str, id_or_description: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, name_or_id);
-    let detail: DatabaseDetail = api.get(&format!("/connections/{}", db.id));
+    let db = resolve_database(&api, id_or_description);
 
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&detail).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&detail).unwrap()),
+        "json" => println!("{}", serde_json::to_string_pretty(&db).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&db).unwrap()),
         "table" => {
             use crossterm::style::Stylize;
-            let label = |l: &str| format!("{:<16}", l).dark_grey().to_string();
-            println!("{}{}", label("name:"), detail.name.clone().white());
-            println!("{}{}", label("id:"), detail.id.dark_cyan());
+            let label = |l: &str| format!("{:<24}", l).dark_grey().to_string();
+            println!("{}{}", label("id:"), db.id.clone().dark_cyan());
             println!(
-                "{}{} synced / {} total",
-                label("tables:"),
-                detail.synced_table_count.to_string().cyan(),
-                detail.table_count.to_string().cyan(),
+                "{}{}",
+                label("description:"),
+                db.description.as_deref().unwrap_or("-").white()
+            );
+            println!(
+                "{}{}",
+                label("default_connection_id:"),
+                db.default_connection_id.clone().dark_cyan()
             );
             println!(
                 "{}{}",
                 label("sql_prefix:"),
-                format!("{}.{{schema}}.{{table}}", detail.name).green()
+                "default.{schema}.{table}  (pass X-Database-Id header when querying)".green()
             );
+            if !db.attachments.is_empty() {
+                println!("{}({})", label("attached catalogs:"), db.attachments.len());
+                for a in &db.attachments {
+                    let alias = a
+                        .alias
+                        .as_deref()
+                        .map(|al| format!(" as {al}"))
+                        .unwrap_or_default();
+                    println!(
+                        "  {}{}",
+                        a.connection_id.clone().dark_cyan(),
+                        alias.dark_grey()
+                    );
+                }
+            }
         }
         _ => unreachable!(),
     }
 }
 
-pub fn create(workspace_id: &str, name: &str, schema: &str, tables: &[String], format: &str) {
+pub fn create(
+    workspace_id: &str,
+    description: Option<&str>,
+    schema: &str,
+    tables: &[String],
+    format: &str,
+) {
     use crossterm::style::Stylize;
 
-    let body = create_connection_request(name, schema, tables);
+    let body = create_database_request(description, schema, tables);
 
     let api = ApiClient::new(Some(workspace_id));
     let spinner = (format == "table").then(|| crate::util::spinner("Creating database..."));
-    let (status, resp_body) = api.post_raw("/connections", &body);
+    let (status, resp_body) = api.post_raw("/databases", &body);
     if let Some(s) = &spinner {
         s.finish_and_clear();
     }
@@ -390,7 +428,7 @@ pub fn create(workspace_id: &str, name: &str, schema: &str, tables: &[String], f
         std::process::exit(1);
     }
 
-    let result: CreateConnectionResponse = match serde_json::from_str(&resp_body) {
+    let result: CreateDatabaseResponse = match serde_json::from_str(&resp_body) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error parsing response: {e}");
@@ -403,42 +441,36 @@ pub fn create(workspace_id: &str, name: &str, schema: &str, tables: &[String], f
         "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
         "table" => {
             println!("{}", "Database created".green());
-            println!("name: {}", result.name);
-            println!("id:   {}", result.id);
+            if let Some(desc) = &result.description {
+                println!("description: {desc}");
+            }
+            println!("id:          {}", result.id);
         }
         _ => unreachable!(),
     }
 }
 
-pub fn delete(workspace_id: &str, name_or_id: &str) {
+pub fn delete(workspace_id: &str, id_or_description: &str) {
     use crossterm::style::Stylize;
 
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, name_or_id);
-    let (status, resp_body) = api.delete_raw(&format!("/connections/{}", db.id));
+    let db = resolve_database(&api, id_or_description);
+    let (status, resp_body) = api.delete_raw(&format!("/databases/{}", db.id));
 
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
     }
 
-    println!(
-        "{}",
-        format!("Database '{}' deleted.", db.name).green()
-    );
+    println!("{}", "Database deleted.".green());
 }
 
-pub fn tables_list(
-    workspace_id: &str,
-    database: &str,
-    schema: Option<&str>,
-    format: &str,
-) {
+pub fn tables_list(workspace_id: &str, database: &str, schema: Option<&str>, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
     let db = resolve_database(&api, database);
-    let tables = collect_tables(&api, &db.id, schema);
+    let tables = collect_tables(&api, &db.default_connection_id, schema);
 
-    let rows = table_rows_for_database(&db.name, tables);
+    let rows = table_rows(tables);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
@@ -495,7 +527,7 @@ pub fn tables_load(
         _ => unreachable!(),
     };
 
-    let path = managed_table_load_path(&db.id, schema, table);
+    let path = managed_table_load_path(&db.default_connection_id, schema, table);
     let body = load_table_request(&upload_id);
 
     let spinner = crate::util::spinner("Loading table...");
@@ -508,12 +540,9 @@ pub fn tables_load(
             eprintln!("{}", msg.red());
             eprintln!(
                 "{}",
-                format!(
-                    "Declare the table when creating the database, e.g.:\n  \
-                     hotdata databases create --name {} --table {}",
-                    db.name, table
-                )
-                .dark_grey()
+                "Declare the table when creating the database, e.g.:\n  \
+                 hotdata databases create --table <table>"
+                    .dark_grey()
             );
         } else {
             eprintln!("{}", msg.red());
@@ -529,25 +558,20 @@ pub fn tables_load(
         }
     };
 
-    let full_name = format!("{}.{}.{}", db.name, result.schema_name, result.table_name);
+    let full_name = format!("default.{}.{}", result.schema_name, result.table_name);
     println!("{}", "Table loaded".green());
     println!("full_name: {}", full_name.green());
     println!("rows:      {}", result.row_count);
 }
 
-pub fn tables_delete(
-    workspace_id: &str,
-    database: &str,
-    table: &str,
-    schema: Option<&str>,
-) {
+pub fn tables_delete(workspace_id: &str, database: &str, table: &str, schema: Option<&str>) {
     use crossterm::style::Stylize;
 
     let api = ApiClient::new(Some(workspace_id));
     let db = resolve_database(&api, database);
     let schema = schema_name(schema);
 
-    let path = managed_table_delete_path(&db.id, schema, table);
+    let path = managed_table_delete_path(&db.default_connection_id, schema, table);
     let (status, resp_body) = api.delete_raw(&path);
 
     if !status.is_success() {
@@ -557,7 +581,7 @@ pub fn tables_delete(
 
     println!(
         "{}",
-        format!("Table '{}.{}.{}' deleted.", db.name, schema, table).green()
+        format!("Table 'default.{}.{}' deleted.", schema, table).green()
     );
 }
 
@@ -572,115 +596,125 @@ mod tests {
     }
 
     #[test]
-    fn build_managed_config_empty_without_tables() {
-        assert_eq!(build_managed_config("public", &[]), serde_json::json!({}));
+    fn create_database_request_empty_without_description_or_tables() {
+        let req = create_database_request(None, "public", &[]);
+        assert_eq!(req, serde_json::json!({}));
     }
 
     #[test]
-    fn build_managed_config_declares_tables() {
-        let cfg = build_managed_config("public", &["orders".to_string(), "customers".to_string()]);
-        assert_eq!(
-            cfg,
-            serde_json::json!({
-                "schemas": [{
-                    "name": "public",
-                    "tables": [{ "name": "orders" }, { "name": "customers" }]
-                }]
-            })
+    fn create_database_request_includes_description() {
+        let req = create_database_request(Some("my db"), "public", &[]);
+        assert_eq!(req["description"], "my db");
+        assert!(req.get("schemas").is_none());
+    }
+
+    #[test]
+    fn create_database_request_includes_schemas_when_tables_declared() {
+        let req = create_database_request(
+            Some("sales"),
+            "public",
+            &["orders".to_string(), "customers".to_string()],
         );
+        assert_eq!(req["description"], "sales");
+        assert_eq!(req["schemas"][0]["name"], "public");
+        assert_eq!(req["schemas"][0]["tables"][0]["name"], "orders");
+        assert_eq!(req["schemas"][0]["tables"][1]["name"], "customers");
     }
 
     #[test]
-    fn is_managed_only_matches_managed_type() {
-        let db = Database {
-            id: "c1".into(),
-            name: "sales".into(),
-            source_type: "managed".into(),
-        };
-        assert!(is_managed(&db));
-        let pg = Database {
-            id: "c2".into(),
-            name: "warehouse".into(),
-            source_type: "postgres".into(),
-        };
-        assert!(!is_managed(&pg));
+    fn create_database_request_schemas_without_description() {
+        let req = create_database_request(None, "analytics", &["events".to_string()]);
+        assert!(req.get("description").is_none());
+        assert_eq!(req["schemas"][0]["name"], "analytics");
+    }
+
+    fn full_detail(id: &str, desc: &str, conn_id: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","description":"{desc}","default_connection_id":"{conn_id}","attachments":[]}}"#
+        )
     }
 
     #[test]
-    fn resolve_database_by_name_and_id() {
+    fn resolve_database_by_id_and_description() {
         let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/connections")
+        // by-id path: direct GET /databases/db_abc succeeds
+        let by_id_mock = server
+            .mock("GET", "/databases/db_abc")
+            .with_status(200)
+            .with_body(full_detail("db_abc", "sales", "conn_1"))
+            .create();
+        // by-description path: GET /databases/warehouse → 404, then list, then detail
+        let not_id = server
+            .mock("GET", "/databases/warehouse")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        let list = server
+            .mock("GET", "/databases")
             .with_status(200)
             .with_body(
-                r#"{"connections":[
-                {"id":"conn_abc","name":"sales","source_type":"managed"},
-                {"id":"conn_xyz","name":"warehouse","source_type":"postgres"}
-            ]}"#,
+                r#"{"databases":[{"id":"db_abc","description":"sales"},{"id":"db_xyz","description":"warehouse"}]}"#,
             )
-            .expect(2)
+            .create();
+        let detail = server
+            .mock("GET", "/databases/db_xyz")
+            .with_status(200)
+            .with_body(full_detail("db_xyz", "warehouse", "conn_2"))
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
-        let by_name = resolve_database(&api, "sales");
-        assert_eq!(by_name.id, "conn_abc");
-        let by_id = resolve_database(&api, "conn_abc");
-        assert_eq!(by_id.name, "sales");
-        mock.assert();
-    }
-
-    #[test]
-    fn try_resolve_database_rejects_non_managed() {
-        let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/connections")
-            .with_status(200)
-            .with_body(
-                r#"{"connections":[{"id":"c1","name":"warehouse","source_type":"postgres"}]}"#,
-            )
-            .create();
-
-        let api = ApiClient::test_new(&server.url(), "k", None);
-        let err = try_resolve_database(&api, "warehouse").unwrap_err();
-        assert!(err.contains("not a managed database"));
-        mock.assert();
+        let by_id = resolve_database(&api, "db_abc");
+        assert_eq!(by_id.default_connection_id, "conn_1");
+        let by_desc = resolve_database(&api, "warehouse");
+        assert_eq!(by_desc.id, "db_xyz");
+        by_id_mock.assert();
+        not_id.assert();
+        list.assert();
+        detail.assert();
     }
 
     #[test]
     fn try_resolve_database_not_found() {
         let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/connections")
+        // Direct id lookup returns 404
+        server
+            .mock("GET", "/databases/missing")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        // List also returns nothing
+        server
+            .mock("GET", "/databases")
             .with_status(200)
-            .with_body(r#"{"connections":[]}"#)
+            .with_body(r#"{"databases":[]}"#)
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", None);
         let err = try_resolve_database(&api, "missing").unwrap_err();
-        assert!(err.contains("no database named"));
-        mock.assert();
+        assert!(err.contains("no database with id or description"));
     }
 
     #[test]
-    fn create_connection_request_includes_declared_tables() {
-        let body = create_connection_request(
-            "sales",
-            "public",
-            &["orders".to_string(), "customers".to_string()],
-        );
-        assert_eq!(body["name"], "sales");
-        assert_eq!(body["source_type"], "managed");
-        assert_eq!(body["skip_discovery"], true);
-        assert_eq!(
-            body["config"]["schemas"][0]["tables"][0]["name"],
-            "orders"
-        );
-    }
+    fn try_resolve_database_rejects_ambiguous_description() {
+        let mut server = mockito::Server::new();
+        // Direct id lookup returns 404 (description isn't a valid id)
+        server
+            .mock("GET", "/databases/sales")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        // List returns two entries with the same description
+        server
+            .mock("GET", "/databases")
+            .with_status(200)
+            .with_body(
+                r#"{"databases":[{"id":"db_1","description":"sales"},{"id":"db_2","description":"sales"}]}"#,
+            )
+            .create();
 
-    #[test]
-    fn create_connection_request_empty_config_without_tables() {
-        let body = create_connection_request("sales", "public", &[]);
-        assert_eq!(body["config"], serde_json::json!({}));
+        let api = ApiClient::test_new(&server.url(), "k", None);
+        let err = try_resolve_database(&api, "sales").unwrap_err();
+        assert!(err.contains("multiple databases"));
     }
 
     #[test]
@@ -712,19 +746,16 @@ mod tests {
     }
 
     #[test]
-    fn table_rows_for_database_builds_full_names() {
-        let rows = table_rows_for_database(
-            "sales",
-            vec![InfoTable {
-                connection: "sales".into(),
-                schema: "public".into(),
-                table: "orders".into(),
-                synced: true,
-                last_sync: Some("2026-05-19T00:00:00Z".into()),
-            }],
-        );
+    fn table_rows_uses_default_prefix() {
+        let rows = table_rows(vec![InfoTable {
+            connection: "ignored".into(),
+            schema: "public".into(),
+            table: "orders".into(),
+            synced: true,
+            last_sync: Some("2026-05-19T00:00:00Z".into()),
+        }]);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].full_name, "sales.public.orders");
+        assert_eq!(rows[0].full_name, "default.public.orders");
         assert!(rows[0].synced);
     }
 
@@ -739,7 +770,7 @@ mod tests {
             ]))
             .with_status(200)
             .with_body(
-                r#"{"tables":[{"connection":"sales","schema":"public","table":"b","synced":true,"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
         let page0 = server
@@ -750,7 +781,7 @@ mod tests {
             ))
             .with_status(200)
             .with_body(
-                r#"{"tables":[{"connection":"sales","schema":"public","table":"a","synced":false,"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
+                r#"{"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
             )
             .create();
 
@@ -764,18 +795,18 @@ mod tests {
     }
 
     #[test]
-    fn create_posts_managed_connection_with_schemas() {
+    fn create_posts_to_databases_endpoint() {
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("POST", "/connections")
+            .mock("POST", "/databases")
             .match_header("X-Workspace-Id", "ws-test")
             .with_status(201)
             .with_body(
-                r#"{"id":"conn_new","name":"mydb","source_type":"managed","tables_discovered":1,"discovery_status":"skipped"}"#,
+                r#"{"id":"db_new","description":"mydb","default_connection_id":"conn_abc"}"#,
             )
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&create_connection_request(
-                    "mydb",
+                serde_json::to_string(&create_database_request(
+                    Some("mydb"),
                     "public",
                     &["gdp".to_string()],
                 ))
@@ -784,34 +815,36 @@ mod tests {
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", Some("ws-test"));
-        let body = create_connection_request("mydb", "public", &["gdp".to_string()]);
-        let (status, resp_body) = api.post_raw("/connections", &body);
+        let body = create_database_request(Some("mydb"), "public", &["gdp".to_string()]);
+        let (status, resp_body) = api.post_raw("/databases", &body);
         assert_eq!(status.as_u16(), 201);
-        let parsed: CreateConnectionResponse = serde_json::from_str(&resp_body).unwrap();
-        assert_eq!(parsed.name, "mydb");
-        assert_eq!(parsed.source_type, "managed");
+        let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();
+        assert_eq!(parsed.description.as_deref(), Some("mydb"));
+        assert_eq!(parsed.default_connection_id, "conn_abc");
         mock.assert();
     }
 
     #[test]
-    fn tables_load_posts_replace_with_upload_id() {
+    fn tables_load_uses_default_connection_id() {
         let mut server = mockito::Server::new();
-        let list = server
-            .mock("GET", "/connections")
+        // resolve_database resolves by id directly
+        let resolve = server
+            .mock("GET", "/databases/db_1")
             .with_status(200)
-            .with_body(
-                r#"{"connections":[{"id":"conn1","name":"sales","source_type":"managed"}]}"#,
-            )
+            .with_body(full_detail("db_1", "sales", "conn_default"))
             .create();
         let load = server
-            .mock("POST", "/connections/conn1/schemas/public/tables/orders/loads")
+            .mock(
+                "POST",
+                "/connections/conn_default/schemas/public/tables/orders/loads",
+            )
             .match_body(mockito::Matcher::JsonString(
                 serde_json::to_string(&load_table_request("upl_123")).unwrap(),
             ))
             .with_status(200)
             .with_body(
                 r#"{
-                "connection_id":"conn1",
+                "connection_id":"conn_default",
                 "schema_name":"public",
                 "table_name":"orders",
                 "row_count":42,
@@ -821,40 +854,41 @@ mod tests {
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", Some("ws1"));
-        let db = resolve_database(&api, "sales");
-        let path = managed_table_load_path(&db.id, "public", "orders");
+        let db = resolve_database(&api, "db_1");
+        let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
         let body = load_table_request("upl_123");
         let (status, resp_body) = api.post_raw(&path, &body);
         assert!(status.is_success());
         let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();
         assert_eq!(parsed.row_count, 42);
         assert_eq!(parsed.table_name, "orders");
-        list.assert();
+        resolve.assert();
         load.assert();
     }
 
     #[test]
-    fn tables_delete_calls_managed_table_endpoint() {
+    fn tables_delete_uses_default_connection_id() {
         let mut server = mockito::Server::new();
-        let list = server
-            .mock("GET", "/connections")
+        let resolve = server
+            .mock("GET", "/databases/db_1")
             .with_status(200)
-            .with_body(
-                r#"{"connections":[{"id":"conn1","name":"sales","source_type":"managed"}]}"#,
-            )
+            .with_body(full_detail("db_1", "sales", "conn_default"))
             .create();
         let delete = server
-            .mock("DELETE", "/connections/conn1/schemas/public/tables/orders")
+            .mock(
+                "DELETE",
+                "/connections/conn_default/schemas/public/tables/orders",
+            )
             .with_status(204)
             .with_body("")
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", None);
-        let db = resolve_database(&api, "sales");
-        let path = managed_table_delete_path(&db.id, "public", "orders");
+        let db = resolve_database(&api, "db_1");
+        let path = managed_table_delete_path(&db.default_connection_id, "public", "orders");
         let (status, _) = api.delete_raw(&path);
         assert_eq!(status.as_u16(), 204);
-        list.assert();
+        resolve.assert();
         delete.assert();
     }
 

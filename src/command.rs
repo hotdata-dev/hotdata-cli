@@ -71,7 +71,7 @@ pub enum Commands {
 
     /// Managed databases you create and populate with tables (parquet uploads)
     Databases {
-        /// Database name or connection ID (omit to use a subcommand)
+        /// Database id or description (omit to use a subcommand)
         name_or_id: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
@@ -557,15 +557,15 @@ pub enum DatabasesCommands {
 
     /// Create a new managed database
     Create {
-        /// Database name (used as the connection name in SQL: `name.schema.table`)
+        /// Optional display label (not unique, not an identifier — databases are addressed by id)
         #[arg(long)]
-        name: String,
+        description: Option<String>,
 
         /// Schema for tables declared at create time (default: public)
         #[arg(long, default_value = "public")]
         schema: String,
 
-        /// Table to declare up front (repeatable). Required before load on current API.
+        /// Table to declare up front (repeatable)
         #[arg(long = "table")]
         tables: Vec<String>,
 

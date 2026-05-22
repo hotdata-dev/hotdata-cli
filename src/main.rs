@@ -382,13 +382,13 @@ fn main() {
                             databases::list(&workspace_id, &output)
                         }
                         Some(DatabasesCommands::Create {
-                            name,
+                            description,
                             schema,
                             tables,
                             output,
                         }) => databases::create(
                             &workspace_id,
-                            &name,
+                            description.as_deref(),
                             &schema,
                             &tables,
                             &output,
