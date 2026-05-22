@@ -76,10 +76,8 @@ fn create_dataset(
     name: &str,
     source: serde_json::Value,
 ) {
-    let mut body = json!({ "table_name": name, "source": source });
-    if let Some(desc) = description {
-        body["label"] = json!(desc);
-    }
+    let label = description.unwrap_or(name);
+    let body = json!({ "table_name": name, "label": label, "source": source });
 
     let (status, resp_body) = api.post_raw("/datasets", &body);
 

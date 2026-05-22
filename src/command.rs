@@ -455,7 +455,7 @@ pub enum DatasetsCommands {
 
     /// Create a derived view from a SQL query or saved query
     Create {
-        /// SQL table name the dataset is addressable as (e.g. default.public.my_view)
+        /// SQL table name the dataset is addressable as (e.g. my_view)
         #[arg(long)]
         name: String,
 
