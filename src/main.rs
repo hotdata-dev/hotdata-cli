@@ -218,14 +218,14 @@ fn main() {
                                     &workspace_id,
                                     &sql,
                                     description.as_deref(),
-                                    Some(&name),
+                                    &name,
                                 )
                             } else {
                                 datasets::create_from_saved_query(
                                     &workspace_id,
                                     &query_id.unwrap(),
                                     description.as_deref(),
-                                    Some(&name),
+                                    &name,
                                 )
                             }
                         }
