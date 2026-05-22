@@ -32,6 +32,7 @@ pub struct ApiClient {
     pub api_url: String,
     workspace_id: Option<String>,
     sandbox_id: Option<String>,
+    database_id: Option<String>,
 }
 
 impl ApiClient {
@@ -117,6 +118,7 @@ impl ApiClient {
                 }
                 profile_config.sandbox
             }),
+            database_id: crate::config::load_current_database("default"),
         }
     }
 
@@ -129,6 +131,7 @@ impl ApiClient {
             api_url: api_url.to_string(),
             workspace_id: workspace_id.map(String::from),
             sandbox_id: None,
+            database_id: None,
         }
     }
 
@@ -166,6 +169,9 @@ impl ApiClient {
             // Send both headers during the session→sandbox migration window.
             req = req.header("X-Session-Id", sid);
             req = req.header("X-Sandbox-Id", sid);
+        }
+        if let Some(ref db_id) = self.database_id {
+            req = req.header("X-Database-Id", db_id);
         }
         req
     }
