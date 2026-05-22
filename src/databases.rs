@@ -436,7 +436,7 @@ pub fn create(
         }
     };
 
-    let _ = crate::config::save_current_database("default", &result.id);
+    let _ = crate::config::save_current_database("default", workspace_id, &result.id);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
@@ -456,18 +456,18 @@ pub fn set(id_or_description: &str, workspace_id: &str) {
     use crossterm::style::Stylize;
     let api = ApiClient::new(Some(workspace_id));
     let db = resolve_database(&api, id_or_description);
-    if let Err(e) = crate::config::save_current_database("default", &db.id) {
+    if let Err(e) = crate::config::save_current_database("default", workspace_id, &db.id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
         std::process::exit(1);
     }
     println!("{}", format!("Current database set to {}", db.id).green());
 }
 
-fn resolve_current_database(provided: Option<&str>, _workspace_id: &str) -> String {
+fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> String {
     if let Some(id) = provided {
         return id.to_string();
     }
-    match crate::config::load_current_database("default") {
+    match crate::config::load_current_database("default", workspace_id) {
         Some(id) => id,
         None => {
             use crossterm::style::Stylize;
@@ -490,6 +490,12 @@ pub fn delete(workspace_id: &str, id_or_description: &str) {
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
+    }
+
+    // If the deleted database was the current one, clear it so subsequent
+    // commands don't silently send a stale X-Database-Id header.
+    if crate::config::load_current_database("default", workspace_id).as_deref() == Some(&db.id) {
+        let _ = crate::config::clear_current_database("default", workspace_id);
     }
 
     println!("{}", "Database deleted.".green());

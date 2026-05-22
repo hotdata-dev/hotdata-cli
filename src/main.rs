@@ -56,6 +56,10 @@ struct Cli {
     command: Option<Commands>,
 }
 
+/// Set once after workspace resolution so the database footer can reference it
+/// without re-doing config I/O.
+static ACTIVE_WORKSPACE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 fn resolve_workspace(provided: Option<String>) -> String {
     // HOTDATA_WORKSPACE env var takes priority and blocks --workspace-id flag
     if let Ok(ws) = std::env::var("HOTDATA_WORKSPACE") {
@@ -67,6 +71,7 @@ fn resolve_workspace(provided: Option<String>) -> String {
             );
             std::process::exit(1);
         }
+        let _ = ACTIVE_WORKSPACE_ID.set(ws.clone());
         return ws;
     }
     if sandbox::find_sandbox_run_ancestor().is_some() {
@@ -75,7 +80,10 @@ fn resolve_workspace(provided: Option<String>) -> String {
     }
     match config::load("default") {
         Ok(profile) => match config::resolve_workspace_id(provided, &profile) {
-            Ok(id) => id,
+            Ok(id) => {
+                let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
+                id
+            }
             Err(e) => {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -127,12 +135,14 @@ extern "C" fn print_sandbox_footer() {
 
 extern "C" fn print_database_footer() {
     use crossterm::style::Stylize;
-    if let Some(id) = config::load_current_database("default") {
-        eprintln!(
-            "{}",
-            format!("current database: {id}  use 'hotdata databases set' to change")
-                .dark_grey(),
-        );
+    if let Some(ws_id) = ACTIVE_WORKSPACE_ID.get() {
+        if let Some(id) = config::load_current_database("default", ws_id) {
+            eprintln!(
+                "{}",
+                format!("current database: {id}  use 'hotdata databases set' to change")
+                    .dark_grey(),
+            );
+        }
     }
 }
 

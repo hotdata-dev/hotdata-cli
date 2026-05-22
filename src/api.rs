@@ -118,7 +118,7 @@ impl ApiClient {
                 }
                 profile_config.sandbox
             }),
-            database_id: crate::config::load_current_database("default"),
+            database_id: workspace_id.and_then(|ws| crate::config::load_current_database("default", ws)),
         }
     }
 
