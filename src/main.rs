@@ -416,7 +416,7 @@ fn main() {
                             &output,
                         ),
                         Some(DatabasesCommands::Set { id_or_description }) => {
-                            databases::set(&id_or_description, &workspace_id)
+                            databases::set(&workspace_id, &id_or_description)
                         }
                         Some(DatabasesCommands::Delete { name_or_id }) => {
                             databases::delete(&workspace_id, &name_or_id)

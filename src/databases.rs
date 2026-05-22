@@ -23,6 +23,7 @@ pub struct Database {
     pub id: String,
     pub description: Option<String>,
     pub default_connection_id: String,
+    #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
 }
 
@@ -82,7 +83,10 @@ fn fetch_database(api: &ApiClient, id: &str) -> Database {
 
 pub fn try_resolve_database(api: &ApiClient, id_or_description: &str) -> Result<Database, String> {
     // Try a direct id lookup first — avoids the list round-trip for the common case.
-    if let Some(db) = api.get_none_if_not_found(&format!("/databases/{id_or_description}")) {
+    // Percent-encode the segment so descriptions containing spaces or other URL-unsafe
+    // characters don't cause a URL parse error before the list fallback can run.
+    let encoded = urlencoding::encode(id_or_description);
+    if let Some(db) = api.get_none_if_not_found(&format!("/databases/{encoded}")) {
         return Ok(db);
     }
 
@@ -436,7 +440,10 @@ pub fn create(
         }
     };
 
-    let _ = crate::config::save_current_database("default", workspace_id, &result.id);
+    if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
+        use crossterm::style::Stylize;
+        eprintln!("{}", format!("warning: database created but could not set as current: {e}").yellow());
+    }
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
@@ -452,7 +459,7 @@ pub fn create(
     }
 }
 
-pub fn set(id_or_description: &str, workspace_id: &str) {
+pub fn set(workspace_id: &str, id_or_description: &str) {
     use crossterm::style::Stylize;
     let api = ApiClient::new(Some(workspace_id));
     let db = resolve_database(&api, id_or_description);
