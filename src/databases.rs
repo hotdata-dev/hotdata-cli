@@ -436,6 +436,8 @@ pub fn create(
         }
     };
 
+    let _ = crate::config::save_current_database("default", &result.id);
+
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
@@ -447,6 +449,34 @@ pub fn create(
             println!("id:          {}", result.id);
         }
         _ => unreachable!(),
+    }
+}
+
+pub fn set(id_or_description: &str, workspace_id: &str) {
+    use crossterm::style::Stylize;
+    let api = ApiClient::new(Some(workspace_id));
+    let db = resolve_database(&api, id_or_description);
+    if let Err(e) = crate::config::save_current_database("default", &db.id) {
+        eprintln!("{}", format!("error saving current database: {e}").red());
+        std::process::exit(1);
+    }
+    println!("{}", format!("Current database set to {}", db.id).green());
+}
+
+fn resolve_current_database(provided: Option<&str>, _workspace_id: &str) -> String {
+    if let Some(id) = provided {
+        return id.to_string();
+    }
+    match crate::config::load_current_database("default") {
+        Some(id) => id,
+        None => {
+            use crossterm::style::Stylize;
+            eprintln!(
+                "{}",
+                "error: no current database set. Use 'hotdata databases set <id>' or pass a database id.".red()
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -465,9 +495,10 @@ pub fn delete(workspace_id: &str, id_or_description: &str) {
     println!("{}", "Database deleted.".green());
 }
 
-pub fn tables_list(workspace_id: &str, database: &str, schema: Option<&str>, format: &str) {
+pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&str>, format: &str) {
+    let database = resolve_current_database(database, workspace_id);
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, database);
+    let db = resolve_database(&api, &database);
     let tables = collect_tables(&api, &db.default_connection_id, schema);
 
     let rows = table_rows(tables);
@@ -502,7 +533,7 @@ pub fn tables_list(workspace_id: &str, database: &str, schema: Option<&str>, for
 
 pub fn tables_load(
     workspace_id: &str,
-    database: &str,
+    database: Option<&str>,
     table: &str,
     schema: Option<&str>,
     file: Option<&str>,
@@ -511,8 +542,9 @@ pub fn tables_load(
 ) {
     use crossterm::style::Stylize;
 
+    let database = resolve_current_database(database, workspace_id);
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, database);
+    let db = resolve_database(&api, &database);
     let schema = schema_name(schema);
 
     // clap enforces mutual exclusion; only one of these is ever Some.
@@ -564,11 +596,12 @@ pub fn tables_load(
     println!("rows:      {}", result.row_count);
 }
 
-pub fn tables_delete(workspace_id: &str, database: &str, table: &str, schema: Option<&str>) {
+pub fn tables_delete(workspace_id: &str, database: Option<&str>, table: &str, schema: Option<&str>) {
     use crossterm::style::Stylize;
 
+    let database = resolve_current_database(database, workspace_id);
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, database);
+    let db = resolve_database(&api, &database);
     let schema = schema_name(schema);
 
     let path = managed_table_delete_path(&db.default_connection_id, schema, table);

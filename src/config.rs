@@ -101,6 +101,8 @@ pub struct ProfileConfig {
     pub workspaces: Vec<WorkspaceEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "session")]
     pub sandbox: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_database: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -225,6 +227,38 @@ pub fn clear_sandbox(profile: &str) -> Result<(), String> {
     let content = serde_yaml::to_string(&config_file)
         .map_err(|e| format!("error serializing config: {e}"))?;
     write_config(&config_path, &content)
+}
+
+pub fn save_current_database(profile: &str, database_id: &str) -> Result<(), String> {
+    let config_path = config_path()?;
+
+    let mut config_file: ConfigFile = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("error reading config file: {e}"))?;
+        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
+    } else {
+        ConfigFile { profiles: HashMap::new() }
+    };
+
+    config_file
+        .profiles
+        .entry(profile.to_string())
+        .or_default()
+        .current_database = Some(database_id.to_string());
+
+    let content = serde_yaml::to_string(&config_file)
+        .map_err(|e| format!("error serializing config: {e}"))?;
+    write_config(&config_path, &content)
+}
+
+pub fn load_current_database(profile: &str) -> Option<String> {
+    let config_path = config_path().ok()?;
+    if !config_path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(&config_path).ok()?;
+    let config_file: ConfigFile = serde_yaml::from_str(&content).ok()?;
+    config_file.profiles.get(profile)?.current_database.clone()
 }
 
 pub fn resolve_workspace_id(provided: Option<String>, profile_config: &ProfileConfig) -> Result<String, String> {
