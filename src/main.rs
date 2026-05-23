@@ -484,11 +484,11 @@ fn main() {
                                     let mut cmd = Cli::command();
                                     cmd.build();
                                     cmd.find_subcommand_mut("databases")
-                                        .unwrap()
+                                        .expect("databases subcommand not found")
                                         .find_subcommand_mut("tables")
-                                        .unwrap()
+                                        .expect("tables subcommand not found")
                                         .print_help()
-                                        .unwrap();
+                                        .expect("failed to print help");
                                 }
                             }
                         },

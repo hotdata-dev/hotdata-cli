@@ -164,12 +164,76 @@ pub fn maybe_print_update_notice(rx: Option<std::sync::mpsc::Receiver<Option<Ver
     );
 }
 
+/// Try to run `brew upgrade <formula>` directly.  Falls back to printing the
+/// manual instruction if `brew` is not on PATH or the command fails.
+fn run_homebrew_upgrade() {
+    println!("Updating via Homebrew...");
+
+    // Locate `brew` — prefer the common install paths so the upgrade works
+    // even if the user's shell profile hasn't been sourced in this context.
+    let brew = ["brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        .iter()
+        .find(|&&p| {
+            if p == "brew" {
+                which_brew()
+            } else {
+                std::path::Path::new(p).exists()
+            }
+        })
+        .copied();
+
+    let Some(brew_bin) = brew else {
+        eprintln!(
+            "{}",
+            "brew not found — run manually:".yellow()
+        );
+        println!("  {}", format!("brew upgrade {HOMEBREW_FORMULA}").cyan());
+        return;
+    };
+
+    let status = std::process::Command::new(brew_bin)
+        .args(["upgrade", HOMEBREW_FORMULA])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            // Cache bust so the update notice clears on the next run.
+            if let Ok(v) = fetch_latest_version() {
+                write_cache(&UpdateCheckCache {
+                    checked_at: now_secs(),
+                    latest_version: v.to_string(),
+                });
+            }
+        }
+        Ok(s) => {
+            eprintln!(
+                "{}",
+                format!("brew upgrade exited with status {s}").red()
+            );
+            std::process::exit(s.code().unwrap_or(1));
+        }
+        Err(e) => {
+            eprintln!("{}", format!("error running brew: {e}").red());
+            eprintln!("Run manually:");
+            println!("  {}", format!("brew upgrade {HOMEBREW_FORMULA}").cyan());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn which_brew() -> bool {
+    std::process::Command::new("which")
+        .arg("brew")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 pub fn run_update() {
     let current = Version::parse(CURRENT_VERSION).expect("invalid package version");
 
     if detect_install_method() == InstallMethod::Homebrew {
-        println!("hotdata was installed via Homebrew. Update with:");
-        println!("  {}", format!("brew upgrade {HOMEBREW_FORMULA}").cyan());
+        run_homebrew_upgrade();
         return;
     }
 
