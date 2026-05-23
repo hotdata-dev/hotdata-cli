@@ -947,7 +947,7 @@ fn main() {
                     .or_else(|| config::load_current_database("default", &workspace_id))
                     .unwrap_or_else(|| {
                         eprintln!(
-                            "error: no active database. Use 'hotdata databases set <id>' to set one, or pass --database."
+                            "error: no active database. Use 'hotdata databases set <id>' to set one, or pass --database-id."
                         );
                         std::process::exit(1);
                     });
