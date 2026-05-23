@@ -132,6 +132,37 @@ pub fn send_debug(
     send_debug_with_redaction(client, builder, body_for_log, &[])
 }
 
+/// Like `send_debug` but for binary (non-UTF-8) responses such as Arrow IPC.
+/// Logs the request and response status in debug mode; prints the byte count
+/// instead of attempting to parse the body as JSON.
+pub fn send_debug_bytes(
+    client: &reqwest::blocking::Client,
+    builder: reqwest::blocking::RequestBuilder,
+) -> reqwest::Result<(reqwest::StatusCode, Vec<u8>)> {
+    let request = builder.build()?;
+    if is_debug() {
+        log_request_struct(&request, None);
+    }
+    let resp = client.execute(request)?;
+    let status = resp.status();
+    let bytes = resp.bytes()?;
+    if is_debug() {
+        use crossterm::style::Stylize;
+        let status_str = format!(
+            "<<< {} {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("")
+        );
+        if status.is_success() {
+            eprintln!("{}", status_str.dark_green());
+        } else {
+            eprintln!("{}", status_str.dark_red());
+        }
+        eprintln!("{}", format!("[binary: {} bytes]", bytes.len()).dark_grey());
+    }
+    Ok((status, bytes.to_vec()))
+}
+
 /// Like `send_debug` but masks the named JSON keys in the printed
 /// response body. The returned body string is always unredacted.
 pub fn send_debug_with_redaction(

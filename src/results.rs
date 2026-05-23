@@ -64,9 +64,6 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
 
 pub fn get(result_id: &str, workspace_id: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-
-    let path = format!("/results/{result_id}");
-    let result: crate::query::QueryResponse = api.get(&path);
-
+    let result = crate::query::fetch_arrow_result(&api, result_id);
     crate::query::print_result(&result, format);
 }
