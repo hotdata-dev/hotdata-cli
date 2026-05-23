@@ -38,6 +38,10 @@ pub enum Commands {
         #[arg(long)]
         connection: Option<String>,
 
+        /// Run query against a specific managed database (overrides the current database set via `databases set`)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
         output: String,

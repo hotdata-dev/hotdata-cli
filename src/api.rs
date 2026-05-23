@@ -122,6 +122,12 @@ impl ApiClient {
         }
     }
 
+    /// Override the database ID for a single query without touching config.
+    pub fn with_database(mut self, database_id: &str) -> Self {
+        self.database_id = Some(database_id.to_string());
+        self
+    }
+
     /// Test-only client (no config load). Used with a local mock HTTP server.
     #[cfg(test)]
     pub(crate) fn test_new(api_url: &str, api_key: &str, workspace_id: Option<&str>) -> Self {

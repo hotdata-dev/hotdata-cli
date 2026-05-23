@@ -463,6 +463,22 @@ pub fn create(
                 println!("description: {desc}");
             }
             println!("id:          {}", result.id);
+            println!();
+            println!(
+                "{}",
+                format!(
+                    concat!(
+                        "Load a table:\n",
+                        "  hotdata databases load --file <path.parquet> {}.<table_name>\n",
+                        "\nQuery with:\n",
+                        "  hotdata query --database {} \"SELECT * FROM default.public.<table> LIMIT 10\"\n",
+                        "\n  Tip: use 'default.<schema>.<table>' as the SQL prefix (not the database or connection id)\n",
+                        "  Column names are case-sensitive — wrap uppercase names in double quotes",
+                    ),
+                    result.id, result.id
+                )
+                .dark_grey()
+            );
         }
         _ => unreachable!(),
     }
@@ -614,8 +630,22 @@ pub fn tables_load(
 
     let full_name = format!("default.{}.{}", result.schema_name, result.table_name);
     println!("{}", "Table loaded".green());
-    println!("full_name: {}", full_name.green());
+    println!("full_name: {}", full_name.clone().green());
     println!("rows:      {}", result.row_count);
+    println!();
+    println!(
+        "{}",
+        format!(
+            concat!(
+                "Query it now:\n",
+                "  hotdata query \"SELECT * FROM {} LIMIT 10\"\n",
+                "\n  Tip: column names are case-sensitive.\n",
+                "  Wrap uppercase names in double quotes: SELECT \"MyColumn\" FROM {} LIMIT 10",
+            ),
+            full_name, full_name
+        )
+        .dark_grey()
+    );
 }
 
 pub fn tables_delete(workspace_id: &str, database: Option<&str>, table: &str, schema: Option<&str>) {
