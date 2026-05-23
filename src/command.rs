@@ -553,6 +553,11 @@ pub enum DatabasesCommands {
         #[arg(long = "table")]
         tables: Vec<String>,
 
+        /// When the database expires. Accepts a relative duration (e.g. 24h, 7d, 90m)
+        /// or an RFC 3339 timestamp. Defaults to 24h when omitted.
+        #[arg(long)]
+        expires_at: Option<String>,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,

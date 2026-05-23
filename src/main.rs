@@ -387,12 +387,14 @@ fn main() {
                             description,
                             schema,
                             tables,
+                            expires_at,
                             output,
                         }) => databases::create(
                             &workspace_id,
                             description.as_deref(),
                             &schema,
                             &tables,
+                            expires_at.as_deref(),
                             &output,
                         ),
                         Some(DatabasesCommands::Set { id_or_description }) => {

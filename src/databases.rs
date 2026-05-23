@@ -130,6 +130,7 @@ pub fn create_database_request(
     description: Option<&str>,
     schema: &str,
     tables: &[String],
+    expires_at: Option<&str>,
 ) -> serde_json::Value {
     let mut req = serde_json::Map::new();
 
@@ -148,6 +149,13 @@ pub fn create_database_request(
         req.insert(
             "schemas".to_string(),
             serde_json::json!([{ "name": schema, "tables": table_objs }]),
+        );
+    }
+
+    if let Some(exp) = expires_at {
+        req.insert(
+            "expires_at".to_string(),
+            serde_json::Value::String(exp.to_string()),
         );
     }
 
@@ -414,11 +422,12 @@ pub fn create(
     description: Option<&str>,
     schema: &str,
     tables: &[String],
+    expires_at: Option<&str>,
     format: &str,
 ) {
     use crossterm::style::Stylize;
 
-    let body = create_database_request(description, schema, tables);
+    let body = create_database_request(description, schema, tables, expires_at);
 
     let api = ApiClient::new(Some(workspace_id));
     let spinner = (format == "table").then(|| crate::util::spinner("Creating database..."));
