@@ -1,3 +1,17 @@
+## [0.2.8] - 2026-05-22
+
+### 🚀 Features
+
+- *(context)* Scope context commands to active database; `hotdata context` now calls `/databases/{id}/context` and requires `--database-id` or an active database set via `databases set` (#98)
+- *(databases)* Add `--expires-at` flag to `databases create`; accepts relative durations (`24h`, `7d`) or RFC 3339 timestamps (#97)
+- *(datasets)* Remove upload/URL/file create paths; `datasets create` now requires exactly one of `--sql` or `--query-id` (#95)
+- *(databases)* Migrate CLI to dedicated `/databases` API; `databases set` saves active database; `X-Database-Id` header sent automatically on all requests (#94)
+
+### 🐛 Bug Fixes
+
+- *(datasets)* Add missing `type` discriminator to dataset source payloads sent to API
+- *(context)* Correct `--database-id` flag name in error message
+
 ## [0.2.7] - 2026-05-20
 
 ### 🚀 Features
