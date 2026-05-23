@@ -208,11 +208,11 @@ pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
 pub fn update(
     dataset_id: &str,
     workspace_id: &str,
-    label: Option<&str>,
-    table_name: Option<&str>,
+    description: Option<&str>,
+    name: Option<&str>,
     format: &str,
 ) {
-    if label.is_none() && table_name.is_none() {
+    if description.is_none() && name.is_none() {
         eprintln!("error: provide at least one of --description or --name.");
         std::process::exit(1);
     }
@@ -220,11 +220,11 @@ pub fn update(
     let api = ApiClient::new(Some(workspace_id));
 
     let mut body = json!({});
-    if let Some(l) = label {
-        body["label"] = json!(l);
+    if let Some(d) = description {
+        body["label"] = json!(d);
     }
-    if let Some(tn) = table_name {
-        body["table_name"] = json!(tn);
+    if let Some(n) = name {
+        body["table_name"] = json!(n);
     }
 
     let d: UpdateResponse = api.put(&format!("/datasets/{dataset_id}"), &body);
