@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, datasets, tables, basic SQL query, sandboxes, workspace context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "list datasets", "create a dataset", "execute a query", "list sandboxes", "workspace context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, datasets, tables, basic SQL query, sandboxes, database context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "list datasets", "create a dataset", "execute a query", "list sandboxes", "database context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
 version: 0.2.8
 ---
 
@@ -48,23 +48,23 @@ If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked*
 
 **Omit `--workspace-id` unless you need to target a specific workspace** (and it is not locked by env or session).
 
-## Workspace context (API)
+## Database context (API)
 
-**Notation `context:<STEM>`:** In this skill, **`context:DATAMODEL`**, **`context:GLOSSARY`**, and **`context:<NAME>`** mean the **authoritative Markdown document** stored on the server under that **stem** via the Hotdata **context API** (`/v1/context`, `hotdata context …`). That is **not** the same as generic English (“a data model”, “a glossary”), and **not** the same as local `./DATAMODEL.md` except as **pull/push transport**. **CLI commands use the bare stem** (no `context:` prefix): e.g. `hotdata context show DATAMODEL`, `hotdata context push GLOSSARY`.
+**Notation `context:<STEM>`:** In this skill, **`context:DATAMODEL`**, **`context:GLOSSARY`**, and **`context:<NAME>`** mean the **authoritative Markdown document** stored on the server under that **stem** via the Hotdata **context API** (`/v1/databases/{database_id}/context`, `hotdata context …`). That is **not** the same as generic English (“a data model”, “a glossary”), and **not** the same as local `./DATAMODEL.md` except as **pull/push transport**. **CLI commands use the bare stem** (no `context:` prefix): e.g. `hotdata context show DATAMODEL`, `hotdata context push GLOSSARY`.
 
-The workspace stores those documents only through the **context API**. The **authoritative** copy always lives on the server under the stem; common stems are **`context:DATAMODEL`** (semantic map) and **`context:GLOSSARY`** (glossary / runbooks).
+Context is **scoped to the active database** (set via `hotdata databases set <id>`). All context commands operate against the database returned by the active-database config unless you pass **`--database-id <id>`** (short: **`-d`**) explicitly. The **authoritative** copy always lives on the server under the stem; common stems are **`context:DATAMODEL`** (semantic map) and **`context:GLOSSARY`** (glossary / runbooks).
 
-The CLI command **`hotdata context push`** reads **`./<NAME>.md`** and **`pull`** writes that file in the **current working directory**—those files exist only as a **transport surface** for the API, not as a second source of truth. **`hotdata context show <name>`** prints Markdown to stdout so agents can read **`context:<NAME>`** without any local file. Stems follow SQL table–identifier rules (ASCII letters, digits, underscore; no dot in the API name; max 128 characters; SQL reserved words are not allowed). For **`show`**, **`pull`**, and **`push`**, the CLI accepts a trailing **`.md`** on the argument (e.g. **`USER.md`**) and treats it as stem **`USER`**—the workspace still stores **`USER`**, not `USER.md`.
+The CLI command **`hotdata context push`** reads **`./<NAME>.md`** and **`pull`** writes that file in the **current working directory**—those files exist only as a **transport surface** for the API, not as a second source of truth. **`hotdata context show <name>`** prints Markdown to stdout so agents can read **`context:<NAME>`** without any local file. Stems follow SQL table–identifier rules (ASCII letters, digits, underscore; no dot in the API name; max 128 characters; SQL reserved words are not allowed). For **`show`**, **`pull`**, and **`push`**, the CLI accepts a trailing **`.md`** on the argument (e.g. **`USER.md`**) and treats it as stem **`USER`**—the database still stores **`USER`**, not `USER.md`.
 
 > **Agents: do not blindly run `hotdata context show DATAMODEL` on session start.** Run **`hotdata context list`** first (optional `--prefix DATAMODEL`). Call **`hotdata context show DATAMODEL` only if** the list includes the `DATAMODEL` stem. If **`show` exits 1** with *no context named …*, that is **normal** when nothing has been pushed yet—**not a hard failure**; do not retry in a loop, and **avoid speculative `show` in parallel** with other shell tools where one failure cancels sibling calls. Proceed without **context:DATAMODEL** until the user asks to create or load one.
 
-**Agents (Claude and similar):** use workspace context as the only durable store for **context:DATAMODEL**, **context:GLOSSARY**, and any other **`context:<STEM>`** documents you introduce. Keep transient analysis notes in **sandbox markdown** or the conversation until you **promote** them into **context:DATAMODEL** when they should guide the whole workspace ([details below](#analysis-modeling-vs-contextdatamodel)).
+**Agents (Claude and similar):** use database context as the only durable store for **context:DATAMODEL**, **context:GLOSSARY**, and any other **`context:<STEM>`** documents you introduce. Keep transient analysis notes in **sandbox markdown** or the conversation until you **promote** them into **context:DATAMODEL** when they should guide the whole database ([details below](#analysis-modeling-vs-contextdatamodel)).
 
 1. **Before** planning non-trivial queries, explaining schema to others, or editing **context:DATAMODEL**, **discover** stored names with `hotdata context list` (and other stems such as **context:GLOSSARY** as needed). **Only if** `DATAMODEL` appears in the list, load it: `hotdata context show DATAMODEL`. If it is **absent**, skip `show` and treat **context:DATAMODEL** as unset—use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) when the user wants to bootstrap, then `push` when ready.
 2. **After** you change **context:DATAMODEL**, persist with **`hotdata context push DATAMODEL`**. The CLI requires a local `./DATAMODEL.md` for that step: write the body there (from `context show`, the template, or your edits), then run `push` from the project directory.
 3. Use **`hotdata context pull DATAMODEL`** when you intentionally want a local `./DATAMODEL.md` copy (for example a human editor); it still reflects API state for **context:DATAMODEL**, not a parallel document.
 
-The standard stem for the workspace semantic map is **`DATAMODEL`** (skill notation **context:DATAMODEL**). Add other stems the same way (e.g. **`GLOSSARY`** → **context:GLOSSARY**) for glossary or runbooks.
+The standard stem for the database semantic map is **`DATAMODEL`** (skill notation **context:DATAMODEL**). Add other stems the same way (e.g. **`GLOSSARY`** → **context:GLOSSARY**) for glossary or runbooks.
 
 ### Analysis modeling vs context:DATAMODEL
 
@@ -72,17 +72,17 @@ Keep two layers separate:
 
 - **Analysis modeling (day to day)** — Understanding data *for the current task*: exploratory SQL, join checks, column semantics for one report, hypotheses, scratch notes. Often conversational or short-lived. **Sandbox markdown** (`sandbox update --markdown`) is the right home while you explore; it dies with the sandbox unless you copy it elsewhere.
 
-- **context:DATAMODEL (Hotdata workspace data model)** — A **durable, workspace-wide** map stored only via the **context API**: entities and tables across connections, PK/FK relationships, how datasets tie back to sources, naming and query conventions the **whole team** should rely on. This is **higher-level shared structure**, not a transcript of one investigation.
+- **context:DATAMODEL (Hotdata database data model)** — A **durable, database-scoped** map stored only via the **context API**: entities and tables across connections, PK/FK relationships, how datasets tie back to sources, naming and query conventions the **whole team** should rely on. This is **higher-level shared structure**, not a transcript of one investigation.
 
-**Promotion:** When analysis findings should **outlive** the sandbox or session and **guide everyone**, merge them into **context:DATAMODEL** (`hotdata context list` → if `DATAMODEL` is listed, `hotdata context show DATAMODEL` → reconcile → `hotdata context push DATAMODEL`). You do **not** need to update **context:DATAMODEL** after every ad-hoc query—only when the workspace story or join graph meaningfully changes.
+**Promotion:** When analysis findings should **outlive** the sandbox or session and **guide everyone**, merge them into **context:DATAMODEL** (`hotdata context list` → if `DATAMODEL` is listed, `hotdata context show DATAMODEL` → reconcile → `hotdata context push DATAMODEL`). You do **not** need to update **context:DATAMODEL** after every ad-hoc query—only when the database story or join graph meaningfully changes.
 
-Use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [references/MODEL_BUILD.md](references/MODEL_BUILD.md) for **what to write inside** the Markdown you store under **context:** stems. Never put workspace-specific model text inside agent skill install paths—only in **workspace context** (and transient `./<NAME>.md` for push/pull when needed).
+Use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [references/MODEL_BUILD.md](references/MODEL_BUILD.md) for **what to write inside** the Markdown you store under **context:** stems. Never put database-specific model text inside agent skill install paths—only in **database context** (and transient `./<NAME>.md` for push/pull when needed).
 
 ## Multi-step workflows
 
 These are **patterns** built from the commands below—not separate CLI subcommands:
 
-- **Model (`context:DATAMODEL`)** — The **shared** Markdown semantic map of the workspace (entities, keys, joins across connections). **Store and read it only via workspace context** (`hotdata context list`, then `hotdata context show DATAMODEL` **only when listed**, `context push DATAMODEL`); refresh using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Contrast **analysis modeling** in sandboxes or chat (see [Analysis modeling vs context:DATAMODEL](#analysis-modeling-vs-contextdatamodel)).
+- **Model (`context:DATAMODEL`)** — The **shared** Markdown semantic map of the active database (entities, keys, joins across connections). **Store and read it only via database context** (`hotdata context list`, then `hotdata context show DATAMODEL` **only when listed**, `context push DATAMODEL`); refresh using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Contrast **analysis modeling** in sandboxes or chat (see [Analysis modeling vs context:DATAMODEL](#analysis-modeling-vs-contextdatamodel)).
 - **History / Chain / OLAP SQL** — See **`hotdata-analytics`** and [references/WORKFLOWS.md](references/WORKFLOWS.md).
 - **Search / retrieval indexes** — See **`hotdata-search`**.
 
@@ -179,39 +179,44 @@ hotdata connections create \
 
 ### Managed databases (`databases`)
 
-**Managed databases** are Hotdata-owned catalogs (`source_type: managed`) you create and populate yourself—no remote source to sync. Query them in SQL as **`<database_name>.<schema>.<table>`** (the database name is the connection name). Prefer **`hotdata databases`** over **`hotdata connections create --type managed`** for this workflow.
+**Managed databases** are Hotdata-owned catalogs you create and populate yourself — no remote source to sync. Query them in SQL as **`<database_id>.<schema>.<table>`**. Prefer **`hotdata databases`** for this workflow.
 
-**Parquet vs datasets:** `databases tables load` accepts **parquet only**. For CSV/JSON uploads without a managed database, use **`hotdata datasets create`**.
+**Parquet vs datasets:** `databases tables load` accepts **parquet only**. For SQL-query or saved-query materializations, use **`hotdata datasets create`**.
 
-**Declare tables at create time:** On the current API, each table must be declared with **`--table`** when creating the database before **`tables load`** will succeed. If load fails with *not declared*, recreate with `--table` or add declaration support when the API allows it.
+**Active database:** `hotdata databases set <id_or_description>` saves the active database to config. All `databases tables` subcommands and all `context` commands default to the active database; pass **`--database <id>`** to override per-command.
 
 ```
 hotdata databases list [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases create --name <name> [--table <table> ...] [--schema public] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases <name_or_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases delete <name_or_id> [--workspace-id <workspace_id>]
+hotdata databases create [--description <label>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases set <id_or_description>
+hotdata databases <id_or_description> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases delete <id_or_description> [--workspace-id <workspace_id>]
 
-hotdata databases tables list <database> [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases tables load <database> <table> --file ./data.parquet [--schema public] [--workspace-id <workspace_id>]
-hotdata databases tables load <database> <table> --upload-id <id> [--schema public] [--workspace-id <workspace_id>]
-hotdata databases tables delete <database> <table> [--schema public] [--workspace-id <workspace_id>]
+# Dot-notation shorthand for load: database.table or database.schema.table
+hotdata databases load <database.table> [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
+
+hotdata databases tables list [--database <id_or_desc>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases tables load <table> [--database <id_or_desc>] [--schema public] [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
+hotdata databases tables delete <table> [--database <id_or_desc>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
-- `list` — managed databases only (filters `source_type: managed` from connections).
-- `create` — registers a managed connection with optional `config.schemas[].tables[]` from repeated **`--table`**. Default schema is **`public`**.
-- `<name_or_id>` — inspect one database (name, id, table counts, SQL prefix hint).
-- `delete` — removes the managed database and its tables.
-- `tables list` — tables with `TABLE` (`<database>.<schema>.<table>`), `SYNCED`, `LAST_SYNC` (via `information_schema`).
-- `tables load` — uploads a local **parquet** file (or uses **`--upload-id`** from a prior `POST /v1/files` staging) and publishes with **`replace`** mode. **`--file`** and **`--upload-id`** are mutually exclusive.
+- `list` — all managed databases in the workspace.
+- `create` — creates a new managed database. `--description` is an optional human-readable label (databases are addressed by id, not description). `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; defaults to `24h` when omitted. Repeat `--table` to declare tables up front.
+- `set` — saves `<id_or_description>` as the active database. Subsequent `databases tables` and `context` commands use it automatically.
+- `<id_or_description>` — inspect one database (id, description, expires_at).
+- `delete` — removes the managed database; clears the active-database config if it matched.
+- `load` — shorthand with dot notation (`database.table` or `database.schema.table`). Schema defaults to `public`.
+- `tables list` — lists tables with `TABLE` (`<database_id>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
+- `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
 - `tables delete` — drops a table from the managed database.
-- Resolving by **name** or **connection id** works for all subcommands that take `<database>` or `<name_or_id>`. Non-managed connections error with a hint to use **`hotdata connections`**.
 
 Example:
 
 ```
-hotdata databases create --name sales --table orders
-hotdata databases tables load sales orders --file ./orders.parquet
-hotdata query "SELECT count(*) FROM sales.public.orders"
+hotdata databases create --description "sales" --table orders
+hotdata databases set <returned-id>
+hotdata databases tables load orders --file ./orders.parquet
+hotdata query "SELECT count(*) FROM <database_id>.public.orders"
 ```
 
 ### List Tables and Columns
@@ -249,28 +254,21 @@ hotdata datasets <dataset_id> [--workspace-id <workspace_id>] [--output table|js
 
 #### Update a dataset
 ```
-hotdata datasets update <dataset_id> [--label <label>] [--table-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata datasets update <dataset_id> [--description <label>] [--name <table_name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
-- The CLI requires **at least one** of **`--label`** or **`--table-name`**.
+- The CLI requires **at least one** of **`--description`** or **`--name`**.
 
 #### Create a dataset
 ```
-hotdata datasets create --label "My Dataset" --file data.csv [--table-name my_dataset] [--workspace-id <workspace_id>]
-hotdata datasets create --label "My Dataset" --sql "SELECT * FROM ..." [--table-name my_dataset] [--workspace-id <workspace_id>]
-hotdata datasets create --label "My Dataset" --query-id <saved_query_id> [--table-name my_dataset] [--workspace-id <workspace_id>]
-hotdata datasets create --label "My Dataset" --url "https://example.com/data.parquet" [--table-name my_dataset] [--workspace-id <workspace_id>]
-hotdata datasets create --label "My Dataset" --upload-id <upload_id> [--format csv|json|parquet] [--table-name my_dataset] [--workspace-id <workspace_id>]
+hotdata datasets create --name <table_name> [--description "My Dataset"] (--sql "SELECT ..." | --query-id <saved_query_id>) [--workspace-id <workspace_id>]
 ```
-- `--file` uploads a local file. Omit to pipe data via stdin: `cat data.csv | hotdata datasets create --label "My Dataset"`
-- `--sql` creates a dataset from a SQL query result.
-- `--query-id` creates a dataset from a previously saved query.
-- `--url` imports data directly from a URL (supports csv, json, parquet).
-- `--upload-id` uses an upload the API already accepted; **`--format`** (default `csv`) applies only with `--upload-id`.
-- `--file`, `--sql`, `--query-id`, `--url`, and `--upload-id` are mutually exclusive.
-- Format is auto-detected from file extension (`.csv`, `.json`, `.parquet`) or file content.
-- `--label` is optional when `--file` is provided — defaults to the filename without extension. Required for `--sql` and `--query-id`.
-- `--table-name` is optional — derived from the label if omitted.
-- After **`datasets create`**, the CLI prints a **`full_name`** line (for example `datasets.main.my_table` or `datasets.s_ufmblmvq.tac_csat`). **Always use that `full_name` in SQL**—do not assume `datasets.main`.
+- **`--name`** (required) — SQL table name the dataset is addressable as (e.g. `my_view`).
+- **`--description`** (optional) — human-readable display label; defaults to `--name` when omitted.
+- **Exactly one** of **`--sql`** or **`--query-id`** is required:
+  - `--sql` — create from an inline SQL query result.
+  - `--query-id` — create from a previously saved query.
+- For parquet/CSV file uploads use **`hotdata databases tables load`** instead.
+- After **`datasets create`**, the CLI prints a **`full_name`** line (e.g. `datasets.main.my_view`). **Always use that `full_name` in SQL**—do not assume `datasets.main`.
 
 #### Refresh a dataset
 ```
@@ -291,23 +289,23 @@ hotdata query "SELECT * FROM datasets.main.my_dataset LIMIT 10"
 
 Use `hotdata datasets <dataset_id>` to inspect schema and names before writing queries.
 
-### Workspace context (named Markdown)
+### Database context (named Markdown)
 
-Reads and writes workspace **context API** documents. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Workspace context (API)](#workspace-context-api).
+Reads and writes **database-scoped context API** documents. Context is tied to the **active database** (set via `hotdata databases set`); pass **`--database-id <id>`** (short: **`-d`**) to target a specific database. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Database context (API)](#database-context-api).
 
 ```
-hotdata context list [--workspace-id <workspace_id>] [--prefix <stem>] [--output table|json|yaml]
-hotdata context show <name> [--workspace-id <workspace_id>]
-hotdata context pull <name> [--workspace-id <workspace_id>] [--force] [--dry-run]
-hotdata context push <name> [--workspace-id <workspace_id>] [--dry-run]
+hotdata context list [--database-id <id>] [--prefix <stem>] [--output table|json|yaml]
+hotdata context show <name> [--database-id <id>]
+hotdata context pull <name> [--database-id <id>] [--force] [--dry-run]
+hotdata context push <name> [--database-id <id>] [--dry-run]
 ```
 
-- `list` — names, `updated_at`, and character counts for each stored context. Use `--prefix` to narrow names (case-sensitive). **Agents:** call **`list` before `show`** for `DATAMODEL` (or any stem) so you do not rely on `show` failing when the document does not exist yet.
-- `show` — print the Markdown body to **stdout** (use this when there is **no** local `./<NAME>.md`; ideal for agents). **Errors** if no context with that `name` exists (exit 1)—expected for a new workspace; use `list` first to avoid that path.
+- `list` — names, `updated_at`, and character counts for each stored context in the active database. Use `--prefix` to narrow names (case-sensitive). **Agents:** call **`list` before `show`** for `DATAMODEL` (or any stem) so you do not rely on `show` failing when the document does not exist yet.
+- `show` — print the Markdown body to **stdout** (use this when there is **no** local `./<NAME>.md`; ideal for agents). **Errors** if no context with that `name` exists (exit 1)—expected for a new database; use `list` first to avoid that path.
 - `pull` — download context `name` to `./<NAME>.md`. Refuses to overwrite an existing file unless `--force`. `--dry-run` prints target path and size only.
 - `push` — upload `./<NAME>.md` to upsert context `name` on the server. `--dry-run` prints size only. Body size must stay within the API limit (order of 512k characters).
 
-**Convention:** **context:DATAMODEL** is the primary workspace semantic map; **context:GLOSSARY** (or other **`context:<STEM>`** docs) for additional narrative context. Same identifier rules as SQL table names. CLI: `hotdata context show DATAMODEL` (bare stem).
+**Convention:** **context:DATAMODEL** is the primary database semantic map; **context:GLOSSARY** (or other **`context:<STEM>`** docs) for additional narrative context. Same identifier rules as SQL table names. CLI: `hotdata context show DATAMODEL` (bare stem).
 
 ### Execute SQL Query
 

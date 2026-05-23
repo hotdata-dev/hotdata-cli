@@ -82,15 +82,16 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json
 2. **Materialize** (pick one)
 
    ```bash
-   hotdata datasets create --label "chain slice" --sql "SELECT ..." [--table-name chain_slice]
-   hotdata datasets create --label "from saved" --query-id <query_id> [--table-name ...]
+   hotdata datasets create --name chain_slice [--description "chain slice"] --sql "SELECT ..."
+   hotdata datasets create --name chain_from_saved [--description "from saved"] --query-id <query_id>
    ```
 
    Or managed parquet:
 
    ```bash
-   hotdata databases create --name analytics --table slice
-   hotdata databases tables load analytics slice --file ./slice.parquet
+   hotdata databases create --description "analytics" --table slice
+   hotdata databases set <returned-id>
+   hotdata databases tables load slice --file ./slice.parquet
    ```
 
 3. **Chain query** — use printed **`full_name`** or `datasets list` **FULL NAME** column:
