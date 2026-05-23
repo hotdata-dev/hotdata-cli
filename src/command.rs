@@ -228,11 +228,15 @@ pub enum Commands {
         command: Option<SandboxCommands>,
     },
 
-    /// Sync workspace text context with local Markdown (`./<NAME>.md` in the current directory)
+    /// Sync database context with local Markdown (`./<NAME>.md` in the current directory)
     Context {
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
+
+        /// Database ID (defaults to active database set via 'hotdata databases set')
+        #[arg(long, short = 'd', global = true)]
+        database_id: Option<String>,
 
         #[command(subcommand)]
         command: ContextCommands,
@@ -852,7 +856,7 @@ pub enum ContextCommands {
         name: String,
     },
 
-    /// Download context from the workspace to ./<NAME>.md
+    /// Download context from the database to ./<NAME>.md
     Pull {
         /// Context name (trailing `.md` ignored, e.g. `USER.md` → `USER`)
         name: String,
@@ -866,7 +870,7 @@ pub enum ContextCommands {
         dry_run: bool,
     },
 
-    /// Upload ./<NAME>.md to the workspace as named context
+    /// Upload ./<NAME>.md to the database as named context
     Push {
         /// Context name (trailing `.md` ignored, e.g. `USER.md` → `USER`; reads `./USER.md`)
         name: String,

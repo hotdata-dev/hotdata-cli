@@ -107,7 +107,7 @@ fn create_dataset(
 
 pub fn create_from_query(workspace_id: &str, sql: &str, description: Option<&str>, name: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    create_dataset(&api, description, name, json!({ "sql": sql }));
+    create_dataset(&api, description, name, json!({ "type": "sql_query", "sql": sql }));
 }
 
 pub fn create_from_saved_query(
@@ -117,7 +117,7 @@ pub fn create_from_saved_query(
     name: &str,
 ) {
     let api = ApiClient::new(Some(workspace_id));
-    create_dataset(&api, description, name, json!({ "saved_query_id": query_id }));
+    create_dataset(&api, description, name, json!({ "type": "saved_query", "saved_query_id": query_id }));
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {

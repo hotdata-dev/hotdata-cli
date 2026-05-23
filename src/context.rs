@@ -1,4 +1,4 @@
-//! Workspace context: `/v1/context` sync with `./{NAME}.md` in the current directory.
+//! Database context: `/v1/databases/{id}/context` sync with `./{NAME}.md` in the current directory.
 
 use crate::api::ApiClient;
 use crossterm::style::Stylize;
@@ -28,7 +28,7 @@ static RESERVED_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 });
 
 #[derive(Debug, Deserialize, Serialize)]
-struct WorkspaceContextEntry {
+struct DatabaseContextEntry {
     name: String,
     content: String,
     updated_at: String,
@@ -36,17 +36,17 @@ struct WorkspaceContextEntry {
 
 #[derive(Deserialize)]
 struct ListResponse {
-    contexts: Vec<WorkspaceContextEntry>,
+    contexts: Vec<DatabaseContextEntry>,
 }
 
 #[derive(Deserialize)]
 struct GetResponse {
-    context: WorkspaceContextEntry,
+    context: DatabaseContextEntry,
 }
 
 #[derive(Deserialize)]
 struct UpsertResponse {
-    context: WorkspaceContextEntry,
+    context: DatabaseContextEntry,
 }
 
 /// Normalizes a context name from the CLI: trims, takes the final path segment, and strips a
@@ -124,9 +124,10 @@ fn local_md_path(name: &str) -> PathBuf {
 
 fn fetch_context(
     api: &ApiClient,
+    database_id: &str,
     name: &str,
-) -> Result<WorkspaceContextEntry, reqwest::StatusCode> {
-    let path = format!("/context/{name}");
+) -> Result<DatabaseContextEntry, reqwest::StatusCode> {
+    let path = format!("/databases/{database_id}/context/{name}");
     let (status, body) = api.get_raw(&path);
     if status == reqwest::StatusCode::NOT_FOUND {
         return Err(status);
@@ -143,11 +144,11 @@ fn fetch_context(
     Ok(parsed.context)
 }
 
-pub fn list(workspace_id: &str, prefix: Option<&str>, format: &str) {
+pub fn list(workspace_id: &str, database_id: &str, prefix: Option<&str>, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    let body: ListResponse = api.get("/context");
+    let body: ListResponse = api.get(&format!("/databases/{database_id}/context"));
 
-    let mut rows: Vec<WorkspaceContextEntry> = body.contexts;
+    let mut rows: Vec<DatabaseContextEntry> = body.contexts;
     if let Some(p) = prefix {
         rows.retain(|c| c.name.starts_with(p));
     }
@@ -176,7 +177,7 @@ pub fn list(workspace_id: &str, prefix: Option<&str>, format: &str) {
     }
 }
 
-pub fn show(workspace_id: &str, name: &str) {
+pub fn show(workspace_id: &str, database_id: &str, name: &str) {
     let name = normalize_context_cli_name(name);
     if let Err(e) = validate_context_stem(&name) {
         eprintln!("error: {e}");
@@ -184,7 +185,7 @@ pub fn show(workspace_id: &str, name: &str) {
     }
 
     let api = ApiClient::new(Some(workspace_id));
-    match fetch_context(&api, &name) {
+    match fetch_context(&api, database_id, &name) {
         Ok(ctx) => {
             print!("{}", ctx.content);
             if !ctx.content.ends_with('\n') {
@@ -194,7 +195,7 @@ pub fn show(workspace_id: &str, name: &str) {
         Err(reqwest::StatusCode::NOT_FOUND) => {
             eprintln!(
                 "{}",
-                format!("error: no context named '{name}' in this workspace.").red()
+                format!("error: no context named '{name}' in this database.").red()
             );
             eprintln!(
                 "{}",
@@ -207,7 +208,7 @@ pub fn show(workspace_id: &str, name: &str) {
     }
 }
 
-pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
+pub fn pull(workspace_id: &str, database_id: &str, name: &str, force: bool, dry_run: bool) {
     let name = normalize_context_cli_name(name);
     if let Err(e) = validate_context_stem(&name) {
         eprintln!("error: {e}");
@@ -229,12 +230,12 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
     }
 
     let api = ApiClient::new(Some(workspace_id));
-    let ctx = match fetch_context(&api, &name) {
+    let ctx = match fetch_context(&api, database_id, &name) {
         Ok(c) => c,
         Err(reqwest::StatusCode::NOT_FOUND) => {
             eprintln!(
                 "{}",
-                format!("error: no context named '{name}' in this workspace.").red()
+                format!("error: no context named '{name}' in this database.").red()
             );
             std::process::exit(1);
         }
@@ -270,7 +271,7 @@ pub fn pull(workspace_id: &str, name: &str, force: bool, dry_run: bool) {
     );
 }
 
-pub fn push(workspace_id: &str, name: &str, dry_run: bool) {
+pub fn push(workspace_id: &str, database_id: &str, name: &str, dry_run: bool) {
     let name = normalize_context_cli_name(name);
     if let Err(e) = validate_context_stem(&name) {
         eprintln!("error: {e}");
@@ -310,7 +311,7 @@ pub fn push(workspace_id: &str, name: &str, dry_run: bool) {
 
     let api = ApiClient::new(Some(workspace_id));
     let body = json!({ "name": &name, "content": content });
-    let resp: UpsertResponse = api.post("/context", &body);
+    let resp: UpsertResponse = api.post(&format!("/databases/{database_id}/context"), &body);
 
     println!(
         "{}",
