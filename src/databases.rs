@@ -684,6 +684,18 @@ mod tests {
         assert_eq!(req["schemas"][0]["name"], "analytics");
     }
 
+    #[test]
+    fn create_database_request_includes_expires_at_when_provided() {
+        let req = create_database_request(None, "public", &[], Some("24h"));
+        assert_eq!(req["expires_at"], "24h");
+    }
+
+    #[test]
+    fn create_database_request_omits_expires_at_when_none() {
+        let req = create_database_request(None, "public", &[], None);
+        assert!(req.get("expires_at").is_none());
+    }
+
     fn full_detail(id: &str, desc: &str, conn_id: &str) -> String {
         format!(
             r#"{{"id":"{id}","description":"{desc}","default_connection_id":"{conn_id}","attachments":[]}}"#
