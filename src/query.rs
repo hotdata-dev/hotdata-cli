@@ -26,7 +26,7 @@ struct QueryRunResponse {
     status: String,
     result_id: Option<String>,
     #[serde(default)]
-    error: Option<String>,
+    error_message: Option<String>,
 }
 
 fn value_to_string(v: &Value) -> String {
@@ -132,7 +132,7 @@ fn arrow_ipc_to_query_response(bytes: Vec<u8>, result_id: String) -> QueryRespon
 }
 
 /// Fetch `/results/{result_id}` as Arrow IPC and return a `QueryResponse`.
-fn fetch_arrow_result(api: &ApiClient, result_id: &str) -> QueryResponse {
+pub(crate) fn fetch_arrow_result(api: &ApiClient, result_id: &str) -> QueryResponse {
     let (status, bytes) = api.get_bytes(&format!("/results/{result_id}"), ACCEPT_ARROW);
     if !status.is_success() {
         use crossterm::style::Stylize;
@@ -214,7 +214,7 @@ pub fn execute(
                 "failed" => {
                     spinner.finish_and_clear();
                     use crossterm::style::Stylize;
-                    let err = run.error.as_deref().unwrap_or("unknown error");
+                    let err = run.error_message.as_deref().unwrap_or("unknown error");
                     eprintln!("{}", format!("query failed: {err}").red());
                     std::process::exit(1);
                 }
@@ -274,7 +274,7 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
         },
         "failed" => {
             use crossterm::style::Stylize;
-            let err = run.error.as_deref().unwrap_or("unknown error");
+            let err = run.error_message.as_deref().unwrap_or("unknown error");
             eprintln!("{}", format!("query failed: {err}").red());
             std::process::exit(1);
         }
