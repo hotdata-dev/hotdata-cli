@@ -17,7 +17,6 @@ pub struct QueryResponse {
 #[derive(Deserialize)]
 struct AsyncResponse {
     query_run_id: String,
-    status: String,
 }
 
 #[derive(Deserialize)]
@@ -184,17 +183,6 @@ pub fn execute(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
 
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            if std::time::Instant::now() > deadline {
-                spinner.finish_and_clear();
-                use crossterm::style::Stylize;
-                eprintln!("{}", "query timed out after 5 minutes".red());
-                eprintln!(
-                    "{}",
-                    format!("Check status with: hotdata query status {run_id}").dark_grey()
-                );
-                std::process::exit(1);
-            }
             let run: QueryRunResponse = api.get(&format!("/query-runs/{run_id}"));
             match run.status.as_str() {
                 "succeeded" => {
@@ -218,7 +206,7 @@ pub fn execute(
                     eprintln!("{}", format!("query failed: {err}").red());
                     std::process::exit(1);
                 }
-                "running" | "queued" | "pending" => continue,
+                "running" | "queued" | "pending" => {}
                 status => {
                     spinner.finish_and_clear();
                     use crossterm::style::Stylize;
@@ -230,6 +218,17 @@ pub fn execute(
                     std::process::exit(2);
                 }
             }
+            if std::time::Instant::now() > deadline {
+                spinner.finish_and_clear();
+                use crossterm::style::Stylize;
+                eprintln!("{}", "query timed out after 5 minutes".red());
+                eprintln!(
+                    "{}",
+                    format!("Check status with: hotdata query status {run_id}").dark_grey()
+                );
+                std::process::exit(1);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
     }
 

@@ -205,7 +205,10 @@ fn download_and_extract_from_url(url: &str) -> Result<(), String> {
     // `resp.text()` and would corrupt the gzip stream). Log the
     // request line manually so `--debug` still shows the URL.
     crate::util::debug_request("GET", url, &[], None);
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("error creating HTTP client: {e}"))?;
     let resp = client
         .get(url)
         .send()
