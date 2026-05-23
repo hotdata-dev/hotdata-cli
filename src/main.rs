@@ -939,21 +939,32 @@ fn main() {
             }
             Commands::Context {
                 workspace_id,
+                database_id,
                 command,
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
+                let database_id = database_id
+                    .or_else(|| config::load_current_database("default", &workspace_id))
+                    .unwrap_or_else(|| {
+                        eprintln!(
+                            "error: no active database. Use 'hotdata databases set <id>' to set one, or pass --database."
+                        );
+                        std::process::exit(1);
+                    });
                 match command {
                     ContextCommands::List { output, prefix } => {
-                        context::list(&workspace_id, prefix.as_deref(), &output)
+                        context::list(&workspace_id, &database_id, prefix.as_deref(), &output)
                     }
-                    ContextCommands::Show { name } => context::show(&workspace_id, &name),
+                    ContextCommands::Show { name } => {
+                        context::show(&workspace_id, &database_id, &name)
+                    }
                     ContextCommands::Pull {
                         name,
                         force,
                         dry_run,
-                    } => context::pull(&workspace_id, &name, force, dry_run),
+                    } => context::pull(&workspace_id, &database_id, &name, force, dry_run),
                     ContextCommands::Push { name, dry_run } => {
-                        context::push(&workspace_id, &name, dry_run)
+                        context::push(&workspace_id, &database_id, &name, dry_run)
                     }
                 }
             }
