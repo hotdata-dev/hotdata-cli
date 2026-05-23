@@ -277,6 +277,32 @@ impl ApiClient {
         self.send(req, None)
     }
 
+    /// GET with a custom Accept header; returns raw bytes instead of decoded text.
+    /// Used for binary result formats such as Arrow IPC streams.
+    pub fn get_bytes(&self, path: &str, accept: &str) -> (reqwest::StatusCode, Vec<u8>) {
+        let url = format!("{}{path}", self.api_url);
+        let req = self.build_request(reqwest::Method::GET, &url).header("Accept", accept);
+        match req.build() {
+            Ok(request) => {
+                match self.client.execute(request) {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let bytes = resp.bytes().unwrap_or_default().to_vec();
+                        (status, bytes)
+                    }
+                    Err(e) => {
+                        eprintln!("error connecting to API: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("error building request: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     /// POST request with JSON body, exits on error, returns raw (status, body).
     pub fn post_raw(&self, path: &str, body: &serde_json::Value) -> (reqwest::StatusCode, String) {
         let url = format!("{}{path}", self.api_url);

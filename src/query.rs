@@ -2,6 +2,8 @@ use crate::api::ApiClient;
 use serde::Deserialize;
 use serde_json::Value;
 
+const ACCEPT_ARROW: &str = "application/vnd.apache.arrow.stream";
+
 #[derive(Deserialize)]
 pub struct QueryResponse {
     pub result_id: Option<String>,
@@ -45,6 +47,103 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
+/// Convert one cell of an Arrow array to a `serde_json::Value`.
+fn arrow_cell(col: &dyn arrow::array::Array, row: usize) -> Value {
+    use arrow::array::*;
+    use arrow::datatypes::DataType::*;
+    use serde_json::Number;
+
+    if col.is_null(row) {
+        return Value::Null;
+    }
+
+    match col.data_type() {
+        Boolean => Value::Bool(col.as_any().downcast_ref::<BooleanArray>().unwrap().value(row)),
+        Int8  => Value::Number(col.as_any().downcast_ref::<Int8Array>().unwrap().value(row).into()),
+        Int16 => Value::Number(col.as_any().downcast_ref::<Int16Array>().unwrap().value(row).into()),
+        Int32 => Value::Number(col.as_any().downcast_ref::<Int32Array>().unwrap().value(row).into()),
+        Int64 => Value::Number(col.as_any().downcast_ref::<Int64Array>().unwrap().value(row).into()),
+        UInt8  => Value::Number(col.as_any().downcast_ref::<UInt8Array>().unwrap().value(row).into()),
+        UInt16 => Value::Number(col.as_any().downcast_ref::<UInt16Array>().unwrap().value(row).into()),
+        UInt32 => Value::Number(col.as_any().downcast_ref::<UInt32Array>().unwrap().value(row).into()),
+        UInt64 => Value::Number(col.as_any().downcast_ref::<UInt64Array>().unwrap().value(row).into()),
+        Float32 => {
+            let v = col.as_any().downcast_ref::<Float32Array>().unwrap().value(row) as f64;
+            Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null)
+        }
+        Float64 => {
+            let v = col.as_any().downcast_ref::<Float64Array>().unwrap().value(row);
+            Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null)
+        }
+        Utf8 => Value::String(
+            col.as_any().downcast_ref::<StringArray>().unwrap().value(row).to_owned(),
+        ),
+        LargeUtf8 => Value::String(
+            col.as_any().downcast_ref::<LargeStringArray>().unwrap().value(row).to_owned(),
+        ),
+        // Dates, timestamps, decimals, etc. — format via Arrow's display helper.
+        _ => {
+            use arrow::util::display::{ArrayFormatter, FormatOptions};
+            let opts = FormatOptions::default();
+            ArrayFormatter::try_new(col, &opts)
+                .map(|f| Value::String(f.value(row).to_string()))
+                .unwrap_or(Value::Null)
+        }
+    }
+}
+
+/// Decode an Arrow IPC stream into a `QueryResponse` suitable for display.
+fn arrow_ipc_to_query_response(bytes: Vec<u8>, result_id: String) -> QueryResponse {
+    use arrow::ipc::reader::StreamReader;
+    use std::io::Cursor;
+
+    let reader = match StreamReader::try_new(Cursor::new(&bytes), None) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error reading Arrow IPC stream: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let columns: Vec<String> = reader.schema().fields().iter().map(|f| f.name().clone()).collect();
+    let mut rows: Vec<Vec<Value>> = Vec::new();
+
+    for batch_result in reader {
+        let batch = match batch_result {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error reading Arrow batch: {e}");
+                std::process::exit(1);
+            }
+        };
+        for row in 0..batch.num_rows() {
+            rows.push((0..batch.num_columns()).map(|c| arrow_cell(batch.column(c).as_ref(), row)).collect());
+        }
+    }
+
+    let row_count = rows.len() as u64;
+    QueryResponse {
+        result_id: Some(result_id),
+        columns,
+        rows,
+        row_count,
+        execution_time_ms: 0,
+        warning: None,
+    }
+}
+
+/// Fetch `/results/{result_id}` as Arrow IPC and return a `QueryResponse`.
+fn fetch_arrow_result(api: &ApiClient, result_id: &str) -> QueryResponse {
+    let (status, bytes) = api.get_bytes(&format!("/results/{result_id}"), ACCEPT_ARROW);
+    if !status.is_success() {
+        use crossterm::style::Stylize;
+        let msg = String::from_utf8_lossy(&bytes);
+        eprintln!("{}", format!("error fetching result: {status} {msg}").red());
+        std::process::exit(1);
+    }
+    arrow_ipc_to_query_response(bytes, result_id.to_owned())
+}
+
 pub fn execute(
     sql: &str,
     workspace_id: &str,
@@ -67,11 +166,12 @@ pub fn execute(
     }
 
     let spinner = crate::util::spinner("running query...");
-
     let (status, resp_body) = api.post_raw("/query", &body);
     spinner.finish_and_clear();
 
     if status.as_u16() == 202 {
+        // Query didn't complete within async_after_ms — poll until done, then
+        // fetch the result as Arrow IPC.
         let async_resp: AsyncResponse = match serde_json::from_str(&resp_body) {
             Ok(r) => r,
             Err(e) => {
@@ -79,21 +179,38 @@ pub fn execute(
                 std::process::exit(1);
             }
         };
-        use crossterm::style::Stylize;
-        eprintln!(
-            "{}",
-            format!("query still running (status: {})", async_resp.status).yellow()
-        );
-        eprintln!("query_run_id: {}", async_resp.query_run_id);
-        eprintln!(
-            "{}",
-            format!(
-                "Poll with: hotdata query status {}",
-                async_resp.query_run_id
-            )
-            .dark_grey()
-        );
-        std::process::exit(2);
+
+        let run_id = &async_resp.query_run_id;
+        let spinner = crate::util::spinner("waiting for query...");
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let run: QueryRunResponse = api.get(&format!("/query-runs/{run_id}"));
+            match run.status.as_str() {
+                "succeeded" => {
+                    spinner.finish_and_clear();
+                    match run.result_id {
+                        Some(ref result_id) => {
+                            let result = fetch_arrow_result(&api, result_id);
+                            print_result(&result, format);
+                        }
+                        None => {
+                            use crossterm::style::Stylize;
+                            println!("{}", "Query succeeded but no result available.".yellow());
+                        }
+                    }
+                    return;
+                }
+                "failed" => {
+                    spinner.finish_and_clear();
+                    use crossterm::style::Stylize;
+                    let err = run.error.as_deref().unwrap_or("unknown error");
+                    eprintln!("{}", format!("query failed: {err}").red());
+                    std::process::exit(1);
+                }
+                _ => continue,
+            }
+        }
     }
 
     if !status.is_success() {
@@ -106,6 +223,7 @@ pub fn execute(
         std::process::exit(1);
     }
 
+    // Fast path: query completed synchronously — response is JSON from /query.
     let result: QueryResponse = match serde_json::from_str(&resp_body) {
         Ok(r) => r,
         Err(e) => {
@@ -126,7 +244,7 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
     match run.status.as_str() {
         "succeeded" => match run.result_id {
             Some(ref result_id) => {
-                let result: QueryResponse = api.get(&format!("/results/{result_id}"));
+                let result = fetch_arrow_result(&api, result_id);
                 print_result(&result, format);
             }
             None => {
