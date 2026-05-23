@@ -652,13 +652,13 @@ mod tests {
 
     #[test]
     fn create_database_request_empty_without_description_or_tables() {
-        let req = create_database_request(None, "public", &[]);
+        let req = create_database_request(None, "public", &[], None);
         assert_eq!(req, serde_json::json!({}));
     }
 
     #[test]
     fn create_database_request_includes_description() {
-        let req = create_database_request(Some("my db"), "public", &[]);
+        let req = create_database_request(Some("my db"), "public", &[], None);
         assert_eq!(req["description"], "my db");
         assert!(req.get("schemas").is_none());
     }
@@ -669,6 +669,7 @@ mod tests {
             Some("sales"),
             "public",
             &["orders".to_string(), "customers".to_string()],
+            None,
         );
         assert_eq!(req["description"], "sales");
         assert_eq!(req["schemas"][0]["name"], "public");
@@ -678,7 +679,7 @@ mod tests {
 
     #[test]
     fn create_database_request_schemas_without_description() {
-        let req = create_database_request(None, "analytics", &["events".to_string()]);
+        let req = create_database_request(None, "analytics", &["events".to_string()], None);
         assert!(req.get("description").is_none());
         assert_eq!(req["schemas"][0]["name"], "analytics");
     }
@@ -864,13 +865,14 @@ mod tests {
                     Some("mydb"),
                     "public",
                     &["gdp".to_string()],
+                    None,
                 ))
                 .unwrap(),
             ))
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", Some("ws-test"));
-        let body = create_database_request(Some("mydb"), "public", &["gdp".to_string()]);
+        let body = create_database_request(Some("mydb"), "public", &["gdp".to_string()], None);
         let (status, resp_body) = api.post_raw("/databases", &body);
         assert_eq!(status.as_u16(), 201);
         let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();
