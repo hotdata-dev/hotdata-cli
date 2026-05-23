@@ -1,3 +1,24 @@
+## [0.3.0] - 2026-05-23
+
+### 🚀 Features
+
+- *(query)* Fetch results as Arrow IPC instead of JSON; reduces transfer size and preserves native types (#103)
+- *(query)* Add `--database` / `-d` flag to scope a query to a managed database without changing the active database (#102)
+- *(databases)* Add `databases show <id>` as an explicit subcommand alias (#103)
+- *(databases)* `databases tables <id>` now lists tables without requiring the `list` subcommand (#103)
+- *(skills)* Add `skills list` as an alias for `skills status` (#103)
+- *(update)* Background update check with post-command notice; never blocks command output (#104)
+- *(update)* Auto-install and update skills to match the new binary version during `hotdata update` (#105)
+- *(update)* Execute `brew upgrade` directly for Homebrew installs instead of printing manual instructions (#106)
+
+### 🐛 Bug Fixes
+
+- *(query)* Async polling loop exits with code 2 on unexpected statuses instead of spinning forever (#103)
+- *(query)* Failed async queries now surface the real server error message (#103)
+- *(query)* `results get <id>` now fetches Arrow IPC like the rest of the query path (#103)
+- *(query)* Polling loop polls first before checking the deadline, eliminating a mandatory 500ms delay (#106)
+- *(skills)* Add 120-second HTTP timeout to the skills tarball download during `hotdata update` (#106)
+
 ## [0.2.9] - 2026-05-22
 
 ### 📚 Documentation
