@@ -45,8 +45,17 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
-pub fn execute(sql: &str, workspace_id: &str, connection: Option<&str>, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+pub fn execute(
+    sql: &str,
+    workspace_id: &str,
+    connection: Option<&str>,
+    database: Option<&str>,
+    format: &str,
+) {
+    let mut api = ApiClient::new(Some(workspace_id));
+    if let Some(db_id) = database {
+        api = api.with_database(db_id);
+    }
 
     let mut body = serde_json::json!({
         "sql": sql,
