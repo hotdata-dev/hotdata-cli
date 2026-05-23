@@ -172,11 +172,15 @@ fn main() {
         skill::maybe_auto_update_after_cli_upgrade();
     }
 
-    // Quiet update-available notice. Skip during `hotdata update` itself so
-    // we don't talk over the updater's own output.
-    if !matches!(&cli.command, Some(Commands::Update)) {
-        update::maybe_print_update_notice();
-    }
+    // Kick off the update check in the background so it runs concurrently
+    // with the command.  We join and print after the command finishes so the
+    // notice always appears at the bottom of the output.  Skipped during
+    // `hotdata update` itself so it doesn't talk over the updater's output.
+    let update_handle = if !matches!(&cli.command, Some(Commands::Update)) {
+        update::spawn_update_check()
+    } else {
+        None
+    };
 
     match cli.command {
         None => {
@@ -1008,6 +1012,9 @@ fn main() {
             Commands::Update => update::run_update(),
         },
     }
+
+    // Print update notice after command output (joined from background thread).
+    update::maybe_print_update_notice(update_handle);
 }
 
 /// Parse a database target like `airbnb.listings` or `airbnb.public.listings`

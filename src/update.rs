@@ -120,31 +120,45 @@ fn stderr_is_tty() -> bool {
     std::io::stderr().is_terminal()
 }
 
-/// Print a one-line notice if a newer release exists. No-op when stderr
-/// isn't a TTY, when --no-input is set, or when the cache says we're up
-/// to date. Best-effort: network/cache errors are swallowed silently so
-/// commands never fail because of the update check.
-pub fn maybe_print_update_notice() {
-    if !stderr_is_tty() {
-        return;
+fn should_check() -> bool {
+    stderr_is_tty()
+        && util::is_interactive()
+        && std::env::var_os("HOTDATA_NO_UPDATE_CHECK").is_none()
+}
+
+/// How long `maybe_print_update_notice` will wait for the background thread
+/// before giving up.  In practice the thread finishes well within this window
+/// because `fetch_latest_version` has its own 5-second HTTP timeout and cache
+/// hits resolve in microseconds.
+const NOTICE_WAIT_MS: u64 = 6_000;
+
+/// Spawn a background thread that checks for a newer release.  Returns a
+/// channel receiver that `maybe_print_update_notice` can poll after the
+/// command runs.  No-op (returns None) when stderr isn't a TTY, `--no-input`
+/// is set, or `HOTDATA_NO_UPDATE_CHECK` is set.
+pub fn spawn_update_check() -> Option<std::sync::mpsc::Receiver<Option<Version>>> {
+    if !should_check() {
+        return None;
     }
-    if !util::is_interactive() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(cached_latest_if_newer());
+    });
+    Some(rx)
+}
+
+/// Poll the receiver returned by `spawn_update_check` and print a one-line
+/// notice if a newer release was found.  Call this *after* the command has
+/// produced its own output so the notice appears at the bottom.
+pub fn maybe_print_update_notice(rx: Option<std::sync::mpsc::Receiver<Option<Version>>>) {
+    let Some(rx) = rx else { return };
+    let Ok(Some(latest)) = rx.recv_timeout(Duration::from_millis(NOTICE_WAIT_MS)) else {
         return;
-    }
-    if std::env::var_os("HOTDATA_NO_UPDATE_CHECK").is_some() {
-        return;
-    }
-    let Some(latest) = cached_latest_if_newer() else {
-        return;
-    };
-    let how = match detect_install_method() {
-        InstallMethod::Homebrew => format!("Run: brew upgrade {HOMEBREW_FORMULA}"),
-        InstallMethod::Other => "Run: hotdata update".to_string(),
     };
     eprintln!(
         "{}",
         format!(
-            "A new version of hotdata is available (v{CURRENT_VERSION} → v{latest}). {how}"
+            "\nA new version of hotdata is available (v{CURRENT_VERSION} → v{latest}). Run: hotdata update"
         )
         .yellow()
     );
