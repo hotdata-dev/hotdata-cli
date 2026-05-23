@@ -208,57 +208,37 @@ fn main() {
                             output,
                         }) => datasets::list(&workspace_id, limit, offset, &output),
                         Some(DatasetsCommands::Create {
-                            label,
-                            table_name,
-                            file,
-                            upload_id,
-                            format,
+                            name,
+                            description,
                             sql,
                             query_id,
-                            url,
                         }) => {
                             if let Some(sql) = sql {
                                 datasets::create_from_query(
                                     &workspace_id,
                                     &sql,
-                                    label.as_deref(),
-                                    table_name.as_deref(),
-                                )
-                            } else if let Some(query_id) = query_id {
-                                datasets::create_from_saved_query(
-                                    &workspace_id,
-                                    &query_id,
-                                    label.as_deref(),
-                                    table_name.as_deref(),
-                                )
-                            } else if let Some(url) = url {
-                                datasets::create_from_url(
-                                    &workspace_id,
-                                    &url,
-                                    label.as_deref(),
-                                    table_name.as_deref(),
+                                    description.as_deref(),
+                                    &name,
                                 )
                             } else {
-                                datasets::create_from_upload(
+                                datasets::create_from_saved_query(
                                     &workspace_id,
-                                    label.as_deref(),
-                                    table_name.as_deref(),
-                                    file.as_deref(),
-                                    upload_id.as_deref(),
-                                    &format,
+                                    query_id.as_deref().unwrap_or_else(|| unreachable!("clap enforces --sql or --query-id")),
+                                    description.as_deref(),
+                                    &name,
                                 )
                             }
                         }
                         Some(DatasetsCommands::Update {
                             id,
-                            label,
-                            table_name,
+                            description,
+                            name,
                             output,
                         }) => datasets::update(
                             &id,
                             &workspace_id,
-                            label.as_deref(),
-                            table_name.as_deref(),
+                            description.as_deref(),
+                            name.as_deref(),
                             &output,
                         ),
                         Some(DatasetsCommands::Refresh { id, r#async }) => {

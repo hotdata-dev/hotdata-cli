@@ -8,7 +8,7 @@ pub enum Commands {
         command: Option<AuthCommands>,
     },
 
-    /// Upload and query Parquet, CSV, and JSON files
+    /// Derived views — virtual SQL tables built from queries over your data
     Datasets {
         /// Dataset ID to show details
         id: Option<String>,
@@ -453,53 +453,37 @@ pub enum DatasetsCommands {
         output: String,
     },
 
-    /// Create a new dataset from a file, piped stdin, upload ID, or SQL query
+    /// Create a derived view from a SQL query or saved query
     Create {
-        /// Dataset label (derived from filename if omitted)
+        /// SQL table name the dataset is addressable as (e.g. my_view)
         #[arg(long)]
-        label: Option<String>,
+        name: String,
 
-        /// Table name (derived from label if omitted)
+        /// Human-readable display label
         #[arg(long)]
-        table_name: Option<String>,
-
-        /// Path to a file to upload (omit to read from stdin)
-        #[arg(long, conflicts_with_all = ["upload_id", "sql"])]
-        file: Option<String>,
-
-        /// Skip upload and use a pre-existing upload ID directly
-        #[arg(long, conflicts_with_all = ["file", "sql"])]
-        upload_id: Option<String>,
-
-        /// Source format when using --upload-id (csv, json, parquet)
-        #[arg(long, default_value = "csv", value_parser = ["csv", "json", "parquet"], requires = "upload_id")]
-        format: String,
+        description: Option<String>,
 
         /// SQL query to create the dataset from
-        #[arg(long, conflicts_with_all = ["file", "upload_id", "query_id", "url"])]
+        #[arg(long, conflicts_with = "query_id", required_unless_present = "query_id")]
         sql: Option<String>,
 
         /// Saved query ID to create the dataset from
-        #[arg(long, conflicts_with_all = ["file", "upload_id", "sql", "url"])]
+        #[arg(long, conflicts_with = "sql", required_unless_present = "sql")]
         query_id: Option<String>,
-
-        /// URL to import data from
-        #[arg(long, conflicts_with_all = ["file", "upload_id", "sql", "query_id"])]
-        url: Option<String>,
     },
 
-    /// Update a dataset's label and/or table name
+    /// Update a dataset's description and/or name
     Update {
         /// Dataset ID
         id: String,
 
         /// New display label
         #[arg(long)]
-        label: Option<String>,
+        description: Option<String>,
 
         /// New SQL table name (must be a valid identifier)
         #[arg(long)]
-        table_name: Option<String>,
+        name: Option<String>,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
