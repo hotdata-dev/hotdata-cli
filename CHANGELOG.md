@@ -1,3 +1,9 @@
+## [0.2.9] - 2026-05-22
+
+### 📚 Documentation
+
+- *(skills)* Update skills to reflect recent API changes: database-scoped context, `databases set`, `--expires-at`, corrected flag names for `databases create` / `datasets create` / `datasets update` (#100)
+
 ## [0.2.8] - 2026-05-22
 
 ### 🚀 Features
