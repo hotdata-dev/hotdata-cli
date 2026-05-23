@@ -10,8 +10,7 @@ pub struct QueryResponse {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Value>>,
     pub row_count: u64,
-    #[serde(default)]
-    pub execution_time_ms: u64,
+    pub execution_time_ms: Option<u64>,
     pub warning: Option<String>,
 }
 
@@ -127,7 +126,7 @@ fn arrow_ipc_to_query_response(bytes: Vec<u8>, result_id: String) -> QueryRespon
         columns,
         rows,
         row_count,
-        execution_time_ms: 0,
+        execution_time_ms: None,
         warning: None,
     }
 }
@@ -182,9 +181,20 @@ pub fn execute(
 
         let run_id = &async_resp.query_run_id;
         let spinner = crate::util::spinner("waiting for query...");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
 
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
+            if std::time::Instant::now() > deadline {
+                spinner.finish_and_clear();
+                use crossterm::style::Stylize;
+                eprintln!("{}", "query timed out after 5 minutes".red());
+                eprintln!(
+                    "{}",
+                    format!("Check status with: hotdata query status {run_id}").dark_grey()
+                );
+                std::process::exit(1);
+            }
             let run: QueryRunResponse = api.get(&format!("/query-runs/{run_id}"));
             match run.status.as_str() {
                 "succeeded" => {
@@ -312,13 +322,17 @@ pub fn print_result(result: &QueryResponse, format: &str) {
                 .as_deref()
                 .map(|id| format!(" [result-id: {id}]"))
                 .unwrap_or_default();
+            let time_part = match result.execution_time_ms {
+                Some(ms) => format!("{ms} ms"),
+                None => "\u{2014}".to_string(), // em dash
+            };
             eprintln!(
                 "{}",
                 format!(
-                    "\n{} row{} ({} ms){}",
+                    "\n{} row{} ({}){}",
                     result.row_count,
                     if result.row_count == 1 { "" } else { "s" },
-                    result.execution_time_ms,
+                    time_part,
                     id_part
                 )
                 .dark_grey()
@@ -327,3 +341,4 @@ pub fn print_result(result: &QueryResponse, format: &str) {
         _ => unreachable!(),
     }
 }
+

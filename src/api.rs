@@ -282,22 +282,10 @@ impl ApiClient {
     pub fn get_bytes(&self, path: &str, accept: &str) -> (reqwest::StatusCode, Vec<u8>) {
         let url = format!("{}{path}", self.api_url);
         let req = self.build_request(reqwest::Method::GET, &url).header("Accept", accept);
-        match req.build() {
-            Ok(request) => {
-                match self.client.execute(request) {
-                    Ok(resp) => {
-                        let status = resp.status();
-                        let bytes = resp.bytes().unwrap_or_default().to_vec();
-                        (status, bytes)
-                    }
-                    Err(e) => {
-                        eprintln!("error connecting to API: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            }
+        match util::send_debug_bytes(&self.client, req) {
+            Ok(pair) => pair,
             Err(e) => {
-                eprintln!("error building request: {e}");
+                eprintln!("error connecting to API: {e}");
                 std::process::exit(1);
             }
         }
