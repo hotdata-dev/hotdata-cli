@@ -185,6 +185,12 @@ pub fn run_update() {
     }
     println!("{}", format!("Updated to v{latest}.").green());
 
+    // Install/update skills to match the new binary.  The tarball URL is built
+    // from `latest` (not CURRENT_VERSION) because the old binary is still
+    // running at this point — we want the skills for the version we just
+    // downloaded, not the one we replaced.
+    crate::skill::install_for_version(&latest);
+
     // Bust the cache so the notice clears on the next run.
     write_cache(&UpdateCheckCache {
         checked_at: now_secs(),

@@ -195,16 +195,19 @@ fn is_managed_by_skills_agent() -> bool {
 }
 
 fn download_and_extract() -> Result<(), String> {
-    let url = download_url();
+    download_and_extract_from_url(&download_url())
+}
+
+fn download_and_extract_from_url(url: &str) -> Result<(), String> {
     eprintln!("Downloading skill...");
 
     // Binary download — can't route through `send_debug` (which calls
     // `resp.text()` and would corrupt the gzip stream). Log the
     // request line manually so `--debug` still shows the URL.
-    crate::util::debug_request("GET", &url, &[], None);
+    crate::util::debug_request("GET", url, &[], None);
     let client = reqwest::blocking::Client::new();
     let resp = client
-        .get(&url)
+        .get(url)
         .send()
         .map_err(|e| format!("error downloading skill: {e}"))?;
 
@@ -248,6 +251,29 @@ fn download_and_extract() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Download and install skills for `version`.  Called from `run_update()` after
+/// the binary has been atomically swapped so that skills match the new CLI on
+/// first use.  Uses the release tarball URL for `version` (not `CURRENT_VERSION`,
+/// which is still the old binary at call time).  Skips silently when managed by
+/// a skills agent.  Prints a warning on failure so the binary update is not
+/// rolled back.
+pub fn install_for_version(version: &Version) {
+    if is_managed_by_skills_agent() {
+        return;
+    }
+    let url = format!("https://github.com/{REPO}/releases/download/v{version}/skills.tar.gz");
+    if let Err(e) = download_and_extract_from_url(&url) {
+        eprintln!(
+            "{}",
+            format!("warning: could not update agent skills: {e}").yellow()
+        );
+        return;
+    }
+    let _symlinks = ensure_symlinks();
+    clear_skill_auto_update_suppression();
+    println!("{}", format!("Agent skills updated to v{version}.").green());
 }
 
 fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
