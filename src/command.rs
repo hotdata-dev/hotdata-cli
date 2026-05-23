@@ -547,6 +547,16 @@ pub enum DatabasesCommands {
         output: String,
     },
 
+    /// Show details for a specific managed database
+    Show {
+        /// Database name or ID
+        name_or_id: String,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
     /// Create a new managed database
     Create {
         /// Optional display label (not unique, not an identifier — databases are addressed by id)
@@ -604,8 +614,11 @@ pub enum DatabasesCommands {
 
     /// Manage tables inside a managed database
     Tables {
+        /// Database id or description — shorthand for `tables list` when no subcommand is given
+        database: Option<String>,
+
         #[command(subcommand)]
-        command: DatabaseTablesCommands,
+        command: Option<DatabaseTablesCommands>,
     },
 }
 
@@ -738,6 +751,8 @@ pub enum SkillCommands {
     },
     /// Show the installation status of the hotdata skill
     Status,
+    /// List installed skills and their versions (alias for status)
+    List,
 }
 
 #[derive(Subcommand)]

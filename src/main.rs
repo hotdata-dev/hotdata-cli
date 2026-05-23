@@ -390,6 +390,9 @@ fn main() {
                         Some(DatabasesCommands::List { output }) => {
                             databases::list(&workspace_id, &output)
                         }
+                        Some(DatabasesCommands::Show { name_or_id, output }) => {
+                            databases::get(&workspace_id, &name_or_id, &output)
+                        }
                         Some(DatabasesCommands::Create {
                             description,
                             schema,
@@ -427,43 +430,63 @@ fn main() {
                                 upload_id.as_deref(),
                             )
                         }
-                        Some(DatabasesCommands::Tables { command }) => match command {
-                            DatabaseTablesCommands::List {
-                                database,
+                        Some(DatabasesCommands::Tables { database, command }) => match command {
+                            Some(DatabaseTablesCommands::List {
+                                database: db_flag,
                                 schema,
                                 output,
-                            } => databases::tables_list(
+                            }) => databases::tables_list(
                                 &workspace_id,
-                                database.as_deref(),
+                                db_flag.as_deref().or(database.as_deref()),
                                 schema.as_deref(),
                                 &output,
                             ),
-                            DatabaseTablesCommands::Load {
-                                database,
+                            Some(DatabaseTablesCommands::Load {
+                                database: db_flag,
                                 table,
                                 schema,
                                 file,
                                 url,
                                 upload_id,
-                            } => databases::tables_load(
+                            }) => databases::tables_load(
                                 &workspace_id,
-                                database.as_deref(),
+                                db_flag.as_deref().or(database.as_deref()),
                                 &table,
                                 Some(schema.as_str()),
                                 file.as_deref(),
                                 url.as_deref(),
                                 upload_id.as_deref(),
                             ),
-                            DatabaseTablesCommands::Delete {
-                                database,
+                            Some(DatabaseTablesCommands::Delete {
+                                database: db_flag,
                                 table,
                                 schema,
-                            } => databases::tables_delete(
+                            }) => databases::tables_delete(
                                 &workspace_id,
-                                database.as_deref(),
+                                db_flag.as_deref().or(database.as_deref()),
                                 &table,
                                 Some(schema.as_str()),
                             ),
+                            None => {
+                                if let Some(ref db) = database {
+                                    databases::tables_list(
+                                        &workspace_id,
+                                        Some(db.as_str()),
+                                        None,
+                                        "table",
+                                    )
+                                } else {
+                                    use clap::CommandFactory;
+                                    let mut cmd = Cli::command();
+                                    cmd.build();
+                                    cmd.find_subcommand_mut("databases")
+                                        .unwrap()
+                                        .find_subcommand_mut("tables")
+                                        .unwrap()
+                                        .print_help()
+                                        .unwrap();
+                                }
+                            }
                         },
                         None => {
                             use clap::CommandFactory;
@@ -507,7 +530,7 @@ fn main() {
                         skill::install()
                     }
                 }
-                SkillCommands::Status => skill::status(),
+                SkillCommands::Status | SkillCommands::List => skill::status(),
             },
             Commands::Results {
                 result_id,
