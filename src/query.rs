@@ -218,7 +218,17 @@ pub fn execute(
                     eprintln!("{}", format!("query failed: {err}").red());
                     std::process::exit(1);
                 }
-                _ => continue,
+                "running" | "queued" | "pending" => continue,
+                status => {
+                    spinner.finish_and_clear();
+                    use crossterm::style::Stylize;
+                    eprintln!("{}", format!("query status: {status}").yellow());
+                    eprintln!(
+                        "{}",
+                        format!("Check status with: hotdata query status {run_id}").dark_grey()
+                    );
+                    std::process::exit(2);
+                }
             }
         }
     }
