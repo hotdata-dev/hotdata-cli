@@ -238,7 +238,7 @@ pub fn update(
     let resp: DetailResponse = api.patch(&path, &body);
     let s = &resp.sandbox;
 
-    println!("{}", "Sandbox updated".green());
+    eprintln!("{}", "Sandbox updated".green());
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(s).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(s).unwrap()),
