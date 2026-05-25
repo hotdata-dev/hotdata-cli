@@ -1,3 +1,9 @@
+## [0.3.1] - 2026-05-25
+
+### 🐛 Bug Fixes
+
+- *(skills)* Bump skill file versions to 0.3.1 so `hotdata skills install` correctly detects and installs the latest skills for CLI v0.3.x
+
 ## [0.3.0] - 2026-05-23
 
 ### 🚀 Features
