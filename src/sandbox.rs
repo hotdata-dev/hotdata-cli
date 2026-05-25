@@ -135,7 +135,7 @@ pub fn read(sandbox_id: &str, workspace_id: &str) {
     if body.sandbox.markdown.is_empty() {
         eprintln!("{}", "Sandbox markdown is empty.".dark_grey());
     } else {
-        print!("{}", body.sandbox.markdown);
+        println!("{}", body.sandbox.markdown);
     }
 }
 
@@ -195,7 +195,7 @@ pub fn new(workspace_id: &str, name: Option<&str>, format: &str) {
         eprintln!("warning: could not save sandbox to config: {e}");
     }
 
-    println!("{}", "Sandbox created".green());
+    eprintln!("{}", "Sandbox created".green());
     match format {
         "json" => println!("{}", serde_json::json!({"public_id": sandbox_id})),
         "yaml" => print!(
@@ -338,6 +338,19 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
             println!("{}", "Active sandbox cleared".green());
         }
     }
+}
+
+pub fn delete(sandbox_id: &str, workspace_id: &str) {
+    let api = ApiClient::new(Some(workspace_id));
+    let path = format!("/sandboxes/{sandbox_id}");
+    let (status, resp_body) = api.delete_raw(&path);
+
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp_body).red());
+        std::process::exit(1);
+    }
+
+    eprintln!("{}", "Sandbox deleted".green());
 }
 
 #[cfg(test)]

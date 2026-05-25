@@ -311,7 +311,28 @@ pub fn push(workspace_id: &str, database_id: &str, name: &str, dry_run: bool) {
 
     let api = ApiClient::new(Some(workspace_id));
     let body = json!({ "name": &name, "content": content });
-    let resp: UpsertResponse = api.post(&format!("/databases/{database_id}/context"), &body);
+    let (status, resp_body) = api.post_raw(&format!("/databases/{database_id}/context"), &body);
+
+    if !status.is_success() {
+        let msg = crate::util::api_error(resp_body.clone());
+        if msg.to_lowercase().contains("not allowed within a session") {
+            eprintln!("{}", msg.red());
+            eprintln!(
+                "{}",
+                "hint: context push is blocked inside an active sandbox. \
+Run 'hotdata sandbox set' (no args) to clear the active sandbox first."
+                    .dark_grey()
+            );
+        } else {
+            eprintln!("{}", msg.red());
+        }
+        std::process::exit(1);
+    }
+
+    let resp: UpsertResponse = serde_json::from_str(&resp_body).unwrap_or_else(|e| {
+        eprintln!("error parsing response: {e}");
+        std::process::exit(1);
+    });
 
     println!(
         "{}",
