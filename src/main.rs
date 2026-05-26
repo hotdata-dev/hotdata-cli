@@ -5,6 +5,7 @@ mod config;
 mod connections;
 mod connections_new;
 mod context;
+mod database_session;
 mod databases;
 mod datasets;
 mod embedding_providers;
