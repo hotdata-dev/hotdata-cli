@@ -438,6 +438,22 @@ fn main() {
                                 upload_id.as_deref(),
                             )
                         }
+                        Some(DatabasesCommands::Run {
+                            database,
+                            description,
+                            schema,
+                            tables,
+                            expires_at,
+                            cmd,
+                        }) => databases::run(
+                            database.as_deref(),
+                            &workspace_id,
+                            description.as_deref(),
+                            &schema,
+                            &tables,
+                            expires_at.as_deref(),
+                            &cmd,
+                        ),
                         Some(DatabasesCommands::Tables { database, command }) => match command {
                             Some(DatabaseTablesCommands::List {
                                 database: db_flag,
