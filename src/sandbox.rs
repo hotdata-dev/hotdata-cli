@@ -350,6 +350,19 @@ pub fn delete(sandbox_id: &str, workspace_id: &str) {
         std::process::exit(1);
     }
 
+    // If the deleted sandbox was the active one, clear the cached session
+    // and config pointer so subsequent commands don't keep routing through
+    // a stale sandbox JWT — mirroring what `sandbox set` (no args) does.
+    let active = std::env::var("HOTDATA_SANDBOX")
+        .ok()
+        .or_else(|| config::load("default").ok().and_then(|p| p.sandbox));
+    if active.as_deref() == Some(sandbox_id) {
+        sandbox_session::clear();
+        if let Err(e) = config::clear_sandbox("default") {
+            eprintln!("warning: could not clear sandbox from config: {e}");
+        }
+    }
+
     eprintln!("{}", "Sandbox deleted".green());
 }
 
