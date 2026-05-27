@@ -1,3 +1,14 @@
+## [0.3.2] - 2026-05-27
+
+### 🐛 Bug Fixes
+
+- *(datasets)* Add missing `-o`/`--output` flag to `datasets create`; move success banner to stderr so `-o json` stdout is `jq`-parseable (#110)
+- *(sandbox)* Move "Sandbox created" and "Sandbox updated" banners to stderr for clean `-o json` output (#110)
+- *(sandbox)* Fix missing trailing newline in `sandbox read` output (#110)
+- *(sandbox)* Add `sandbox delete <id>` subcommand; clears the active session automatically when the deleted sandbox was the active one (#110)
+- *(workspaces)* Fix incorrect lock check in `workspaces set` — was checking `HOTDATA_WORKSPACE` (always set in sandbox runs), now correctly checks `HOTDATA_SANDBOX` (#110)
+- *(context)* Surface a friendly hint when `context push` is blocked inside an active sandbox, pointing users to `hotdata sandbox set` (no args) to clear it (#110)
+
 ## [0.3.1] - 2026-05-25
 
 ### 🐛 Bug Fixes
