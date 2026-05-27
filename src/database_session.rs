@@ -32,7 +32,7 @@ pub fn session_path() -> Option<PathBuf> {
     config::config_dir().ok().map(|d| d.join("database_session.json"))
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // Reserved for flows that re-use a cached database session.
 pub fn load() -> Option<DatabaseSession> {
     let path = session_path()?;
     let raw = fs::read_to_string(&path).ok()?;
@@ -60,7 +60,7 @@ pub fn save(session: &DatabaseSession) -> Result<(), String> {
     Ok(())
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // Reserved for flows that re-use a cached database session.
 pub fn clear() {
     if let Some(path) = session_path() {
         let _ = fs::remove_file(path);
@@ -118,6 +118,12 @@ pub fn refresh(api_url: &str, refresh_token: &str) -> Result<DatabaseSession, St
     Ok(session_from_response(resp, String::new()))
 }
 
+/// Build a [`DatabaseSession`] from a mint/refresh response. The mint
+/// response doesn't carry the workspace public_id, so the caller passes
+/// it in (it's what the JWT's `workspaces` claim restricts the bearer
+/// to). For refresh, `workspace_id` is left blank — the caller fills it
+/// from the prior session, since the database-id ↔ workspace mapping is
+/// invariant across refreshes.
 pub(crate) fn session_from_response(resp: MintResponse, workspace_id: String) -> DatabaseSession {
     let now = now_unix();
     DatabaseSession {
