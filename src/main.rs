@@ -6,7 +6,6 @@ mod connections;
 mod connections_new;
 mod context;
 mod databases;
-mod datasets;
 mod embedding_providers;
 mod indexes;
 mod jobs;
@@ -27,7 +26,7 @@ use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
 use command::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
-    DatabaseTablesCommands, DatabasesCommands, DatasetsCommands, EmbeddingProvidersCommands,
+    DatabaseTablesCommands, DatabasesCommands, EmbeddingProvidersCommands,
     IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands,
     SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands,
 };
@@ -195,74 +194,6 @@ fn main() {
                 Some(AuthCommands::Status) => auth::status("default"),
                 Some(AuthCommands::Logout) => auth::logout("default"),
             },
-            Commands::Datasets {
-                id,
-                workspace_id,
-                output,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                if let Some(id) = id {
-                    datasets::get(&id, &workspace_id, &output)
-                } else {
-                    match command {
-                        Some(DatasetsCommands::List {
-                            limit,
-                            offset,
-                            output,
-                        }) => datasets::list(&workspace_id, limit, offset, &output),
-                        Some(DatasetsCommands::Create {
-                            name,
-                            description,
-                            sql,
-                            query_id,
-                            output,
-                        }) => {
-                            if let Some(sql) = sql {
-                                datasets::create_from_query(
-                                    &workspace_id,
-                                    &sql,
-                                    description.as_deref(),
-                                    &name,
-                                    &output,
-                                )
-                            } else {
-                                datasets::create_from_saved_query(
-                                    &workspace_id,
-                                    query_id.as_deref().unwrap_or_else(|| unreachable!("clap enforces --sql or --query-id")),
-                                    description.as_deref(),
-                                    &name,
-                                    &output,
-                                )
-                            }
-                        }
-                        Some(DatasetsCommands::Update {
-                            id,
-                            description,
-                            name,
-                            output,
-                        }) => datasets::update(
-                            &id,
-                            &workspace_id,
-                            description.as_deref(),
-                            name.as_deref(),
-                            &output,
-                        ),
-                        Some(DatasetsCommands::Refresh { id, r#async }) => {
-                            datasets::refresh(&workspace_id, &id, r#async)
-                        }
-                        None => {
-                            use clap::CommandFactory;
-                            let mut cmd = Cli::command();
-                            cmd.build();
-                            cmd.find_subcommand_mut("datasets")
-                                .unwrap()
-                                .print_help()
-                                .unwrap();
-                        }
-                    }
-                }
-            }
             Commands::Query {
                 sql,
                 workspace_id,

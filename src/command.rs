@@ -8,23 +8,6 @@ pub enum Commands {
         command: Option<AuthCommands>,
     },
 
-    /// Derived views — virtual SQL tables built from queries over your data
-    Datasets {
-        /// Dataset ID to show details
-        id: Option<String>,
-
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, short = 'w', global = true)]
-        workspace_id: Option<String>,
-
-        /// Output format (used with dataset ID)
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-
-        #[command(subcommand)]
-        command: Option<DatasetsCommands>,
-    },
-
     /// Execute a SQL query, or check status of a running query
     Query {
         /// SQL query string (omit when using a subcommand)
@@ -441,75 +424,6 @@ pub enum JobsCommands {
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum DatasetsCommands {
-    /// List all datasets in a workspace
-    List {
-        /// Maximum number of results (default: 100, max: 1000)
-        #[arg(long)]
-        limit: Option<u32>,
-
-        /// Pagination offset
-        #[arg(long)]
-        offset: Option<u32>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Create a derived view from a SQL query or saved query
-    Create {
-        /// SQL table name the dataset is addressable as (e.g. my_view)
-        #[arg(long)]
-        name: String,
-
-        /// Human-readable display label
-        #[arg(long)]
-        description: Option<String>,
-
-        /// SQL query to create the dataset from
-        #[arg(long, conflicts_with = "query_id", required_unless_present = "query_id")]
-        sql: Option<String>,
-
-        /// Saved query ID to create the dataset from
-        #[arg(long, conflicts_with = "sql", required_unless_present = "sql")]
-        query_id: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Update a dataset's description and/or name
-    Update {
-        /// Dataset ID
-        id: String,
-
-        /// New display label
-        #[arg(long)]
-        description: Option<String>,
-
-        /// New SQL table name (must be a valid identifier)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Refresh a dataset by re-running its source (URL fetch or saved query) and creating a new version
-    Refresh {
-        /// Dataset ID
-        id: String,
-
-        /// Submit as a background job
-        #[arg(long)]
-        r#async: bool,
     },
 }
 
