@@ -71,6 +71,16 @@ struct CreateDatabaseResponse {
     expires_at: Option<String>,
 }
 
+/// Response shape of `POST /v1/auth/database`.
+#[derive(Deserialize)]
+struct DatabaseTokenResponse {
+    token: String,
+    refresh_token: String,
+    database_id: String,
+    expires_in: u64,
+    refresh_expires_in: u64,
+}
+
 #[derive(Deserialize)]
 struct LoadManagedTableResponse {
     #[allow(dead_code)]
@@ -435,6 +445,106 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
             }
         }
         _ => unreachable!(),
+    }
+}
+
+/// Create a database and return its id. Used by `run` when no
+/// `--database` is given. Mirrors `create`'s request path but returns
+/// the id instead of printing.
+fn create_and_return_id(
+    api: &ApiClient,
+    description: Option<&str>,
+    schema: &str,
+    tables: &[String],
+    expires_at: Option<&str>,
+) -> String {
+    use crossterm::style::Stylize;
+    let body = create_database_request(description, schema, tables, expires_at);
+    let (status, resp_body) = api.post_raw("/databases", &body);
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp_body).red());
+        std::process::exit(1);
+    }
+    let result: CreateDatabaseResponse = match serde_json::from_str(&resp_body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing create response: {e}");
+            std::process::exit(1);
+        }
+    };
+    result.id
+}
+
+/// Mint a database-scoped JWT for an existing database id via
+/// `POST /v1/auth/database` (grant_type=existing_database). The call
+/// doubles as an existence + access check (the server 404s an unknown
+/// or unreachable database).
+fn mint_database_token(api: &ApiClient, database_id: &str) -> DatabaseTokenResponse {
+    let body = serde_json::json!({
+        "grant_type": "existing_database",
+        "database_id": database_id,
+    });
+    api.post("/auth/database", &body)
+}
+
+/// Run a command with a database-scoped token. Creates a new database
+/// first when `database` is None, then mints a JWT and execs the
+/// command with it injected as HOTDATA_DATABASE_TOKEN.
+pub fn run(
+    database: Option<&str>,
+    workspace_id: &str,
+    description: Option<&str>,
+    schema: &str,
+    tables: &[String],
+    expires_at: Option<&str>,
+    cmd: &[String],
+) {
+    use crossterm::style::Stylize;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let api = ApiClient::new(Some(workspace_id));
+
+    let database_id = match database {
+        Some(id) => id.to_string(),
+        None => create_and_return_id(&api, description, schema, tables, expires_at),
+    };
+
+    let resp = mint_database_token(&api, &database_id);
+    let db_id = resp.database_id.clone();
+    let db_jwt = resp.token.clone();
+    let db_refresh = resp.refresh_token.clone();
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let session = crate::database_session::DatabaseSession {
+        access_token: db_jwt.clone(),
+        refresh_token: db_refresh.clone(),
+        database_id: db_id.clone(),
+        workspace_id: workspace_id.to_string(),
+        access_expires_at: now + resp.expires_in,
+        refresh_expires_at: now + resp.refresh_expires_in,
+    };
+    if let Err(e) = crate::database_session::save(&session) {
+        eprintln!("warning: could not persist database session: {e}");
+    }
+
+    eprintln!("{} {}", "database:".dark_grey(), db_id);
+    eprintln!("{} {}", "workspace:".dark_grey(), workspace_id);
+
+    let status = std::process::Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .env("HOTDATA_DATABASE", &db_id)
+        .env("HOTDATA_WORKSPACE", workspace_id)
+        .env("HOTDATA_API_URL", &api.api_url)
+        .env("HOTDATA_DATABASE_TOKEN", &db_jwt)
+        .env("HOTDATA_DATABASE_REFRESH_TOKEN", &db_refresh)
+        .status();
+
+    match status {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(e) => {
+            eprintln!("error: failed to execute '{}': {e}", cmd[0]);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -1052,5 +1162,49 @@ mod tests {
         assert_eq!(parsed.schema_name, "analytics");
         assert_eq!(parsed.table_name, "events");
         assert_eq!(parsed.row_count, 99);
+    }
+
+    #[test]
+    fn database_token_response_deserializes() {
+        let body = r#"{"ok":true,"token":"jwt-x","refresh_token":"rt-x","database_id":"dbid_abc","expires_in":300,"refresh_expires_in":259200}"#;
+        let resp: DatabaseTokenResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(resp.token, "jwt-x");
+        assert_eq!(resp.database_id, "dbid_abc");
+        assert_eq!(resp.refresh_token, "rt-x");
+        assert_eq!(resp.expires_in, 300);
+    }
+
+    #[test]
+    fn create_and_return_id_parses_id() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/databases")
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"dbid_new","description":"scratch","default_connection_id":"conn_1"}"#)
+            .create();
+        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let id = create_and_return_id(&api, Some("scratch"), "public", &[], None);
+        m.assert();
+        assert_eq!(id, "dbid_new");
+    }
+
+    #[test]
+    fn mint_database_token_posts_existing_database_grant() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/auth/database")
+            .match_body(mockito::Matcher::JsonString(
+                r#"{"grant_type":"existing_database","database_id":"dbid_abc"}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ok":true,"token":"jwt-x","refresh_token":"rt-x","database_id":"dbid_abc","expires_in":300,"refresh_expires_in":259200}"#)
+            .create();
+        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let resp = mint_database_token(&api, "dbid_abc");
+        m.assert();
+        assert_eq!(resp.token, "jwt-x");
+        assert_eq!(resp.database_id, "dbid_abc");
     }
 }
