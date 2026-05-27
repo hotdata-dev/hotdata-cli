@@ -2,7 +2,7 @@
 
 OLAP-style SQL, **History** (query runs and stored results), and **Chain** (materialized follow-ups). Requires **`hotdata`** for auth, workspaces, and catalog commands.
 
-**Related:** **`hotdata-search`** for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../hotdata/references/WORKFLOWS.md) for datasets vs managed databases.
+**Related:** **`hotdata-search`** for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../hotdata/references/WORKFLOWS.md) for views vs managed databases.
 
 ---
 
@@ -66,11 +66,11 @@ hotdata query "SELECT ..."
 
 Land a smaller table — pick one:
 
-**Datasets** (CSV/JSON/URL/SQL snapshot → `datasets.<schema>.<table>`):
+**Views** (SQL snapshot → `views.<schema>.<table>`):
 
 ```bash
-hotdata datasets create --label "chain revenue slice" --sql "SELECT ..." [--table-name chain_revenue_slice]
-hotdata datasets create --label "from saved" --query-id <query_id> [--table-name ...]
+hotdata views create --name chain_revenue_slice --description "chain revenue slice" --sql "SELECT ..."
+hotdata views create --name chain_from_saved --description "from saved" --query-id <query_id>
 ```
 
 **Managed database** (parquet → `<database>.<schema>.<table>`):
@@ -80,17 +80,17 @@ hotdata databases create --name chain_db --table revenue_slice
 hotdata databases tables load chain_db revenue_slice --file ./revenue_slice.parquet
 ```
 
-Note the printed **`full_name`** (e.g. `datasets.main.chain_revenue_slice` or `chain_db.public.revenue_slice`). For datasets, **`FULL NAME`** from `datasets list` is authoritative.
+Note the printed **`full_name`** (e.g. `views.main.chain_revenue_slice` or `chain_db.public.revenue_slice`). For views, **`FULL NAME`** from `views list` is authoritative.
 
 ### 3. Chain query
 
-Query using that name — do not hardcode `datasets.main` if the schema segment is a sandbox id:
+Query using that name — do not hardcode `views.main` if the schema segment is a sandbox id:
 
 ```bash
-hotdata datasets list
-hotdata query "SELECT * FROM datasets.main.chain_revenue_slice WHERE ..."
+hotdata views list
+hotdata query "SELECT * FROM views.main.chain_revenue_slice WHERE ..."
 # Sandbox example (use actual full_name from create or list):
-# hotdata query "SELECT * FROM datasets.s_ufmblmvq.chain_revenue_slice WHERE ..."
+# hotdata query "SELECT * FROM views.s_ufmblmvq.chain_revenue_slice WHERE ..."
 # Managed database:
 # hotdata query "SELECT * FROM chain_db.public.revenue_slice WHERE ..."
 ```
@@ -99,18 +99,18 @@ hotdata query "SELECT * FROM datasets.main.chain_revenue_slice WHERE ..."
 
 For **sandbox-scoped** chain tables:
 
-- Qualified name is **`datasets.<sandbox_id>.<table>`**, not `datasets.main`.
+- Qualified name is **`views.<sandbox_id>.<table>`**, not `views.main`.
 - Run queries with **active sandbox** in config (`hotdata sandbox set`) **or** inside **`hotdata sandbox <sandbox_id> run hotdata query "…"`**.
 - Without sandbox context, you may get **access denied** on sandbox-only tables.
 
 ### Naming and documentation
 
 - Prefer predictable `--table-name` values: `chain_<topic>_<YYYYMMDD>`.
-- Record long-lived chains in **context:DATAMODEL → Derived tables (Chain)** with the **full** SQL name you use (`datasets.…` or `database.schema.table`).
+- Record long-lived chains in **context:DATAMODEL → Derived tables (Chain)** with the **full** SQL name you use (`views.…` or `database.schema.table`).
 - Promote join/grain findings to **context:DATAMODEL** when they should outlive the sandbox (**`hotdata`** skill).
 
 ### Guardrails
 
 - Materialize when the base scan is large and the follow-up runs many times.
 - Keep Chain tables focused; avoid wide `SELECT *` materializations when a narrow projection suffices.
-- For upload format choice (datasets vs databases), see **`hotdata`** WORKFLOWS — [Datasets vs managed databases](../../hotdata/references/WORKFLOWS.md#datasets-vs-managed-databases).
+- For source format choice (views vs databases), see **`hotdata`** WORKFLOWS — [Views vs managed databases](../../hotdata/references/WORKFLOWS.md#views-vs-managed-databases).

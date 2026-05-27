@@ -18,7 +18,7 @@ For each connection, record `id`, `name`, and `source_type`.
 
 ---
 
-## 2. Enumerate tables, columns, and datasets
+## 2. Enumerate tables, columns, and views
 
 If the catalog may be **stale** (recent DDL, new tables missing), run **`hotdata connections refresh <connection_id>`** for affected connections **before** relying on `tables list`.
 
@@ -28,14 +28,14 @@ If the catalog may be **stale** (recent DDL, new tables missing), run **`hotdata
 hotdata tables list --connection-id <connection_id>
 ```
 
-**Uploaded datasets:**
+**Views:**
 
 ```bash
-hotdata datasets list
-hotdata datasets <dataset_id>
+hotdata views list
+hotdata views <view_id>
 ```
 
-Capture schema for each dataset (columns, types) from the detail view.
+Capture schema for each view (columns, types) from the detail view.
 
 You can also refresh after enumeration if you discover drift:
 

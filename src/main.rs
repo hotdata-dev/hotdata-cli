@@ -20,6 +20,7 @@ mod table;
 mod tables;
 mod update;
 mod util;
+mod views;
 mod workspace;
 
 use anstyle::AnsiColor;
@@ -28,7 +29,7 @@ use command::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
     DatabaseTablesCommands, DatabasesCommands, EmbeddingProvidersCommands,
     IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands,
-    SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands,
+    SandboxCommands, SkillCommands, TablesCommands, ViewsCommands, WorkspaceCommands,
 };
 
 #[derive(Parser)]
@@ -307,6 +308,74 @@ fn main() {
                             let mut cmd = Cli::command();
                             cmd.build();
                             cmd.find_subcommand_mut("connections")
+                                .unwrap()
+                                .print_help()
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+            Commands::Views {
+                id,
+                workspace_id,
+                output,
+                command,
+            } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                if let Some(id) = id {
+                    views::get(&id, &workspace_id, &output)
+                } else {
+                    match command {
+                        Some(ViewsCommands::List {
+                            limit,
+                            offset,
+                            output,
+                        }) => views::list(&workspace_id, limit, offset, &output),
+                        Some(ViewsCommands::Create {
+                            name,
+                            description,
+                            sql,
+                            query_id,
+                            output,
+                        }) => {
+                            if let Some(sql) = sql {
+                                views::create_from_query(
+                                    &workspace_id,
+                                    &sql,
+                                    description.as_deref(),
+                                    &name,
+                                    &output,
+                                )
+                            } else {
+                                views::create_from_saved_query(
+                                    &workspace_id,
+                                    query_id.as_deref().unwrap_or_else(|| unreachable!("clap enforces --sql or --query-id")),
+                                    description.as_deref(),
+                                    &name,
+                                    &output,
+                                )
+                            }
+                        }
+                        Some(ViewsCommands::Update {
+                            id,
+                            description,
+                            name,
+                            output,
+                        }) => views::update(
+                            &id,
+                            &workspace_id,
+                            description.as_deref(),
+                            name.as_deref(),
+                            &output,
+                        ),
+                        Some(ViewsCommands::Refresh { id, r#async }) => {
+                            views::refresh(&workspace_id, &id, r#async)
+                        }
+                        None => {
+                            use clap::CommandFactory;
+                            let mut cmd = Cli::command();
+                            cmd.build();
+                            cmd.find_subcommand_mut("views")
                                 .unwrap()
                                 .print_help()
                                 .unwrap();

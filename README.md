@@ -67,7 +67,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
 | `databases` | `list`, `create`, `delete`, `tables` | Managed databases (create and load tables via parquet) |
 | `tables` | `list` | List tables and columns |
-| `datasets` | `list`, `create`, `update` | Manage uploaded datasets |
+| `views` | `list`, `create`, `update`, `refresh` | Manage SQL-derived views |
 | `context` | `list`, `show`, `pull`, `push` | Workspace Markdown context (e.g. data model `DATAMODEL`) via the context API |
 | `query` | | Execute a SQL query |
 | `queries` | `list` | Inspect query run history |
@@ -146,7 +146,7 @@ hotdata databases tables delete <database> <table> [--schema public]
 
 - `create` registers a managed connection (`source_type: managed`) with no external credentials. Use `--table` to declare tables up front (required before `tables load` on the current API).
 - `tables load` uploads a **parquet** file (or uses a staged `upload_id` from `POST /v1/files`) and publishes it as the table generation (`replace` mode).
-- For CSV/JSON uploads without a managed database, use `hotdata datasets create` instead (`datasets.main.*`).
+- For SQL-query materializations without a managed database, use `hotdata views create` instead (`views.main.*`).
 
 Example:
 
@@ -167,24 +167,19 @@ hotdata tables list [--workspace-id <id>] [--connection-id <id>] [--schema <patt
 - `--schema` and `--table` support SQL `%` wildcard patterns.
 - Tables are displayed as `<connection>.<schema>.<table>` — use this format in SQL queries.
 
-## Datasets
+## Views
 
 ```sh
-hotdata datasets list [--workspace-id <id>] [--limit <n>] [--offset <n>] [--format table|json|yaml]
-hotdata datasets <dataset_id> [--workspace-id <id>] [--format table|json|yaml]
-hotdata datasets create --file data.csv [--label "My Dataset"] [--table-name my_dataset]
-hotdata datasets create --sql "SELECT ..." --label "My Dataset"
-hotdata datasets create --url "https://example.com/data.parquet" --label "My Dataset"
-hotdata datasets update <dataset_id> [--label "New Label"] [--table-name new_table]
-hotdata datasets refresh <dataset_id> [--workspace-id <id>] [--async]
+hotdata views list [--workspace-id <id>] [--limit <n>] [--offset <n>] [--output table|json|yaml]
+hotdata views <view_id> [--workspace-id <id>] [--output table|json|yaml]
+hotdata views create --name my_view [--description "My View"] (--sql "SELECT ..." | --query-id <id>)
+hotdata views update <view_id> [--description "New Label"] [--name new_table]
+hotdata views refresh <view_id> [--workspace-id <id>] [--async]
 ```
 
-- Datasets are queryable as `datasets.main.<table_name>`.
-- `--file`, `--sql`, `--query-id`, and `--url` are mutually exclusive.
-- `--url` imports data directly from a URL (supports csv, json, parquet).
-- Format is auto-detected from file extension or content.
-- Piped stdin is supported: `cat data.csv | hotdata datasets create --label "My Dataset"`
-- `refresh` re-runs the dataset's source (URL fetch or saved query) and creates a new version. Not supported for upload-source datasets.
+- Views are queryable as `views.main.<name>`.
+- `--sql` and `--query-id` are mutually exclusive; exactly one is required for `create`.
+- `refresh` re-runs the view's source query and creates a new version.
 - `--async` submits the refresh as a background job and returns a job ID; poll with `hotdata jobs <job_id>`.
 
 ## Workspace context

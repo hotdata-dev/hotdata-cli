@@ -1,6 +1,6 @@
 ---
 name: hotdata-analytics
-description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain via datasets or managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for connections, tables, datasets, and auth.
+description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain via views or managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for connections, tables, views, and auth.
 version: 0.3.2
 ---
 
@@ -8,7 +8,7 @@ version: 0.3.2
 
 **OLAP-style analytics** in Hotdata: PostgreSQL-dialect SQL, query execution, run history, stored results, **Chain** materializations, and **sorted** indexes for filters and joins.
 
-**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`connections`, `tables`, `datasets`, `databases`).
+**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`connections`, `tables`, `views`, `databases`).
 
 **Related skills:** **`hotdata-search`** (BM25, vector, retrieval indexes), **`hotdata-geospatial`** (spatial SQL).
 
@@ -23,7 +23,7 @@ hotdata query status <query_run_id> [--output table|json|csv]
 
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
 - Use **`hotdata tables list`** for schema discovery — not `information_schema` via `query`.
-- Fully qualified names: `<connection>.<schema>.<table>`, `datasets.<schema>.<table>`, `<database>.<schema>.<table>`.
+- Fully qualified names: `<connection>.<schema>.<table>`, `views.<schema>.<table>`, `<database>.<schema>.<table>`.
 - Long-running queries may return `query_run_id` → poll with **`query status`** (exit `2` = still running). Do not re-run identical heavy SQL while polling.
 - For **workspace-wide** joins and naming, load **context:DATAMODEL** when listed (`hotdata context list` → `show DATAMODEL`) — see **`hotdata`** skill.
 
@@ -82,8 +82,8 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json
 2. **Materialize** (pick one)
 
    ```bash
-   hotdata datasets create --name chain_slice [--description "chain slice"] --sql "SELECT ..."
-   hotdata datasets create --name chain_from_saved [--description "from saved"] --query-id <query_id>
+   hotdata views create --name chain_slice --description "chain slice" --sql "SELECT ..."
+   hotdata views create --name chain_from_saved --description "from saved" --query-id <query_id>
    ```
 
    Or managed parquet:
@@ -94,10 +94,10 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json
    hotdata databases tables load slice --file ./slice.parquet
    ```
 
-3. **Chain query** — use printed **`full_name`** or `datasets list` **FULL NAME** column:
+3. **Chain query** — use printed **`full_name`** or `views list` **FULL NAME** column:
 
    ```bash
-   hotdata query "SELECT * FROM datasets.main.chain_slice WHERE ..."
+   hotdata query "SELECT * FROM views.main.chain_slice WHERE ..."
    hotdata query "SELECT * FROM analytics.public.slice WHERE ..."
    ```
 
@@ -122,4 +122,4 @@ List and delete use the same `hotdata indexes` commands as in the search skill; 
 
 ## Sandboxes and chains
 
-Sandbox datasets use **`datasets.<sandbox_id>.<table>`**, not `datasets.main`. Run queries with active sandbox config or `hotdata sandbox <id> run hotdata query "..."`. See **`hotdata`** skill **Sandboxes**.
+Sandbox views use **`views.<sandbox_id>.<table>`**, not `views.main`. Run queries with active sandbox config or `hotdata sandbox <id> run hotdata query "..."`. See **`hotdata`** skill **Sandboxes**.

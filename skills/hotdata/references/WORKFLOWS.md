@@ -11,16 +11,16 @@ Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
 | Login, workspaces, connections, tables, context, sandboxes | **`hotdata`** | `auth`, `workspaces`, `connections`, `tables`, `context`, `sandbox` |
-| Upload CSV/JSON/URL or SQL-derived tables | **`hotdata`** | `datasets create`, `databases …` (see below) |
-| SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** | `query`, `queries`, `results`, `datasets create --sql` |
+| Upload SQL-derived tables | **`hotdata`** | `views create`, `databases …` (see below) |
+| SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** | `query`, `queries`, `results`, `views create --sql` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** | `search`, `indexes create`, `embedding-providers` |
 | Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** | `query` with `ST_*`, WKB columns |
 
 | Concept | Where documented |
 |--------|------------------|
 | **Model** | This file — [Model](#model) |
-| **Upload path (datasets vs databases)** | This file — [Datasets vs managed databases](#datasets-vs-managed-databases) |
-| **Sandboxes** | This file — [Sandboxes and datasets](#sandboxes-and-datasets) |
+| **Upload path (views vs databases)** | This file — [Views vs managed databases](#views-vs-managed-databases) |
+| **Sandboxes** | This file — [Sandboxes and views](#sandboxes-and-views) |
 | **History / Chain** | **`hotdata-analytics`** — [WORKFLOWS.md](../../hotdata-analytics/references/WORKFLOWS.md) |
 | **Search indexes** | **`hotdata-search`** — [INDEXES.md](../../hotdata-search/references/INDEXES.md) |
 | **Epic flows** | This file — [Epic flows](#epic-flows) |
@@ -44,7 +44,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 7. [ ] (Optional) `hotdata context list` — if `DATAMODEL` is listed, `hotdata context show DATAMODEL`; else skip `show`
 8. [ ] (Optional) Bootstrap **context:DATAMODEL** — [Model](#model), [DATA_MODEL.template.md](DATA_MODEL.template.md)
 
-**Next:** upload data ([Datasets vs managed databases](#datasets-vs-managed-databases)) or run analytics (**Chain** below).
+**Next:** create views ([Views vs managed databases](#views-vs-managed-databases)) or run analytics (**Chain** below).
 
 ### Chain (materialize then query)
 
@@ -52,11 +52,11 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 1. [ ] Run base SQL: `hotdata query "SELECT …"` — poll `hotdata query status <id>` if async
 2. [ ] Materialize one way:
-   - [ ] **Dataset:** `hotdata datasets create --label "…" --sql "SELECT …" [--table-name …]`
+   - [ ] **View:** `hotdata views create --name "…" --sql "SELECT …"`
    - [ ] **Managed DB:** `hotdata databases create --name … --table …` then `hotdata databases tables load … --file ./….parquet`
-3. [ ] Copy **`full_name`** from create output (or `datasets list` **FULL NAME**)
+3. [ ] Copy **`full_name`** from create output (or `views list` **FULL NAME**)
 4. [ ] Chain: `hotdata query "SELECT … FROM <full_name> WHERE …"`
-5. [ ] (Sandbox) Use `datasets.<sandbox_id>.<table>` and active sandbox or `hotdata sandbox <id> run …`
+5. [ ] (Sandbox) Use `views.<sandbox_id>.<table>` and active sandbox or `hotdata sandbox <id> run …`
 6. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
 
 **Detail:** [hotdata-analytics WORKFLOWS — Chain](../../hotdata-analytics/references/WORKFLOWS.md#chain)
@@ -80,38 +80,37 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 ---
 
-## Datasets vs managed databases
+## Views vs managed databases
 
-Both land queryable tables in the workspace; the path depends on **format** and **how you want to name tables in SQL**.
+Both land queryable tables in the workspace; the path depends on **source** and **how you want to name tables in SQL**.
 
-| | **Datasets** | **Managed databases** |
-|---|-------------|------------------------|
-| **Best for** | CSV, JSON, URL import, stdin, SQL/query snapshot | Parquet files you own; catalog-style `name.schema.table` |
-| **SQL prefix** | `datasets.<schema>.<table>` (often `datasets.main.*`) | `<database>.<schema>.<table>` (database = connection name) |
-| **CLI** | `hotdata datasets create` | `hotdata databases create` + `databases tables load` |
+| | **Views** | **Managed databases** |
+|---|-----------|------------------------|
+| **Best for** | SQL/query snapshot | Parquet files you own; catalog-style `name.schema.table` |
+| **SQL prefix** | `views.<schema>.<table>` (often `views.main.*`) | `<database>.<schema>.<table>` (database = connection name) |
+| **CLI** | `hotdata views create` | `hotdata databases create` + `databases tables load` |
 | **Declare schema up front** | No | Yes — `--table` on create (required before load on current API) |
-| **Parquet** | Yes (`--file`, `--url`, `--upload-id`) | **Only** parquet on `tables load` |
-| **Refresh upstream** | `datasets refresh` (URL/query sources) | Replace via `tables load` again |
+| **Parquet** | No | **Only** parquet on `tables load` |
+| **Refresh upstream** | `views refresh` (query sources) | Replace via `tables load` again |
 
-**Rule of thumb:** CSV/JSON or “upload a file from a URL” → **datasets**. Parquet catalog you control as **`mydb.public.orders`** → **databases**.
+**Rule of thumb:** SQL-query snapshot → **views**. Parquet catalog you control as **`mydb.public.orders`** → **databases**.
 
-### Workflow: dataset upload and query
+### Workflow: view creation and query
 
 1. Authenticate and set workspace (`hotdata auth`, `hotdata workspaces set` if needed).
-2. Create the dataset (one source):
+2. Create the view:
 
    ```bash
-   hotdata datasets create --label "Orders" --file ./orders.csv
-   # or: --url "https://example.com/orders.parquet"
-   # or: --sql "SELECT ..."   # materialize from a query
+   hotdata views create --name orders --sql “SELECT ...”
+   # or: --query-id <saved_query_id>  # materialize from a saved query
    ```
 
-3. Note the printed **`full_name`** (e.g. `datasets.main.orders`) — do not assume `datasets.main`.
-4. Inspect if needed: `hotdata datasets list`, `hotdata datasets <dataset_id>`.
+3. Note the printed **`full_name`** (e.g. `views.main.orders`) — do not assume `views.main`.
+4. Inspect if needed: `hotdata views list`, `hotdata views <view_id>`.
 5. Query:
 
    ```bash
-   hotdata query "SELECT count(*) FROM datasets.main.orders"
+   hotdata query “SELECT count(*) FROM views.main.orders”
    ```
 
 ### Workflow: managed database (parquet)
@@ -137,7 +136,7 @@ Both land queryable tables in the workspace; the path depends on **format** and 
    hotdata query "SELECT count(*) FROM sales.public.orders"
    ```
 
-For **Chain** materializations into datasets or databases, see **`hotdata-analytics`**.
+For **Chain** materializations into views or databases, see **`hotdata-analytics`**.
 
 ---
 
@@ -165,8 +164,8 @@ hotdata connections list
 hotdata connections refresh <connection_id>   # after DDL / stale remote metadata
 hotdata tables list
 hotdata tables list --connection-id <connection_id>
-hotdata datasets list
-hotdata datasets <dataset_id>
+hotdata views list
+hotdata views <view_id>
 hotdata databases list
 ```
 
@@ -174,24 +173,24 @@ Use `hotdata tables list` for discovery; do not query `information_schema` for t
 
 ---
 
-## Sandboxes and datasets
+## Sandboxes and views
 
-Use this when work is isolated in a **sandbox** (exploratory runs, ephemeral datasets).
+Use this when work is isolated in a **sandbox** (exploratory runs, ephemeral views).
 
-**Active sandbox vs `sandbox run`:** After `sandbox new` or `sandbox set`, run **`datasets create`**, **`query`**, etc. **directly**. **`sandbox run <cmd>`** (no id before `run`) **always creates a new sandbox**.
+**Active sandbox vs `sandbox run`:** After `sandbox new` or `sandbox set`, run **`views create`**, **`query`**, etc. **directly**. **`sandbox run <cmd>`** (no id before `run`) **always creates a new sandbox**.
 
-**Qualified names:** Workspace datasets → **`datasets.main.<table>`**. Sandbox datasets → **`datasets.<sandbox_id>.<table>`**. Use **`full_name`** from create or **FULL NAME** from `datasets list`.
+**Qualified names:** Workspace views → **`views.main.<table>`**. Sandbox views → **`views.<sandbox_id>.<table>`**. Use **`full_name`** from create or **FULL NAME** from `views list`.
 
 **Access:** Sandbox-only tables need active sandbox config or **`hotdata sandbox <id> run …`**.
 
 **SQL:** Quote mixed-case columns with double quotes.
 
-**Listing:** `datasets list` returns all workspace datasets; use **FULL NAME** to spot sandbox vs `main` rows.
+**Listing:** `views list` returns all workspace views; use **FULL NAME** to spot sandbox vs `main` rows.
 
 ---
 
 ## Cross-cutting
 
 - **Workspace:** Active workspace or `--workspace-id`. **`hotdata queries`** uses the active workspace only (no `--workspace-id`).
-- **Jobs:** `hotdata jobs list` / `jobs <id>` for async refreshes, dataset refresh, and index builds.
+- **Jobs:** `hotdata jobs list` / `jobs <id>` for async refreshes, view refresh, and index builds.
 - **Discovery:** `hotdata tables list` — not `query` on `information_schema`.
