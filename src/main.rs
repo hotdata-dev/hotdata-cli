@@ -216,6 +216,7 @@ fn main() {
                             description,
                             sql,
                             query_id,
+                            output,
                         }) => {
                             if let Some(sql) = sql {
                                 datasets::create_from_query(
@@ -223,6 +224,7 @@ fn main() {
                                     &sql,
                                     description.as_deref(),
                                     &name,
+                                    &output,
                                 )
                             } else {
                                 datasets::create_from_saved_query(
@@ -230,6 +232,7 @@ fn main() {
                                     query_id.as_deref().unwrap_or_else(|| unreachable!("clap enforces --sql or --query-id")),
                                     description.as_deref(),
                                     &name,
+                                    &output,
                                 )
                             }
                         }
@@ -956,6 +959,9 @@ fn main() {
                     }
                     Some(SandboxCommands::Set { id: set_id }) => {
                         sandbox::set(set_id.as_deref(), &workspace_id)
+                    }
+                    Some(SandboxCommands::Delete { id: delete_id }) => {
+                        sandbox::delete(&delete_id, &workspace_id)
                     }
                     None => match id {
                         Some(id) => sandbox::get(&id, &workspace_id, &output),

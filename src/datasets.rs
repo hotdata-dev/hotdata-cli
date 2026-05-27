@@ -17,7 +17,7 @@ fn default_schema() -> String {
     "main".to_string()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct CreateResponse {
     id: String,
     label: String,
@@ -75,6 +75,7 @@ fn create_dataset(
     description: Option<&str>,
     name: &str,
     source: serde_json::Value,
+    format: &str,
 ) {
     let label = description.unwrap_or(name);
     let body = json!({ "table_name": name, "label": label, "source": source });
@@ -96,18 +97,25 @@ fn create_dataset(
     };
 
     use crossterm::style::Stylize;
-    println!("{}", "Dataset created".green());
-    println!("id:         {}", dataset.id);
-    println!("label:      {}", dataset.label);
-    println!(
-        "full_name:  datasets.{}.{}",
-        dataset.schema_name, dataset.table_name
-    );
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&dataset).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&dataset).unwrap()),
+        "table" => {
+            eprintln!("{}", "Dataset created".green());
+            println!("id:         {}", dataset.id);
+            println!("label:      {}", dataset.label);
+            println!(
+                "full_name:  datasets.{}.{}",
+                dataset.schema_name, dataset.table_name
+            );
+        }
+        _ => unreachable!(),
+    }
 }
 
-pub fn create_from_query(workspace_id: &str, sql: &str, description: Option<&str>, name: &str) {
+pub fn create_from_query(workspace_id: &str, sql: &str, description: Option<&str>, name: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    create_dataset(&api, description, name, json!({ "type": "sql_query", "sql": sql }));
+    create_dataset(&api, description, name, json!({ "type": "sql_query", "sql": sql }), format);
 }
 
 pub fn create_from_saved_query(
@@ -115,9 +123,10 @@ pub fn create_from_saved_query(
     query_id: &str,
     description: Option<&str>,
     name: &str,
+    format: &str,
 ) {
     let api = ApiClient::new(Some(workspace_id));
-    create_dataset(&api, description, name, json!({ "type": "saved_query", "saved_query_id": query_id }));
+    create_dataset(&api, description, name, json!({ "type": "saved_query", "saved_query_id": query_id }), format);
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {

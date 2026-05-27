@@ -478,6 +478,10 @@ pub enum DatasetsCommands {
         /// Saved query ID to create the dataset from
         #[arg(long, conflicts_with = "sql", required_unless_present = "sql")]
         query_id: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Update a dataset's description and/or name
@@ -853,6 +857,12 @@ pub enum SandboxCommands {
         /// Command and arguments to execute
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
+    },
+
+    /// Delete a sandbox permanently
+    Delete {
+        /// Sandbox ID to delete
+        id: String,
     },
 }
 
