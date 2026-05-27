@@ -504,6 +504,9 @@ pub fn run(
 
     let api = ApiClient::new(Some(workspace_id));
 
+    // Unlike `create`, we don't persist the auto-created database as the
+    // workspace's "current" database: a `run` database is scratch/ephemeral
+    // for the child process, addressed only by the token we mint below.
     let database_id = match database {
         Some(id) => id.to_string(),
         None => create_and_return_id(&api, description, schema, tables, expires_at),
@@ -1179,6 +1182,12 @@ mod tests {
         let mut server = mockito::Server::new();
         let m = server
             .mock("POST", "/databases")
+            .match_body(mockito::Matcher::Json(create_database_request(
+                Some("scratch"),
+                "public",
+                &[],
+                None,
+            )))
             .with_status(201)
             .with_header("content-type", "application/json")
             .with_body(r#"{"id":"dbid_new","description":"scratch","default_connection_id":"conn_1"}"#)
