@@ -16,6 +16,13 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// The refresh path below (REFRESH_LEEWAY_SECONDS, now_unix, MintResponse,
+// redact, refresh, session_from_response) mirrors sandbox_session.rs and is
+// covered by tests, but has no production caller yet: it's reserved for when
+// a child of `databases run` re-mints an expiring HOTDATA_DATABASE_TOKEN
+// (the child-side ApiClient consumption is not wired up yet). Annotated
+// #[allow(dead_code)] until that lands so the build stays warning-clean.
+#[allow(dead_code)]
 const REFRESH_LEEWAY_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -67,6 +74,7 @@ pub fn clear() {
     }
 }
 
+#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -74,6 +82,7 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 #[derive(Deserialize)]
 pub(crate) struct MintResponse {
     token: String,
@@ -83,6 +92,7 @@ pub(crate) struct MintResponse {
     refresh_expires_in: u64,
 }
 
+#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 fn redact(s: &str) -> String {
     util::mask_credential(s)
 }
@@ -90,6 +100,7 @@ fn redact(s: &str) -> String {
 /// Trade a refresh token for a fresh database JWT (no rotation). Same
 /// endpoint as the new-mint path: `POST /v1/auth/database` with
 /// grant_type=refresh_token.
+#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 pub fn refresh(api_url: &str, refresh_token: &str) -> Result<DatabaseSession, String> {
     let url = format!("{}/auth/database", api_url.trim_end_matches('/'));
     let body = serde_json::json!({
@@ -124,6 +135,7 @@ pub fn refresh(api_url: &str, refresh_token: &str) -> Result<DatabaseSession, St
 /// to). For refresh, `workspace_id` is left blank — the caller fills it
 /// from the prior session, since the database-id ↔ workspace mapping is
 /// invariant across refreshes.
+#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 pub(crate) fn session_from_response(resp: MintResponse, workspace_id: String) -> DatabaseSession {
     let now = now_unix();
     DatabaseSession {
