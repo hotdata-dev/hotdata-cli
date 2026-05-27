@@ -643,7 +643,7 @@ pub enum DatabasesCommands {
         #[arg(long)]
         description: Option<String>,
 
-        /// Schema for the auto-created database (default: public)
+        /// Schema for tables declared in the auto-created database (default: public)
         #[arg(long, default_value = "public")]
         schema: String,
 
@@ -651,7 +651,8 @@ pub enum DatabasesCommands {
         #[arg(long = "table")]
         tables: Vec<String>,
 
-        /// When the auto-created database expires (e.g. 24h, 7d, or RFC 3339)
+        /// When the auto-created database expires. Accepts a relative duration
+        /// (e.g. 24h, 7d, 90m) or an RFC 3339 timestamp. Defaults to 24h when omitted.
         #[arg(long)]
         expires_at: Option<String>,
 
