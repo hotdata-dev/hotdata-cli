@@ -75,7 +75,7 @@ pub enum Commands {
 
     /// Managed databases you create and populate with tables (parquet uploads)
     Databases {
-        /// Database id or description (omit to use a subcommand)
+        /// Database id or name (omit to use a subcommand)
         name_or_id: Option<String>,
 
         /// Workspace ID (defaults to first workspace from login)
@@ -563,20 +563,32 @@ pub enum DatabasesCommands {
 
     /// Create a new managed database
     Create {
-        /// Optional display label (not unique, not an identifier — databases are addressed by id)
+        /// SQL catalog alias — becomes the catalog name in queries:
+        /// SELECT … FROM <name>.public.<table>.
+        /// Must be [a-z_][a-z0-9_]*, globally unique. When provided the
+        /// database defaults to no expiry; omit for an anonymous 24h sandbox.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Optional display label (not unique, not an identifier)
         #[arg(long)]
         description: Option<String>,
 
-        /// Schema for tables declared at create time (default: public)
+        /// Default schema for bare `--table` entries (default: public).
+        /// Use dot notation in `--table` to target a different schema directly,
+        /// e.g. `--table raw.raw_orders` always goes into the "raw" schema.
         #[arg(long, default_value = "public")]
         schema: String,
 
-        /// Table to declare up front (repeatable)
+        /// Table to declare up front (repeatable). Accepts bare names or
+        /// `schema.table` dot notation to span multiple schemas in one command:
+        ///   --table orders --table raw.raw_orders --table raw.raw_customers
         #[arg(long = "table")]
         tables: Vec<String>,
 
         /// When the database expires. Accepts a relative duration (e.g. 24h, 7d, 90m)
-        /// or an RFC 3339 timestamp. Defaults to 24h when omitted.
+        /// or an RFC 3339 timestamp. Omitting with --name means no expiry; omitting
+        /// without --name defaults to 24h.
         #[arg(long)]
         expires_at: Option<String>,
 
@@ -587,8 +599,8 @@ pub enum DatabasesCommands {
 
     /// Set the current database (used by default when no database is specified)
     Set {
-        /// Database id or description
-        id_or_description: String,
+        /// Database id
+        id: String,
     },
 
     /// Delete a managed database and its tables
@@ -618,7 +630,7 @@ pub enum DatabasesCommands {
 
     /// Manage tables inside a managed database
     Tables {
-        /// Database id or description — shorthand for `tables list` when no subcommand is given
+        /// Database id or name — shorthand for `tables list` when no subcommand is given
         database: Option<String>,
 
         #[command(subcommand)]
@@ -630,7 +642,7 @@ pub enum DatabasesCommands {
 pub enum DatabaseTablesCommands {
     /// List tables in a managed database
     List {
-        /// Database id or description (defaults to current database)
+        /// Database id or name (defaults to current database)
         #[arg(long)]
         database: Option<String>,
 
@@ -645,7 +657,7 @@ pub enum DatabaseTablesCommands {
 
     /// Load a parquet file into a table (creates or replaces the table)
     Load {
-        /// Database id or description (defaults to current database)
+        /// Database id or name (defaults to current database)
         #[arg(long)]
         database: Option<String>,
 
@@ -671,7 +683,7 @@ pub enum DatabaseTablesCommands {
 
     /// Delete a table from a managed database
     Delete {
-        /// Database id or description (defaults to current database)
+        /// Database id or name (defaults to current database)
         #[arg(long)]
         database: Option<String>,
 
