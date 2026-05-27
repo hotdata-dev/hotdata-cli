@@ -341,6 +341,7 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
 }
 
 pub fn delete(sandbox_id: &str, workspace_id: &str) {
+    check_sandbox_lock();
     let api = ApiClient::new(Some(workspace_id));
     let path = format!("/sandboxes/{sandbox_id}");
     let (status, resp_body) = api.delete_raw(&path);
