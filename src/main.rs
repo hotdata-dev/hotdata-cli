@@ -402,7 +402,6 @@ fn main() {
                         }
                         Some(DatabasesCommands::Create {
                             name,
-                            description,
                             schema,
                             tables,
                             expires_at,
@@ -410,7 +409,6 @@ fn main() {
                         }) => databases::create(
                             &workspace_id,
                             name.as_deref(),
-                            description.as_deref(),
                             &schema,
                             &tables,
                             expires_at.as_deref(),

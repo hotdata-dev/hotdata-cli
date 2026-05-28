@@ -11,8 +11,6 @@ struct DatabaseSummary {
     id: String,
     #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -26,8 +24,6 @@ pub struct Database {
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
     pub default_connection_id: String,
     #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
@@ -70,8 +66,6 @@ struct CreateDatabaseResponse {
     id: String,
     #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
     default_connection_id: String,
     #[serde(default)]
     expires_at: Option<String>,
@@ -139,7 +133,6 @@ fn schema_name(schema: Option<&str>) -> &str {
 /// Build the request body for `POST /v1/databases`.
 pub fn create_database_request(
     name: Option<&str>,
-    description: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
@@ -150,13 +143,6 @@ pub fn create_database_request(
         req.insert(
             "name".to_string(),
             serde_json::Value::String(n.to_string()),
-        );
-    }
-
-    if let Some(desc) = description {
-        req.insert(
-            "description".to_string(),
-            serde_json::Value::String(desc.to_string()),
         );
     }
 
@@ -396,21 +382,20 @@ pub fn list(workspace_id: &str, format: &str) {
                     .map(|d| {
                         vec![
                             d.name.as_deref().unwrap_or("-").to_string(),
-                            d.description.as_deref().unwrap_or("-").to_string(),
                             d.id.clone(),
                         ]
                     })
                     .collect();
-                crate::table::print(&["NAME", "DESCRIPTION", "ID"], &rows);
+                crate::table::print(&["NAME", "ID"], &rows);
             }
         }
         _ => unreachable!(),
     }
 }
 
-pub fn get(workspace_id: &str, id_or_description: &str, format: &str) {
+pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, id_or_description);
+    let db = resolve_database(&api, id_or_name);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&db).unwrap()),
@@ -422,11 +407,6 @@ pub fn get(workspace_id: &str, id_or_description: &str, format: &str) {
             if let Some(n) = &db.name {
                 println!("{}{}", label("name:"), n.clone().cyan());
             }
-            println!(
-                "{}{}",
-                label("description:"),
-                db.description.as_deref().unwrap_or("-").white()
-            );
             println!(
                 "{}{}",
                 label("default_connection_id:"),
@@ -461,7 +441,6 @@ pub fn get(workspace_id: &str, id_or_description: &str, format: &str) {
 pub fn create(
     workspace_id: &str,
     name: Option<&str>,
-    description: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
@@ -469,7 +448,7 @@ pub fn create(
 ) {
     use crossterm::style::Stylize;
 
-    let body = create_database_request(name, description, schema, tables, expires_at);
+    let body = create_database_request(name, schema, tables, expires_at);
 
     let api = ApiClient::new(Some(workspace_id));
     let spinner = (format == "table").then(|| crate::util::spinner("Creating database..."));
@@ -504,9 +483,6 @@ pub fn create(
             if let Some(n) = &result.name {
                 println!("name:        {}", n.clone().cyan());
             }
-            if let Some(desc) = &result.description {
-                println!("description: {desc}");
-            }
             println!("id:          {}", result.id);
             if let Some(exp) = &result.expires_at {
                 println!("expires_at:  {exp}");
@@ -532,13 +508,15 @@ pub fn create(
     }
 }
 
-pub fn set(workspace_id: &str, id: &str) {
+pub fn set(workspace_id: &str, id_or_name: &str) {
     use crossterm::style::Stylize;
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
+    let api = ApiClient::new(Some(workspace_id));
+    let db = resolve_database(&api, id_or_name);
+    if let Err(e) = crate::config::save_current_database("default", workspace_id, &db.id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
         std::process::exit(1);
     }
-    println!("{}", format!("Current database set to {}", id).green());
+    println!("{}", format!("Current database set to {}", db.id).green());
 }
 
 fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> String {
@@ -558,11 +536,11 @@ fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> Strin
     }
 }
 
-pub fn delete(workspace_id: &str, id_or_description: &str) {
+pub fn delete(workspace_id: &str, id_or_name: &str) {
     use crossterm::style::Stylize;
 
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, id_or_description);
+    let db = resolve_database(&api, id_or_name);
     let (status, resp_body) = api.delete_raw(&format!("/databases/{}", db.id));
 
     if !status.is_success() {
@@ -727,22 +705,15 @@ mod tests {
     }
 
     #[test]
-    fn create_database_request_empty_without_name_description_or_tables() {
-        let req = create_database_request(None, None, "public", &[], None);
+    fn create_database_request_empty_without_name_or_tables() {
+        let req = create_database_request(None, "public", &[], None);
         assert_eq!(req, serde_json::json!({}));
     }
 
     #[test]
     fn create_database_request_includes_name() {
-        let req = create_database_request(Some("jaffle_shop"), None, "public", &[], None);
+        let req = create_database_request(Some("jaffle_shop"), "public", &[], None);
         assert_eq!(req["name"], "jaffle_shop");
-        assert!(req.get("schemas").is_none());
-    }
-
-    #[test]
-    fn create_database_request_includes_description() {
-        let req = create_database_request(None, Some("my db"), "public", &[], None);
-        assert_eq!(req["description"], "my db");
         assert!(req.get("schemas").is_none());
     }
 
@@ -750,40 +721,37 @@ mod tests {
     fn create_database_request_includes_schemas_when_tables_declared() {
         let req = create_database_request(
             None,
-            Some("sales"),
             "public",
             &["orders".to_string(), "customers".to_string()],
             None,
         );
-        assert_eq!(req["description"], "sales");
         assert_eq!(req["schemas"][0]["name"], "public");
         assert_eq!(req["schemas"][0]["tables"][0]["name"], "orders");
         assert_eq!(req["schemas"][0]["tables"][1]["name"], "customers");
     }
 
     #[test]
-    fn create_database_request_schemas_without_description() {
-        let req = create_database_request(None, None, "analytics", &["events".to_string()], None);
-        assert!(req.get("description").is_none());
+    fn create_database_request_schemas_without_name() {
+        let req = create_database_request(None, "analytics", &["events".to_string()], None);
+        assert!(req.get("name").is_none());
         assert_eq!(req["schemas"][0]["name"], "analytics");
     }
 
     #[test]
     fn create_database_request_includes_expires_at_when_provided() {
-        let req = create_database_request(None, None, "public", &[], Some("24h"));
+        let req = create_database_request(None, "public", &[], Some("24h"));
         assert_eq!(req["expires_at"], "24h");
     }
 
     #[test]
     fn create_database_request_omits_expires_at_when_none() {
-        let req = create_database_request(None, None, "public", &[], None);
+        let req = create_database_request(None, "public", &[], None);
         assert!(req.get("expires_at").is_none());
     }
 
     #[test]
     fn create_database_request_dot_notation_groups_tables_by_schema() {
         let req = create_database_request(
-            None,
             None,
             "public",
             &[
@@ -981,7 +949,6 @@ mod tests {
             .match_body(mockito::Matcher::JsonString(
                 serde_json::to_string(&create_database_request(
                     Some("mydb"),
-                    None,
                     "public",
                     &["gdp".to_string()],
                     None,
@@ -991,7 +958,7 @@ mod tests {
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", Some("ws-test"));
-        let body = create_database_request(Some("mydb"), None, "public", &["gdp".to_string()], None);
+        let body = create_database_request(Some("mydb"), "public", &["gdp".to_string()], None);
         let (status, resp_body) = api.post_raw("/databases", &body);
         assert_eq!(status.as_u16(), 201);
         let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();

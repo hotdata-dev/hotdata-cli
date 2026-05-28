@@ -570,10 +570,6 @@ pub enum DatabasesCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Optional display label (not unique, not an identifier)
-        #[arg(long)]
-        description: Option<String>,
-
         /// Default schema for bare `--table` entries (default: public).
         /// Use dot notation in `--table` to target a different schema directly,
         /// e.g. `--table raw.raw_orders` always goes into the "raw" schema.
