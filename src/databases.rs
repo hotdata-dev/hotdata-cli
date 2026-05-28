@@ -381,12 +381,12 @@ pub fn list(workspace_id: &str, format: &str) {
                     .iter()
                     .map(|d| {
                         vec![
-                            d.name.as_deref().unwrap_or("-").to_string(),
                             d.id.clone(),
+                            d.name.as_deref().unwrap_or("-").to_string(),
                         ]
                     })
                     .collect();
-                crate::table::print(&["NAME", "ID"], &rows);
+                crate::table::print(&["ID", "NAME"], &rows);
             }
         }
         _ => unreachable!(),
