@@ -1,139 +1,129 @@
+## [0.3.3] - 2026-05-28
+
+### 🐛 Bug Fixes
+
+- *(databases)* Use name not description for API alignment (#112)
 ## [0.3.2] - 2026-05-27
 
 ### 🐛 Bug Fixes
 
-- *(datasets)* Add missing `-o`/`--output` flag to `datasets create`; move success banner to stderr so `-o json` stdout is `jq`-parseable (#110)
-- *(sandbox)* Move "Sandbox created" and "Sandbox updated" banners to stderr for clean `-o json` output (#110)
-- *(sandbox)* Fix missing trailing newline in `sandbox read` output (#110)
-- *(sandbox)* Add `sandbox delete <id>` subcommand; clears the active session automatically when the deleted sandbox was the active one (#110)
-- *(workspaces)* Fix incorrect lock check in `workspaces set` — was checking `HOTDATA_WORKSPACE` (always set in sandbox runs), now correctly checks `HOTDATA_SANDBOX` (#110)
-- *(context)* Surface a friendly hint when `context push` is blocked inside an active sandbox, pointing users to `hotdata sandbox set` (no args) to clear it (#110)
-
+- *(cli)* Resolve 6 bugs found during E2E testing (#110)
 ## [0.3.1] - 2026-05-25
 
 ### 🐛 Bug Fixes
 
-- *(skills)* Bump skill file versions to 0.3.1 so `hotdata skills install` correctly detects and installs the latest skills for CLI v0.3.x
-
+- *(skills)* Bump skill versions to 0.3.1 to match CLI release (#109)
 ## [0.3.0] - 2026-05-23
 
 ### 🚀 Features
 
-- *(query)* Fetch results as Arrow IPC instead of JSON; reduces transfer size and preserves native types (#103)
-- *(query)* Add `--database` / `-d` flag to scope a query to a managed database without changing the active database (#102)
-- *(databases)* Add `databases show <id>` as an explicit subcommand alias (#103)
-- *(databases)* `databases tables <id>` now lists tables without requiring the `list` subcommand (#103)
-- *(skills)* Add `skills list` as an alias for `skills status` (#103)
-- *(update)* Background update check with post-command notice; never blocks command output (#104)
-- *(update)* Auto-install and update skills to match the new binary version during `hotdata update` (#105)
-- *(update)* Execute `brew upgrade` directly for Homebrew installs instead of printing manual instructions (#106)
+- *(query)* Add --database flag and improve post-load UX
+- *(query)* Fetch results as Arrow IPC instead of JSON
+- *(cli)* Fix three commands that failed smoke test
+- *(update)* Background update check with post-command notice (#104)
+- *(update)* Auto-install and update skills during hotdata update (#105)
 
 ### 🐛 Bug Fixes
 
-- *(query)* Async polling loop exits with code 2 on unexpected statuses instead of spinning forever (#103)
-- *(query)* Failed async queries now surface the real server error message (#103)
-- *(query)* `results get <id>` now fetches Arrow IPC like the rest of the query path (#103)
-- *(query)* Polling loop polls first before checking the deadline, eliminating a mandatory 500ms delay (#106)
-- *(skills)* Add 120-second HTTP timeout to the skills tarball download during `hotdata update` (#106)
-
-## [0.2.9] - 2026-05-22
+- *(query)* Address four code review issues in Arrow IPC path
+- *(query)* Handle unknown poll statuses instead of spinning forever
+- *(query)* Two issues from Codex review
+- Address code review feedback from post-release audit (#106)
 
 ### 📚 Documentation
 
-- *(skills)* Update skills to reflect recent API changes: database-scoped context, `databases set`, `--expires-at`, corrected flag names for `databases create` / `datasets create` / `datasets update` (#100)
+- Add CHANGELOG entry for v0.3.0 (#108)
+## [0.2.9] - 2026-05-23
 
-## [0.2.8] - 2026-05-22
+### 📚 Documentation
+
+- *(skills)* Update skills to reflect 0.2.8 API changes
+## [0.2.8] - 2026-05-23
 
 ### 🚀 Features
 
-- *(context)* Scope context commands to active database; `hotdata context` now calls `/databases/{id}/context` and requires `--database-id` or an active database set via `databases set` (#98)
-- *(databases)* Add `--expires-at` flag to `databases create`; accepts relative durations (`24h`, `7d`) or RFC 3339 timestamps (#97)
-- *(datasets)* Remove upload/URL/file create paths; `datasets create` now requires exactly one of `--sql` or `--query-id` (#95)
-- *(databases)* Migrate CLI to dedicated `/databases` API; `databases set` saves active database; `X-Database-Id` header sent automatically on all requests (#94)
-
-### 🐛 Bug Fixes
-
-- *(datasets)* Add missing `type` discriminator to dataset source payloads sent to API
-- *(context)* Correct `--database-id` flag name in error message
-
+- *(databases)* Migrate to dedicated databases API (#94)
+- *(datasets)* Narrow create to sql/query-id; rename label/table-name (#95)
+- *(databases)* Add --expires-at option to databases create (#97)
+- *(context)* Scope context commands to active database (#98)
 ## [0.2.7] - 2026-05-20
 
 ### 🚀 Features
 
-- *(indexes)* Dot-bracket notation for `indexes create`: `airbnb.listings[col1,col2]` replaces `--connection-id/--schema/--table/--columns` (#92)
-- *(databases)* Add `databases load <db.table>` shorthand replacing `databases tables load` (#92)
-- *(indexes)* Make `--name` optional on `indexes create`; auto-derived from table, columns, and type (#92)
-
-### 🐛 Bug Fixes
-
-- *(databases)* Remove `load:` hint from `databases create` success output (#92)
-
-## [0.2.6] - 2026-05-19
+- Dot notation for indexes create and databases load (#92)
+## [0.2.6] - 2026-05-20
 
 ### 🚀 Features
 
-- *(search)* Infer `--type` and `--column` from table indexes; schema defaults to `public` (#90)
-
-### 🐛 Bug Fixes
-
-- *(search)* Explicit error when a search index has no columns (#90)
-
+- *(search)* Infer --type and --column from indexes; default schema to public (#90)
 ## [0.2.5] - 2026-05-19
 
 ### 🚀 Features
 
-- *(databases)* Add `--url` flag to `tables load` for remote parquet files (#88)
+- *(databases)* Add --url flag to tables load for remote parquet files
+
+### 🐛 Bug Fixes
+
+- *(changelog)* Correct 0.2.5 section and preserve released history.
 ## [0.2.4] - 2026-05-19
 
 ### 🚀 Features
 
-- *(auth)* Add `hotdata auth register` command (#85, #86)
-- *(auth)* Default register to GitHub; add `--email` flag
-- *(update)* Add `hotdata update` command
-- *(skills)* Split bundled skills into `hotdata-search` and `hotdata-analytics` (#84)
+- *(update)* Add update command
+- *(skills)* Split search and analytics sub-skills; improve workflows.
+- *(auth)* Add hotdata auth register command
+- *(auth)* Default register to GitHub, add --email flag
 
 ### 🐛 Bug Fixes
 
 - *(auth)* Align CLI callback page colors with web app theme
+- *(changelog)* Correct 0.2.4 section and preserve released history.
 
 ### 🚜 Refactor
 
-- *(auth)* Extract `run_browser_auth` helper; add tests for `exchange_cli_register_code`
+- *(auth)* Extract run_browser_auth helper; add tests for exchange_cli_register_code
 
 ### 📚 Documentation
 
-- *(skill)* Epic flow checklists, datasets vs databases workflows, tag-only release finish (#84)
+- *(skill)* Add epic flow checklists to core WORKFLOWS.
 ## [0.2.3] - 2026-05-19
 
 ### 🚀 Features
 
-- *(databases)* Add managed databases CLI for parquet table loads (#82)
 - *(sandbox)* Add sandbox JWT support
 - *(tty)* Add no-input flag and tty checks for interactive commands
+- *(databases)* Add managed databases CLI for parquet table loads for parquet table loads.
 
 ### 🐛 Bug Fixes
 
-- *(deps)* Bump openssl to 0.10.79 for CVE fixes (#77)
+- *(deps)* Bump openssl to 0.10.79 for CVE fixes
+- *(changelog)* Correct 0.2.3 section and preserve released history.
 
 ### 💼 Other
 
-- Ignore macOS metadata files (#81)
+- Ignore macOS metadata files
 
 ### 📚 Documentation
 
-- *(skill)* Document managed databases commands
+- *(skill)* Document managed databases commands.
 ## [0.2.2] - 2026-05-04
 
 ### 🚀 Features
 
 - *(wizard)* Render schema description, examples, defaults (#75)
 
+### 🐛 Bug Fixes
+
+- *(changelog)* Preserve released sections from main for CI validate
 ## [0.2.1] - 2026-04-30
+
+### 🐛 Bug Fixes
+
+- *(changelog)* Keep prior release sections identical to main
 
 ### 📚 Documentation
 
 - *(skill)* Align hotdata skill with CLI behavior
-
 ## [0.2.0] - 2026-04-29
 
 ### 🚀 Features
@@ -155,6 +145,8 @@
 ### 💼 Other
 
 - *(release)* Bump geospatial skill version on release
+- *(deps)* Bump rustls-webpki to 0.103.13
+- Validate CHANGELOG sections match base branch on PRs
 
 ### 🚜 Refactor
 
@@ -167,7 +159,6 @@
 
 ### 🚀 Features
 
-- *(auth)* Add CLI auth session support (JWT access tokens, refresh, PKCE login)
 - *(indexes)* Workspace-wide list with filters and parallel fetch
 
 ### 💼 Other
