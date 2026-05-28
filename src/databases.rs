@@ -508,15 +508,19 @@ pub fn create(
     }
 }
 
-pub fn set(workspace_id: &str, id_or_name: &str) {
+pub fn set(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, id_or_name);
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, &db.id) {
+    let encoded = urlencoding::encode(id);
+    if api.get_none_if_not_found::<Database>(&format!("/databases/{encoded}")).is_none() {
+        eprintln!("{}", format!("error: no database with id '{id}'").red());
+        std::process::exit(1);
+    }
+    if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
         std::process::exit(1);
     }
-    println!("{}", format!("Current database set to {}", db.id).green());
+    println!("{}", format!("Current database set to {id}").green());
 }
 
 fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> String {
