@@ -28,7 +28,7 @@ fn databases_create_help_documents_table_flag() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("--table"));
-    assert!(help.contains("--description"));
+    assert!(help.contains("--name"));
 }
 
 #[test]

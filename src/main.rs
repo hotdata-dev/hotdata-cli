@@ -401,21 +401,21 @@ fn main() {
                             databases::get(&workspace_id, &name_or_id, &output)
                         }
                         Some(DatabasesCommands::Create {
-                            description,
+                            name,
                             schema,
                             tables,
                             expires_at,
                             output,
                         }) => databases::create(
                             &workspace_id,
-                            description.as_deref(),
+                            name.as_deref(),
                             &schema,
                             &tables,
                             expires_at.as_deref(),
                             &output,
                         ),
-                        Some(DatabasesCommands::Set { id_or_description }) => {
-                            databases::set(&workspace_id, &id_or_description)
+                        Some(DatabasesCommands::Set { id }) => {
+                            databases::set(&workspace_id, &id)
                         }
                         Some(DatabasesCommands::Delete { name_or_id }) => {
                             databases::delete(&workspace_id, &name_or_id)
