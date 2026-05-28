@@ -219,18 +219,12 @@ pub fn infer_for_search(
 
     let api = ApiClient::new(Some(workspace_id));
 
-    // Resolve connection name → ID
+    // Resolve connection name → ID, or treat as a raw ID when name lookup fails.
     let conn_map = connection_lookup(&api);
-    let connection_id = match conn_map.get(connection_name) {
-        Some(id) => id.clone(),
-        None => {
-            eprintln!(
-                "{}",
-                format!("Connection '{}' not found.", connection_name).red()
-            );
-            std::process::exit(1);
-        }
-    };
+    let connection_id = conn_map
+        .get(connection_name)
+        .cloned()
+        .unwrap_or_else(|| connection_name.to_string());
 
     // Fetch indexes for this table
     let indexes = list_one_table(&api, &connection_id, schema, table);

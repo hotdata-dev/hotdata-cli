@@ -9,6 +9,9 @@ const DEFAULT_SCHEMA: &str = "public";
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct DatabaseSummary {
     id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     description: Option<String>,
 }
 
@@ -21,6 +24,9 @@ struct ListDatabasesResponse {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Database {
     pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
     pub description: Option<String>,
     pub default_connection_id: String,
     #[serde(default)]
@@ -62,8 +68,13 @@ struct TableRow {
 #[derive(Deserialize, Serialize)]
 struct CreateDatabaseResponse {
     id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     description: Option<String>,
     default_connection_id: String,
+    #[serde(default)]
+    expires_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -90,21 +101,21 @@ pub fn try_resolve_database(api: &ApiClient, id_or_description: &str) -> Result<
         return Ok(db);
     }
 
-    // Fall back to listing and matching by description.
+    // Fall back to listing and matching by name.
     let body: ListDatabasesResponse = api.get("/databases");
-    let desc_matches: Vec<&DatabaseSummary> = body
+    let name_matches: Vec<&DatabaseSummary> = body
         .databases
         .iter()
-        .filter(|d| d.description.as_deref() == Some(id_or_description))
+        .filter(|d| d.name.as_deref() == Some(id_or_description))
         .collect();
 
-    match desc_matches.len() {
+    match name_matches.len() {
         0 => Err(format!(
-            "no database with id or description '{id_or_description}'"
+            "no database with id or name '{id_or_description}'"
         )),
-        1 => Ok(fetch_database(api, &desc_matches[0].id)),
+        1 => Ok(fetch_database(api, &name_matches[0].id)),
         _ => Err(format!(
-            "multiple databases have description '{}' — use the database id instead",
+            "multiple databases have name '{}' — use the database id instead",
             id_or_description
         )),
     }
@@ -127,12 +138,20 @@ fn schema_name(schema: Option<&str>) -> &str {
 
 /// Build the request body for `POST /v1/databases`.
 pub fn create_database_request(
+    name: Option<&str>,
     description: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
 ) -> serde_json::Value {
     let mut req = serde_json::Map::new();
+
+    if let Some(n) = name {
+        req.insert(
+            "name".to_string(),
+            serde_json::Value::String(n.to_string()),
+        );
+    }
 
     if let Some(desc) = description {
         req.insert(
@@ -359,12 +378,13 @@ pub fn list(workspace_id: &str, format: &str) {
                     .iter()
                     .map(|d| {
                         vec![
+                            d.name.as_deref().unwrap_or("-").to_string(),
                             d.description.as_deref().unwrap_or("-").to_string(),
                             d.id.clone(),
                         ]
                     })
                     .collect();
-                crate::table::print(&["DESCRIPTION", "ID"], &rows);
+                crate::table::print(&["NAME", "DESCRIPTION", "ID"], &rows);
             }
         }
         _ => unreachable!(),
@@ -419,6 +439,7 @@ pub fn get(workspace_id: &str, id_or_description: &str, format: &str) {
 
 pub fn create(
     workspace_id: &str,
+    name: Option<&str>,
     description: Option<&str>,
     schema: &str,
     tables: &[String],
@@ -427,7 +448,7 @@ pub fn create(
 ) {
     use crossterm::style::Stylize;
 
-    let body = create_database_request(description, schema, tables, expires_at);
+    let body = create_database_request(name, description, schema, tables, expires_at);
 
     let api = ApiClient::new(Some(workspace_id));
     let spinner = (format == "table").then(|| crate::util::spinner("Creating database..."));
@@ -459,23 +480,29 @@ pub fn create(
         "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
         "table" => {
             println!("{}", "Database created".green());
+            if let Some(n) = &result.name {
+                println!("name:        {}", n.clone().cyan());
+            }
             if let Some(desc) = &result.description {
                 println!("description: {desc}");
             }
             println!("id:          {}", result.id);
+            if let Some(exp) = &result.expires_at {
+                println!("expires_at:  {exp}");
+            }
+            let catalog = result.name.as_deref().unwrap_or("default");
             println!();
             println!(
                 "{}",
                 format!(
                     concat!(
                         "Load a table:\n",
-                        "  hotdata databases load --file <path.parquet> {}.<table_name>\n",
+                        "  hotdata databases load --catalog {} --table <table_name> --file <path.parquet>\n",
                         "\nQuery with:\n",
-                        "  hotdata query --database {} \"SELECT * FROM default.public.<table> LIMIT 10\"\n",
-                        "\n  Tip: use 'default.<schema>.<table>' as the SQL prefix (not the database or connection id)\n",
-                        "  Column names are case-sensitive — wrap uppercase names in double quotes",
+                        "  hotdata query --database {} \"SELECT * FROM {}.public.<table> LIMIT 10\"\n",
+                        "\n  Tip: column names are case-sensitive — wrap uppercase names in double quotes",
                     ),
-                    result.id, result.id
+                    catalog, result.id, catalog
                 )
                 .dark_grey()
             );
@@ -682,13 +709,13 @@ mod tests {
 
     #[test]
     fn create_database_request_empty_without_description_or_tables() {
-        let req = create_database_request(None, "public", &[], None);
+        let req = create_database_request(None, None, "public", &[], None);
         assert_eq!(req, serde_json::json!({}));
     }
 
     #[test]
     fn create_database_request_includes_description() {
-        let req = create_database_request(Some("my db"), "public", &[], None);
+        let req = create_database_request(None, Some("my db"), "public", &[], None);
         assert_eq!(req["description"], "my db");
         assert!(req.get("schemas").is_none());
     }
@@ -696,6 +723,7 @@ mod tests {
     #[test]
     fn create_database_request_includes_schemas_when_tables_declared() {
         let req = create_database_request(
+            None,
             Some("sales"),
             "public",
             &["orders".to_string(), "customers".to_string()],
@@ -709,20 +737,20 @@ mod tests {
 
     #[test]
     fn create_database_request_schemas_without_description() {
-        let req = create_database_request(None, "analytics", &["events".to_string()], None);
+        let req = create_database_request(None, None, "analytics", &["events".to_string()], None);
         assert!(req.get("description").is_none());
         assert_eq!(req["schemas"][0]["name"], "analytics");
     }
 
     #[test]
     fn create_database_request_includes_expires_at_when_provided() {
-        let req = create_database_request(None, "public", &[], Some("24h"));
+        let req = create_database_request(None, None, "public", &[], Some("24h"));
         assert_eq!(req["expires_at"], "24h");
     }
 
     #[test]
     fn create_database_request_omits_expires_at_when_none() {
-        let req = create_database_request(None, "public", &[], None);
+        let req = create_database_request(None, None, "public", &[], None);
         assert!(req.get("expires_at").is_none());
     }
 
@@ -751,7 +779,7 @@ mod tests {
             .mock("GET", "/databases")
             .with_status(200)
             .with_body(
-                r#"{"databases":[{"id":"db_abc","description":"sales"},{"id":"db_xyz","description":"warehouse"}]}"#,
+                r#"{"databases":[{"id":"db_abc","name":"sales"},{"id":"db_xyz","name":"warehouse"}]}"#,
             )
             .create();
         let detail = server
@@ -789,24 +817,24 @@ mod tests {
 
         let api = ApiClient::test_new(&server.url(), "k", None);
         let err = try_resolve_database(&api, "missing").unwrap_err();
-        assert!(err.contains("no database with id or description"));
+        assert!(err.contains("no database with id or name"));
     }
 
     #[test]
-    fn try_resolve_database_rejects_ambiguous_description() {
+    fn try_resolve_database_rejects_ambiguous_name() {
         let mut server = mockito::Server::new();
-        // Direct id lookup returns 404 (description isn't a valid id)
+        // Direct id lookup returns 404 (name isn't a valid id)
         server
             .mock("GET", "/databases/sales")
             .with_status(404)
             .with_body(r#"{"error":"not found"}"#)
             .create();
-        // List returns two entries with the same description
+        // List returns two entries with the same name
         server
             .mock("GET", "/databases")
             .with_status(200)
             .with_body(
-                r#"{"databases":[{"id":"db_1","description":"sales"},{"id":"db_2","description":"sales"}]}"#,
+                r#"{"databases":[{"id":"db_1","name":"sales"},{"id":"db_2","name":"sales"}]}"#,
             )
             .create();
 
@@ -905,6 +933,7 @@ mod tests {
             .match_body(mockito::Matcher::JsonString(
                 serde_json::to_string(&create_database_request(
                     Some("mydb"),
+                    None,
                     "public",
                     &["gdp".to_string()],
                     None,
@@ -914,7 +943,7 @@ mod tests {
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", Some("ws-test"));
-        let body = create_database_request(Some("mydb"), "public", &["gdp".to_string()], None);
+        let body = create_database_request(Some("mydb"), None, "public", &["gdp".to_string()], None);
         let (status, resp_body) = api.post_raw("/databases", &body);
         assert_eq!(status.as_u16(), 201);
         let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();

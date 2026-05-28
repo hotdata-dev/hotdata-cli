@@ -401,6 +401,7 @@ fn main() {
                             databases::get(&workspace_id, &name_or_id, &output)
                         }
                         Some(DatabasesCommands::Create {
+                            name,
                             description,
                             schema,
                             tables,
@@ -408,6 +409,7 @@ fn main() {
                             output,
                         }) => databases::create(
                             &workspace_id,
+                            name.as_deref(),
                             description.as_deref(),
                             &schema,
                             &tables,
@@ -421,17 +423,20 @@ fn main() {
                             databases::delete(&workspace_id, &name_or_id)
                         }
                         Some(DatabasesCommands::Load {
-                            target,
+                            table,
+                            catalog,
+                            schema,
                             file,
                             url,
                             upload_id,
                         }) => {
-                            let (database, schema, table) = parse_db_target(&target);
+                            let resolved_schema =
+                                schema.unwrap_or_else(|| "public".to_string());
                             databases::tables_load(
                                 &workspace_id,
-                                Some(database.as_str()),
+                                catalog.as_deref(),
                                 &table,
-                                Some(schema.as_str()),
+                                Some(resolved_schema.as_str()),
                                 file.as_deref(),
                                 url.as_deref(),
                                 upload_id.as_deref(),
@@ -626,7 +631,10 @@ fn main() {
                         &output,
                     ),
                     IndexesCommands::Create {
-                        target,
+                        catalog,
+                        schema,
+                        table_name,
+                        column,
                         dataset_id,
                         columns,
                         name,
@@ -640,31 +648,14 @@ fn main() {
                     } => {
                         let api = api::ApiClient::new(Some(&workspace_id));
                         let (scope, resolved_columns, auto_name) =
-                            match (target.as_deref(), dataset_id.as_deref()) {
-                                (Some(tgt), None) => {
-                                    let (conn_name, schema, table, cols) =
-                                        parse_index_target(tgt);
-                                    let conn_id =
-                                        connections::resolve_connection_id(&api, &conn_name);
-                                    let auto = format!(
-                                        "{table}_{cols}_{type}",
-                                        cols = cols.join("_"),
-                                        type = r#type
-                                    );
-                                    (
-                                        (conn_id, schema, table),
-                                        cols.join(","),
-                                        auto,
-                                    )
-                                }
-                                (None, Some(did)) => {
-                                    let cols =
-                                        columns.as_deref().unwrap_or_else(|| {
-                                            eprintln!(
-                                                "error: --columns is required with --dataset-id"
-                                            );
-                                            std::process::exit(1);
-                                        });
+                            match dataset_id.as_deref() {
+                                Some(did) => {
+                                    let cols = columns.as_deref().unwrap_or_else(|| {
+                                        eprintln!(
+                                            "error: --columns is required with --dataset-id"
+                                        );
+                                        std::process::exit(1);
+                                    });
                                     let auto = format!(
                                         "dataset_{cols}_{type}",
                                         cols = cols.replace(',', "_"),
@@ -676,23 +667,46 @@ fn main() {
                                         auto,
                                     )
                                 }
-                                _ => {
-                                    eprintln!(
-                                        "error: provide either <target> (e.g. airbnb.listings[col1,col2]) or --dataset-id with --columns"
-                                    );
-                                    std::process::exit(1);
+                                None => {
+                                    let tbl = table_name.unwrap_or_else(|| {
+                                        eprintln!("error: --table is required");
+                                        std::process::exit(1);
+                                    });
+                                    let col = column.or(columns).unwrap_or_else(|| {
+                                        eprintln!("error: --column is required");
+                                        std::process::exit(1);
+                                    });
+                                    let sch = schema.unwrap_or_else(|| "public".to_string());
+                                    let cat = catalog
+                                        .or_else(|| {
+                                            crate::config::load_current_database(
+                                                "default",
+                                                &workspace_id,
+                                            )
+                                        })
+                                        .unwrap_or_else(|| {
+                                            eprintln!(
+                                                "error: --catalog is required (or set a current database with 'hotdata databases set')"
+                                            );
+                                            std::process::exit(1);
+                                        });
+                                    let db = databases::resolve_database(&api, &cat);
+                                    let conn_id = db.default_connection_id;
+                                    let auto =
+                                        format!("{tbl}_{col}_{type}", type = r#type);
+                                    ((conn_id, sch, tbl), col, auto)
                                 }
                             };
                         let index_name = name.unwrap_or(auto_name);
                         let is_dataset = dataset_id.is_some();
-                        let (conn_id, schema, table) = scope;
+                        let (conn_id, idx_schema, idx_table) = scope;
                         let resolved_scope = if is_dataset {
                             indexes::IndexScope::Dataset { dataset_id: &conn_id }
                         } else {
                             indexes::IndexScope::Connection {
                                 connection_id: &conn_id,
-                                schema: &schema,
-                                table: &table,
+                                schema: &idx_schema,
+                                table: &idx_table,
                             }
                         };
                         indexes::create(
@@ -793,6 +807,8 @@ fn main() {
             Commands::Search {
                 query,
                 r#type,
+                catalog,
+                schema,
                 table,
                 column,
                 select,
@@ -802,22 +818,28 @@ fn main() {
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
 
-                // Parse `connection.table` or `connection.schema.table`.
-                // Schema defaults to `public` when omitted.
-                let parts: Vec<&str> = table.splitn(4, '.').collect();
-                let (conn_name, schema, table_name) = match parts.as_slice() {
-                    [conn, schema, tbl] => {
-                        (conn.to_string(), schema.to_string(), tbl.to_string())
-                    }
-                    [conn, tbl] => (conn.to_string(), "public".to_string(), tbl.to_string()),
-                    _ => {
+                let api = api::ApiClient::new(Some(&workspace_id));
+                let cat = catalog
+                    .or_else(|| {
+                        crate::config::load_current_database("default", &workspace_id)
+                    })
+                    .unwrap_or_else(|| {
                         eprintln!(
-                            "error: --table must be 'connection.table' or 'connection.schema.table'"
+                            "error: --catalog is required (or set a current database with 'hotdata databases set')"
                         );
                         std::process::exit(1);
-                    }
-                };
-                let normalized_table = format!("{}.{}.{}", conn_name, schema, table_name);
+                    });
+                let db = databases::resolve_database(&api, &cat);
+                let resolved_schema = schema.unwrap_or_else(|| "public".to_string());
+                let db_id = db.id.clone();
+                let conn_id = db.default_connection_id;
+
+                // bm25_search takes a string literal for the table path; the server resolves
+                // catalog aliases (like "default") only in SQL FROM clauses, not in string
+                // arguments. Use the connection ID as the catalog prefix so it resolves directly.
+                let bm25_table = format!("{}.{}.{}", conn_id, resolved_schema, table);
+                // vector queries run as standard SQL with X-Database-Id, so the catalog alias works.
+                let vector_table = format!("{}.{}.{}", cat, resolved_schema, table);
 
                 // Infer --type and --column from the table's indexes when either is omitted.
                 let (resolved_type, resolved_column) =
@@ -826,9 +848,9 @@ fn main() {
                     } else {
                         let (inferred_type, inferred_column) = indexes::infer_for_search(
                             &workspace_id,
-                            &conn_name,
-                            &schema,
-                            &table_name,
+                            &conn_id,
+                            &resolved_schema,
+                            &table,
                             r#type.as_deref(),
                             column.as_deref(),
                         );
@@ -849,7 +871,7 @@ fn main() {
                         format!(
                             "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
                             bm25_columns,
-                            normalized_table.replace('\'', "''"),
+                            bm25_table.replace('\'', "''"),
                             resolved_column.replace('\'', "''"),
                             query.replace('\'', "''"),
                             limit,
@@ -862,12 +884,12 @@ fn main() {
                         select_cols,
                         resolved_column,
                         query.replace('\'', "''"),
-                        normalized_table,
+                        vector_table,
                         limit,
                     ),
                     _ => unreachable!(),
                 };
-                query::execute(&sql, &workspace_id, None, None, &output)
+                query::execute(&sql, &workspace_id, None, Some(db_id.as_str()), &output)
             }
             Commands::Queries {
                 id,
@@ -1023,122 +1045,6 @@ fn main() {
     update::maybe_print_update_notice(update_handle);
 }
 
-/// Parse a database target like `airbnb.listings` or `airbnb.public.listings`
-/// into `(database, schema, table)`. Schema defaults to `public`.
-fn parse_db_target(target: &str) -> (String, String, String) {
-    let parts: Vec<&str> = target.splitn(4, '.').collect();
-    match parts.as_slice() {
-        [db, tbl] => (db.to_string(), "public".to_string(), tbl.to_string()),
-        [db, schema, tbl] => (db.to_string(), schema.to_string(), tbl.to_string()),
-        _ => {
-            eprintln!(
-                "error: target must be 'database.table' or 'database.schema.table'"
-            );
-            std::process::exit(1);
-        }
-    }
-}
-
-/// Parse an index target like `airbnb.listings[col1,col2]` or
-/// `airbnb.public.listings[col1,col2]` into `(conn_name, schema, table, columns)`.
-/// Schema defaults to `public` when only two dot-parts are given.
-fn parse_index_target(target: &str) -> (String, String, String, Vec<String>) {
-    let Some(bracket_pos) = target.find('[') else {
-        eprintln!(
-            "error: target must include columns in brackets, e.g. airbnb.listings[col1,col2]"
-        );
-        std::process::exit(1);
-    };
-    if !target.ends_with(']') {
-        eprintln!(
-            "error: target bracket is not closed — use e.g. 'airbnb.listings[col1,col2]'"
-        );
-        std::process::exit(1);
-    }
-    let table_part = &target[..bracket_pos];
-    let cols_raw = &target[bracket_pos + 1..target.len() - 1];
-
-    let parts: Vec<&str> = table_part.splitn(4, '.').collect();
-    let (conn, schema, table) = match parts.as_slice() {
-        [c, t] => (c.to_string(), "public".to_string(), t.to_string()),
-        [c, s, t] => (c.to_string(), s.to_string(), t.to_string()),
-        _ => {
-            eprintln!(
-                "error: target must be 'connection.table[cols]' or 'connection.schema.table[cols]'"
-            );
-            std::process::exit(1);
-        }
-    };
-
-    let columns: Vec<String> = cols_raw
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    if columns.is_empty() {
-        eprintln!("error: no columns specified in brackets");
-        std::process::exit(1);
-    }
-
-    (conn, schema, table, columns)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- parse_db_target ---
-
-    #[test]
-    fn db_target_two_parts_defaults_schema_to_public() {
-        let (db, schema, table) = parse_db_target("airbnb.listings");
-        assert_eq!(db, "airbnb");
-        assert_eq!(schema, "public");
-        assert_eq!(table, "listings");
-    }
-
-    #[test]
-    fn db_target_three_parts_uses_explicit_schema() {
-        let (db, schema, table) = parse_db_target("airbnb.staging.listings");
-        assert_eq!(db, "airbnb");
-        assert_eq!(schema, "staging");
-        assert_eq!(table, "listings");
-    }
-
-    // --- parse_index_target ---
-
-    #[test]
-    fn index_target_two_parts_defaults_schema_to_public() {
-        let (conn, schema, table, cols) = parse_index_target("airbnb.listings[description]");
-        assert_eq!(conn, "airbnb");
-        assert_eq!(schema, "public");
-        assert_eq!(table, "listings");
-        assert_eq!(cols, vec!["description"]);
-    }
-
-    #[test]
-    fn index_target_three_parts_uses_explicit_schema() {
-        let (conn, schema, table, cols) =
-            parse_index_target("airbnb.public.listings[name,description]");
-        assert_eq!(conn, "airbnb");
-        assert_eq!(schema, "public");
-        assert_eq!(table, "listings");
-        assert_eq!(cols, vec!["name", "description"]);
-    }
-
-    #[test]
-    fn index_target_multiple_columns() {
-        let (_, _, _, cols) = parse_index_target("db.tbl[a,b,c]");
-        assert_eq!(cols, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn index_target_trims_column_whitespace() {
-        let (_, _, _, cols) = parse_index_target("db.tbl[a, b]");
-        assert_eq!(cols, vec!["a", "b"]);
-    }
-}
 
 pub fn get_styles() -> clap::builder::Styles {
     Styles::styled()

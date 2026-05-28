@@ -173,8 +173,15 @@ pub enum Commands {
         #[arg(long, value_parser = ["vector", "bm25"])]
         r#type: Option<String>,
 
-        /// Table to search (`connection.table` or `connection.schema.table`).
-        /// Schema defaults to `public` when omitted.
+        /// Catalog (database name) to search in. Defaults to the current database.
+        #[arg(long)]
+        catalog: Option<String>,
+
+        /// Schema to search in (default: public)
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Table to search
         #[arg(long)]
         table: String,
 
@@ -328,28 +335,29 @@ pub enum IndexesCommands {
         output: String,
     },
 
-    /// Create an index on a table or dataset.
-    ///
-    /// For connection-scoped indexes, pass the table and columns using bracket notation:
-    ///   `connection.table[col1,col2]` or `connection.schema.table[col1,col2]`
-    ///   (schema defaults to `public` when omitted)
-    ///
-    /// For dataset-scoped indexes, use `--dataset-id` with `--columns`.
+    /// Create an index on a table
     Create {
-        /// Table and columns to index: `connection.table[col1,col2]`
-        /// or `connection.schema.table[col1,col2]`. Schema defaults to `public`.
-        ///
-        /// Quote the argument to prevent shell glob expansion:
-        /// `hotdata indexes create 'airbnb.listings[description]' --type bm25`
-        #[arg(conflicts_with = "dataset_id")]
-        target: Option<String>,
+        /// Catalog (database name) for the table to index. Defaults to the current database.
+        #[arg(long, conflicts_with = "dataset_id")]
+        catalog: Option<String>,
 
-        /// Dataset ID (alternative scope to the positional target)
-        #[arg(long, conflicts_with = "target")]
+        /// Schema for the table to index (default: public)
+        #[arg(long, conflicts_with = "dataset_id")]
+        schema: Option<String>,
+
+        /// Table name to index
+        #[arg(long = "table", conflicts_with = "dataset_id")]
+        table_name: Option<String>,
+
+        /// Column to index
+        #[arg(long)]
+        column: Option<String>,
+
+        /// Dataset ID (alternative scope — use with --columns)
+        #[arg(long, conflicts_with_all = ["catalog", "table_name"])]
         dataset_id: Option<String>,
 
-        /// Columns to index (comma-separated). Required with --dataset-id;
-        /// for connection scope use bracket notation in the target instead.
+        /// Columns to index (comma-separated). Required with --dataset-id.
         #[arg(long)]
         columns: Option<String>,
 
@@ -563,7 +571,13 @@ pub enum DatabasesCommands {
 
     /// Create a new managed database
     Create {
-        /// Optional display label (not unique, not an identifier — databases are addressed by id)
+        /// SQL catalog alias — becomes the catalog name in queries:
+        /// SELECT ... FROM <name>.public.<table>.
+        /// Must be [a-z_][a-z0-9_]*, globally unique.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Optional display label
         #[arg(long)]
         description: Option<String>,
 
@@ -576,7 +590,8 @@ pub enum DatabasesCommands {
         tables: Vec<String>,
 
         /// When the database expires. Accepts a relative duration (e.g. 24h, 7d, 90m)
-        /// or an RFC 3339 timestamp. Defaults to 24h when omitted.
+        /// or an RFC 3339 timestamp. Omitting with --name means no expiry; omitting
+        /// without --name defaults to 24h.
         #[arg(long)]
         expires_at: Option<String>,
 
@@ -597,11 +612,20 @@ pub enum DatabasesCommands {
         name_or_id: String,
     },
 
-    /// Load a parquet file into a table using dot notation: `database.table` or `database.schema.table`
+    /// Load a parquet file into a managed database table
     Load {
-        /// Table to load into: `database.table` or `database.schema.table`.
-        /// Schema defaults to `public` when omitted.
-        target: String,
+        /// Table name to load into
+        #[arg(long, required = true)]
+        table: String,
+
+        /// Catalog (database name) to load into. Defaults to the current database set via
+        /// `databases set`. Required when no current database is configured.
+        #[arg(long)]
+        catalog: Option<String>,
+
+        /// Schema to load into (default: public)
+        #[arg(long)]
+        schema: Option<String>,
 
         /// Path to a local parquet file to upload and load
         #[arg(long, conflicts_with_all = ["upload_id", "url"])]
