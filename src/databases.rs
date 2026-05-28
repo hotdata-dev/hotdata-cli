@@ -132,7 +132,6 @@ pub fn resolve_database(api: &ApiClient, id_or_name: &str) -> Database {
     }
 }
 
-
 fn schema_name(schema: Option<&str>) -> &str {
     schema.unwrap_or(DEFAULT_SCHEMA)
 }
@@ -162,14 +161,31 @@ pub fn create_database_request(
     }
 
     if !tables.is_empty() {
-        let table_objs: Vec<serde_json::Value> = tables
-            .iter()
-            .map(|t| serde_json::json!({ "name": t }))
+        // Group tables by schema, preserving insertion order.
+        // Dot-notation entries (e.g. "raw.raw_orders") use the named schema;
+        // bare names fall back to the `schema` argument.
+        let mut schema_tables: Vec<(String, Vec<String>)> = Vec::new();
+        for t in tables {
+            let (s, table_name) = match t.split_once('.') {
+                Some((s, tbl)) => (s.to_string(), tbl.to_string()),
+                None => (schema.to_string(), t.to_string()),
+            };
+            if let Some(entry) = schema_tables.iter_mut().find(|(n, _)| n == &s) {
+                entry.1.push(table_name);
+            } else {
+                schema_tables.push((s, vec![table_name]));
+            }
+        }
+        let schemas_json: Vec<serde_json::Value> = schema_tables
+            .into_iter()
+            .map(|(s, tbls)| {
+                serde_json::json!({
+                    "name": s,
+                    "tables": tbls.iter().map(|t| serde_json::json!({ "name": t })).collect::<Vec<_>>()
+                })
+            })
             .collect();
-        req.insert(
-            "schemas".to_string(),
-            serde_json::json!([{ "name": schema, "tables": table_objs }]),
-        );
+        req.insert("schemas".to_string(), serde_json::Value::Array(schemas_json));
     }
 
     if let Some(exp) = expires_at {
@@ -762,6 +778,28 @@ mod tests {
     fn create_database_request_omits_expires_at_when_none() {
         let req = create_database_request(None, None, "public", &[], None);
         assert!(req.get("expires_at").is_none());
+    }
+
+    #[test]
+    fn create_database_request_dot_notation_groups_tables_by_schema() {
+        let req = create_database_request(
+            None,
+            None,
+            "public",
+            &[
+                "orders".to_string(),
+                "raw.raw_orders".to_string(),
+                "raw.raw_customers".to_string(),
+            ],
+            None,
+        );
+        // bare "orders" → default schema "public"
+        assert_eq!(req["schemas"][0]["name"], "public");
+        assert_eq!(req["schemas"][0]["tables"][0]["name"], "orders");
+        // dot-notation entries → "raw" schema, table name is the part after the dot
+        assert_eq!(req["schemas"][1]["name"], "raw");
+        assert_eq!(req["schemas"][1]["tables"][0]["name"], "raw_orders");
+        assert_eq!(req["schemas"][1]["tables"][1]["name"], "raw_customers");
     }
 
     fn full_detail(id: &str, name: &str, conn_id: &str) -> String {
