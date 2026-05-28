@@ -1,3 +1,9 @@
+## [0.3.3] - 2026-05-28
+
+### 🐛 Bug Fixes
+
+- *(databases)* Use name not description for API alignment (#112)
+
 ## [0.3.2] - 2026-05-27
 
 ### 🐛 Bug Fixes
