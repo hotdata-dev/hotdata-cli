@@ -191,6 +191,8 @@ hotdata databases create [--description <label>] [--table <table> ...] [--schema
 hotdata databases set <id_or_description>
 hotdata databases <id_or_description> [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases delete <id_or_description> [--workspace-id <workspace_id>]
+hotdata databases run [--database <id>] [--description <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] <cmd> [args...]
+hotdata databases <id> run <cmd> [args...]
 
 # Dot-notation shorthand for load: database.table or database.schema.table
 hotdata databases load <database.table> [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
@@ -209,6 +211,7 @@ hotdata databases tables delete <table> [--database <id_or_desc>] [--schema publ
 - `tables list` — lists tables with `TABLE` (`<database_id>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
 - `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
 - `tables delete` — drops a table from the managed database.
+- `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`, sandbox-style) or via `--database <id>`; omit both to auto-create a scratch database using `--description` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, `source:"database_token"`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
 
 Example:
 
