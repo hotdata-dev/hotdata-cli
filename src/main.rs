@@ -391,7 +391,31 @@ fn main() {
                 command,
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
-                if let Some(name_or_id) = name_or_id {
+                // `databases <id> run ...` should mint a token for <id>, not
+                // short to `show`. Route Run before the name_or_id show-shorthand;
+                // --database on the subcommand takes precedence over the group
+                // positional. Other subcommands keep the existing semantics: a
+                // group-level name_or_id is treated as a `show` shorthand.
+                if let Some(DatabasesCommands::Run {
+                    database,
+                    description,
+                    schema,
+                    tables,
+                    expires_at,
+                    cmd,
+                }) = command
+                {
+                    let db = database.as_deref().or(name_or_id.as_deref());
+                    databases::run(
+                        db,
+                        &workspace_id,
+                        description.as_deref(),
+                        &schema,
+                        &tables,
+                        expires_at.as_deref(),
+                        &cmd,
+                    );
+                } else if let Some(name_or_id) = name_or_id {
                     databases::get(&workspace_id, &name_or_id, &output);
                 } else {
                     match command {
@@ -438,22 +462,6 @@ fn main() {
                                 upload_id.as_deref(),
                             )
                         }
-                        Some(DatabasesCommands::Run {
-                            database,
-                            description,
-                            schema,
-                            tables,
-                            expires_at,
-                            cmd,
-                        }) => databases::run(
-                            database.as_deref(),
-                            &workspace_id,
-                            description.as_deref(),
-                            &schema,
-                            &tables,
-                            expires_at.as_deref(),
-                            &cmd,
-                        ),
                         Some(DatabasesCommands::Tables { database, command }) => match command {
                             Some(DatabaseTablesCommands::List {
                                 database: db_flag,
@@ -512,6 +520,10 @@ fn main() {
                                 }
                             }
                         },
+                        Some(DatabasesCommands::Run { .. }) => {
+                            // Handled by the Run-first if-let above.
+                            unreachable!("Run handled before name_or_id shorthand");
+                        }
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
