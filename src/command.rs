@@ -632,6 +632,34 @@ pub enum DatabasesCommands {
         #[command(subcommand)]
         command: Option<DatabaseTablesCommands>,
     },
+
+    /// Run a command with a database-scoped token. Creates a new database unless --database is given.
+    Run {
+        /// Existing database id to scope the token to (omit to auto-create a database)
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Description for the auto-created database (only used when --database is omitted)
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Schema for tables declared in the auto-created database (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Table to declare in the auto-created database (repeatable)
+        #[arg(long = "table")]
+        tables: Vec<String>,
+
+        /// When the auto-created database expires. Accepts a relative duration
+        /// (e.g. 24h, 7d, 90m) or an RFC 3339 timestamp. Defaults to 24h when omitted.
+        #[arg(long)]
+        expires_at: Option<String>,
+
+        /// Command to execute (everything after `--`)
+        #[arg(trailing_var_arg = true, required = true)]
+        cmd: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]

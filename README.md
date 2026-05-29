@@ -137,6 +137,8 @@ hotdata databases list [-w <id>] [-o table|json|yaml]
 hotdata databases create --name <name> [--table <table> ...] [--schema public] [-o table|json|yaml]
 hotdata databases <name_or_id> [-o table|json|yaml]
 hotdata databases delete <name_or_id>
+hotdata databases run [--database <id>] [--description <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] <cmd> [args...]
+hotdata databases <id> run <cmd> [args...]
 
 hotdata databases tables list <database> [--schema <name>] [-o table|json|yaml]
 hotdata databases tables load <database> <table> --file ./data.parquet [--schema public]
@@ -146,6 +148,7 @@ hotdata databases tables delete <database> <table> [--schema public]
 
 - `create` registers a managed connection (`source_type: managed`) with no external credentials. Use `--table` to declare tables up front (required before `tables load` on the current API).
 - `tables load` uploads a **parquet** file (or uses a staged `upload_id` from `POST /v1/files`) and publishes it as the table generation (`replace` mode).
+- `run` mints a database-scoped JWT and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected into its environment. Pass a database id (group-positional `<id>` like `sandbox run`, or `--database <id>`) to scope an existing database; omit both to auto-create a scratch one using `--description` / `--schema` / `--table` / `--expires-at`. Useful for launching an agent or child process whose API access is restricted to a single database.
 - For CSV/JSON uploads without a managed database, use `hotdata datasets create` instead (`datasets.main.*`).
 
 Example:

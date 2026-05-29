@@ -50,20 +50,33 @@ impl ApiClient {
 
         // Auth source precedence:
         //
-        // 1. `HOTDATA_SANDBOX_TOKEN` env var — a `sandbox run` child
+        // 1. `HOTDATA_DATABASE_TOKEN` env var — a `databases run` child
+        //    is executing with the parent's credentials scrubbed and a
+        //    database-scoped JWT injected. Refresh in-memory via
+        //    `HOTDATA_DATABASE_REFRESH_TOKEN` near expiry; never write
+        //    to disk (the child's FS may not be writable).
+        // 2. `HOTDATA_SANDBOX_TOKEN` env var — a `sandbox run` child
         //    is executing with the parent's credentials scrubbed.
         //    Refresh in-memory via `HOTDATA_SANDBOX_REFRESH_TOKEN` if
         //    the JWT is close to expiry; never write to disk (the
         //    child's FS may not be writable).
-        // 2. `~/.hotdata/sandbox_session.json` — the user ran
+        // 3. `~/.hotdata/sandbox_session.json` — the user ran
         //    `hotdata sandbox set <id>` (or `sandbox new` / `sandbox
         //    run` in the parent shell). The sandbox JWT is the active
         //    bearer for *every* command until `sandbox set` (with no
         //    id) clears the file.
-        // 3. `~/.hotdata/session.json` + optional api_key fallback —
+        // 4. `~/.hotdata/session.json` + optional api_key fallback —
         //    normal user-scoped CLI session.
         let api_url = profile_config.api_url.to_string();
-        let access_token = if std::env::var("HOTDATA_SANDBOX_TOKEN").is_ok() {
+        let access_token = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
+            match crate::database_session::refresh_from_env(&api_url) {
+                Some(t) => t,
+                None => {
+                    eprintln!("{}", "error: HOTDATA_DATABASE_TOKEN is empty".red());
+                    std::process::exit(1);
+                }
+            }
+        } else if std::env::var("HOTDATA_SANDBOX_TOKEN").is_ok() {
             match crate::sandbox_session::refresh_from_env(&api_url) {
                 Some(t) => t,
                 None => {
@@ -118,7 +131,9 @@ impl ApiClient {
                 }
                 profile_config.sandbox
             }),
-            database_id: workspace_id.and_then(|ws| crate::config::load_current_database("default", ws)),
+            database_id: std::env::var("HOTDATA_DATABASE").ok().or_else(|| {
+                workspace_id.and_then(|ws| crate::config::load_current_database("default", ws))
+            }),
         }
     }
 
