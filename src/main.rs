@@ -136,6 +136,11 @@ extern "C" fn print_sandbox_footer() {
 
 extern "C" fn print_database_footer() {
     use crossterm::style::Stylize;
+    // Inside a `databases run` child the parent already announced the
+    // database at spawn; mirror sandbox's footer suppression.
+    if database_session::database_token_in_use().is_some() {
+        return;
+    }
     if let Some(ws_id) = ACTIVE_WORKSPACE_ID.get() {
         if let Some(id) = config::load_current_database("default", ws_id) {
             eprintln!(

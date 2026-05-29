@@ -16,13 +16,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// The refresh path below (REFRESH_LEEWAY_SECONDS, now_unix, MintResponse,
-// redact, refresh, session_from_response) mirrors sandbox_session.rs and is
-// covered by tests, but has no production caller yet: it's reserved for when
-// a child of `databases run` re-mints an expiring HOTDATA_DATABASE_TOKEN
-// (the child-side ApiClient consumption is not wired up yet). Annotated
-// #[allow(dead_code)] until that lands so the build stays warning-clean.
-#[allow(dead_code)]
+/// Refresh ahead of expiry to avoid racing it.
 const REFRESH_LEEWAY_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -74,7 +68,6 @@ pub fn clear() {
     }
 }
 
-#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -82,7 +75,6 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 #[derive(Deserialize)]
 pub(crate) struct MintResponse {
     token: String,
@@ -92,7 +84,6 @@ pub(crate) struct MintResponse {
     refresh_expires_in: u64,
 }
 
-#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 fn redact(s: &str) -> String {
     util::mask_credential(s)
 }
@@ -100,7 +91,6 @@ fn redact(s: &str) -> String {
 /// Trade a refresh token for a fresh database JWT (no rotation). Same
 /// endpoint as the new-mint path: `POST /v1/auth/database` with
 /// grant_type=refresh_token.
-#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 pub fn refresh(api_url: &str, refresh_token: &str) -> Result<DatabaseSession, String> {
     let url = format!("{}/auth/database", api_url.trim_end_matches('/'));
     let body = serde_json::json!({
@@ -135,7 +125,6 @@ pub fn refresh(api_url: &str, refresh_token: &str) -> Result<DatabaseSession, St
 /// to). For refresh, `workspace_id` is left blank — the caller fills it
 /// from the prior session, since the database-id ↔ workspace mapping is
 /// invariant across refreshes.
-#[allow(dead_code)] // Part of the reserved refresh path (see REFRESH_LEEWAY_SECONDS).
 pub(crate) fn session_from_response(resp: MintResponse, workspace_id: String) -> DatabaseSession {
     let now = now_unix();
     DatabaseSession {
@@ -145,6 +134,81 @@ pub(crate) fn session_from_response(resp: MintResponse, workspace_id: String) ->
         workspace_id,
         access_expires_at: now + resp.expires_in,
         refresh_expires_at: now + resp.refresh_expires_in,
+    }
+}
+
+/// Decode a JWT's payload (without verifying the signature) and pull
+/// out the named string claim. Returns `None` if the token is
+/// unparseable or the claim is missing.
+fn jwt_string_claim(token: &str, claim: &str) -> Option<String> {
+    use base64::Engine;
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1].as_bytes())
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    value.get(claim).and_then(|v| v.as_str()).map(String::from)
+}
+
+/// Decode the `exp` claim out of a JWT without verifying the signature.
+/// Returns `None` if the token is unparseable; in that case the caller
+/// should treat it as expired (force-refresh or fail).
+fn jwt_exp(token: &str) -> Option<u64> {
+    use base64::Engine;
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1].as_bytes())
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    value.get("exp").and_then(|v| v.as_u64())
+}
+
+/// If `HOTDATA_DATABASE_TOKEN` is set in the environment, return
+/// `(token, database_id)` — the database id read from the JWT's
+/// `database` claim. Returns `None` if no env var is set, or if the
+/// token isn't a parseable JWT (in which case we can still use it as
+/// a bearer but can't identify the database).
+pub fn database_token_in_use() -> Option<(String, Option<String>)> {
+    let token = std::env::var("HOTDATA_DATABASE_TOKEN").ok()?;
+    if token.is_empty() {
+        return None;
+    }
+    let database_id = jwt_string_claim(&token, "database");
+    Some((token, database_id))
+}
+
+/// In-child equivalent of a parent-side `ensure_access_token`: operates
+/// on env vars only. Used by [`crate::api::ApiClient`] when the parent
+/// `databases run` already passed in `HOTDATA_DATABASE_TOKEN` and
+/// `HOTDATA_DATABASE_REFRESH_TOKEN`. The new tokens are *not* persisted
+/// to disk — the child may not have write access to the parent's
+/// config dir (sandboxed FS), and re-doing the refresh on the next
+/// invocation costs one HTTP call.
+///
+/// Falls back to the current `HOTDATA_DATABASE_TOKEN` value if a
+/// refresh isn't needed or fails.
+pub fn refresh_from_env(api_url: &str) -> Option<String> {
+    let current = std::env::var("HOTDATA_DATABASE_TOKEN").ok()?;
+    let needs_refresh = match jwt_exp(&current) {
+        Some(exp) => exp.saturating_sub(REFRESH_LEEWAY_SECONDS) <= now_unix(),
+        None => true,
+    };
+    if !needs_refresh {
+        return Some(current);
+    }
+    let rt = std::env::var("HOTDATA_DATABASE_REFRESH_TOKEN").ok()?;
+    if rt.is_empty() {
+        return Some(current);
+    }
+    match refresh(api_url, &rt) {
+        Ok(new_session) => Some(new_session.access_token),
+        Err(_) => Some(current),
     }
 }
 
