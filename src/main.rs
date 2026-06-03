@@ -5,6 +5,7 @@ mod config;
 mod connections;
 mod connections_new;
 mod context;
+mod database_session;
 mod databases;
 mod embedding_providers;
 mod indexes;
@@ -135,6 +136,11 @@ extern "C" fn print_sandbox_footer() {
 
 extern "C" fn print_database_footer() {
     use crossterm::style::Stylize;
+    // Inside a `databases run` child the parent already announced the
+    // database at spawn; mirror sandbox's footer suppression.
+    if database_session::database_token_in_use().is_some() {
+        return;
+    }
     if let Some(ws_id) = ACTIVE_WORKSPACE_ID.get() {
         if let Some(id) = config::load_current_database("default", ws_id) {
             eprintln!(
@@ -390,7 +396,31 @@ fn main() {
                 command,
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
-                if let Some(name_or_id) = name_or_id {
+                // `databases <id> run ...` should mint a token for <id>, not
+                // short to `show`. Route Run before the name_or_id show-shorthand;
+                // --database on the subcommand takes precedence over the group
+                // positional. Other subcommands keep the existing semantics: a
+                // group-level name_or_id is treated as a `show` shorthand.
+                if let Some(DatabasesCommands::Run {
+                    database,
+                    description,
+                    schema,
+                    tables,
+                    expires_at,
+                    cmd,
+                }) = command
+                {
+                    let db = database.as_deref().or(name_or_id.as_deref());
+                    databases::run(
+                        db,
+                        &workspace_id,
+                        description.as_deref(),
+                        &schema,
+                        &tables,
+                        expires_at.as_deref(),
+                        &cmd,
+                    );
+                } else if let Some(name_or_id) = name_or_id {
                     databases::get(&workspace_id, &name_or_id, &output);
                 } else {
                     match command {
@@ -402,7 +432,6 @@ fn main() {
                         }
                         Some(DatabasesCommands::Create {
                             name,
-                            description,
                             schema,
                             tables,
                             expires_at,
@@ -410,14 +439,13 @@ fn main() {
                         }) => databases::create(
                             &workspace_id,
                             name.as_deref(),
-                            description.as_deref(),
                             &schema,
                             &tables,
                             expires_at.as_deref(),
                             &output,
                         ),
-                        Some(DatabasesCommands::Set { id_or_description }) => {
-                            databases::set(&workspace_id, &id_or_description)
+                        Some(DatabasesCommands::Set { id }) => {
+                            databases::set(&workspace_id, &id)
                         }
                         Some(DatabasesCommands::Delete { name_or_id }) => {
                             databases::delete(&workspace_id, &name_or_id)
@@ -500,6 +528,10 @@ fn main() {
                                 }
                             }
                         },
+                        Some(DatabasesCommands::Run { .. }) => {
+                            // Handled by the Run-first if-let above.
+                            unreachable!("Run handled before name_or_id shorthand");
+                        }
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();

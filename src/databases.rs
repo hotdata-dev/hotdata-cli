@@ -11,8 +11,6 @@ struct DatabaseSummary {
     id: String,
     #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -26,8 +24,6 @@ pub struct Database {
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
     pub default_connection_id: String,
     #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
@@ -70,11 +66,19 @@ struct CreateDatabaseResponse {
     id: String,
     #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
     default_connection_id: String,
     #[serde(default)]
     expires_at: Option<String>,
+}
+
+/// Response shape of `POST /v1/auth/database`.
+#[derive(Deserialize)]
+struct DatabaseTokenResponse {
+    token: String,
+    refresh_token: String,
+    database_id: String,
+    expires_in: u64,
+    refresh_expires_in: u64,
 }
 
 #[derive(Deserialize)]
@@ -92,11 +96,11 @@ fn fetch_database(api: &ApiClient, id: &str) -> Database {
     api.get(&format!("/databases/{id}"))
 }
 
-pub fn try_resolve_database(api: &ApiClient, id_or_description: &str) -> Result<Database, String> {
+pub fn try_resolve_database(api: &ApiClient, id_or_name: &str) -> Result<Database, String> {
     // Try a direct id lookup first — avoids the list round-trip for the common case.
-    // Percent-encode the segment so descriptions containing spaces or other URL-unsafe
+    // Percent-encode the segment so names containing spaces or other URL-unsafe
     // characters don't cause a URL parse error before the list fallback can run.
-    let encoded = urlencoding::encode(id_or_description);
+    let encoded = urlencoding::encode(id_or_name);
     if let Some(db) = api.get_none_if_not_found(&format!("/databases/{encoded}")) {
         return Ok(db);
     }
@@ -106,23 +110,23 @@ pub fn try_resolve_database(api: &ApiClient, id_or_description: &str) -> Result<
     let name_matches: Vec<&DatabaseSummary> = body
         .databases
         .iter()
-        .filter(|d| d.name.as_deref() == Some(id_or_description))
+        .filter(|d| d.name.as_deref() == Some(id_or_name))
         .collect();
 
     match name_matches.len() {
         0 => Err(format!(
-            "no database with id or name '{id_or_description}'"
+            "no database with id or name '{id_or_name}'"
         )),
         1 => Ok(fetch_database(api, &name_matches[0].id)),
         _ => Err(format!(
             "multiple databases have name '{}' — use the database id instead",
-            id_or_description
+            id_or_name
         )),
     }
 }
 
-pub fn resolve_database(api: &ApiClient, id_or_description: &str) -> Database {
-    match try_resolve_database(api, id_or_description) {
+pub fn resolve_database(api: &ApiClient, id_or_name: &str) -> Database {
+    match try_resolve_database(api, id_or_name) {
         Ok(db) => db,
         Err(e) => {
             use crossterm::style::Stylize;
@@ -139,7 +143,6 @@ fn schema_name(schema: Option<&str>) -> &str {
 /// Build the request body for `POST /v1/databases`.
 pub fn create_database_request(
     name: Option<&str>,
-    description: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
@@ -153,22 +156,32 @@ pub fn create_database_request(
         );
     }
 
-    if let Some(desc) = description {
-        req.insert(
-            "description".to_string(),
-            serde_json::Value::String(desc.to_string()),
-        );
-    }
-
     if !tables.is_empty() {
-        let table_objs: Vec<serde_json::Value> = tables
-            .iter()
-            .map(|t| serde_json::json!({ "name": t }))
+        // Group tables by schema, preserving insertion order.
+        // Dot-notation entries (e.g. "raw.raw_orders") use the named schema;
+        // bare names fall back to the `schema` argument.
+        let mut schema_tables: Vec<(String, Vec<String>)> = Vec::new();
+        for t in tables {
+            let (s, table_name) = match t.split_once('.') {
+                Some((s, tbl)) => (s.to_string(), tbl.to_string()),
+                None => (schema.to_string(), t.to_string()),
+            };
+            if let Some(entry) = schema_tables.iter_mut().find(|(n, _)| n == &s) {
+                entry.1.push(table_name);
+            } else {
+                schema_tables.push((s, vec![table_name]));
+            }
+        }
+        let schemas_json: Vec<serde_json::Value> = schema_tables
+            .into_iter()
+            .map(|(s, tbls)| {
+                serde_json::json!({
+                    "name": s,
+                    "tables": tbls.iter().map(|t| serde_json::json!({ "name": t })).collect::<Vec<_>>()
+                })
+            })
             .collect();
-        req.insert(
-            "schemas".to_string(),
-            serde_json::json!([{ "name": schema, "tables": table_objs }]),
-        );
+        req.insert("schemas".to_string(), serde_json::Value::Array(schemas_json));
     }
 
     if let Some(exp) = expires_at {
@@ -370,7 +383,7 @@ pub fn list(workspace_id: &str, format: &str) {
                 eprintln!("{}", "No databases found.".dark_grey());
                 eprintln!(
                     "{}",
-                    "Create one with: hotdata databases create".dark_grey()
+                    "Create one with: hotdata databases create --name <catalog_name>".dark_grey()
                 );
             } else {
                 let rows: Vec<Vec<String>> = body
@@ -378,22 +391,21 @@ pub fn list(workspace_id: &str, format: &str) {
                     .iter()
                     .map(|d| {
                         vec![
-                            d.name.as_deref().unwrap_or("-").to_string(),
-                            d.description.as_deref().unwrap_or("-").to_string(),
                             d.id.clone(),
+                            d.name.as_deref().unwrap_or("-").to_string(),
                         ]
                     })
                     .collect();
-                crate::table::print(&["NAME", "DESCRIPTION", "ID"], &rows);
+                crate::table::print(&["ID", "NAME"], &rows);
             }
         }
         _ => unreachable!(),
     }
 }
 
-pub fn get(workspace_id: &str, id_or_description: &str, format: &str) {
+pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, id_or_description);
+    let db = resolve_database(&api, id_or_name);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&db).unwrap()),
@@ -402,20 +414,19 @@ pub fn get(workspace_id: &str, id_or_description: &str, format: &str) {
             use crossterm::style::Stylize;
             let label = |l: &str| format!("{:<24}", l).dark_grey().to_string();
             println!("{}{}", label("id:"), db.id.clone().dark_cyan());
-            println!(
-                "{}{}",
-                label("description:"),
-                db.description.as_deref().unwrap_or("-").white()
-            );
+            if let Some(n) = &db.name {
+                println!("{}{}", label("name:"), n.clone().cyan());
+            }
             println!(
                 "{}{}",
                 label("default_connection_id:"),
                 db.default_connection_id.clone().dark_cyan()
             );
+            let catalog = db.name.as_deref().unwrap_or("default");
             println!(
                 "{}{}",
                 label("sql_prefix:"),
-                "default.{schema}.{table}  (pass X-Database-Id header when querying)".green()
+                format!("{catalog}.{{schema}}.{{table}}  (pass X-Database-Id header when querying)").green()
             );
             if !db.attachments.is_empty() {
                 println!("{}({})", label("attached catalogs:"), db.attachments.len());
@@ -437,10 +448,112 @@ pub fn get(workspace_id: &str, id_or_description: &str, format: &str) {
     }
 }
 
+/// Create a database and return its id. Used by `run` when no
+/// `--database` is given. Mirrors `create`'s request path but returns
+/// the id instead of printing.
+fn create_and_return_id(
+    api: &ApiClient,
+    description: Option<&str>,
+    schema: &str,
+    tables: &[String],
+    expires_at: Option<&str>,
+) -> String {
+    use crossterm::style::Stylize;
+    let body = create_database_request(description, schema, tables, expires_at);
+    let (status, resp_body) = api.post_raw("/databases", &body);
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp_body).red());
+        std::process::exit(1);
+    }
+    let result: CreateDatabaseResponse = match serde_json::from_str(&resp_body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing create response: {e}");
+            std::process::exit(1);
+        }
+    };
+    result.id
+}
+
+/// Mint a database-scoped JWT for an existing database id via
+/// `POST /v1/auth/database` (grant_type=existing_database). The call
+/// doubles as an existence + access check (the server 404s an unknown
+/// or unreachable database).
+fn mint_database_token(api: &ApiClient, database_id: &str) -> DatabaseTokenResponse {
+    let body = serde_json::json!({
+        "grant_type": "existing_database",
+        "database_id": database_id,
+    });
+    api.post("/auth/database", &body)
+}
+
+/// Run a command with a database-scoped token. Creates a new database
+/// first when `database` is None, then mints a JWT and execs the
+/// command with it injected as HOTDATA_DATABASE_TOKEN.
+pub fn run(
+    database: Option<&str>,
+    workspace_id: &str,
+    description: Option<&str>,
+    schema: &str,
+    tables: &[String],
+    expires_at: Option<&str>,
+    cmd: &[String],
+) {
+    use crossterm::style::Stylize;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let api = ApiClient::new(Some(workspace_id));
+
+    // Unlike `create`, we don't persist the auto-created database as the
+    // workspace's "current" database: a `run` database is scratch/ephemeral
+    // for the child process, addressed only by the token we mint below.
+    let database_id = match database {
+        Some(id) => id.to_string(),
+        None => create_and_return_id(&api, description, schema, tables, expires_at),
+    };
+
+    let resp = mint_database_token(&api, &database_id);
+    let db_id = resp.database_id.clone();
+    let db_jwt = resp.token.clone();
+    let db_refresh = resp.refresh_token.clone();
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let session = crate::database_session::DatabaseSession {
+        access_token: db_jwt.clone(),
+        refresh_token: db_refresh.clone(),
+        database_id: db_id.clone(),
+        workspace_id: workspace_id.to_string(),
+        access_expires_at: now + resp.expires_in,
+        refresh_expires_at: now + resp.refresh_expires_in,
+    };
+    if let Err(e) = crate::database_session::save(&session) {
+        eprintln!("warning: could not persist database session: {e}");
+    }
+
+    eprintln!("{} {}", "database:".dark_grey(), db_id);
+    eprintln!("{} {}", "workspace:".dark_grey(), workspace_id);
+
+    let status = std::process::Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .env("HOTDATA_DATABASE", &db_id)
+        .env("HOTDATA_WORKSPACE", workspace_id)
+        .env("HOTDATA_API_URL", &api.api_url)
+        .env("HOTDATA_DATABASE_TOKEN", &db_jwt)
+        .env("HOTDATA_DATABASE_REFRESH_TOKEN", &db_refresh)
+        .status();
+
+    match status {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(e) => {
+            eprintln!("error: failed to execute '{}': {e}", cmd[0]);
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn create(
     workspace_id: &str,
     name: Option<&str>,
-    description: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
@@ -448,7 +561,7 @@ pub fn create(
 ) {
     use crossterm::style::Stylize;
 
-    let body = create_database_request(name, description, schema, tables, expires_at);
+    let body = create_database_request(name, schema, tables, expires_at);
 
     let api = ApiClient::new(Some(workspace_id));
     let spinner = (format == "table").then(|| crate::util::spinner("Creating database..."));
@@ -483,15 +596,12 @@ pub fn create(
             if let Some(n) = &result.name {
                 println!("name:        {}", n.clone().cyan());
             }
-            if let Some(desc) = &result.description {
-                println!("description: {desc}");
-            }
             println!("id:          {}", result.id);
             if let Some(exp) = &result.expires_at {
                 println!("expires_at:  {exp}");
             }
-            let catalog = result.name.as_deref().unwrap_or("default");
             println!();
+            let catalog = result.name.as_deref().unwrap_or("default");
             println!(
                 "{}",
                 format!(
@@ -511,15 +621,19 @@ pub fn create(
     }
 }
 
-pub fn set(workspace_id: &str, id_or_description: &str) {
+pub fn set(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, id_or_description);
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, &db.id) {
+    let encoded = urlencoding::encode(id);
+    if api.get_none_if_not_found::<Database>(&format!("/databases/{encoded}")).is_none() {
+        eprintln!("{}", format!("error: no database with id '{id}'").red());
+        std::process::exit(1);
+    }
+    if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
         std::process::exit(1);
     }
-    println!("{}", format!("Current database set to {}", db.id).green());
+    println!("{}", format!("Current database set to {id}").green());
 }
 
 fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> String {
@@ -539,11 +653,11 @@ fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> Strin
     }
 }
 
-pub fn delete(workspace_id: &str, id_or_description: &str) {
+pub fn delete(workspace_id: &str, id_or_name: &str) {
     use crossterm::style::Stylize;
 
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, id_or_description);
+    let db = resolve_database(&api, id_or_name);
     let (status, resp_body) = api.delete_raw(&format!("/databases/{}", db.id));
 
     if !status.is_success() {
@@ -710,15 +824,15 @@ mod tests {
     }
 
     #[test]
-    fn create_database_request_empty_without_description_or_tables() {
-        let req = create_database_request(None, None, "public", &[], None);
+    fn create_database_request_empty_without_name_or_tables() {
+        let req = create_database_request(None, "public", &[], None);
         assert_eq!(req, serde_json::json!({}));
     }
 
     #[test]
-    fn create_database_request_includes_description() {
-        let req = create_database_request(None, Some("my db"), "public", &[], None);
-        assert_eq!(req["description"], "my db");
+    fn create_database_request_includes_name() {
+        let req = create_database_request(Some("jaffle_shop"), "public", &[], None);
+        assert_eq!(req["name"], "jaffle_shop");
         assert!(req.get("schemas").is_none());
     }
 
@@ -726,44 +840,63 @@ mod tests {
     fn create_database_request_includes_schemas_when_tables_declared() {
         let req = create_database_request(
             None,
-            Some("sales"),
             "public",
             &["orders".to_string(), "customers".to_string()],
             None,
         );
-        assert_eq!(req["description"], "sales");
         assert_eq!(req["schemas"][0]["name"], "public");
         assert_eq!(req["schemas"][0]["tables"][0]["name"], "orders");
         assert_eq!(req["schemas"][0]["tables"][1]["name"], "customers");
     }
 
     #[test]
-    fn create_database_request_schemas_without_description() {
-        let req = create_database_request(None, None, "analytics", &["events".to_string()], None);
-        assert!(req.get("description").is_none());
+    fn create_database_request_schemas_without_name() {
+        let req = create_database_request(None, "analytics", &["events".to_string()], None);
+        assert!(req.get("name").is_none());
         assert_eq!(req["schemas"][0]["name"], "analytics");
     }
 
     #[test]
     fn create_database_request_includes_expires_at_when_provided() {
-        let req = create_database_request(None, None, "public", &[], Some("24h"));
+        let req = create_database_request(None, "public", &[], Some("24h"));
         assert_eq!(req["expires_at"], "24h");
     }
 
     #[test]
     fn create_database_request_omits_expires_at_when_none() {
-        let req = create_database_request(None, None, "public", &[], None);
+        let req = create_database_request(None, "public", &[], None);
         assert!(req.get("expires_at").is_none());
     }
 
-    fn full_detail(id: &str, desc: &str, conn_id: &str) -> String {
+    #[test]
+    fn create_database_request_dot_notation_groups_tables_by_schema() {
+        let req = create_database_request(
+            None,
+            "public",
+            &[
+                "orders".to_string(),
+                "raw.raw_orders".to_string(),
+                "raw.raw_customers".to_string(),
+            ],
+            None,
+        );
+        // bare "orders" → default schema "public"
+        assert_eq!(req["schemas"][0]["name"], "public");
+        assert_eq!(req["schemas"][0]["tables"][0]["name"], "orders");
+        // dot-notation entries → "raw" schema, table name is the part after the dot
+        assert_eq!(req["schemas"][1]["name"], "raw");
+        assert_eq!(req["schemas"][1]["tables"][0]["name"], "raw_orders");
+        assert_eq!(req["schemas"][1]["tables"][1]["name"], "raw_customers");
+    }
+
+    fn full_detail(id: &str, name: &str, conn_id: &str) -> String {
         format!(
-            r#"{{"id":"{id}","description":"{desc}","default_connection_id":"{conn_id}","attachments":[]}}"#
+            r#"{{"id":"{id}","name":"{name}","default_connection_id":"{conn_id}","attachments":[]}}"#
         )
     }
 
     #[test]
-    fn resolve_database_by_id_and_description() {
+    fn resolve_database_by_id_and_name() {
         let mut server = mockito::Server::new();
         // by-id path: direct GET /databases/db_abc succeeds
         let by_id_mock = server
@@ -771,7 +904,7 @@ mod tests {
             .with_status(200)
             .with_body(full_detail("db_abc", "sales", "conn_1"))
             .create();
-        // by-description path: GET /databases/warehouse → 404, then list, then detail
+        // by-name path: GET /databases/warehouse → 404, then list, then detail
         let not_id = server
             .mock("GET", "/databases/warehouse")
             .with_status(404)
@@ -793,8 +926,8 @@ mod tests {
         let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
         let by_id = resolve_database(&api, "db_abc");
         assert_eq!(by_id.default_connection_id, "conn_1");
-        let by_desc = resolve_database(&api, "warehouse");
-        assert_eq!(by_desc.id, "db_xyz");
+        let by_name = resolve_database(&api, "warehouse");
+        assert_eq!(by_name.id, "db_xyz");
         by_id_mock.assert();
         not_id.assert();
         list.assert();
@@ -930,12 +1063,11 @@ mod tests {
             .match_header("X-Workspace-Id", "ws-test")
             .with_status(201)
             .with_body(
-                r#"{"id":"db_new","description":"mydb","default_connection_id":"conn_abc"}"#,
+                r#"{"id":"db_new","name":"mydb","default_connection_id":"conn_abc"}"#,
             )
             .match_body(mockito::Matcher::JsonString(
                 serde_json::to_string(&create_database_request(
                     Some("mydb"),
-                    None,
                     "public",
                     &["gdp".to_string()],
                     None,
@@ -945,11 +1077,11 @@ mod tests {
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", Some("ws-test"));
-        let body = create_database_request(Some("mydb"), None, "public", &["gdp".to_string()], None);
+        let body = create_database_request(Some("mydb"), "public", &["gdp".to_string()], None);
         let (status, resp_body) = api.post_raw("/databases", &body);
         assert_eq!(status.as_u16(), 201);
         let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();
-        assert_eq!(parsed.description.as_deref(), Some("mydb"));
+        assert_eq!(parsed.name.as_deref(), Some("mydb"));
         assert_eq!(parsed.default_connection_id, "conn_abc");
         mock.assert();
     }
@@ -1035,5 +1167,55 @@ mod tests {
         assert_eq!(parsed.schema_name, "analytics");
         assert_eq!(parsed.table_name, "events");
         assert_eq!(parsed.row_count, 99);
+    }
+
+    #[test]
+    fn database_token_response_deserializes() {
+        let body = r#"{"ok":true,"token":"jwt-x","refresh_token":"rt-x","database_id":"dbid_abc","expires_in":300,"refresh_expires_in":259200}"#;
+        let resp: DatabaseTokenResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(resp.token, "jwt-x");
+        assert_eq!(resp.database_id, "dbid_abc");
+        assert_eq!(resp.refresh_token, "rt-x");
+        assert_eq!(resp.expires_in, 300);
+    }
+
+    #[test]
+    fn create_and_return_id_parses_id() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/databases")
+            .match_body(mockito::Matcher::Json(create_database_request(
+                Some("scratch"),
+                "public",
+                &[],
+                None,
+            )))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"dbid_new","description":"scratch","default_connection_id":"conn_1"}"#)
+            .create();
+        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let id = create_and_return_id(&api, Some("scratch"), "public", &[], None);
+        m.assert();
+        assert_eq!(id, "dbid_new");
+    }
+
+    #[test]
+    fn mint_database_token_posts_existing_database_grant() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/auth/database")
+            .match_body(mockito::Matcher::JsonString(
+                r#"{"grant_type":"existing_database","database_id":"dbid_abc"}"#.to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ok":true,"token":"jwt-x","refresh_token":"rt-x","database_id":"dbid_abc","expires_in":300,"refresh_expires_in":259200}"#)
+            .create();
+        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let resp = mint_database_token(&api, "dbid_abc");
+        m.assert();
+        assert_eq!(resp.token, "jwt-x");
+        assert_eq!(resp.database_id, "dbid_abc");
     }
 }

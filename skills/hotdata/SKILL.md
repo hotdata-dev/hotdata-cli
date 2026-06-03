@@ -1,7 +1,7 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, views, tables, basic SQL query, sandboxes, database context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "list views", "create a view", "execute a query", "list sandboxes", "database context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
-version: 0.3.2
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, datasets, tables, basic SQL query, sandboxes, database context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "list datasets", "create a dataset", "execute a query", "list sandboxes", "database context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
+version: 0.3.3
 ---
 
 # Hotdata CLI Skill
@@ -188,9 +188,11 @@ hotdata connections create \
 ```
 hotdata databases list [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases create [--name <name>] [--description <label>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases set <id_or_name>
+hotdata databases set <id>
 hotdata databases <id_or_name> [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases delete <id_or_name> [--workspace-id <workspace_id>]
+hotdata databases run [--database <id>] [--description <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] <cmd> [args...]
+hotdata databases <id> run <cmd> [args...]
 
 hotdata databases load --table <table> [--catalog <name>] [--schema public] [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
 
@@ -208,6 +210,7 @@ hotdata databases tables delete <table> [--database <id_or_name>] [--schema publ
 - `tables list` — lists tables with `TABLE` (`<database_id>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
 - `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
 - `tables delete` — drops a table from the managed database.
+- `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`, sandbox-style) or via `--database <id>`; omit both to auto-create a scratch database using `--description` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, `source:"database_token"`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
 
 Example:
 
