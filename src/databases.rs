@@ -202,11 +202,11 @@ pub fn is_parquet_path(path: &str) -> bool {
         || Path::new(path).extension().and_then(|e| e.to_str()) == Some("parquet")
 }
 
-fn table_rows(tables: Vec<InfoTable>) -> Vec<TableRow> {
+fn table_rows(catalog: &str, tables: Vec<InfoTable>) -> Vec<TableRow> {
     tables
         .into_iter()
         .map(|t| TableRow {
-            full_name: format!("default.{}.{}", t.schema, t.table),
+            full_name: format!("{catalog}.{}.{}", t.schema, t.table),
             schema: t.schema,
             table: t.table,
             synced: t.synced,
@@ -566,7 +566,8 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
     let db = resolve_database(&api, &database);
     let tables = collect_tables(&api, &db.default_connection_id, schema);
 
-    let rows = table_rows(tables);
+    let catalog = db.name.as_deref().unwrap_or("default");
+    let rows = table_rows(catalog, tables);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
@@ -655,7 +656,8 @@ pub fn tables_load(
         }
     };
 
-    let full_name = format!("default.{}.{}", result.schema_name, result.table_name);
+    let catalog = db.name.as_deref().unwrap_or("default");
+    let full_name = format!("{catalog}.{}.{}", result.schema_name, result.table_name);
     println!("{}", "Table loaded".green());
     println!("full_name: {}", full_name.clone().green());
     println!("rows:      {}", result.row_count);
@@ -872,8 +874,8 @@ mod tests {
     }
 
     #[test]
-    fn table_rows_uses_default_prefix() {
-        let rows = table_rows(vec![InfoTable {
+    fn table_rows_uses_catalog_prefix() {
+        let rows = table_rows("mydb", vec![InfoTable {
             connection: "ignored".into(),
             schema: "public".into(),
             table: "orders".into(),
@@ -881,7 +883,7 @@ mod tests {
             last_sync: Some("2026-05-19T00:00:00Z".into()),
         }]);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].full_name, "default.public.orders");
+        assert_eq!(rows[0].full_name, "mydb.public.orders");
         assert!(rows[0].synced);
     }
 
