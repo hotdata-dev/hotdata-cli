@@ -215,7 +215,7 @@ hotdata databases tables delete <table> [--database <id_or_name>] [--schema publ
 Example:
 
 ```
-hotdata databases create --name sales --table orders
+hotdata databases create --name sales
 hotdata databases load --catalog sales --table orders --file ./orders.parquet
 hotdata query "SELECT count(*) FROM sales.public.orders"
 ```

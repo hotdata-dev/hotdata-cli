@@ -154,7 +154,7 @@ hotdata databases tables delete <database> <table> [--schema public]
 Example:
 
 ```sh
-hotdata databases create --name sales --table orders
+hotdata databases create --name sales
 hotdata databases tables load sales orders --file ./orders.parquet
 hotdata query "SELECT count(*) FROM sales.public.orders"
 ```
