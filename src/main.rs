@@ -844,11 +844,9 @@ fn main() {
                 let db_id = db.id.clone();
                 let conn_id = db.default_connection_id;
 
-                // bm25_search takes a string literal for the table path; the server resolves
-                // catalog aliases (like "default") only in SQL FROM clauses, not in string
-                // arguments. Use the connection ID as the catalog prefix so it resolves directly.
-                let bm25_table = format!("{}.{}.{}", conn_id, resolved_schema, table);
-                // vector queries run as standard SQL with X-Database-Id, so the catalog alias works.
+                // Both search types run as SQL with X-Database-Id; the server rewrites
+                // catalog aliases (like "default") to the real connection name before execution.
+                let bm25_table = format!("{}.{}.{}", db.default_catalog, resolved_schema, table);
                 let vector_table = format!("{}.{}.{}", db.default_catalog, resolved_schema, table);
 
                 // Infer --type and --column from the table's indexes when either is omitted.
