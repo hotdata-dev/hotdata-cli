@@ -214,11 +214,15 @@ fn main() {
                     Some(QueryCommands::Status { id }) => query::poll(&id, &workspace_id, &output),
                     None => match sql {
                         Some(sql) => {
+                            let resolved_db = database.as_deref().map(|d| {
+                                let api = api::ApiClient::new(Some(&workspace_id));
+                                databases::resolve_database(&api, d).id
+                            });
                             query::execute(
                                 &sql,
                                 &workspace_id,
                                 connection.as_deref(),
-                                database.as_deref(),
+                                resolved_db.as_deref(),
                                 &output,
                             )
                         }

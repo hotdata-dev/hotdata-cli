@@ -625,16 +625,12 @@ pub fn create(
 pub fn set(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     let api = ApiClient::new(Some(workspace_id));
-    let encoded = urlencoding::encode(id);
-    if api.get_none_if_not_found::<Database>(&format!("/databases/{encoded}")).is_none() {
-        eprintln!("{}", format!("error: no database with id '{id}'").red());
-        std::process::exit(1);
-    }
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
+    let db = resolve_database(&api, id);
+    if let Err(e) = crate::config::save_current_database("default", workspace_id, &db.id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
         std::process::exit(1);
     }
-    println!("{}", format!("Current database set to {id}").green());
+    println!("{}", format!("Current database set to {}", db.id).green());
 }
 
 fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> String {
@@ -681,8 +677,7 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
     let db = resolve_database(&api, &database);
     let tables = collect_tables(&api, &db.default_connection_id, schema);
 
-    let catalog = db.name.as_deref().unwrap_or("default");
-    let rows = table_rows(catalog, tables);
+    let rows = table_rows(&db.default_catalog, tables);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
@@ -771,8 +766,7 @@ pub fn tables_load(
         }
     };
 
-    let catalog = db.name.as_deref().unwrap_or("default");
-    let full_name = format!("{catalog}.{}.{}", result.schema_name, result.table_name);
+    let full_name = format!("{}.{}.{}", db.default_catalog, result.schema_name, result.table_name);
     println!("{}", "Table loaded".green());
     println!("full_name: {}", full_name.clone().green());
     println!("rows:      {}", result.row_count);
