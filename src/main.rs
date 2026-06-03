@@ -709,19 +709,7 @@ fn main() {
                                         std::process::exit(1);
                                     });
                                     let sch = schema.unwrap_or_else(|| "public".to_string());
-                                    let cat = catalog
-                                        .or_else(|| {
-                                            crate::config::load_current_database(
-                                                "default",
-                                                &workspace_id,
-                                            )
-                                        })
-                                        .unwrap_or_else(|| {
-                                            eprintln!(
-                                                "error: --catalog is required (or set a current database with 'hotdata databases set')"
-                                            );
-                                            std::process::exit(1);
-                                        });
+                                    let cat = catalog.unwrap();
                                     let db = databases::resolve_database(&api, &cat);
                                     let conn_id = db.default_connection_id;
                                     let auto =
@@ -851,17 +839,7 @@ fn main() {
                 let workspace_id = resolve_workspace(workspace_id);
 
                 let api = api::ApiClient::new(Some(&workspace_id));
-                let cat = catalog
-                    .or_else(|| {
-                        crate::config::load_current_database("default", &workspace_id)
-                    })
-                    .unwrap_or_else(|| {
-                        eprintln!(
-                            "error: --catalog is required (or set a current database with 'hotdata databases set')"
-                        );
-                        std::process::exit(1);
-                    });
-                let db = databases::resolve_database(&api, &cat);
+                let db = databases::resolve_database(&api, &catalog);
                 let resolved_schema = schema.unwrap_or_else(|| "public".to_string());
                 let db_id = db.id.clone();
                 let conn_id = db.default_connection_id;
@@ -871,7 +849,7 @@ fn main() {
                 // arguments. Use the connection ID as the catalog prefix so it resolves directly.
                 let bm25_table = format!("{}.{}.{}", conn_id, resolved_schema, table);
                 // vector queries run as standard SQL with X-Database-Id, so the catalog alias works.
-                let vector_table = format!("{}.{}.{}", cat, resolved_schema, table);
+                let vector_table = format!("{}.{}.{}", db.default_catalog, resolved_schema, table);
 
                 // Infer --type and --column from the table's indexes when either is omitted.
                 let (resolved_type, resolved_column) =

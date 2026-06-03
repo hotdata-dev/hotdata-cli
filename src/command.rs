@@ -173,9 +173,9 @@ pub enum Commands {
         #[arg(long, value_parser = ["vector", "bm25"])]
         r#type: Option<String>,
 
-        /// Catalog (database name) to search in. Defaults to the current database.
+        /// Catalog (database id or name) to search in.
         #[arg(long)]
-        catalog: Option<String>,
+        catalog: String,
 
         /// Schema to search in (default: public)
         #[arg(long)]
@@ -337,8 +337,8 @@ pub enum IndexesCommands {
 
     /// Create an index on a table
     Create {
-        /// Catalog (database name) for the table to index. Defaults to the current database.
-        #[arg(long, conflicts_with = "dataset_id")]
+        /// Catalog (database id or name) for the table to index.
+        #[arg(long, conflicts_with = "dataset_id", required_unless_present = "dataset_id")]
         catalog: Option<String>,
 
         /// Schema for the table to index (default: public)

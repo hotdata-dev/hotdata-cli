@@ -25,6 +25,7 @@ pub struct Database {
     #[serde(default)]
     pub name: Option<String>,
     pub default_connection_id: String,
+    pub default_catalog: String,
     #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
 }
@@ -891,7 +892,7 @@ mod tests {
 
     fn full_detail(id: &str, name: &str, conn_id: &str) -> String {
         format!(
-            r#"{{"id":"{id}","name":"{name}","default_connection_id":"{conn_id}","attachments":[]}}"#
+            r#"{{"id":"{id}","name":"{name}","default_connection_id":"{conn_id}","default_catalog":"default","attachments":[]}}"#
         )
     }
 
