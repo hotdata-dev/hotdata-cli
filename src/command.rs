@@ -602,13 +602,13 @@ pub enum DatabasesCommands {
 
     /// Set the current database (used by default when no database is specified)
     Set {
-        /// Database id or description
+        /// Database id or name
         id_or_description: String,
     },
 
     /// Delete a managed database and its tables
     Delete {
-        /// Database name or connection ID
+        /// Database name or ID
         name_or_id: String,
     },
 

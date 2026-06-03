@@ -181,31 +181,30 @@ hotdata connections create \
 
 **Managed databases** are Hotdata-owned catalogs you create and populate yourself — no remote source to sync. Query them in SQL as **`<database_id>.<schema>.<table>`**. Prefer **`hotdata databases`** for this workflow.
 
-**Parquet vs views:** `databases tables load` accepts **parquet only**. For SQL-query or saved-query materializations, use **`hotdata views create`**.
+**Parquet vs datasets:** `databases tables load` accepts **parquet only**. For SQL-query or saved-query materializations, use **`hotdata datasets create`**.
 
 **Active database:** `hotdata databases set <id_or_description>` saves the active database to config. All `databases tables` subcommands and all `context` commands default to the active database; pass **`--database <id>`** to override per-command.
 
 ```
 hotdata databases list [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases create [--description <label>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases set <id_or_description>
-hotdata databases <id_or_description> [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases delete <id_or_description> [--workspace-id <workspace_id>]
+hotdata databases create [--name <name>] [--description <label>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases set <id_or_name>
+hotdata databases <id_or_name> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases delete <id_or_name> [--workspace-id <workspace_id>]
 
-# Dot-notation shorthand for load: database.table or database.schema.table
-hotdata databases load <database.table> [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
+hotdata databases load --table <table> [--catalog <name>] [--schema public] [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
 
-hotdata databases tables list [--database <id_or_desc>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases tables load <table> [--database <id_or_desc>] [--schema public] [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
-hotdata databases tables delete <table> [--database <id_or_desc>] [--schema public] [--workspace-id <workspace_id>]
+hotdata databases tables list [--database <id_or_name>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases tables load <table> [--database <id_or_name>] [--schema public] [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
+hotdata databases tables delete <table> [--database <id_or_name>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
 - `list` — all managed databases in the workspace.
-- `create` — creates a new managed database. `--description` is an optional human-readable label (databases are addressed by id, not description). `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; defaults to `24h` when omitted. Repeat `--table` to declare tables up front.
-- `set` — saves `<id_or_description>` as the active database. Subsequent `databases tables` and `context` commands use it automatically.
-- `<id_or_description>` — inspect one database (id, description, expires_at).
+- `create` — creates a new managed database. `--name` sets the SQL catalog alias used in queries (`SELECT … FROM <name>.public.<table>`); must be `[a-z_][a-z0-9_]*`, globally unique, and omitting it means no expiry default. `--description` is an optional display label. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; defaults to `24h` when `--name` is omitted. Repeat `--table` to declare tables up front.
+- `set` — saves `<id_or_name>` as the active database. Subsequent `databases tables` and `context` commands use it automatically.
+- `<id_or_name>` — inspect one database (id, name, expires_at).
 - `delete` — removes the managed database; clears the active-database config if it matched.
-- `load` — shorthand with dot notation (`database.table` or `database.schema.table`). Schema defaults to `public`.
+- `load` — loads a parquet file into a table. `--catalog` selects the database by name; defaults to the current database set via `databases set`. Schema defaults to `public`.
 - `tables list` — lists tables with `TABLE` (`<database_id>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
 - `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
 - `tables delete` — drops a table from the managed database.
@@ -213,10 +212,9 @@ hotdata databases tables delete <table> [--database <id_or_desc>] [--schema publ
 Example:
 
 ```
-hotdata databases create --description "sales" --table orders
-hotdata databases set <returned-id>
-hotdata databases tables load orders --file ./orders.parquet
-hotdata query "SELECT count(*) FROM <database_id>.public.orders"
+hotdata databases create --name sales --table orders
+hotdata databases load --catalog sales --table orders --file ./orders.parquet
+hotdata query "SELECT count(*) FROM sales.public.orders"
 ```
 
 ### List Tables and Columns

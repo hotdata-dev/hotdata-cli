@@ -229,10 +229,10 @@ hotdata queries <query_run_id> [-o table|json|yaml]
 
 ```sh
 # BM25 full-text search (requires a BM25 index on the column)
-hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [-o table|json|csv]
+hotdata search "<query>" --type bm25 --catalog <catalog> --table <table> --column <column> [--schema <schema>] [--select <columns>] [--limit <n>] [-o table|json|csv]
 
 # Vector search (requires a vector index with auto-embedding on the column)
-hotdata search "<query>" --type vector --table <table> --column <source_text_column> [--limit <n>]
+hotdata search "<query>" --type vector --catalog <catalog> --table <table> --column <source_text_column> [--schema <schema>] [--limit <n>]
 ```
 
 - **`--type vector`** — pass your query as **plain text**, name the **source text column** (e.g. `title`). The server embeds the query at the same time, using the same provider that auto-embedded the column when the index was built — so distance metric, model, and dimensions all match automatically. No `OPENAI_API_KEY`, no client-side embedding, no need to know about the auto-generated `_embedding` column. Generated SQL: `vector_distance(col, 'query')` server-side.
@@ -244,16 +244,16 @@ hotdata search "<query>" --type vector --table <table> --column <source_text_col
 
 ## Indexes
 
-Indexes attach to either a connection-table (`--connection-id` + `--schema` + `--table`) or a dataset (`--dataset-id`). The two scopes are mutually exclusive.
+Indexes attach to either a catalog-table (`--catalog` + `--table`) or a dataset (`--dataset-id`). The two scopes are mutually exclusive.
 
 ```sh
-# Connection-table scope
-hotdata indexes list   --connection-id <id> --schema <schema> --table <table> [-o table|json|yaml]
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
-  --name <name> --columns <cols> --type sorted|bm25|vector \
-  [--metric l2|cosine|dot] [--async] \
+# Catalog-table scope
+hotdata indexes list   --catalog <catalog> --table <table> [--schema <schema>] [-o table|json|yaml]
+hotdata indexes create --catalog <catalog> --table <table> [--schema <schema>] \
+  --column <col> --type sorted|bm25|vector \
+  [--name <name>] [--metric l2|cosine|dot] [--async] \
   [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
-hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
+hotdata indexes delete --catalog <catalog> --table <table> [--schema <schema>] --name <name>
 
 # Dataset scope
 hotdata indexes list   --dataset-id <id> [-o table|json|yaml]

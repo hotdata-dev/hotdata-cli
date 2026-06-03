@@ -20,12 +20,12 @@ Retrieval workloads in Hotdata: **BM25 full-text**, **vector similarity**, and t
 
 ```bash
 # BM25 (requires a BM25 index on the column)
-hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> \
-  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
+hotdata search "<query>" --type bm25 --catalog <catalog> --table <table> --column <column> \
+  [--schema <schema>] [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 
 # Vector (requires a vector index; server auto-embeds the query text)
-hotdata search "<query>" --type vector --table <connection.schema.table> --column <source_text_column> \
-  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
+hotdata search "<query>" --type vector --catalog <catalog> --table <table> --column <source_text_column> \
+  [--schema <schema>] [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 ```
 
 | Type | Behavior |
@@ -41,22 +41,24 @@ hotdata search "<query>" --type vector --table <connection.schema.table> --colum
 
 ## Indexes (BM25 and vector)
 
-Indexes attach to a **connection table** (`--connection-id` + `--schema` + `--table`) or a **dataset** (`--dataset-id`). Scopes are mutually exclusive for create/delete.
+Indexes attach to a **catalog table** (`--catalog` + `--table`) or a **dataset** (`--dataset-id`). Scopes are mutually exclusive for create/delete.
+
+**Note:** `indexes create` uses `--catalog`/`--table`; `indexes list` and `indexes delete` still use `--connection-id`/`--schema`/`--table`.
 
 ```bash
-# List — workspace scan on connection tables (filter with -c / --schema / --table)
+# List — workspace scan (filter with --connection-id / --schema / --table)
 hotdata indexes list [--connection-id <id>] [--schema <schema>] [--table <table>] [--workspace-id <ws>] [--output table|json|yaml]
 hotdata indexes list --dataset-id <dataset_id> [--workspace-id <ws>] [--output table|json|yaml]
 
-# Connection table
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
-  --name <name> --columns <cols> --type bm25|vector \
-  [--metric l2|cosine|dot] [--async] \
+# Catalog table (create uses --catalog; list/delete use --connection-id)
+hotdata indexes create --catalog <catalog> --table <table> --column <col> --type bm25|vector \
+  [--schema <schema>] [--name <name>] [--metric l2|cosine|dot] [--async] \
   [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
 
 # Dataset
-hotdata indexes create --dataset-id <dataset_id> --name <name> --columns <cols> --type bm25|vector ...
+hotdata indexes create --dataset-id <dataset_id> --columns <cols> --type bm25|vector \
+  [--name <name>] [--metric l2|cosine|dot] [--async] ...
 hotdata indexes delete --dataset-id <dataset_id> --name <name>
 ```
 
@@ -89,6 +91,6 @@ hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
 
 1. `hotdata tables list --connection-id <id>` — confirm column types.
 2. `hotdata indexes list` — avoid duplicate indexes.
-3. `hotdata indexes create ... --type bm25|vector` (add `--async` if large).
-4. `hotdata search "..." --type bm25|vector --table ... --column ...`
+3. `hotdata indexes create --catalog <catalog> --table <table> --column <col> --type bm25|vector` (add `--async` if large).
+4. `hotdata search "..." --type bm25|vector --catalog <catalog> --table <table> --column <col>`
 5. Record what exists in **context:DATAMODEL** (core skill) when the workspace should remember index choices.

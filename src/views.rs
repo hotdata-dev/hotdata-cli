@@ -191,7 +191,7 @@ pub fn get(view_id: &str, workspace_id: &str, format: &str) {
             let updated_at = crate::util::format_date(&v.updated_at);
             println!("id:          {}", v.id);
             println!("label:       {}", v.label);
-            println!("full_name:   views.main.{}", v.table_name);
+            println!("full_name:   views.{}.{}", v.schema_name, v.table_name);
             println!("source_type: {}", v.source_type);
             println!("created_at:  {created_at}");
             println!("updated_at:  {updated_at}");
