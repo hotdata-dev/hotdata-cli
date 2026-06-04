@@ -69,9 +69,8 @@ pub struct Api {
     /// session-token mints, which target `/v1/auth/*` directly).
     pub api_url: String,
     workspace_id: Option<String>,
-    /// Sandbox/session id, sent as `X-Session-Id` (and the legacy
-    /// `X-Sandbox-Id`) to scope requests to a sandbox. `None` when no sandbox
-    /// is active.
+    /// Sandbox/session id, sent as `X-Session-Id` to scope requests to a
+    /// sandbox. `None` when no sandbox is active.
     session_id: Option<String>,
     database_id: Option<String>,
 }
@@ -290,8 +289,7 @@ impl Api {
         // HOTDATA_SANDBOX wins; otherwise, if we are a descendant of a
         // `sandbox run` whose sandbox context was lost, exit (a restart is
         // required); else fall back to the persisted sandbox in config. This id
-        // is sent as X-Session-Id (and the legacy X-Sandbox-Id) to scope
-        // requests to the sandbox.
+        // is sent as X-Session-Id to scope requests to the sandbox.
         let session_id = std::env::var("HOTDATA_SANDBOX").ok().or_else(|| {
             if crate::sandbox::find_sandbox_run_ancestor().is_some() {
                 eprintln!("error: sandbox has been lost -- restart the process");
@@ -342,8 +340,7 @@ impl Api {
             );
         }
         // Scope generated SDK ops to the sandbox session: the SDK forwards
-        // X-Session-Id from api_keys. The raw seam helpers additionally send the
-        // legacy X-Sandbox-Id, which the SDK does not model.
+        // X-Session-Id from api_keys.
         if let Some(ref sid) = session_id {
             configuration.api_keys.insert(
                 hotdata::client::SESSION_ID_HEADER.to_string(),
@@ -395,8 +392,7 @@ impl Api {
 
     /// Test-only constructor that also scopes the client to a sandbox session
     /// and/or database, so tests can assert the `X-Session-Id` (api_keys, on
-    /// generated ops), `X-Sandbox-Id`, and `X-Database-Id` headers reach the
-    /// wire.
+    /// generated ops) and `X-Database-Id` headers reach the wire.
     #[cfg(test)]
     pub(crate) fn test_new_scoped(
         api_url: &str,
@@ -505,13 +501,10 @@ impl Api {
                 };
                 req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
             }
-            // Sandbox scope: X-Session-Id is canonical (the SDK also forwards it
-            // from api_keys on generated ops); X-Sandbox-Id is the legacy header
-            // the SDK does not model, sent here to match the old client during
-            // the session->sandbox migration window.
+            // Sandbox session scope (also forwarded from api_keys on generated
+            // ops; set here for the raw seam paths).
             if let Some(ref sid) = session_id {
                 req = req.header("X-Session-Id", sid.clone());
-                req = req.header("X-Sandbox-Id", sid.clone());
             }
             // X-Database-Id scopes the request to a database. The old ApiClient
             // attached it to every request when set; the SDK does not forward
@@ -569,13 +562,10 @@ impl Api {
                 };
                 req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
             }
-            // Sandbox scope: X-Session-Id is canonical (the SDK also forwards it
-            // from api_keys on generated ops); X-Sandbox-Id is the legacy header
-            // the SDK does not model, sent here to match the old client during
-            // the session->sandbox migration window.
+            // Sandbox session scope (also forwarded from api_keys on generated
+            // ops; set here for the raw seam paths).
             if let Some(ref sid) = session_id {
                 req = req.header("X-Session-Id", sid.clone());
-                req = req.header("X-Sandbox-Id", sid.clone());
             }
             // X-Database-Id scopes the request to a database. The old ApiClient
             // attached it to every request when set; the SDK does not forward
@@ -625,13 +615,10 @@ impl Api {
                 };
                 req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
             }
-            // Sandbox scope: X-Session-Id is canonical (the SDK also forwards it
-            // from api_keys on generated ops); X-Sandbox-Id is the legacy header
-            // the SDK does not model, sent here to match the old client during
-            // the session->sandbox migration window.
+            // Sandbox session scope (also forwarded from api_keys on generated
+            // ops; set here for the raw seam paths).
             if let Some(ref sid) = session_id {
                 req = req.header("X-Session-Id", sid.clone());
-                req = req.header("X-Sandbox-Id", sid.clone());
             }
             // X-Database-Id scopes the request to a database. The old ApiClient
             // attached it to every request when set; the SDK does not forward
@@ -691,13 +678,10 @@ impl Api {
                 };
                 req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
             }
-            // Sandbox scope: X-Session-Id is canonical (the SDK also forwards it
-            // from api_keys on generated ops); X-Sandbox-Id is the legacy header
-            // the SDK does not model, sent here to match the old client during
-            // the session->sandbox migration window.
+            // Sandbox session scope (also forwarded from api_keys on generated
+            // ops; set here for the raw seam paths).
             if let Some(ref sid) = session_id {
                 req = req.header("X-Session-Id", sid.clone());
-                req = req.header("X-Sandbox-Id", sid.clone());
             }
             // X-Database-Id scopes the request to a database. The old ApiClient
             // attached it to every request when set; the SDK does not forward
@@ -1221,15 +1205,12 @@ mod tests {
     // --- sandbox session scope headers --------------------------------------
 
     #[test]
-    fn sandbox_scope_sends_session_headers_on_raw_calls() {
-        // Regression: when a sandbox is active the old ApiClient sent both
-        // X-Session-Id and the legacy X-Sandbox-Id on every request. The raw
-        // seam helpers must reproduce both.
+    fn sandbox_scope_sends_session_id() {
+        // When a sandbox is active the seam scopes the request with X-Session-Id.
         let mut server = mockito::Server::new();
         let m = server
             .mock("POST", "/v1/query")
             .match_header("X-Session-Id", "sb-1")
-            .match_header("X-Sandbox-Id", "sb-1")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"ok":true}"#)
