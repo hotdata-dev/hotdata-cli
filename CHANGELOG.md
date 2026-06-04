@@ -1,3 +1,11 @@
+## [0.4.0] - 2026-06-04
+
+### 🚀 Features
+
+- *(databases)* Add --catalog flag to databases create (#125)
+- *(queries)* Show result_id in queries list table (#126)
+- Managed database demo flow — explicit flags, catalog resolution, BM25 search (#127)
+
 ## [0.3.4] - 2026-06-04
 
 ### 🚀 Features
