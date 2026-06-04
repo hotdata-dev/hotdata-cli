@@ -18,6 +18,7 @@ mod raw_http;
 mod results;
 mod sandbox;
 mod sandbox_session;
+mod sdk;
 mod skill;
 mod table;
 mod tables;
