@@ -30,12 +30,24 @@ Skip duplicates (same table, column, and purpose).
 
 ## 3. Create indexes
 
+For managed databases (catalog alias — auto-selects the active database connection):
+
+```bash
+hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
+  --column body --type bm25
+
+hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
+  --column embedding --type vector --metric cosine
+```
+
+For regular connections (explicit connection ID):
+
 ```bash
 hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
-  --name idx_posts_body_bm25 --columns body --type bm25
+  --name idx_posts_body_bm25 --column body --type bm25
 
 hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
-  --name idx_chunks_embedding --columns embedding --type vector --metric cosine
+  --name idx_chunks_embedding --column embedding --type vector --metric cosine
 ```
 
 Large builds: `--async`, then `hotdata jobs list` / `hotdata jobs <job_id>`.

@@ -16,15 +16,15 @@ Retrieval workloads in Hotdata: **BM25 full-text**, **vector similarity**, and t
 
 ## Search CLI
 
-`--type` is **required**: `bm25` or `vector`. Both run server-side.
+Both run server-side. `--type` and `--column` are **optional** when the table has exactly one search index — they are inferred automatically. Specify them when multiple indexes exist.
 
 ```bash
 # BM25 (requires a BM25 index on the column)
-hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> \
+hotdata search "<query>" --table <connection.schema.table> [--type bm25] [--column <column>] \
   [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 
 # Vector (requires a vector index; server auto-embeds the query text)
-hotdata search "<query>" --type vector --table <connection.schema.table> --column <source_text_column> \
+hotdata search "<query>" --table <connection.schema.table> [--type vector] [--column <source_text_column>] \
   [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 ```
 
@@ -33,6 +33,7 @@ hotdata search "<query>" --type vector --table <connection.schema.table> --colum
 | **`bm25`** | Server generates `bm25_search(table, col, 'text')`. Results sort by score (descending). |
 | **`vector`** | Pass plain-text query; name the **source text column** (e.g. `title`). Server embeds using the same provider/metric/dimensions as the index. SQL uses `vector_distance(col, 'text')`. Results sort by distance (ascending). |
 
+- **Inference:** when `--type` or `--column` are omitted, the CLI fetches the table's indexes and selects the only BM25/vector index. If multiple exist, you must specify both flags.
 - **No vector index, or custom embedding model?** Use raw SQL via `hotdata query` (e.g. `cosine_distance(col, [<vec>])`). The removed `--model` / stdin-vector paths hardcoded `l2_distance` and are not supported.
 - **Before search:** create the right index (`indexes create --type bm25` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
 - Default `--limit` is 10.
@@ -48,15 +49,19 @@ Indexes attach to a **connection table** (`--connection-id` + `--schema` + `--ta
 hotdata indexes list [--connection-id <id>] [--schema <schema>] [--table <table>] [--workspace-id <ws>] [--output table|json|yaml]
 hotdata indexes list --dataset-id <dataset_id> [--workspace-id <ws>] [--output table|json|yaml]
 
-# Connection table
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
-  --name <name> --columns <cols> --type bm25|vector \
-  [--metric l2|cosine|dot] [--async] \
+# Managed database (catalog alias — uses the active database when the catalog matches)
+hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
+  --column <col> --type bm25|vector \
+  [--name <name>] [--metric l2|cosine|dot] [--async] \
   [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+
+# Connection table (raw connection ID)
+hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
+  --column <col> --type bm25|vector [--name <name>] ...
 hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
 
 # Dataset
-hotdata indexes create --dataset-id <dataset_id> --name <name> --columns <cols> --type bm25|vector ...
+hotdata indexes create --dataset-id <dataset_id> --column <col> --type bm25|vector [--name <name>] ...
 hotdata indexes delete --dataset-id <dataset_id> --name <name>
 ```
 
@@ -89,6 +94,6 @@ hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
 
 1. `hotdata tables list --connection-id <id>` — confirm column types.
 2. `hotdata indexes list` — avoid duplicate indexes.
-3. `hotdata indexes create ... --type bm25|vector` (add `--async` if large).
-4. `hotdata search "..." --type bm25|vector --table ... --column ...`
+3. `hotdata indexes create --catalog <alias> --table <table> --column <col> --type bm25|vector` (add `--async` if large).
+4. `hotdata search "..." --table <catalog.table>` — `--type` and `--column` are inferred when there is one search index.
 5. Record what exists in **context:DATAMODEL** (core skill) when the workspace should remember index choices.
