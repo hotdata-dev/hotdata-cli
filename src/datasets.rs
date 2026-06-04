@@ -1,46 +1,44 @@
-use crate::api::ApiClient;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use crate::sdk::Api;
+use hotdata::models::{
+    CreateDatasetRequest, CreateDatasetResponse, DatasetSource, DatasetSourceOneOf1,
+    DatasetSourceOneOf2, GetDatasetResponse, RefreshRequest, RefreshResponse, UpdateDatasetRequest,
+    UpdateDatasetResponse,
+};
+use serde::Serialize;
 
-#[derive(Deserialize, Serialize)]
-struct Dataset {
+/// Output shape for `create`, preserving the CLI's field order for json/yaml.
+#[derive(Serialize)]
+struct CreateView {
     id: String,
     label: String,
-    #[serde(default = "default_schema")]
+    schema_name: String,
+    table_name: String,
+}
+
+impl From<CreateDatasetResponse> for CreateView {
+    fn from(r: CreateDatasetResponse) -> Self {
+        CreateView {
+            id: r.id,
+            label: r.label,
+            schema_name: r.schema_name,
+            table_name: r.table_name,
+        }
+    }
+}
+
+/// Output shape for `list` rows.
+#[derive(Serialize)]
+struct DatasetView {
+    id: String,
+    label: String,
     schema_name: String,
     table_name: String,
     created_at: String,
     updated_at: String,
 }
 
-fn default_schema() -> String {
-    "main".to_string()
-}
-
-#[derive(Deserialize, Serialize)]
-struct CreateResponse {
-    id: String,
-    label: String,
-    #[serde(default = "default_schema")]
-    schema_name: String,
-    table_name: String,
-}
-
-#[derive(Deserialize)]
-struct ListResponse {
-    datasets: Vec<Dataset>,
-    count: u64,
-    has_more: bool,
-}
-
-#[derive(Deserialize, Serialize)]
-struct Column {
-    name: String,
-    data_type: String,
-    nullable: bool,
-}
-
-#[derive(Deserialize, Serialize)]
+/// Output shape for `get`.
+#[derive(Serialize)]
 struct DatasetDetail {
     id: String,
     label: String,
@@ -52,49 +50,59 @@ struct DatasetDetail {
     columns: Vec<Column>,
 }
 
-#[derive(Deserialize, Serialize)]
-struct UpdateResponse {
+#[derive(Serialize)]
+struct Column {
+    name: String,
+    data_type: String,
+    nullable: bool,
+}
+
+/// Output shape for `update`, preserving the CLI's field order and optional
+/// `schema_name`. runtimedb's `UpdateDatasetResponse` does not currently send
+/// `schema_name`, so we don't synthesize one — sandbox-scoped datasets live
+/// under `datasets.<sandbox_id>.<table>`, not `datasets.main.*`.
+#[derive(Serialize)]
+struct UpdateView {
     id: String,
     label: String,
-    // Not currently in runtimedb's UpdateDatasetResponse; kept Optional so we
-    // print `full_name` only when the server actually returns the schema.
-    // Synthesizing "main" is wrong for sandbox-scoped datasets where
-    // schema_name == sandbox_id.
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     schema_name: Option<String>,
     table_name: String,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     latest_version: Option<i32>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pinned_version: Option<i32>,
     updated_at: String,
 }
 
-fn create_dataset(
-    api: &ApiClient,
-    description: Option<&str>,
-    name: &str,
-    source: serde_json::Value,
-    format: &str,
-) {
-    let label = description.unwrap_or(name);
-    let body = json!({ "table_name": name, "label": label, "source": source });
-
-    let (status, resp_body) = api.post_raw("/datasets", &body);
-
-    if !status.is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
-
-    let dataset: CreateResponse = match serde_json::from_str(&resp_body) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
+impl From<UpdateDatasetResponse> for UpdateView {
+    fn from(r: UpdateDatasetResponse) -> Self {
+        UpdateView {
+            id: r.id,
+            label: r.label,
+            // The SDK model carries no schema_name; keep None so we print the
+            // unqualified table_name + the "see qualified name" hint.
+            schema_name: None,
+            table_name: r.table_name,
+            latest_version: Some(r.latest_version),
+            pinned_version: r.pinned_version.flatten(),
+            updated_at: r.updated_at,
         }
+    }
+}
+
+fn create_dataset(api: &Api, description: Option<&str>, name: &str, source: DatasetSource, format: &str) {
+    let label = description.unwrap_or(name).to_string();
+    let mut request = CreateDatasetRequest::new(label, source);
+    request.table_name = Some(Some(name.to_string()));
+
+    let resp = match crate::sdk::block(
+        api.client().datasets().create(request, api.database_id()),
+    ) {
+        Ok(r) => r,
+        Err(e) => e.exit(),
     };
+    let dataset = CreateView::from(resp);
 
     use crossterm::style::Stylize;
     match format {
@@ -114,8 +122,12 @@ fn create_dataset(
 }
 
 pub fn create_from_query(workspace_id: &str, sql: &str, description: Option<&str>, name: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    create_dataset(&api, description, name, json!({ "type": "sql_query", "sql": sql }), format);
+    let api = Api::new(Some(workspace_id));
+    let source = DatasetSource::DatasetSourceOneOf2(Box::new(DatasetSourceOneOf2::new(
+        sql.to_string(),
+        hotdata::models::dataset_source_one_of_2::Type::SqlQuery,
+    )));
+    create_dataset(&api, description, name, source, format);
 }
 
 pub fn create_from_saved_query(
@@ -125,29 +137,46 @@ pub fn create_from_saved_query(
     name: &str,
     format: &str,
 ) {
-    let api = ApiClient::new(Some(workspace_id));
-    create_dataset(&api, description, name, json!({ "type": "saved_query", "saved_query_id": query_id }), format);
+    let api = Api::new(Some(workspace_id));
+    let source = DatasetSource::DatasetSourceOneOf1(Box::new(DatasetSourceOneOf1::new(
+        query_id.to_string(),
+        hotdata::models::dataset_source_one_of_1::Type::SavedQuery,
+    )));
+    create_dataset(&api, description, name, source, format);
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
-    let params = [
-        ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
-    ];
-    let body: ListResponse = api.get_with_params("/datasets", &params);
+    let body = crate::sdk::block(
+        api.client()
+            .datasets()
+            .list(limit.map(|l| l as i32), offset.map(|o| o as i32)),
+    )
+    .unwrap_or_else(|e| e.exit());
+
+    let datasets: Vec<DatasetView> = body
+        .datasets
+        .into_iter()
+        .map(|d| DatasetView {
+            id: d.id,
+            label: d.label,
+            schema_name: d.schema_name,
+            table_name: d.table_name,
+            created_at: d.created_at,
+            updated_at: d.updated_at,
+        })
+        .collect();
 
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&body.datasets).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&body.datasets).unwrap()),
+        "json" => println!("{}", serde_json::to_string_pretty(&datasets).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&datasets).unwrap()),
         "table" => {
-            if body.datasets.is_empty() {
+            if datasets.is_empty() {
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No datasets found.".dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body
-                    .datasets
+                let rows: Vec<Vec<String>> = datasets
                     .iter()
                     .map(|d| {
                         vec![
@@ -178,9 +207,29 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
 }
 
 pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
-    let d: DatasetDetail = api.get(&format!("/datasets/{dataset_id}"));
+    let resp: GetDatasetResponse =
+        crate::sdk::block(api.client().datasets().get(dataset_id)).unwrap_or_else(|e| e.exit());
+
+    let d = DatasetDetail {
+        id: resp.id,
+        label: resp.label,
+        schema_name: resp.schema_name,
+        table_name: resp.table_name,
+        source_type: resp.source_type,
+        created_at: resp.created_at,
+        updated_at: resp.updated_at,
+        columns: resp
+            .columns
+            .into_iter()
+            .map(|c| Column {
+                name: c.name,
+                data_type: c.data_type,
+                nullable: c.nullable,
+            })
+            .collect(),
+    };
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&d).unwrap()),
@@ -226,17 +275,20 @@ pub fn update(
         std::process::exit(1);
     }
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
-    let mut body = json!({});
+    let mut request = UpdateDatasetRequest::new();
     if let Some(d) = description {
-        body["label"] = json!(d);
+        request.label = Some(Some(d.to_string()));
     }
     if let Some(n) = name {
-        body["table_name"] = json!(n);
+        request.table_name = Some(Some(n.to_string()));
     }
 
-    let d: UpdateResponse = api.put(&format!("/datasets/{dataset_id}"), &body);
+    let resp: UpdateDatasetResponse =
+        crate::sdk::block(api.client().datasets().update(dataset_id, request))
+            .unwrap_or_else(|e| e.exit());
+    let d = UpdateView::from(resp);
 
     use crossterm::style::Stylize;
     eprintln!("{}", "Dataset updated".green());
@@ -271,25 +323,22 @@ pub fn update(
 pub fn refresh(workspace_id: &str, dataset_id: &str, async_mode: bool) {
     use crossterm::style::Stylize;
 
-    let mut body = json!({
-        "dataset_id": dataset_id,
-    });
+    let api = Api::new(Some(workspace_id));
+
+    let mut request = RefreshRequest::new();
+    request.dataset_id = Some(Some(dataset_id.to_string()));
     if async_mode {
-        body["async"] = json!(true);
+        request.r#async = Some(true);
     }
 
-    let api = ApiClient::new(Some(workspace_id));
-    let (status, resp_body) = api.post_raw("/refresh", &body);
-
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
-
-    let parsed: serde_json::Value = serde_json::from_str(&resp_body).unwrap_or_default();
+    let resp = crate::sdk::block(api.client().refresh().refresh(request))
+        .unwrap_or_else(|e| e.exit());
 
     if async_mode {
-        let job_id = parsed["id"].as_str().unwrap_or("unknown");
+        let job_id = match &resp {
+            RefreshResponse::SubmitJobResponse(j) => j.id.clone(),
+            _ => "unknown".to_string(),
+        };
         println!("{}", "Dataset refresh submitted.".green());
         println!("job_id: {}", job_id);
         println!(
@@ -299,9 +348,15 @@ pub fn refresh(workspace_id: &str, dataset_id: &str, async_mode: bool) {
         return;
     }
 
-    let id = parsed["id"].as_str().unwrap_or("unknown");
-    let version = parsed["version"].as_i64().unwrap_or(0);
-    let dataset_status = parsed["status"].as_str().unwrap_or("");
+    let (id, version, dataset_status) = match &resp {
+        RefreshResponse::RefreshDatasetResponse(r) => {
+            (r.id.clone(), r.version as i64, r.status.clone())
+        }
+        RefreshResponse::SubmitJobResponse(j) => {
+            (j.id.clone(), 0, j.status.to_string())
+        }
+        _ => ("unknown".to_string(), 0, String::new()),
+    };
     println!("{}", "Dataset refresh completed.".green());
     println!(
         "{}",
@@ -312,13 +367,14 @@ pub fn refresh(workspace_id: &str, dataset_id: &str, async_mode: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hotdata::models::UpdateDatasetResponse;
 
     /// Mirrors runtimedb's `UpdateDatasetResponse` (see runtimedb/src/http/models.rs).
-    /// The CLI must deserialize this exact shape — schema_name, source_type,
-    /// created_at, and columns are NOT in the response. If runtimedb's response
-    /// gains or loses fields, update this fixture in lockstep.
+    /// The SDK deserializes this exact shape; here we assert the CLI's `UpdateView`
+    /// conversion preserves the display contract: no synthesized schema_name, and
+    /// latest/pinned versions surfaced when present.
     #[test]
-    fn update_response_deserializes_runtimedb_payload() {
+    fn update_view_from_runtimedb_payload() {
         let body = serde_json::json!({
             "id": "ds_abc123",
             "label": "url_test",
@@ -326,34 +382,20 @@ mod tests {
             "latest_version": 3,
             "updated_at": "2026-04-28T18:30:00Z",
         });
-        let resp: UpdateResponse = serde_json::from_value(body).unwrap();
-        assert_eq!(resp.id, "ds_abc123");
-        assert_eq!(resp.label, "url_test");
-        assert_eq!(resp.table_name, "url_test");
-        // The server doesn't currently send schema_name, so we don't synthesize
-        // one — sandbox-scoped datasets live under datasets.<sandbox_id>.<table>,
-        // not datasets.main.*, and a fabricated "main" would mislead users.
-        assert!(resp.schema_name.is_none());
-        assert_eq!(resp.latest_version, Some(3));
-        assert!(resp.pinned_version.is_none());
+        let resp: UpdateDatasetResponse = serde_json::from_value(body).unwrap();
+        let view = UpdateView::from(resp);
+        assert_eq!(view.id, "ds_abc123");
+        assert_eq!(view.label, "url_test");
+        assert_eq!(view.table_name, "url_test");
+        // The server doesn't send schema_name and we never synthesize "main",
+        // so sandbox-scoped datasets aren't mislabeled.
+        assert!(view.schema_name.is_none());
+        assert_eq!(view.latest_version, Some(3));
+        assert!(view.pinned_version.is_none());
     }
 
     #[test]
-    fn update_response_uses_schema_name_when_server_supplies_it() {
-        // Forward-compat: if runtimedb later includes schema_name, we use it.
-        let body = serde_json::json!({
-            "id": "ds_abc123",
-            "label": "x",
-            "schema_name": "sandbox_xyz",
-            "table_name": "x",
-            "updated_at": "2026-04-28T18:30:00Z",
-        });
-        let resp: UpdateResponse = serde_json::from_value(body).unwrap();
-        assert_eq!(resp.schema_name.as_deref(), Some("sandbox_xyz"));
-    }
-
-    #[test]
-    fn update_response_handles_pinned_version() {
+    fn update_view_handles_pinned_version() {
         let body = serde_json::json!({
             "id": "ds_abc123",
             "label": "x",
@@ -362,20 +404,30 @@ mod tests {
             "pinned_version": 2,
             "updated_at": "2026-04-28T18:30:00Z",
         });
-        let resp: UpdateResponse = serde_json::from_value(body).unwrap();
-        assert_eq!(resp.pinned_version, Some(2));
+        let resp: UpdateDatasetResponse = serde_json::from_value(body).unwrap();
+        let view = UpdateView::from(resp);
+        assert_eq!(view.pinned_version, Some(2));
     }
 
     #[test]
-    fn update_response_tolerates_missing_latest_version() {
-        // Defensive: treat latest_version as optional in case the server omits it.
-        let body = serde_json::json!({
-            "id": "ds_abc123",
-            "label": "x",
-            "table_name": "x",
-            "updated_at": "2026-04-28T18:30:00Z",
-        });
-        let resp: UpdateResponse = serde_json::from_value(body).unwrap();
-        assert!(resp.latest_version.is_none());
+    fn create_from_query_builds_sql_source() {
+        let source = DatasetSource::DatasetSourceOneOf2(Box::new(DatasetSourceOneOf2::new(
+            "SELECT 1".to_string(),
+            hotdata::models::dataset_source_one_of_2::Type::SqlQuery,
+        )));
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["type"], "sql_query");
+        assert_eq!(json["sql"], "SELECT 1");
+    }
+
+    #[test]
+    fn create_from_saved_query_builds_saved_query_source() {
+        let source = DatasetSource::DatasetSourceOneOf1(Box::new(DatasetSourceOneOf1::new(
+            "sq_123".to_string(),
+            hotdata::models::dataset_source_one_of_1::Type::SavedQuery,
+        )));
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["type"], "saved_query");
+        assert_eq!(json["saved_query_id"], "sq_123");
     }
 }
