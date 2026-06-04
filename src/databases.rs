@@ -839,6 +839,46 @@ pub fn tables_load(
             all_tables.push(new_table_key);
         }
 
+        // Warn if any existing table has synced data — delete+recreate will lose it.
+        let synced: Vec<String> = existing
+            .iter()
+            .filter(|t| t.synced)
+            .map(|t| format!("{}.{}", t.schema, t.table))
+            .collect();
+        if !synced.is_empty() {
+            use crossterm::style::Stylize;
+            let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or(&db.id);
+            eprintln!(
+                "{}",
+                format!(
+                    "warning: declaring '{}' requires recreating the database '{catalog}'. \
+                     The following tables have loaded data that will be lost:\n  {}",
+                    table,
+                    synced.join(", ")
+                )
+                .yellow()
+            );
+            if crate::util::is_interactive() {
+                use std::io::Write;
+                eprint!("Proceed and lose this data? [y/N] ");
+                std::io::stderr().flush().unwrap();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    eprintln!("{}", "Aborted.".red());
+                    std::process::exit(1);
+                }
+            } else {
+                eprintln!(
+                    "{}",
+                    "error: cannot auto-declare table in non-interactive mode — existing data would be lost. \
+                     Declare all tables up front with 'databases create --table <name>'."
+                        .red()
+                );
+                std::process::exit(1);
+            }
+        }
+
         let (del_status, del_body) = api.delete_raw(&format!("/databases/{}", db.id));
         if !del_status.is_success() {
             eprintln!("{}", crate::util::api_error(del_body).red());
