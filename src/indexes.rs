@@ -1,4 +1,4 @@
-use crate::sdk::{block, none_if_404, Api};
+use crate::sdk::{Api, block, none_if_404};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -158,8 +158,8 @@ fn resolve_search_params(
         .filter(|i| {
             let t = i.index_type.as_str();
             (t == "bm25" || t == "vector")
-                && hint_type.map_or(true, |ht| ht == t)
-                && hint_column.map_or(true, |hc| i.columns.iter().any(|c| c == hc))
+                && hint_type.is_none_or(|ht| ht == t)
+                && hint_column.is_none_or(|hc| i.columns.iter().any(|c| c == hc))
         })
         .collect();
 
@@ -176,9 +176,11 @@ fn resolve_search_params(
         }
         [one] => {
             let index_type = one.index_type.clone();
-            let column = one.columns.first().cloned().ok_or_else(|| {
-                format!("Index '{}' has no columns.", one.index_name)
-            })?;
+            let column = one
+                .columns
+                .first()
+                .cloned()
+                .ok_or_else(|| format!("Index '{}' has no columns.", one.index_name))?;
             Ok((index_type, column))
         }
         _ => {
@@ -376,9 +378,9 @@ impl IndexScope<'_> {
                 connection_id,
                 schema,
                 table,
-            } => format!(
-                "/connections/{connection_id}/tables/{schema}/{table}/indexes/{index_name}"
-            ),
+            } => {
+                format!("/connections/{connection_id}/tables/{schema}/{table}/indexes/{index_name}")
+            }
             IndexScope::Dataset { dataset_id } => {
                 format!("/datasets/{dataset_id}/indexes/{index_name}")
             }
@@ -778,7 +780,11 @@ mod tests {
         let indexes = vec![make_index("sorted_idx", "sorted", &["id"])];
         let result = resolve_search_params(&indexes, None, None, "db.public.t");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("No BM25 or vector index found"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("No BM25 or vector index found")
+        );
     }
 
     #[test]
@@ -797,7 +803,11 @@ mod tests {
         ];
         let result = resolve_search_params(&indexes, None, None, "db.public.t");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Multiple search indexes found"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Multiple search indexes found")
+        );
     }
 
     #[test]

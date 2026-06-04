@@ -1,4 +1,4 @@
-use crate::sdk::{block, none_if_404, Api, ApiError};
+use crate::sdk::{Api, ApiError, block, none_if_404};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -99,8 +99,7 @@ struct ConnectionTypeDetail {
 
 pub fn types_list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let resp =
-        block(api.client().connection_types().list()).unwrap_or_else(|e| e.exit());
+    let resp = block(api.client().connection_types().list()).unwrap_or_else(|e| e.exit());
     let body = ListConnectionTypesResponse {
         connection_types: resp
             .connection_types
@@ -137,8 +136,7 @@ pub fn types_list(workspace_id: &str, format: &str) {
 
 pub fn types_get(workspace_id: &str, name: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let resp =
-        block(api.client().connection_types().get(name)).unwrap_or_else(|e| e.exit());
+    let resp = block(api.client().connection_types().get(name)).unwrap_or_else(|e| e.exit());
     // The SDK models nullable fields as `Option<Option<Value>>`; flatten and
     // drop an explicit JSON `null` to match the old behavior (the old struct
     // deserialized a missing/`null` field to `None`).
@@ -210,20 +208,16 @@ pub fn resolve_connection_id(api: &Api, name_or_id: &str) -> String {
 
     // Before listing connections, check if the active database's catalog or name
     // matches — prefer it over any stale connection entry with the same name.
-    if let Some(ws) = api.workspace_id() {
-        if let Some(active_id) = crate::config::load_current_database("default", ws) {
-            if let Some(active_db) = none_if_404(
-                api.get_json::<crate::databases::Database>(&format!("/databases/{active_id}"), &[]),
-            )
-            .unwrap_or_else(|e| e.exit())
-            {
-                if active_db.default_catalog.as_deref() == Some(name_or_id)
-                    || active_db.name.as_deref() == Some(name_or_id)
-                {
-                    return active_db.default_connection_id;
-                }
-            }
-        }
+    if let Some(ws) = api.workspace_id()
+        && let Some(active_id) = crate::config::load_current_database("default", ws)
+        && let Some(active_db) = none_if_404(
+            api.get_json::<crate::databases::Database>(&format!("/databases/{active_id}"), &[]),
+        )
+        .unwrap_or_else(|e| e.exit())
+        && (active_db.default_catalog.as_deref() == Some(name_or_id)
+            || active_db.name.as_deref() == Some(name_or_id))
+    {
+        return active_db.default_connection_id;
     }
 
     let resp = block(api.client().connections().list()).unwrap_or_else(|e| e.exit());
@@ -252,8 +246,7 @@ pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
     let is_table = format == "table";
 
     let spinner = is_table.then(|| crate::util::spinner("Fetching connection..."));
-    let resp =
-        block(api.client().connections().get(connection_id)).unwrap_or_else(|e| e.exit());
+    let resp = block(api.client().connections().get(connection_id)).unwrap_or_else(|e| e.exit());
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
@@ -337,15 +330,13 @@ pub fn create(workspace_id: &str, name: &str, source_type: &str, config: &str, f
     let is_table = format == "table";
 
     let spinner = is_table.then(|| crate::util::spinner("Creating connection..."));
-    let (status, resp_body) = api
-        .post_raw("/connections", &body)
-        .unwrap_or_else(|e| {
-            if let Some(s) = &spinner {
-                s.finish_and_clear();
-            }
-            eprintln!("{}", error_text(e));
-            std::process::exit(1);
-        });
+    let (status, resp_body) = api.post_raw("/connections", &body).unwrap_or_else(|e| {
+        if let Some(s) = &spinner {
+            s.finish_and_clear();
+        }
+        eprintln!("{}", error_text(e));
+        std::process::exit(1);
+    });
     if let Some(s) = &spinner {
         s.finish_and_clear();
     }
@@ -573,12 +564,12 @@ pub fn refresh(
             )
             .dark_grey()
         );
-        if let Some(errors) = parsed["errors"].as_array() {
-            if !errors.is_empty() {
-                eprintln!("{}", format!("  {} error(s):", errors.len()).yellow());
-                for err in errors {
-                    eprintln!("    {}", err);
-                }
+        if let Some(errors) = parsed["errors"].as_array()
+            && !errors.is_empty()
+        {
+            eprintln!("{}", format!("  {} error(s):", errors.len()).yellow());
+            for err in errors {
+                eprintln!("    {}", err);
             }
         }
     }

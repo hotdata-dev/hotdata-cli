@@ -142,14 +142,13 @@ extern "C" fn print_database_footer() {
     if database_session::database_token_in_use().is_some() {
         return;
     }
-    if let Some(ws_id) = ACTIVE_WORKSPACE_ID.get() {
-        if let Some(id) = config::load_current_database("default", ws_id) {
-            eprintln!(
-                "{}",
-                format!("current database: {id}  use 'hotdata databases set' to change")
-                    .dark_grey(),
-            );
-        }
+    if let Some(ws_id) = ACTIVE_WORKSPACE_ID.get()
+        && let Some(id) = config::load_current_database("default", ws_id)
+    {
+        eprintln!(
+            "{}",
+            format!("current database: {id}  use 'hotdata databases set' to change").dark_grey(),
+        );
     }
 }
 
@@ -236,7 +235,9 @@ fn main() {
                             } else {
                                 datasets::create_from_saved_query(
                                     &workspace_id,
-                                    query_id.as_deref().unwrap_or_else(|| unreachable!("clap enforces --sql or --query-id")),
+                                    query_id.as_deref().unwrap_or_else(|| {
+                                        unreachable!("clap enforces --sql or --query-id")
+                                    }),
                                     description.as_deref(),
                                     &name,
                                     &output,
@@ -282,15 +283,13 @@ fn main() {
                 match command {
                     Some(QueryCommands::Status { id }) => query::poll(&id, &workspace_id, &output),
                     None => match sql {
-                        Some(sql) => {
-                            query::execute(
-                                &sql,
-                                &workspace_id,
-                                connection.as_deref(),
-                                database.as_deref(),
-                                &output,
-                            )
-                        }
+                        Some(sql) => query::execute(
+                            &sql,
+                            &workspace_id,
+                            connection.as_deref(),
+                            database.as_deref(),
+                            &output,
+                        ),
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
@@ -447,12 +446,8 @@ fn main() {
                             expires_at.as_deref(),
                             &output,
                         ),
-                        Some(DatabasesCommands::Set { id }) => {
-                            databases::set(&workspace_id, &id)
-                        }
-                        Some(DatabasesCommands::Unset) => {
-                            databases::unset(&workspace_id)
-                        }
+                        Some(DatabasesCommands::Set { id }) => databases::set(&workspace_id, &id),
+                        Some(DatabasesCommands::Unset) => databases::unset(&workspace_id),
                         Some(DatabasesCommands::Delete { name_or_id }) => {
                             databases::delete(&workspace_id, &name_or_id)
                         }
@@ -680,51 +675,62 @@ fn main() {
                         description,
                     } => {
                         let api = sdk::Api::new(Some(&workspace_id));
-                        let (scope, resolved_columns, auto_name) =
-                            match (catalog.as_deref().or(table.as_deref()), dataset_id.as_deref()) {
-                                (Some(_), None) => {
-                                    let catalog_or_conn = catalog.as_deref().unwrap_or_else(|| {
-                                        eprintln!("error: --catalog is required");
-                                        std::process::exit(1);
-                                    });
-                                    let tbl = table.as_deref().unwrap_or_else(|| {
-                                        eprintln!("error: --table is required");
-                                        std::process::exit(1);
-                                    });
-                                    let cols = column.as_deref().unwrap_or_else(|| {
-                                        eprintln!("error: --column is required");
-                                        std::process::exit(1);
-                                    });
-                                    let conn_id = connections::resolve_connection_id(&api, catalog_or_conn);
-                                    let auto = format!(
-                                        "{tbl}_{cols}_{type}",
-                                        cols = cols.replace(',', "_"),
-                                        type = r#type
-                                    );
-                                    ((conn_id, schema, tbl.to_string()), cols.to_string(), auto)
-                                }
-                                (None, Some(did)) => {
-                                    let cols = column.as_deref().unwrap_or_else(|| {
-                                        eprintln!("error: --column is required with --dataset-id");
-                                        std::process::exit(1);
-                                    });
-                                    let auto = format!(
-                                        "dataset_{cols}_{type}",
-                                        cols = cols.replace(',', "_"),
-                                        type = r#type
-                                    );
-                                    ((did.to_string(), String::new(), String::new()), cols.to_string(), auto)
-                                }
-                                _ => {
-                                    eprintln!("error: provide --catalog and --table, or --dataset-id with --column");
+                        let (scope, resolved_columns, auto_name) = match (
+                            catalog.as_deref().or(table.as_deref()),
+                            dataset_id.as_deref(),
+                        ) {
+                            (Some(_), None) => {
+                                let catalog_or_conn = catalog.as_deref().unwrap_or_else(|| {
+                                    eprintln!("error: --catalog is required");
                                     std::process::exit(1);
-                                }
-                            };
+                                });
+                                let tbl = table.as_deref().unwrap_or_else(|| {
+                                    eprintln!("error: --table is required");
+                                    std::process::exit(1);
+                                });
+                                let cols = column.as_deref().unwrap_or_else(|| {
+                                    eprintln!("error: --column is required");
+                                    std::process::exit(1);
+                                });
+                                let conn_id =
+                                    connections::resolve_connection_id(&api, catalog_or_conn);
+                                let auto = format!(
+                                    "{tbl}_{cols}_{type}",
+                                    cols = cols.replace(',', "_"),
+                                    type = r#type
+                                );
+                                ((conn_id, schema, tbl.to_string()), cols.to_string(), auto)
+                            }
+                            (None, Some(did)) => {
+                                let cols = column.as_deref().unwrap_or_else(|| {
+                                    eprintln!("error: --column is required with --dataset-id");
+                                    std::process::exit(1);
+                                });
+                                let auto = format!(
+                                    "dataset_{cols}_{type}",
+                                    cols = cols.replace(',', "_"),
+                                    type = r#type
+                                );
+                                (
+                                    (did.to_string(), String::new(), String::new()),
+                                    cols.to_string(),
+                                    auto,
+                                )
+                            }
+                            _ => {
+                                eprintln!(
+                                    "error: provide --catalog and --table, or --dataset-id with --column"
+                                );
+                                std::process::exit(1);
+                            }
+                        };
                         let index_name = name.unwrap_or(auto_name);
                         let is_dataset = dataset_id.is_some();
                         let (conn_id, schema, table) = scope;
                         let resolved_scope = if is_dataset {
-                            indexes::IndexScope::Dataset { dataset_id: &conn_id }
+                            indexes::IndexScope::Dataset {
+                                dataset_id: &conn_id,
+                            }
                         } else {
                             indexes::IndexScope::Connection {
                                 connection_id: &conn_id,
@@ -759,7 +765,9 @@ fn main() {
                             schema.as_deref(),
                             table.as_deref(),
                         ) {
-                            (Some(did), _, _, _) => indexes::IndexScope::Dataset { dataset_id: did },
+                            (Some(did), _, _, _) => {
+                                indexes::IndexScope::Dataset { dataset_id: did }
+                            }
                             (None, Some(cid), Some(sch), Some(tbl)) => {
                                 indexes::IndexScope::Connection {
                                     connection_id: cid,
@@ -843,9 +851,7 @@ fn main() {
                 // Schema defaults to `public` when omitted.
                 let parts: Vec<&str> = table.splitn(4, '.').collect();
                 let (conn_name, schema, table_name) = match parts.as_slice() {
-                    [conn, schema, tbl] => {
-                        (conn.to_string(), schema.to_string(), tbl.to_string())
-                    }
+                    [conn, schema, tbl] => (conn.to_string(), schema.to_string(), tbl.to_string()),
                     [conn, tbl] => (conn.to_string(), "public".to_string(), tbl.to_string()),
                     _ => {
                         eprintln!(
@@ -857,23 +863,22 @@ fn main() {
                 let normalized_table = format!("{}.{}.{}", conn_name, schema, table_name);
 
                 // Infer --type and --column from the table's indexes when either is omitted.
-                let (resolved_type, resolved_column) =
-                    if r#type.is_some() && column.is_some() {
-                        (r#type.unwrap(), column.unwrap())
-                    } else {
-                        let (inferred_type, inferred_column) = indexes::infer_for_search(
-                            &workspace_id,
-                            &conn_name,
-                            &schema,
-                            &table_name,
-                            r#type.as_deref(),
-                            column.as_deref(),
-                        );
-                        (
-                            r#type.unwrap_or(inferred_type),
-                            column.unwrap_or(inferred_column),
-                        )
-                    };
+                let (resolved_type, resolved_column) = if r#type.is_some() && column.is_some() {
+                    (r#type.unwrap(), column.unwrap())
+                } else {
+                    let (inferred_type, inferred_column) = indexes::infer_for_search(
+                        &workspace_id,
+                        &conn_name,
+                        &schema,
+                        &table_name,
+                        r#type.as_deref(),
+                        column.as_deref(),
+                    );
+                    (
+                        r#type.unwrap_or(inferred_type),
+                        column.unwrap_or(inferred_column),
+                    )
+                };
 
                 let select_cols = select.as_deref().unwrap_or("*");
 
@@ -1061,12 +1066,6 @@ fn main() {
 
     // Print update notice after command output (joined from background thread).
     update::maybe_print_update_notice(update_handle);
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 }
 
 pub fn get_styles() -> clap::builder::Styles {

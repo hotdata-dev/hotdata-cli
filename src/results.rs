@@ -61,7 +61,11 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                             crate::util::format_date(&r.created_at),
                         ];
                         if has_rows {
-                            row.push(r.row_count.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string()));
+                            row.push(
+                                r.row_count
+                                    .map(|n| n.to_string())
+                                    .unwrap_or_else(|| "-".to_string()),
+                            );
                         }
                         if has_query_run {
                             row.push(r.query_run_id.as_deref().unwrap_or("-").to_string());
@@ -70,7 +74,7 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                             row.push(
                                 r.expires_at
                                     .as_deref()
-                                    .map(|s| crate::util::format_date(s))
+                                    .map(crate::util::format_date)
                                     .unwrap_or_else(|| "-".to_string()),
                             );
                         }
@@ -79,9 +83,15 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                     .collect();
 
                 let mut headers = vec!["ID", "STATUS", "CREATED"];
-                if has_rows { headers.push("ROWS"); }
-                if has_query_run { headers.push("QUERY_RUN_ID"); }
-                if has_expires { headers.push("EXPIRES"); }
+                if has_rows {
+                    headers.push("ROWS");
+                }
+                if has_query_run {
+                    headers.push("QUERY_RUN_ID");
+                }
+                if has_expires {
+                    headers.push("EXPIRES");
+                }
 
                 crate::table::print(&headers, &rows);
             }
