@@ -89,9 +89,8 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json
    Or managed parquet:
 
    ```bash
-   hotdata databases create --name analytics --table slice
-   hotdata databases set <returned-id>
-   hotdata databases tables load slice --file ./slice.parquet
+   hotdata databases create --catalog analytics
+   hotdata databases load --catalog analytics --table slice --file ./slice.parquet
    ```
 
 3. **Chain query** — use printed **`full_name`** or `datasets list` **FULL NAME** column:
@@ -113,7 +112,7 @@ For equality, range, and sort-heavy OLAP — not full-text or vector (see **`hot
 
 ```bash
 hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
-  --name idx_orders_created --columns created_at --type sorted [--async]
+  --name idx_orders_created --column created_at --type sorted [--async]
 ```
 
 List and delete use the same `hotdata indexes` commands as in the search skill; only **`--type sorted`** is the analytics focus here.

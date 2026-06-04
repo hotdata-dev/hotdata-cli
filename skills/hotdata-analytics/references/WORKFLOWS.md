@@ -76,8 +76,8 @@ hotdata datasets create --label "from saved" --query-id <query_id> [--table-name
 **Managed database** (parquet → `<database>.<schema>.<table>`):
 
 ```bash
-hotdata databases create --name chain_db --table revenue_slice
-hotdata databases tables load chain_db revenue_slice --file ./revenue_slice.parquet
+hotdata databases create --catalog chain_db
+hotdata databases load --catalog chain_db --table revenue_slice --file ./revenue_slice.parquet
 ```
 
 Note the printed **`full_name`** (e.g. `datasets.main.chain_revenue_slice` or `chain_db.public.revenue_slice`). For datasets, **`FULL NAME`** from `datasets list` is authoritative.
