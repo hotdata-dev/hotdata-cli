@@ -190,7 +190,7 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                 crate::table::print(&["ID", "LABEL", "FULL NAME", "CREATED AT"], &rows);
             }
             if body.has_more {
-                let next = offset.unwrap_or(0) + body.count as u32;
+                let next = offset.unwrap_or(0) + body.count.max(0) as u32;
                 use crossterm::style::Stylize;
                 eprintln!(
                     "{}",

@@ -54,7 +54,7 @@ fn fetch_health(api: &Api, connection_id: &str, show_spinner: bool) -> HealthSta
         Ok(h) => HealthStatus::Available(HealthResponse {
             connection_id: h.connection_id,
             healthy: h.healthy,
-            latency_ms: Some(h.latency_ms as u64),
+            latency_ms: Some(h.latency_ms.max(0) as u64),
             error: h.error.flatten(),
         }),
         Err(e) => HealthStatus::Unavailable(error_text(e)),
@@ -254,8 +254,8 @@ pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
         id: resp.id,
         name: resp.name,
         source_type: resp.source_type,
-        table_count: resp.table_count as u64,
-        synced_table_count: resp.synced_table_count as u64,
+        table_count: resp.table_count.max(0) as u64,
+        synced_table_count: resp.synced_table_count.max(0) as u64,
     };
 
     let health = fetch_health(&api, connection_id, is_table);
