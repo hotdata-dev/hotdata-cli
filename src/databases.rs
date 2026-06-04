@@ -453,13 +453,13 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
 /// the id instead of printing.
 fn create_and_return_id(
     api: &ApiClient,
-    description: Option<&str>,
+    name: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
 ) -> String {
     use crossterm::style::Stylize;
-    let body = create_database_request(description, schema, tables, expires_at);
+    let body = create_database_request(name, schema, tables, expires_at);
     let (status, resp_body) = api.post_raw("/databases", &body);
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
@@ -493,7 +493,7 @@ fn mint_database_token(api: &ApiClient, database_id: &str) -> DatabaseTokenRespo
 pub fn run(
     database: Option<&str>,
     workspace_id: &str,
-    description: Option<&str>,
+    name: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
@@ -509,7 +509,7 @@ pub fn run(
     // for the child process, addressed only by the token we mint below.
     let database_id = match database {
         Some(id) => id.to_string(),
-        None => create_and_return_id(&api, description, schema, tables, expires_at),
+        None => create_and_return_id(&api, name, schema, tables, expires_at),
     };
 
     let resp = mint_database_token(&api, &database_id);

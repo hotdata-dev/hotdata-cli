@@ -403,7 +403,7 @@ fn main() {
                 // group-level name_or_id is treated as a `show` shorthand.
                 if let Some(DatabasesCommands::Run {
                     database,
-                    description,
+                    name,
                     schema,
                     tables,
                     expires_at,
@@ -414,7 +414,7 @@ fn main() {
                     databases::run(
                         db,
                         &workspace_id,
-                        description.as_deref(),
+                        name.as_deref(),
                         &schema,
                         &tables,
                         expires_at.as_deref(),

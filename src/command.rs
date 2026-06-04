@@ -639,9 +639,9 @@ pub enum DatabasesCommands {
         #[arg(long)]
         database: Option<String>,
 
-        /// Description for the auto-created database (only used when --database is omitted)
+        /// Name for the auto-created database (only used when --database is omitted)
         #[arg(long)]
-        description: Option<String>,
+        name: Option<String>,
 
         /// Schema for tables declared in the auto-created database (default: public)
         #[arg(long, default_value = "public")]
