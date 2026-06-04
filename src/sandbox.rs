@@ -1,28 +1,10 @@
-use crate::api::ApiClient;
 use crate::config;
 use crate::sandbox_session::{self, SandboxSession};
+use crate::sdk::{block, Api, ApiError};
 use crossterm::style::Stylize;
-use serde::{Deserialize, Serialize};
+use hotdata::models::UpdateSandboxRequest;
+use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-#[derive(Deserialize, Serialize)]
-struct Sandbox {
-    public_id: String,
-    name: String,
-    markdown: String,
-    created_at: String,
-    updated_at: String,
-}
-
-#[derive(Deserialize)]
-struct ListResponse {
-    sandboxes: Vec<Sandbox>,
-}
-
-#[derive(Deserialize)]
-struct DetailResponse {
-    sandbox: Sandbox,
-}
 
 /// Response shape of `/v1/auth/sandbox` and `/v1/auth/sandbox/<id>`.
 #[derive(Deserialize)]
@@ -41,6 +23,30 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Mint (or re-mint) a sandbox-scoped JWT via `POST /v1/auth/sandbox`.
+///
+/// This token-mint endpoint has no SDK operation, so it stays on the raw seam.
+/// [`Api::post_raw`] still carries the user bearer + `X-Workspace-Id` like every
+/// SDK call. Reproduces the old `ApiClient::post` behavior exactly: a transport
+/// error or a non-success status prints the standard error and exits, and a
+/// malformed body exits the same way `parse_json` did.
+fn mint_sandbox_token(api: &Api, body: &serde_json::Value) -> SandboxTokenResponse {
+    let (status, resp_body) = api
+        .post_raw("/auth/sandbox", body)
+        .unwrap_or_else(|e| e.exit());
+    if !status.is_success() {
+        ApiError::Status {
+            status,
+            body: resp_body,
+        }
+        .exit();
+    }
+    serde_json::from_str(&resp_body).unwrap_or_else(|e| {
+        eprintln!("error parsing response: {e}");
+        std::process::exit(1);
+    })
+}
+
 fn persist_sandbox_session(resp: SandboxTokenResponse, workspace_id: &str) {
     let now = now_unix();
     let session = SandboxSession {
@@ -57,8 +63,8 @@ fn persist_sandbox_session(resp: SandboxTokenResponse, workspace_id: &str) {
 }
 
 pub fn list(workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let body: ListResponse = api.get("/sandboxes");
+    let api = Api::new(Some(workspace_id));
+    let body = block(api.client().sandboxes().list()).unwrap_or_else(|e| e.exit());
 
     let current_sandbox = std::env::var("HOTDATA_SANDBOX")
         .ok()
@@ -96,10 +102,9 @@ pub fn list(workspace_id: &str, format: &str) {
 }
 
 pub fn get(sandbox_id: &str, workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let path = format!("/sandboxes/{sandbox_id}");
-    let body: DetailResponse = api.get(&path);
-    let s = &body.sandbox;
+    let api = Api::new(Some(workspace_id));
+    let body = block(api.client().sandboxes().get(sandbox_id)).unwrap_or_else(|e| e.exit());
+    let s = &*body.sandbox;
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(s).unwrap()),
@@ -129,9 +134,8 @@ pub fn get(sandbox_id: &str, workspace_id: &str, format: &str) {
 }
 
 pub fn read(sandbox_id: &str, workspace_id: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let path = format!("/sandboxes/{sandbox_id}");
-    let body: DetailResponse = api.get(&path);
+    let api = Api::new(Some(workspace_id));
+    let body = block(api.client().sandboxes().get(sandbox_id)).unwrap_or_else(|e| e.exit());
     if body.sandbox.markdown.is_empty() {
         eprintln!("{}", "Sandbox markdown is empty.".dark_grey());
     } else {
@@ -178,7 +182,7 @@ fn find_sandbox_run_ancestor_inner() -> Option<sysinfo::Pid> {
 
 pub fn new(workspace_id: &str, name: Option<&str>, format: &str) {
     check_sandbox_lock();
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
     let mut body = serde_json::json!({});
     if let Some(n) = name {
@@ -186,8 +190,10 @@ pub fn new(workspace_id: &str, name: Option<&str>, format: &str) {
     }
 
     // POST /auth/sandbox creates the sandbox AND mints a sandbox-scoped
-    // JWT (+ refresh token) in one round-trip.
-    let resp: SandboxTokenResponse = api.post("/auth/sandbox", &body);
+    // JWT (+ refresh token) in one round-trip. This token-mint endpoint has
+    // no SDK operation, so it stays on the raw seam (which still carries the
+    // user bearer + X-Workspace-Id like every SDK call).
+    let resp = mint_sandbox_token(&api, &body);
     let sandbox_id = resp.sandbox_id.clone();
     persist_sandbox_session(resp, workspace_id);
 
@@ -224,19 +230,16 @@ pub fn update(
         std::process::exit(1);
     }
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
-    let mut body = serde_json::json!({});
-    if let Some(n) = name {
-        body["name"] = serde_json::json!(n);
-    }
-    if let Some(m) = markdown {
-        body["markdown"] = serde_json::json!(m);
-    }
+    let request = UpdateSandboxRequest {
+        name: name.map(String::from),
+        markdown: markdown.map(String::from),
+    };
 
-    let path = format!("/sandboxes/{sandbox_id}");
-    let resp: DetailResponse = api.patch(&path, &body);
-    let s = &resp.sandbox;
+    let resp =
+        block(api.client().sandboxes().update(sandbox_id, request)).unwrap_or_else(|e| e.exit());
+    let s = &*resp.sandbox;
 
     eprintln!("{}", "Sandbox updated".green());
     match format {
@@ -258,7 +261,7 @@ pub fn update(
 
 pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd: &[String]) {
     check_sandbox_lock();
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
     // Mint (or re-mint, for an existing sandbox) a sandbox-scoped JWT
     // by dispatching on grant_type at /auth/sandbox. Either way we
@@ -277,7 +280,7 @@ pub fn run(sandbox_id: Option<&str>, workspace_id: &str, name: Option<&str>, cmd
             b
         }
     };
-    let resp: SandboxTokenResponse = api.post("/auth/sandbox", &body);
+    let resp = mint_sandbox_token(&api, &body);
 
     let sid = resp.sandbox_id.clone();
     let sandbox_jwt = resp.token.clone();
@@ -313,12 +316,12 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
             // the grant_type=existing_sandbox dispatch. The call
             // doubles as an existence + access check (404/403 if the
             // user can't reach it).
-            let api = ApiClient::new(Some(workspace_id));
+            let api = Api::new(Some(workspace_id));
             let body = serde_json::json!({
                 "grant_type": "existing_sandbox",
                 "sandbox_id": id,
             });
-            let resp: SandboxTokenResponse = api.post("/auth/sandbox", &body);
+            let resp = mint_sandbox_token(&api, &body);
             persist_sandbox_session(resp, workspace_id);
 
             if let Err(e) = config::save_sandbox("default", id) {
@@ -342,14 +345,8 @@ pub fn set(sandbox_id: Option<&str>, workspace_id: &str) {
 
 pub fn delete(sandbox_id: &str, workspace_id: &str) {
     check_sandbox_lock();
-    let api = ApiClient::new(Some(workspace_id));
-    let path = format!("/sandboxes/{sandbox_id}");
-    let (status, resp_body) = api.delete_raw(&path);
-
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
+    let api = Api::new(Some(workspace_id));
+    block(api.client().sandboxes().delete(sandbox_id)).unwrap_or_else(|e| e.exit());
 
     // If the deleted sandbox was the active one, clear the cached session
     // and config pointer so subsequent commands don't keep routing through
