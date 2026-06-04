@@ -329,29 +329,26 @@ pub enum IndexesCommands {
     },
 
     /// Create an index on a table or dataset.
-    ///
-    /// For connection-scoped indexes, pass the table and columns using bracket notation:
-    ///   `connection.table[col1,col2]` or `connection.schema.table[col1,col2]`
-    ///   (schema defaults to `public` when omitted)
-    ///
-    /// For dataset-scoped indexes, use `--dataset-id` with `--columns`.
     Create {
-        /// Table and columns to index: `connection.table[col1,col2]`
-        /// or `connection.schema.table[col1,col2]`. Schema defaults to `public`.
-        ///
-        /// Quote the argument to prevent shell glob expansion:
-        /// `hotdata indexes create 'airbnb.listings[description]' --type bm25`
-        #[arg(conflicts_with = "dataset_id")]
-        target: Option<String>,
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
+        #[arg(long, conflicts_with = "dataset_id")]
+        catalog: Option<String>,
 
-        /// Dataset ID (alternative scope to the positional target)
-        #[arg(long, conflicts_with = "target")]
-        dataset_id: Option<String>,
+        /// Schema name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
 
-        /// Columns to index (comma-separated). Required with --dataset-id;
-        /// for connection scope use bracket notation in the target instead.
+        /// Table name to index
+        #[arg(long, conflicts_with = "dataset_id")]
+        table: Option<String>,
+
+        /// Column(s) to index (comma-separated)
         #[arg(long)]
-        columns: Option<String>,
+        column: Option<String>,
+
+        /// Dataset ID (alternative scope to --catalog/--table)
+        #[arg(long, conflicts_with_all = ["catalog", "table"])]
+        dataset_id: Option<String>,
 
         /// Index name (derived from table, columns, and type if omitted)
         #[arg(long)]

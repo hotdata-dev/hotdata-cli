@@ -664,9 +664,11 @@ fn main() {
                         &output,
                     ),
                     IndexesCommands::Create {
-                        target,
+                        catalog,
+                        schema,
+                        table,
+                        column,
                         dataset_id,
-                        columns,
                         name,
                         r#type,
                         metric,
@@ -678,46 +680,42 @@ fn main() {
                     } => {
                         let api = api::ApiClient::new(Some(&workspace_id));
                         let (scope, resolved_columns, auto_name) =
-                            match (target.as_deref(), dataset_id.as_deref()) {
-                                (Some(tgt), None) => {
-                                    let (conn_name, schema, table, cols) =
-                                        parse_index_target(tgt);
-                                    let conn_id =
-                                        connections::resolve_connection_id(&api, &conn_name);
+                            match (catalog.as_deref().or(table.as_deref()), dataset_id.as_deref()) {
+                                (Some(_), None) => {
+                                    let catalog_or_conn = catalog.as_deref().unwrap_or_else(|| {
+                                        eprintln!("error: --catalog is required");
+                                        std::process::exit(1);
+                                    });
+                                    let tbl = table.as_deref().unwrap_or_else(|| {
+                                        eprintln!("error: --table is required");
+                                        std::process::exit(1);
+                                    });
+                                    let cols = column.as_deref().unwrap_or_else(|| {
+                                        eprintln!("error: --column is required");
+                                        std::process::exit(1);
+                                    });
+                                    let conn_id = connections::resolve_connection_id(&api, catalog_or_conn);
                                     let auto = format!(
-                                        "{table}_{cols}_{type}",
-                                        cols = cols.join("_"),
+                                        "{tbl}_{cols}_{type}",
+                                        cols = cols.replace(',', "_"),
                                         type = r#type
                                     );
-                                    (
-                                        (conn_id, schema, table),
-                                        cols.join(","),
-                                        auto,
-                                    )
+                                    ((conn_id, schema, tbl.to_string()), cols.to_string(), auto)
                                 }
                                 (None, Some(did)) => {
-                                    let cols =
-                                        columns.as_deref().unwrap_or_else(|| {
-                                            eprintln!(
-                                                "error: --columns is required with --dataset-id"
-                                            );
-                                            std::process::exit(1);
-                                        });
+                                    let cols = column.as_deref().unwrap_or_else(|| {
+                                        eprintln!("error: --column is required with --dataset-id");
+                                        std::process::exit(1);
+                                    });
                                     let auto = format!(
                                         "dataset_{cols}_{type}",
                                         cols = cols.replace(',', "_"),
                                         type = r#type
                                     );
-                                    (
-                                        (did.to_string(), String::new(), String::new()),
-                                        cols.to_string(),
-                                        auto,
-                                    )
+                                    ((did.to_string(), String::new(), String::new()), cols.to_string(), auto)
                                 }
                                 _ => {
-                                    eprintln!(
-                                        "error: provide either <target> (e.g. airbnb.listings[col1,col2]) or --dataset-id with --columns"
-                                    );
+                                    eprintln!("error: provide --catalog and --table, or --dataset-id with --column");
                                     std::process::exit(1);
                                 }
                             };
@@ -1065,87 +1063,9 @@ fn main() {
 }
 
 
-/// Parse an index target like `airbnb.listings[col1,col2]` or
-/// `airbnb.public.listings[col1,col2]` into `(conn_name, schema, table, columns)`.
-/// Schema defaults to `public` when only two dot-parts are given.
-fn parse_index_target(target: &str) -> (String, String, String, Vec<String>) {
-    let Some(bracket_pos) = target.find('[') else {
-        eprintln!(
-            "error: target must include columns in brackets, e.g. airbnb.listings[col1,col2]"
-        );
-        std::process::exit(1);
-    };
-    if !target.ends_with(']') {
-        eprintln!(
-            "error: target bracket is not closed — use e.g. 'airbnb.listings[col1,col2]'"
-        );
-        std::process::exit(1);
-    }
-    let table_part = &target[..bracket_pos];
-    let cols_raw = &target[bracket_pos + 1..target.len() - 1];
-
-    let parts: Vec<&str> = table_part.splitn(4, '.').collect();
-    let (conn, schema, table) = match parts.as_slice() {
-        [c, t] => (c.to_string(), "public".to_string(), t.to_string()),
-        [c, s, t] => (c.to_string(), s.to_string(), t.to_string()),
-        _ => {
-            eprintln!(
-                "error: target must be 'connection.table[cols]' or 'connection.schema.table[cols]'"
-            );
-            std::process::exit(1);
-        }
-    };
-
-    let columns: Vec<String> = cols_raw
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    if columns.is_empty() {
-        eprintln!("error: no columns specified in brackets");
-        std::process::exit(1);
-    }
-
-    (conn, schema, table, columns)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- parse_index_target ---
-
-    #[test]
-    fn index_target_two_parts_defaults_schema_to_public() {
-        let (conn, schema, table, cols) = parse_index_target("airbnb.listings[description]");
-        assert_eq!(conn, "airbnb");
-        assert_eq!(schema, "public");
-        assert_eq!(table, "listings");
-        assert_eq!(cols, vec!["description"]);
-    }
-
-    #[test]
-    fn index_target_three_parts_uses_explicit_schema() {
-        let (conn, schema, table, cols) =
-            parse_index_target("airbnb.public.listings[name,description]");
-        assert_eq!(conn, "airbnb");
-        assert_eq!(schema, "public");
-        assert_eq!(table, "listings");
-        assert_eq!(cols, vec!["name", "description"]);
-    }
-
-    #[test]
-    fn index_target_multiple_columns() {
-        let (_, _, _, cols) = parse_index_target("db.tbl[a,b,c]");
-        assert_eq!(cols, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn index_target_trims_column_whitespace() {
-        let (_, _, _, cols) = parse_index_target("db.tbl[a, b]");
-        assert_eq!(cols, vec!["a", "b"]);
-    }
 }
 
 pub fn get_styles() -> clap::builder::Styles {
