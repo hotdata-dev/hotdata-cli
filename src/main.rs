@@ -881,6 +881,9 @@ fn main() {
                 let sql = match resolved_type.as_str() {
                     "bm25" => {
                         let bm25_columns = match select.as_deref() {
+                            Some(cols) if cols.split(',').any(|c| c.trim() == "score") => {
+                                cols.to_string()
+                            }
                             Some(cols) => format!("{}, score", cols),
                             None => "*".to_string(),
                         };

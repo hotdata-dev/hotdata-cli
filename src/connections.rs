@@ -173,20 +173,24 @@ pub fn resolve_connection_id(api: &ApiClient, name_or_id: &str) -> String {
     }
 
     let body: ListResponse = api.get("/connections");
-    match body
+    if let Some(conn) = body
         .connections
         .iter()
         .find(|c| c.id == name_or_id || c.name == name_or_id)
     {
-        Some(conn) => conn.id.clone(),
-        None => {
-            eprintln!(
-                "{}",
-                format!("error: no connection named or with id '{name_or_id}'").red()
-            );
-            std::process::exit(1);
-        }
+        return conn.id.clone();
     }
+
+    // Fall back to managed databases: treat name_or_id as a catalog alias.
+    if let Ok(db) = crate::databases::try_resolve_database(api, name_or_id) {
+        return db.default_connection_id;
+    }
+
+    eprintln!(
+        "{}",
+        format!("error: no connection named or with id '{name_or_id}'").red()
+    );
+    std::process::exit(1);
 }
 
 pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
