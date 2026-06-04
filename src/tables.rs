@@ -1,35 +1,16 @@
-use crate::api::ApiClient;
-use serde::{Deserialize, Serialize};
+use crate::sdk::Api;
+use hotdata::models::TableInfo;
+use serde::Serialize;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 struct Column {
     name: String,
     data_type: String,
     nullable: bool,
 }
 
-#[derive(Deserialize)]
-struct Table {
-    connection: String,
-    schema: String,
-    table: String,
-    synced: bool,
-    last_sync: Option<String>,
-    #[serde(default)]
-    columns: Vec<Column>,
-}
-
-impl Table {
-    fn full_name(&self) -> String {
-        format!("{}.{}.{}", self.connection, self.schema, self.table)
-    }
-}
-
-#[derive(Deserialize)]
-struct ListResponse {
-    tables: Vec<Table>,
-    has_more: bool,
-    next_cursor: Option<String>,
+fn full_name(t: &TableInfo) -> String {
+    format!("{}.{}.{}", t.connection, t.schema, t.table)
 }
 
 #[derive(Serialize)]
@@ -55,38 +36,42 @@ pub fn list(
     cursor: Option<&str>,
     format: &str,
 ) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
-    let mut params: Vec<(&str, Option<String>)> = Vec::new();
-    if let Some(id) = connection_id {
-        params.push(("connection_id", Some(id.to_string())));
-        params.push(("include_columns", Some("true".to_string())));
-    }
-    if let Some(s) = schema {
-        params.push(("schema", Some(s.to_string())));
-    }
-    if let Some(t) = table_filter {
-        params.push(("table", Some(t.to_string())));
-    }
-    if let Some(l) = limit {
-        params.push(("limit", Some(l.to_string())));
-    }
-    if let Some(c) = cursor {
-        params.push(("cursor", Some(c.to_string())));
-    }
+    // The CLI only requests columns when a connection is specified, matching
+    // the old behavior (include_columns=true iff connection_id is set).
+    let include_columns = connection_id.map(|_| true);
 
-    let body: ListResponse = api.get_with_params("/information_schema", &params);
+    let body = crate::sdk::block(api.client().information_schema().get(
+        connection_id,
+        schema,
+        table_filter,
+        include_columns,
+        limit.map(|l| l as i32),
+        cursor,
+    ))
+    .unwrap_or_else(|e| e.exit());
 
     let has_more = body.has_more;
-    let next_cursor = body.next_cursor.clone();
+    let next_cursor = body.next_cursor.flatten();
 
     if connection_id.is_some() {
         let out: Vec<TableWithColumns> = body
             .tables
             .into_iter()
             .map(|t| TableWithColumns {
-                table: t.full_name(),
-                columns: t.columns,
+                table: full_name(&t),
+                columns: t
+                    .columns
+                    .flatten()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|c| Column {
+                        name: c.name,
+                        data_type: c.data_type,
+                        nullable: c.nullable,
+                    })
+                    .collect(),
             })
             .collect();
         match format {
@@ -120,9 +105,9 @@ pub fn list(
             .tables
             .iter()
             .map(|t| TableRow {
-                table: t.full_name(),
+                table: full_name(t),
                 synced: t.synced,
-                last_sync: t.last_sync.clone(),
+                last_sync: t.last_sync.clone().flatten(),
             })
             .collect();
         out.sort_by(|a, b| a.table.cmp(&b.table));
