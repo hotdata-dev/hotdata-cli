@@ -89,7 +89,7 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json
    Or managed parquet:
 
    ```bash
-   hotdata databases create --description "analytics" --table slice
+   hotdata databases create --name analytics --table slice
    hotdata databases set <returned-id>
    hotdata databases tables load slice --file ./slice.parquet
    ```

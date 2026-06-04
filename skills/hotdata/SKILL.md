@@ -187,11 +187,11 @@ hotdata connections create \
 
 ```
 hotdata databases list [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases create [--description <label>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases create [--name <catalog_name>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases set <id_or_description>
 hotdata databases <id_or_description> [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases delete <id_or_description> [--workspace-id <workspace_id>]
-hotdata databases run [--database <id>] [--description <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] <cmd> [args...]
+hotdata databases run [--database <id>] [--name <catalog_name>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] <cmd> [args...]
 hotdata databases <id> run <cmd> [args...]
 
 # Dot-notation shorthand for load: database.table or database.schema.table
@@ -203,7 +203,7 @@ hotdata databases tables delete <table> [--database <id_or_desc>] [--schema publ
 ```
 
 - `list` — all managed databases in the workspace.
-- `create` — creates a new managed database. `--description` is an optional human-readable label (databases are addressed by id, not description). `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; defaults to `24h` when omitted. Repeat `--table` to declare tables up front.
+- `create` — creates a new managed database. `--name` is an optional catalog alias used in queries (`SELECT … FROM <name>.public.<table>`); must be `[a-z_][a-z0-9_]*`. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; defaults to `24h` when omitted. Repeat `--table` to declare tables up front.
 - `set` — saves `<id_or_description>` as the active database. Subsequent `databases tables` and `context` commands use it automatically.
 - `<id_or_description>` — inspect one database (id, description, expires_at).
 - `delete` — removes the managed database; clears the active-database config if it matched.
@@ -211,12 +211,12 @@ hotdata databases tables delete <table> [--database <id_or_desc>] [--schema publ
 - `tables list` — lists tables with `TABLE` (`<database_id>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
 - `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
 - `tables delete` — drops a table from the managed database.
-- `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`, sandbox-style) or via `--database <id>`; omit both to auto-create a scratch database using `--description` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, `source:"database_token"`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
+- `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`, sandbox-style) or via `--database <id>`; omit both to auto-create a scratch database using `--name` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, `source:"database_token"`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
 
 Example:
 
 ```
-hotdata databases create --description "sales" --table orders
+hotdata databases create --name sales --table orders
 hotdata databases set <returned-id>
 hotdata databases tables load orders --file ./orders.parquet
 hotdata query "SELECT count(*) FROM <database_id>.public.orders"
