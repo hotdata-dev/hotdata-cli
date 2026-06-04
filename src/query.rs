@@ -1,4 +1,4 @@
-use crate::api::ApiClient;
+use crate::sdk::Api;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -17,15 +17,6 @@ pub struct QueryResponse {
 #[derive(Deserialize)]
 struct AsyncResponse {
     query_run_id: String,
-}
-
-#[derive(Deserialize)]
-struct QueryRunResponse {
-    id: String,
-    status: String,
-    result_id: Option<String>,
-    #[serde(default)]
-    error_message: Option<String>,
 }
 
 fn value_to_string(v: &Value) -> String {
@@ -131,8 +122,15 @@ fn arrow_ipc_to_query_response(bytes: Vec<u8>, result_id: String) -> QueryRespon
 }
 
 /// Fetch `/results/{result_id}` as Arrow IPC and return a `QueryResponse`.
-pub(crate) fn fetch_arrow_result(api: &ApiClient, result_id: &str) -> QueryResponse {
-    let (status, bytes) = api.get_bytes(&format!("/results/{result_id}"), ACCEPT_ARROW);
+///
+/// The Arrow stream is fetched through the SDK seam ([`Api::get_bytes`]) — same
+/// auth/transport as every other call — but decoded here with the CLI's own
+/// pinned `arrow` crate rather than the SDK's `get_result_arrow` (whose
+/// `RecordBatch` comes from a different `arrow` major version).
+pub(crate) fn fetch_arrow_result(api: &Api, result_id: &str) -> QueryResponse {
+    let (status, bytes) = api
+        .get_bytes(&format!("/results/{result_id}"), ACCEPT_ARROW)
+        .unwrap_or_else(|e| e.exit());
     if !status.is_success() {
         use crossterm::style::Stylize;
         let msg = String::from_utf8_lossy(&bytes);
@@ -149,7 +147,7 @@ pub fn execute(
     database: Option<&str>,
     format: &str,
 ) {
-    let mut api = ApiClient::new(Some(workspace_id));
+    let mut api = Api::new(Some(workspace_id));
     if let Some(db_id) = database {
         api = api.with_database(db_id);
     }
@@ -163,8 +161,10 @@ pub fn execute(
         body["connection_id"] = Value::String(conn.to_string());
     }
 
+    // The /query 202 async-submit branch (AsyncResponse{query_run_id}) is not
+    // exposed by the SDK's typed query() op, so submit raw through the seam.
     let spinner = crate::util::spinner("running query...");
-    let (status, resp_body) = api.post_raw("/query", &body);
+    let (status, resp_body) = api.post_raw("/query", &body).unwrap_or_else(|e| e.exit());
     spinner.finish_and_clear();
 
     if status.as_u16() == 202 {
@@ -183,11 +183,14 @@ pub fn execute(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
 
         loop {
-            let run: QueryRunResponse = api.get(&format!("/query-runs/{run_id}"));
+            // Drive the poll loop ourselves to preserve the 5-minute deadline
+            // and 500ms cadence (NOT the SDK's PollConfig defaults).
+            let run = crate::sdk::block(api.client().query_runs().get(run_id))
+                .unwrap_or_else(|e| e.exit());
             match run.status.as_str() {
                 "succeeded" => {
                     spinner.finish_and_clear();
-                    match run.result_id {
+                    match run.result_id.flatten() {
                         Some(ref result_id) => {
                             let result = fetch_arrow_result(&api, result_id);
                             print_result(&result, format);
@@ -202,7 +205,10 @@ pub fn execute(
                 "failed" => {
                     spinner.finish_and_clear();
                     use crossterm::style::Stylize;
-                    let err = run.error_message.as_deref().unwrap_or("unknown error");
+                    let err = run
+                        .error_message
+                        .flatten()
+                        .unwrap_or_else(|| "unknown error".to_string());
                     eprintln!("{}", format!("query failed: {err}").red());
                     std::process::exit(1);
                 }
@@ -256,12 +262,13 @@ pub fn execute(
 
 /// Poll a query run by ID. If succeeded and has a result_id, fetch and display the result.
 pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
-    let run: QueryRunResponse = api.get(&format!("/query-runs/{query_run_id}"));
+    let run = crate::sdk::block(api.client().query_runs().get(query_run_id))
+        .unwrap_or_else(|e| e.exit());
 
     match run.status.as_str() {
-        "succeeded" => match run.result_id {
+        "succeeded" => match run.result_id.flatten() {
             Some(ref result_id) => {
                 let result = fetch_arrow_result(&api, result_id);
                 print_result(&result, format);
@@ -273,7 +280,10 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
         },
         "failed" => {
             use crossterm::style::Stylize;
-            let err = run.error_message.as_deref().unwrap_or("unknown error");
+            let err = run
+                .error_message
+                .flatten()
+                .unwrap_or_else(|| "unknown error".to_string());
             eprintln!("{}", format!("query failed: {err}").red());
             std::process::exit(1);
         }

@@ -1,4 +1,3 @@
-use crate::api::ApiClient;
 use crate::sdk::Api;
 use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
@@ -103,7 +102,7 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
 }
 
 pub fn get(result_id: &str, workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let result = crate::query::fetch_arrow_result(&api, result_id);
     crate::query::print_result(&result, format);
 }
