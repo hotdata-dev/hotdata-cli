@@ -600,17 +600,28 @@ pub enum DatabasesCommands {
         id: String,
     },
 
+    /// Clear the current database
+    Unset,
+
     /// Delete a managed database and its tables
     Delete {
         /// Database name or connection ID
         name_or_id: String,
     },
 
-    /// Load a parquet file into a table using dot notation: `database.table` or `database.schema.table`
+    /// Load a parquet file into a managed database table
     Load {
-        /// Table to load into: `database.table` or `database.schema.table`.
-        /// Schema defaults to `public` when omitted.
-        target: String,
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
+        #[arg(long)]
+        catalog: String,
+
+        /// Schema to load into (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Table name to load into
+        #[arg(long)]
+        table: String,
 
         /// Path to a local parquet file to upload and load
         #[arg(long, conflicts_with_all = ["upload_id", "url"])]

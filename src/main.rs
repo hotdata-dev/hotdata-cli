@@ -449,26 +449,28 @@ fn main() {
                         Some(DatabasesCommands::Set { id }) => {
                             databases::set(&workspace_id, &id)
                         }
+                        Some(DatabasesCommands::Unset) => {
+                            databases::unset(&workspace_id)
+                        }
                         Some(DatabasesCommands::Delete { name_or_id }) => {
                             databases::delete(&workspace_id, &name_or_id)
                         }
                         Some(DatabasesCommands::Load {
-                            target,
+                            catalog,
+                            schema,
+                            table,
                             file,
                             url,
                             upload_id,
-                        }) => {
-                            let (database, schema, table) = parse_db_target(&target);
-                            databases::tables_load(
-                                &workspace_id,
-                                Some(database.as_str()),
-                                &table,
-                                Some(schema.as_str()),
-                                file.as_deref(),
-                                url.as_deref(),
-                                upload_id.as_deref(),
-                            )
-                        }
+                        }) => databases::tables_load(
+                            &workspace_id,
+                            Some(catalog.as_str()),
+                            &table,
+                            Some(schema.as_str()),
+                            file.as_deref(),
+                            url.as_deref(),
+                            upload_id.as_deref(),
+                        ),
                         Some(DatabasesCommands::Tables { database, command }) => match command {
                             Some(DatabaseTablesCommands::List {
                                 database: db_flag,
@@ -1059,21 +1061,6 @@ fn main() {
     update::maybe_print_update_notice(update_handle);
 }
 
-/// Parse a database target like `airbnb.listings` or `airbnb.public.listings`
-/// into `(database, schema, table)`. Schema defaults to `public`.
-fn parse_db_target(target: &str) -> (String, String, String) {
-    let parts: Vec<&str> = target.splitn(4, '.').collect();
-    match parts.as_slice() {
-        [db, tbl] => (db.to_string(), "public".to_string(), tbl.to_string()),
-        [db, schema, tbl] => (db.to_string(), schema.to_string(), tbl.to_string()),
-        _ => {
-            eprintln!(
-                "error: target must be 'database.table' or 'database.schema.table'"
-            );
-            std::process::exit(1);
-        }
-    }
-}
 
 /// Parse an index target like `airbnb.listings[col1,col2]` or
 /// `airbnb.public.listings[col1,col2]` into `(conn_name, schema, table, columns)`.
@@ -1123,24 +1110,6 @@ fn parse_index_target(target: &str) -> (String, String, String, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- parse_db_target ---
-
-    #[test]
-    fn db_target_two_parts_defaults_schema_to_public() {
-        let (db, schema, table) = parse_db_target("airbnb.listings");
-        assert_eq!(db, "airbnb");
-        assert_eq!(schema, "public");
-        assert_eq!(table, "listings");
-    }
-
-    #[test]
-    fn db_target_three_parts_uses_explicit_schema() {
-        let (db, schema, table) = parse_db_target("airbnb.staging.listings");
-        assert_eq!(db, "airbnb");
-        assert_eq!(schema, "staging");
-        assert_eq!(table, "listings");
-    }
 
     // --- parse_index_target ---
 

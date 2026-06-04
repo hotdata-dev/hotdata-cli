@@ -398,17 +398,20 @@ pub fn list(workspace_id: &str, format: &str) {
                     "Create one with: hotdata databases create --catalog <alias>".dark_grey()
                 );
             } else {
+                let current = crate::config::load_current_database("default", workspace_id);
                 let rows: Vec<Vec<String>> = body
                     .databases
                     .iter()
                     .map(|d| {
+                        let marker = if current.as_deref() == Some(d.id.as_str()) { "*" } else { "" };
                         vec![
+                            marker.to_string(),
                             d.id.clone(),
                             d.name.as_deref().unwrap_or("-").to_string(),
                         ]
                     })
                     .collect();
-                crate::table::print(&["ID", "NAME"], &rows);
+                crate::table::print(&["", "ID", "NAME"], &rows);
             }
         }
         _ => unreachable!(),
@@ -642,6 +645,15 @@ pub fn create(
         }
         _ => unreachable!(),
     }
+}
+
+pub fn unset(workspace_id: &str) {
+    use crossterm::style::Stylize;
+    if let Err(e) = crate::config::clear_current_database("default", workspace_id) {
+        eprintln!("{}", format!("error clearing current database: {e}").red());
+        std::process::exit(1);
+    }
+    println!("{}", "Current database cleared.".green());
 }
 
 pub fn set(workspace_id: &str, id: &str) {
