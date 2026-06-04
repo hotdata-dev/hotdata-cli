@@ -189,25 +189,28 @@ hotdata connections create \
 hotdata databases list [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases create [--name <display_name>] [--catalog <alias>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases set <id_or_name>
+hotdata databases unset
 hotdata databases <id_or_name> [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases delete <id_or_name> [--workspace-id <workspace_id>]
 hotdata databases run [--database <id>] [--name <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] <cmd> [args...]
 hotdata databases <id> run <cmd> [args...]
 
-# Dot-notation shorthand for load: database.table or database.schema.table
-hotdata databases load <database.table> [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
+# Preferred: load by catalog alias (auto-declares table if needed)
+hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
 
+# Also available via tables subcommand
 hotdata databases tables list [--database <id_or_name>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases tables load <table> [--database <id_or_name>] [--schema public] [--file ./data.parquet] [--url <url>] [--upload-id <id>] [--workspace-id <workspace_id>]
+hotdata databases tables load <table> [--database <id_or_name>] [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
 hotdata databases tables delete <table> [--database <id_or_name>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
-- `list` — all managed databases in the workspace.
+- `list` — all managed databases in the workspace. Active database is marked with `*`.
 - `create` — creates a new managed database. `--name` is an optional human-readable display name. `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`); must be `[a-z_][a-z0-9_]*`. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; omitting means no expiry. Repeat `--table` to declare tables up front.
 - `set` — saves `<id_or_name>` as the active database. Subsequent `databases tables` and `context` commands use it automatically.
+- `unset` — clears the active database from config.
 - `<id_or_name>` — inspect one database (id, catalog, name, expires_at).
 - `delete` — removes the managed database; clears the active-database config if it matched.
-- `load` — shorthand with dot notation (`database.table` or `database.schema.table`). Schema defaults to `public`.
+- `load` (top-level shorthand) — loads parquet into `--catalog.--schema.--table`. Accepts `--file`, `--url`, or `--upload-id`. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
 - `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
 - `tables delete` — drops a table from the managed database.
@@ -216,10 +219,9 @@ hotdata databases tables delete <table> [--database <id_or_name>] [--schema publ
 Example:
 
 ```
-hotdata databases create --name "Sales reporting" --catalog sales --table orders
-hotdata databases set <returned-id>
-hotdata databases tables load orders --file ./orders.parquet
-hotdata query "SELECT count(*) FROM sales.public.orders"
+hotdata databases create --catalog airbnb
+hotdata databases load --catalog airbnb --table listings --url https://example.com/listings.parquet
+hotdata query "SELECT count(*) FROM airbnb.public.listings"
 ```
 
 ### List Tables and Columns
@@ -457,17 +459,18 @@ Use a sandbox to explore tables and capture **analysis-oriented** notes in sandb
 
 ## Workflow: Creating a managed database (parquet)
 
-1. Create the database and declare tables up front:
+1. Create the database with a catalog alias:
    ```
-   hotdata databases create --name mydb --table events --table users
+   hotdata databases create --catalog mydb
    ```
-2. Load parquet into each table:
+2. Load parquet per table (tables are auto-declared if needed):
    ```
-   hotdata databases tables load mydb events --file ./events.parquet
+   hotdata databases load --catalog mydb --table events --file ./events.parquet
+   hotdata databases load --catalog mydb --table events --url https://example.com/events.parquet
    ```
 3. Confirm tables and query:
    ```
-   hotdata databases tables list mydb
+   hotdata databases tables list
    hotdata query "SELECT * FROM mydb.public.events LIMIT 10"
    ```
 

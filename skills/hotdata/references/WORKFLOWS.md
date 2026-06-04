@@ -68,12 +68,12 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 1. [ ] `hotdata tables list --connection-id <id>` — pick text column (BM25) or embedding/text column (vector)
 2. [ ] `hotdata indexes list` — avoid duplicate bm25/vector indexes on the same column
 3. [ ] Create index:
-   - [ ] **Keyword:** `hotdata indexes create … --type bm25 --columns <text_col>`
-   - [ ] **Semantic:** `hotdata indexes create … --type vector --columns <col> [--metric cosine|l2|dot]`
+   - [ ] **Managed DB:** `hotdata indexes create --catalog <alias> --table <tbl> --column <text_col> --type bm25|vector`
+   - [ ] **Connection:** `hotdata indexes create --connection-id <id> --schema <s> --table <t> --column <col> --type bm25|vector [--metric cosine|l2|dot]`
    - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
-4. [ ] Search:
-   - [ ] `hotdata search "…" --type bm25 --table <connection.schema.table> --column <col>`
-   - [ ] `hotdata search "…" --type vector --table … --column <source_text_col>`
+4. [ ] Search (--type and --column inferred when one search index exists):
+   - [ ] `hotdata search "…" --table <catalog.schema.table>` (auto-infer)
+   - [ ] `hotdata search "…" --table … --type bm25 --column <col>` (explicit)
 5. [ ] (Optional) Note indexes in **context:DATAMODEL → Search & index summary**
 
 **Detail:** [hotdata-search INDEXES.md](../../hotdata-search/references/INDEXES.md)
@@ -116,24 +116,23 @@ Both land queryable tables in the workspace; the path depends on **format** and 
 
 ### Workflow: managed database (parquet)
 
-1. Create the database and **declare tables** up front:
+1. Create the database with a catalog alias:
 
    ```bash
-   hotdata databases create --name sales --table orders --table customers
+   hotdata databases create --catalog sales
    ```
 
-2. Load parquet per table:
+2. Load parquet per table (tables are auto-declared if needed):
 
    ```bash
-   hotdata databases tables load sales orders --file ./orders.parquet
+   hotdata databases load --catalog sales --table orders --file ./orders.parquet
+   hotdata databases load --catalog sales --table customers --url https://example.com/customers.parquet
    ```
-
-   If load fails with *not declared*, add `--table` at create time. There is no `--url` on load — download parquet locally first.
 
 3. Confirm and query:
 
    ```bash
-   hotdata databases tables list sales
+   hotdata databases tables list
    hotdata query "SELECT count(*) FROM sales.public.orders"
    ```
 

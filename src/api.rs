@@ -181,6 +181,10 @@ impl ApiClient {
         self
     }
 
+    pub fn workspace_id(&self) -> Option<&str> {
+        self.workspace_id.as_deref()
+    }
+
     /// Test-only client (no config load). Used with a local mock HTTP server.
     /// The refresher returns `None`, so 401s are not retried — matching the
     /// behavior of tests that don't exercise the refresh path.

@@ -11,6 +11,8 @@ struct DatabaseSummary {
     id: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    default_catalog: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -27,6 +29,8 @@ pub struct Database {
     #[serde(default)]
     pub default_catalog: Option<String>,
     pub default_connection_id: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
     #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
 }
@@ -109,8 +113,26 @@ pub fn try_resolve_database(api: &ApiClient, id_or_name: &str) -> Result<Databas
         return Ok(db);
     }
 
-    // Fall back to listing and matching by name.
+    // Fall back to listing — prefer catalog alias match, then name.
     let body: ListDatabasesResponse = api.get("/databases");
+
+    let catalog_matches: Vec<&DatabaseSummary> = body
+        .databases
+        .iter()
+        .filter(|d| d.default_catalog.as_deref() == Some(id_or_name))
+        .collect();
+
+    if !catalog_matches.is_empty() {
+        return match catalog_matches.len() {
+            1 => Ok(fetch_database(api, &catalog_matches[0].id)),
+            _ => Err(format!(
+                "multiple databases have catalog '{}' — use the database id instead",
+                id_or_name
+            )),
+        };
+    }
+
+
     let name_matches: Vec<&DatabaseSummary> = body
         .databases
         .iter()
@@ -119,7 +141,7 @@ pub fn try_resolve_database(api: &ApiClient, id_or_name: &str) -> Result<Databas
 
     match name_matches.len() {
         0 => Err(format!(
-            "no database with id or name '{id_or_name}'"
+            "no database with id, catalog, or name '{id_or_name}'"
         )),
         1 => Ok(fetch_database(api, &name_matches[0].id)),
         _ => Err(format!(
@@ -398,17 +420,20 @@ pub fn list(workspace_id: &str, format: &str) {
                     "Create one with: hotdata databases create --catalog <alias>".dark_grey()
                 );
             } else {
+                let current = crate::config::load_current_database("default", workspace_id);
                 let rows: Vec<Vec<String>> = body
                     .databases
                     .iter()
                     .map(|d| {
+                        let marker = if current.as_deref() == Some(d.id.as_str()) { "*" } else { "" };
                         vec![
+                            marker.to_string(),
                             d.id.clone(),
                             d.name.as_deref().unwrap_or("-").to_string(),
                         ]
                     })
                     .collect();
-                crate::table::print(&["ID", "NAME"], &rows);
+                crate::table::print(&["", "ID", "NAME"], &rows);
             }
         }
         _ => unreachable!(),
@@ -630,18 +655,28 @@ pub fn create(
                 format!(
                     concat!(
                         "Load a table:\n",
-                        "  hotdata databases load --file <path.parquet> {}.<table_name>\n",
+                        "  hotdata databases load --catalog {0} --table <table> --file <path.parquet>\n",
+                        "  hotdata databases load --catalog {0} --table <table> --url <url>\n",
                         "\nQuery with:\n",
-                        "  hotdata query --database {} \"SELECT * FROM {}.public.<table> LIMIT 10\"\n",
+                        "  hotdata query \"SELECT * FROM {0}.public.<table> LIMIT 10\"\n",
                         "\n  Tip: column names are case-sensitive — wrap uppercase names in double quotes",
                     ),
-                    result.id, result.id, catalog
+                    catalog
                 )
                 .dark_grey()
             );
         }
         _ => unreachable!(),
     }
+}
+
+pub fn unset(workspace_id: &str) {
+    use crossterm::style::Stylize;
+    if let Err(e) = crate::config::clear_current_database("default", workspace_id) {
+        eprintln!("{}", format!("error clearing current database: {e}").red());
+        std::process::exit(1);
+    }
+    println!("{}", "Current database cleared.".green());
 }
 
 pub fn set(workspace_id: &str, id: &str) {
@@ -747,7 +782,26 @@ pub fn tables_load(
 
     let database = resolve_current_database(database, workspace_id);
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, &database);
+    // Prefer the active database when its catalog or name matches the lookup key,
+    // avoiding ambiguity when multiple databases share the same catalog name.
+    let active_id = crate::config::load_current_database("default", workspace_id);
+    let lookup_key = match active_id.as_deref() {
+        Some(id) => {
+            if let Some(active) = api.get_none_if_not_found::<Database>(&format!("/databases/{id}")) {
+                if active.default_catalog.as_deref() == Some(database.as_str())
+                    || active.name.as_deref() == Some(database.as_str())
+                {
+                    id.to_string()
+                } else {
+                    database.clone()
+                }
+            } else {
+                database.clone()
+            }
+        }
+        None => database.clone(),
+    };
+    let db = resolve_database(&api, &lookup_key);
     let schema = schema_name(schema);
 
     // clap enforces mutual exclusion; only one of these is ever Some.
@@ -769,19 +823,98 @@ pub fn tables_load(
     let (status, resp_body) = api.post_raw(&path, &body);
     spinner.finish_and_clear();
 
-    if !status.is_success() {
-        let msg = crate::util::api_error(resp_body);
-        if msg.contains("not declared") {
-            eprintln!("{}", msg.red());
+    let (status, resp_body) = if !status.is_success()
+        && crate::util::api_error(resp_body.clone()).contains("not declared")
+    {
+        // The table wasn't declared at create time. Collect existing tables so
+        // they are re-declared in the replacement database, then delete and
+        // recreate with all tables (including the new one) declared.
+        let existing = collect_tables(&api, &db.default_connection_id, None);
+        let mut all_tables: Vec<String> = existing
+            .iter()
+            .map(|t| format!("{}.{}", t.schema, t.table))
+            .collect();
+        let new_table_key = format!("{schema}.{table}");
+        if !all_tables.contains(&new_table_key) {
+            all_tables.push(new_table_key);
+        }
+
+        // Warn if any existing table has synced data — delete+recreate will lose it.
+        let synced: Vec<String> = existing
+            .iter()
+            .filter(|t| t.synced)
+            .map(|t| format!("{}.{}", t.schema, t.table))
+            .collect();
+        if !synced.is_empty() {
+            use crossterm::style::Stylize;
+            let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or(&db.id);
             eprintln!(
                 "{}",
-                "Declare the table when creating the database, e.g.:\n  \
-                 hotdata databases create --table <table>"
-                    .dark_grey()
+                format!(
+                    "warning: declaring '{}' requires recreating the database '{catalog}'. \
+                     The following tables have loaded data that will be lost:\n  {}",
+                    table,
+                    synced.join(", ")
+                )
+                .yellow()
             );
-        } else {
-            eprintln!("{}", msg.red());
+            if crate::util::is_interactive() {
+                use std::io::Write;
+                eprint!("Proceed and lose this data? [y/N] ");
+                std::io::stderr().flush().unwrap();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    eprintln!("{}", "Aborted.".red());
+                    std::process::exit(1);
+                }
+            } else {
+                eprintln!(
+                    "{}",
+                    "error: cannot auto-declare table in non-interactive mode — existing data would be lost. \
+                     Declare all tables up front with 'databases create --table <name>'."
+                        .red()
+                );
+                std::process::exit(1);
+            }
         }
+
+        let (del_status, del_body) = api.delete_raw(&format!("/databases/{}", db.id));
+        if !del_status.is_success() {
+            eprintln!("{}", crate::util::api_error(del_body).red());
+            std::process::exit(1);
+        }
+        let create_body = create_database_request(
+            db.name.as_deref(),
+            db.default_catalog.as_deref(),
+            schema,
+            &all_tables,
+            db.expires_at.as_deref(),
+        );
+        let (create_status, create_body_resp) = api.post_raw("/databases", &create_body);
+        if !create_status.is_success() {
+            eprintln!("{}", crate::util::api_error(create_body_resp).red());
+            std::process::exit(1);
+        }
+        let new_db: CreateDatabaseResponse = match serde_json::from_str(&create_body_resp) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error parsing create response: {e}");
+                std::process::exit(1);
+            }
+        };
+        let _ = crate::config::save_current_database("default", workspace_id, &new_db.id);
+        let new_path = managed_table_load_path(&new_db.default_connection_id, schema, table);
+        let spinner = crate::util::spinner("Loading table...");
+        let result = api.post_raw(&new_path, &body);
+        spinner.finish_and_clear();
+        result
+    } else {
+        (status, resp_body)
+    };
+
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
     }
 
@@ -978,7 +1111,7 @@ mod tests {
 
         let api = ApiClient::test_new(&server.url(), "k", None);
         let err = try_resolve_database(&api, "missing").unwrap_err();
-        assert!(err.contains("no database with id or name"));
+        assert!(err.contains("no database with id"));
     }
 
     #[test]

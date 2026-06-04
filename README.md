@@ -135,28 +135,35 @@ Managed databases are Hotdata-owned catalogs you create and populate yourself (n
 ```sh
 hotdata databases list [-w <id>] [-o table|json|yaml]
 hotdata databases create [--name <display_name>] [--catalog <alias>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [-o table|json|yaml]
+hotdata databases set <id>
+hotdata databases unset
 hotdata databases <name_or_id> [-o table|json|yaml]
 hotdata databases delete <name_or_id>
 hotdata databases run [--database <id>] [--name <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] <cmd> [args...]
 hotdata databases <id> run <cmd> [args...]
 
-hotdata databases tables list <database> [--schema <name>] [-o table|json|yaml]
-hotdata databases tables load <database> <table> --file ./data.parquet [--schema public]
-hotdata databases tables load <database> <table> --upload-id <id> [--schema public]
-hotdata databases tables delete <database> <table> [--schema public]
+# Preferred: load by catalog alias (auto-declares table if needed)
+hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id>)
+
+# Also available: explicit database flag
+hotdata databases tables list [--database <id_or_name>] [--schema <name>] [-o table|json|yaml]
+hotdata databases tables load <table> [--database <id_or_name>] [--schema public] (--file <path> | --url <url> | --upload-id <id>)
+hotdata databases tables delete <table> [--database <id_or_name>] [--schema public]
 ```
 
-- `create` registers a managed connection with no external credentials. `--name` is a human-readable display name; `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`) and must be `[a-z_][a-z0-9_]*`. Use `--table` to declare tables up front (required before `tables load` on the current API).
+- `create` registers a managed connection with no external credentials. `--name` is a human-readable display name; `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`) and must be `[a-z_][a-z0-9_]*`.
+- `set` / `unset` — save or clear the active database. All `databases tables` and `context` commands default to it. The active database is marked with `*` in `databases list`.
+- `load` (top-level shorthand) — loads a parquet file into `--catalog.--schema.--table`. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
 - `tables load` uploads a **parquet** file (or uses a staged `upload_id` from `POST /v1/files`) and publishes it as the table generation (`replace` mode).
-- `run` mints a database-scoped JWT and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected into its environment. Pass a database id (group-positional `<id>` like `sandbox run`, or `--database <id>`) to scope an existing database; omit both to auto-create a scratch one using `--name` / `--schema` / `--table` / `--expires-at`. Useful for launching an agent or child process whose API access is restricted to a single database.
+- `run` mints a database-scoped JWT and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected into its environment.
 - For CSV/JSON uploads without a managed database, use `hotdata datasets create` instead (`datasets.main.*`).
 
 Example:
 
 ```sh
-hotdata databases create --name "Sales reporting" --catalog sales --table orders
-hotdata databases tables load sales orders --file ./orders.parquet
-hotdata query "SELECT count(*) FROM sales.public.orders"
+hotdata databases create --catalog airbnb
+hotdata databases load --catalog airbnb --table listings --url https://example.com/listings.parquet
+hotdata query "SELECT count(*) FROM airbnb.public.listings"
 ```
 
 ## Tables
@@ -233,14 +240,14 @@ hotdata queries <query_run_id> [-o table|json|yaml]
 
 ## Search
 
-`--type` is **required** — no default. Pass either `vector` (similarity search via the index's embedding provider) or `bm25` (full-text search). Both run entirely server-side.
+Both run entirely server-side. `--type` and `--column` are **optional** when the table has exactly one search index — they are inferred automatically. Pass them explicitly when multiple indexes exist.
 
 ```sh
 # BM25 full-text search (requires a BM25 index on the column)
-hotdata search "<query>" --type bm25 --table <connection.schema.table> --column <column> [--select <columns>] [--limit <n>] [-o table|json|csv]
+hotdata search "<query>" --table <connection.schema.table> [--type bm25] [--column <column>] [--select <columns>] [--limit <n>] [-o table|json|csv]
 
 # Vector search (requires a vector index with auto-embedding on the column)
-hotdata search "<query>" --type vector --table <table> --column <source_text_column> [--limit <n>]
+hotdata search "<query>" --table <table> [--type vector] [--column <source_text_column>] [--limit <n>]
 ```
 
 - **`--type vector`** — pass your query as **plain text**, name the **source text column** (e.g. `title`). The server embeds the query at the same time, using the same provider that auto-embedded the column when the index was built — so distance metric, model, and dimensions all match automatically. No `OPENAI_API_KEY`, no client-side embedding, no need to know about the auto-generated `_embedding` column. Generated SQL: `vector_distance(col, 'query')` server-side.
@@ -255,17 +262,21 @@ hotdata search "<query>" --type vector --table <table> --column <source_text_col
 Indexes attach to either a connection-table (`--connection-id` + `--schema` + `--table`) or a dataset (`--dataset-id`). The two scopes are mutually exclusive.
 
 ```sh
-# Connection-table scope
+# Managed database scope (catalog alias resolves via active database)
+hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
+  --column <cols> --type bm25|vector|sorted \
+  [--name <name>] [--metric l2|cosine|dot] [--async] \
+  [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+
+# Connection-table scope (for non-managed connections)
 hotdata indexes list   --connection-id <id> --schema <schema> --table <table> [-o table|json|yaml]
 hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
-  --name <name> --columns <cols> --type sorted|bm25|vector \
-  [--metric l2|cosine|dot] [--async] \
-  [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+  --column <cols> --type sorted|bm25|vector [--name <name>] ...
 hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
 
 # Dataset scope
 hotdata indexes list   --dataset-id <id> [-o table|json|yaml]
-hotdata indexes create --dataset-id <id> --name <name> --columns <cols> --type sorted|bm25|vector ...
+hotdata indexes create --dataset-id <id> --column <cols> --type sorted|bm25|vector [--name <name>] ...
 hotdata indexes delete --dataset-id <id> --name <name>
 ```
 
