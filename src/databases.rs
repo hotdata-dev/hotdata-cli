@@ -11,6 +11,8 @@ struct DatabaseSummary {
     id: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    default_catalog: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -109,7 +111,7 @@ pub fn try_resolve_database(api: &ApiClient, id_or_name: &str) -> Result<Databas
         return Ok(db);
     }
 
-    // Fall back to listing and matching by name.
+    // Fall back to listing and matching by name or catalog alias.
     let body: ListDatabasesResponse = api.get("/databases");
     let name_matches: Vec<&DatabaseSummary> = body
         .databases
@@ -117,13 +119,29 @@ pub fn try_resolve_database(api: &ApiClient, id_or_name: &str) -> Result<Databas
         .filter(|d| d.name.as_deref() == Some(id_or_name))
         .collect();
 
-    match name_matches.len() {
+    if !name_matches.is_empty() {
+        return match name_matches.len() {
+            1 => Ok(fetch_database(api, &name_matches[0].id)),
+            _ => Err(format!(
+                "multiple databases have name '{}' — use the database id instead",
+                id_or_name
+            )),
+        };
+    }
+
+    let catalog_matches: Vec<&DatabaseSummary> = body
+        .databases
+        .iter()
+        .filter(|d| d.default_catalog.as_deref() == Some(id_or_name))
+        .collect();
+
+    match catalog_matches.len() {
         0 => Err(format!(
-            "no database with id or name '{id_or_name}'"
+            "no database with id, name, or catalog '{id_or_name}'"
         )),
-        1 => Ok(fetch_database(api, &name_matches[0].id)),
+        1 => Ok(fetch_database(api, &catalog_matches[0].id)),
         _ => Err(format!(
-            "multiple databases have name '{}' — use the database id instead",
+            "multiple databases have catalog '{}' — use the database id instead",
             id_or_name
         )),
     }
@@ -781,19 +799,47 @@ pub fn tables_load(
     let (status, resp_body) = api.post_raw(&path, &body);
     spinner.finish_and_clear();
 
-    if !status.is_success() {
-        let msg = crate::util::api_error(resp_body);
-        if msg.contains("not declared") {
-            eprintln!("{}", msg.red());
-            eprintln!(
-                "{}",
-                "Declare the table when creating the database, e.g.:\n  \
-                 hotdata databases create --table <table>"
-                    .dark_grey()
-            );
-        } else {
-            eprintln!("{}", msg.red());
+    let (status, resp_body) = if !status.is_success()
+        && crate::util::api_error(resp_body.clone()).contains("not declared")
+    {
+        // The table wasn't declared at create time. Delete the database and
+        // recreate it with the table declared, then retry the load.
+        let (del_status, del_body) = api.delete_raw(&format!("/databases/{}", db.id));
+        if !del_status.is_success() {
+            eprintln!("{}", crate::util::api_error(del_body).red());
+            std::process::exit(1);
         }
+        let create_body = create_database_request(
+            db.name.as_deref(),
+            db.default_catalog.as_deref(),
+            schema,
+            &[table.to_string()],
+            None,
+        );
+        let (create_status, create_body_resp) = api.post_raw("/databases", &create_body);
+        if !create_status.is_success() {
+            eprintln!("{}", crate::util::api_error(create_body_resp).red());
+            std::process::exit(1);
+        }
+        let new_db: CreateDatabaseResponse = match serde_json::from_str(&create_body_resp) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error parsing create response: {e}");
+                std::process::exit(1);
+            }
+        };
+        let _ = crate::config::save_current_database("default", workspace_id, &new_db.id);
+        let new_path = managed_table_load_path(&new_db.default_connection_id, schema, table);
+        let spinner = crate::util::spinner("Loading table...");
+        let result = api.post_raw(&new_path, &body);
+        spinner.finish_and_clear();
+        result
+    } else {
+        (status, resp_body)
+    };
+
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
     }
 
