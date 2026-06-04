@@ -125,6 +125,8 @@ struct QueryRun {
     sql_hash: String,
     sql_text: String,
     result_id: Option<String>,
+    #[serde(default)]
+    database_id: Option<String>,
     error_message: Option<String>,
     warning_message: Option<String>,
     trace_id: Option<String>,
@@ -193,18 +195,22 @@ pub fn list(
                             r.id.clone(),
                             color_status(&r.status),
                             crate::util::format_date(&r.created_at),
-                            r.execution_time_ms
-                                .map(|ms| ms.to_string())
-                                .unwrap_or_else(|| "-".to_string()),
                             r.row_count
                                 .map(|n| n.to_string())
                                 .unwrap_or_else(|| "-".to_string()),
-                            truncate_sql(&r.sql_text, 60),
+                            r.result_id
+                                .as_deref()
+                                .map(|id| {
+                                    let prefix: String = id.chars().take(8).collect();
+                                    format!("{prefix}…")
+                                })
+                                .unwrap_or_else(|| "-".to_string()),
+                            truncate_sql(&r.sql_text, 40),
                         ]
                     })
                     .collect();
                 crate::table::print(
-                    &["ID", "STATUS", "CREATED", "DURATION_MS", "ROWS", "SQL"],
+                    &["ID", "STATUS", "CREATED", "ROWS", "RESULT", "SQL"],
                     &rows,
                 );
             }
@@ -258,6 +264,9 @@ fn print_detail(r: &QueryRun, format: &str) {
             }
             if let Some(ref id) = r.result_id {
                 println!("{}{}", label("result id:"), id);
+            }
+            if let Some(ref id) = r.database_id {
+                println!("{}{}", label("database id:"), id);
             }
             if let Some(ref id) = r.saved_query_id {
                 let version = r
