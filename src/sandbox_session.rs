@@ -194,7 +194,7 @@ pub fn sandbox_token_in_use() -> Option<(String, Option<String>)> {
 }
 
 /// In-child equivalent of [`ensure_access_token`] that operates on env
-/// vars only — used by [`crate::api::ApiClient`] when the parent
+/// vars only — used by [`crate::sdk::Api`] when the parent
 /// `sandbox run` already passed in `HOTDATA_SANDBOX_TOKEN` and
 /// `HOTDATA_SANDBOX_REFRESH_TOKEN`. The new tokens are *not* persisted
 /// to disk: the child may not have write access to the parent's

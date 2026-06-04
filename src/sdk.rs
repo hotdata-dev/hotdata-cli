@@ -1,7 +1,7 @@
 //! Synchronous wrapper over the async Hotdata Rust SDK.
 //!
-//! This module is the seam that replaces the hand-rolled
-//! [`ApiClient`](crate::api::ApiClient). The 15 command modules stay
+//! This module is the seam that replaces the hand-rolled legacy
+//! `ApiClient`. The 15 command modules stay
 //! synchronous and call [`Api`] methods; [`Api`] drives the async SDK behind a
 //! process-global multi-thread tokio runtime via `block_on`.
 //!
