@@ -563,12 +563,14 @@ pub enum DatabasesCommands {
 
     /// Create a new managed database
     Create {
-        /// SQL catalog alias — becomes the catalog name in queries:
-        /// SELECT … FROM <name>.public.<table>.
-        /// Must be [a-z_][a-z0-9_]*, globally unique. When provided the
-        /// database defaults to no expiry; omit for an anonymous 24h sandbox.
+        /// Human-readable display name for the database (e.g. "Sales reporting").
         #[arg(long)]
         name: Option<String>,
+
+        /// SQL catalog alias used in queries: SELECT … FROM <catalog>.schema.table.
+        /// Must be [a-z_][a-z0-9_]*, globally unique.
+        #[arg(long)]
+        catalog: Option<String>,
 
         /// Default schema for bare `--table` entries (default: public).
         /// Use dot notation in `--table` to target a different schema directly,
@@ -583,8 +585,7 @@ pub enum DatabasesCommands {
         tables: Vec<String>,
 
         /// When the database expires. Accepts a relative duration (e.g. 24h, 7d, 90m)
-        /// or an RFC 3339 timestamp. Omitting with --name means no expiry; omitting
-        /// without --name defaults to 24h.
+        /// or an RFC 3339 timestamp. Omitting means no expiry.
         #[arg(long)]
         expires_at: Option<String>,
 

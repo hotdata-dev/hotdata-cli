@@ -24,6 +24,8 @@ pub struct Database {
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub default_catalog: Option<String>,
     pub default_connection_id: String,
     #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
@@ -66,6 +68,8 @@ struct CreateDatabaseResponse {
     id: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    default_catalog: Option<String>,
     default_connection_id: String,
     #[serde(default)]
     expires_at: Option<String>,
@@ -143,6 +147,7 @@ fn schema_name(schema: Option<&str>) -> &str {
 /// Build the request body for `POST /v1/databases`.
 pub fn create_database_request(
     name: Option<&str>,
+    catalog: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
@@ -153,6 +158,13 @@ pub fn create_database_request(
         req.insert(
             "name".to_string(),
             serde_json::Value::String(n.to_string()),
+        );
+    }
+
+    if let Some(c) = catalog {
+        req.insert(
+            "default_catalog".to_string(),
+            serde_json::Value::String(c.to_string()),
         );
     }
 
@@ -215,11 +227,11 @@ pub fn is_parquet_path(path: &str) -> bool {
         || Path::new(path).extension().and_then(|e| e.to_str()) == Some("parquet")
 }
 
-fn table_rows(tables: Vec<InfoTable>) -> Vec<TableRow> {
+fn table_rows(catalog: &str, tables: Vec<InfoTable>) -> Vec<TableRow> {
     tables
         .into_iter()
         .map(|t| TableRow {
-            full_name: format!("default.{}.{}", t.schema, t.table),
+            full_name: format!("{catalog}.{}.{}", t.schema, t.table),
             schema: t.schema,
             table: t.table,
             synced: t.synced,
@@ -383,7 +395,7 @@ pub fn list(workspace_id: &str, format: &str) {
                 eprintln!("{}", "No databases found.".dark_grey());
                 eprintln!(
                     "{}",
-                    "Create one with: hotdata databases create --name <catalog_name>".dark_grey()
+                    "Create one with: hotdata databases create --catalog <alias>".dark_grey()
                 );
             } else {
                 let rows: Vec<Vec<String>> = body
@@ -417,12 +429,17 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
             if let Some(n) = &db.name {
                 println!("{}{}", label("name:"), n.clone().cyan());
             }
+            if let Some(c) = &db.default_catalog {
+                println!("{}{}", label("catalog:"), c.clone().cyan());
+            }
             println!(
                 "{}{}",
                 label("default_connection_id:"),
                 db.default_connection_id.clone().dark_cyan()
             );
-            let catalog = db.name.as_deref().unwrap_or("default");
+            let catalog = db.default_catalog.as_deref()
+                .or(db.name.as_deref())
+                .unwrap_or("default");
             println!(
                 "{}{}",
                 label("sql_prefix:"),
@@ -459,7 +476,7 @@ fn create_and_return_id(
     expires_at: Option<&str>,
 ) -> String {
     use crossterm::style::Stylize;
-    let body = create_database_request(name, schema, tables, expires_at);
+    let body = create_database_request(name, None, schema, tables, expires_at);
     let (status, resp_body) = api.post_raw("/databases", &body);
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
@@ -554,6 +571,7 @@ pub fn run(
 pub fn create(
     workspace_id: &str,
     name: Option<&str>,
+    catalog: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
@@ -561,7 +579,7 @@ pub fn create(
 ) {
     use crossterm::style::Stylize;
 
-    let body = create_database_request(name, schema, tables, expires_at);
+    let body = create_database_request(name, catalog, schema, tables, expires_at);
 
     let api = ApiClient::new(Some(workspace_id));
     let spinner = (format == "table").then(|| crate::util::spinner("Creating database..."));
@@ -596,12 +614,17 @@ pub fn create(
             if let Some(n) = &result.name {
                 println!("name:        {}", n.clone().cyan());
             }
+            if let Some(c) = &result.default_catalog {
+                println!("catalog:     {}", c.clone().cyan());
+            }
             println!("id:          {}", result.id);
             if let Some(exp) = &result.expires_at {
                 println!("expires_at:  {exp}");
             }
             println!();
-            let catalog = result.name.as_deref().unwrap_or("default");
+            let catalog = result.default_catalog.as_deref()
+                .or(result.name.as_deref())
+                .unwrap_or("default");
             println!(
                 "{}",
                 format!(
@@ -678,9 +701,10 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
     let database = resolve_current_database(database, workspace_id);
     let api = ApiClient::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
+    let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
     let tables = collect_tables(&api, &db.default_connection_id, schema);
 
-    let rows = table_rows(tables);
+    let rows = table_rows(catalog, tables);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
@@ -769,7 +793,8 @@ pub fn tables_load(
         }
     };
 
-    let full_name = format!("default.{}.{}", result.schema_name, result.table_name);
+    let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
+    let full_name = format!("{catalog}.{}.{}", result.schema_name, result.table_name);
     println!("{}", "Table loaded".green());
     println!("full_name: {}", full_name.clone().green());
     println!("rows:      {}", result.row_count);
@@ -805,9 +830,10 @@ pub fn tables_delete(workspace_id: &str, database: Option<&str>, table: &str, sc
         std::process::exit(1);
     }
 
+    let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
     println!(
         "{}",
-        format!("Table 'default.{}.{}' deleted.", schema, table).green()
+        format!("Table '{catalog}.{schema}.{table}' deleted.").green()
     );
 }
 
@@ -823,13 +849,13 @@ mod tests {
 
     #[test]
     fn create_database_request_empty_without_name_or_tables() {
-        let req = create_database_request(None, "public", &[], None);
+        let req = create_database_request(None, None, "public", &[], None);
         assert_eq!(req, serde_json::json!({}));
     }
 
     #[test]
     fn create_database_request_includes_name() {
-        let req = create_database_request(Some("jaffle_shop"), "public", &[], None);
+        let req = create_database_request(Some("jaffle_shop"), None, "public", &[], None);
         assert_eq!(req["name"], "jaffle_shop");
         assert!(req.get("schemas").is_none());
     }
@@ -837,6 +863,7 @@ mod tests {
     #[test]
     fn create_database_request_includes_schemas_when_tables_declared() {
         let req = create_database_request(
+            None,
             None,
             "public",
             &["orders".to_string(), "customers".to_string()],
@@ -849,26 +876,27 @@ mod tests {
 
     #[test]
     fn create_database_request_schemas_without_name() {
-        let req = create_database_request(None, "analytics", &["events".to_string()], None);
+        let req = create_database_request(None, None, "analytics", &["events".to_string()], None);
         assert!(req.get("name").is_none());
         assert_eq!(req["schemas"][0]["name"], "analytics");
     }
 
     #[test]
     fn create_database_request_includes_expires_at_when_provided() {
-        let req = create_database_request(None, "public", &[], Some("24h"));
+        let req = create_database_request(None, None, "public", &[], Some("24h"));
         assert_eq!(req["expires_at"], "24h");
     }
 
     #[test]
     fn create_database_request_omits_expires_at_when_none() {
-        let req = create_database_request(None, "public", &[], None);
+        let req = create_database_request(None, None, "public", &[], None);
         assert!(req.get("expires_at").is_none());
     }
 
     #[test]
     fn create_database_request_dot_notation_groups_tables_by_schema() {
         let req = create_database_request(
+            None,
             None,
             "public",
             &[
@@ -1006,7 +1034,7 @@ mod tests {
 
     #[test]
     fn table_rows_uses_default_prefix() {
-        let rows = table_rows(vec![InfoTable {
+        let rows = table_rows("default", vec![InfoTable {
             connection: "ignored".into(),
             schema: "public".into(),
             table: "orders".into(),
@@ -1066,6 +1094,7 @@ mod tests {
             .match_body(mockito::Matcher::JsonString(
                 serde_json::to_string(&create_database_request(
                     Some("mydb"),
+                    None,
                     "public",
                     &["gdp".to_string()],
                     None,
@@ -1075,7 +1104,7 @@ mod tests {
             .create();
 
         let api = ApiClient::test_new(&server.url(), "k", Some("ws-test"));
-        let body = create_database_request(Some("mydb"), "public", &["gdp".to_string()], None);
+        let body = create_database_request(Some("mydb"), None, "public", &["gdp".to_string()], None);
         let (status, resp_body) = api.post_raw("/databases", &body);
         assert_eq!(status.as_u16(), 201);
         let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();
@@ -1184,6 +1213,7 @@ mod tests {
             .mock("POST", "/databases")
             .match_body(mockito::Matcher::Json(create_database_request(
                 Some("scratch"),
+                None,
                 "public",
                 &[],
                 None,

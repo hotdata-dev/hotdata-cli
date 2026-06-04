@@ -354,7 +354,10 @@ pub mod test_helpers {
         let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         // SAFETY: tests are serialized via ENV_LOCK mutex, so no concurrent env mutation.
-        unsafe { std::env::set_var("HOTDATA_CONFIG_DIR", tmp.path()) };
+        unsafe {
+            std::env::set_var("HOTDATA_CONFIG_DIR", tmp.path());
+            std::env::remove_var("HOTDATA_API_KEY");
+        }
         (tmp, guard)
     }
 }
