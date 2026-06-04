@@ -680,7 +680,7 @@ fn main() {
                         output_column,
                         description,
                     } => {
-                        let api = api::ApiClient::new(Some(&workspace_id));
+                        let api = sdk::Api::new(Some(&workspace_id));
                         let (scope, resolved_columns, auto_name) =
                             match (catalog.as_deref().or(table.as_deref()), dataset_id.as_deref()) {
                                 (Some(_), None) => {

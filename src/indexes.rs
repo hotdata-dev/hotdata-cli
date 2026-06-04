@@ -1,4 +1,3 @@
-use crate::api::ApiClient;
 use crate::sdk::{block, none_if_404, Api};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -212,14 +211,10 @@ pub fn infer_for_search(
 ) -> (String, String) {
     use crossterm::style::Stylize;
 
-    // `resolve_connection_id` still consumes the legacy `ApiClient` (it reaches
-    // into databases.rs, which has not yet been migrated); build one alongside
-    // the SDK-backed `Api` used for the index fetch.
-    let legacy = ApiClient::new(Some(workspace_id));
     let api = Api::new(Some(workspace_id));
 
     // Resolve connection name → ID (falls back to managed database catalog lookup)
-    let connection_id = crate::connections::resolve_connection_id(&legacy, connection_name);
+    let connection_id = crate::connections::resolve_connection_id(&api, connection_name);
 
     // Fetch indexes for this table
     let indexes = list_one_table(&api, &connection_id, schema, table);

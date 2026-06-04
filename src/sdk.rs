@@ -347,6 +347,18 @@ impl Api {
         &self.client
     }
 
+    /// Resolve the current bearer token synchronously by driving the installed
+    /// `token_provider` on the shared runtime.
+    ///
+    /// Used by raw-HTTP paths that the SDK can't serve (the streaming `/files`
+    /// upload) but that still need the same `Authorization: Bearer <jwt>` the
+    /// SDK installs on every call. Returns `None` if no provider/static token
+    /// is configured.
+    pub fn current_bearer(&self) -> Option<String> {
+        let cfg = self.client.configuration();
+        rt().block_on(cfg.resolve_bearer_token())
+    }
+
     /// Issue an authenticated `GET {base}/v1{path}` through the SDK
     /// `Configuration` and deserialize the JSON body into a CLI-owned type.
     ///
@@ -419,6 +431,49 @@ impl Api {
         let url = format!("{}/v1{path}", cfg.base_path);
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::POST, &url).json(body);
+            if let Some(ref user_agent) = cfg.user_agent {
+                req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
+            }
+            if let Some(apikey) = cfg.api_keys.get(hotdata::client::WORKSPACE_ID_HEADER) {
+                let value = match apikey.prefix {
+                    Some(ref prefix) => format!("{} {}", prefix, apikey.key),
+                    None => apikey.key.clone(),
+                };
+                req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
+            }
+            if let Some(token) = cfg.resolve_bearer_token().await {
+                req = req.bearer_auth(token);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
+            Ok((status, body))
+        })
+    }
+
+    /// Issue an authenticated `DELETE {base}/v1{path}` through the SDK
+    /// `Configuration`, returning the raw status + body text.
+    ///
+    /// The seam's DELETE counterpart to [`post_raw`](Self::post_raw): used by
+    /// `databases.rs`, where the delete bodies feed the same CLI-side
+    /// `(status, body)` control flow as the old raw `delete_raw` (e.g. the
+    /// delete+recreate path inspects the failure body), so non-success is
+    /// returned as `Ok((status, body))` rather than an error.
+    pub fn delete_raw(
+        &self,
+        path: &str,
+    ) -> Result<(reqwest::StatusCode, String), ApiError> {
+        let cfg = self.client.configuration();
+        let url = format!("{}/v1{path}", cfg.base_path);
+        rt().block_on(async move {
+            let mut req = cfg.client.request(reqwest::Method::DELETE, &url);
             if let Some(ref user_agent) = cfg.user_agent {
                 req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
             }

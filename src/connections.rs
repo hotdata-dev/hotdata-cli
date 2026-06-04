@@ -1,5 +1,4 @@
-use crate::api::ApiClient;
-use crate::sdk::{block, Api, ApiError};
+use crate::sdk::{block, none_if_404, Api, ApiError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -195,12 +194,16 @@ struct ListResponse {
 /// If `name_or_id` looks like a raw connection ID (starts with "conn"), tries
 /// `GET /connections/{id}` directly first to avoid listing the full workspace.
 /// Falls back to listing and matching by name on a 404 or when given a plain name.
-pub fn resolve_connection_id(api: &ApiClient, name_or_id: &str) -> String {
+pub fn resolve_connection_id(api: &Api, name_or_id: &str) -> String {
     use crossterm::style::Stylize;
 
     if name_or_id.starts_with("conn") {
-        let (status, _) = api.get_raw(&format!("/connections/{name_or_id}"));
-        if status.is_success() {
+        // Existence probe: a 404 just means "not a raw id", fall through to the
+        // name/catalog lookup; any other error is fatal.
+        if none_if_404(block(api.client().connections().get(name_or_id)))
+            .unwrap_or_else(|e| e.exit())
+            .is_some()
+        {
             return name_or_id.to_string();
         }
     }
@@ -209,7 +212,11 @@ pub fn resolve_connection_id(api: &ApiClient, name_or_id: &str) -> String {
     // matches — prefer it over any stale connection entry with the same name.
     if let Some(ws) = api.workspace_id() {
         if let Some(active_id) = crate::config::load_current_database("default", ws) {
-            if let Some(active_db) = api.get_none_if_not_found::<crate::databases::Database>(&format!("/databases/{active_id}")) {
+            if let Some(active_db) = none_if_404(
+                api.get_json::<crate::databases::Database>(&format!("/databases/{active_id}"), &[]),
+            )
+            .unwrap_or_else(|e| e.exit())
+            {
                 if active_db.default_catalog.as_deref() == Some(name_or_id)
                     || active_db.name.as_deref() == Some(name_or_id)
                 {
@@ -219,8 +226,8 @@ pub fn resolve_connection_id(api: &ApiClient, name_or_id: &str) -> String {
         }
     }
 
-    let body: ListResponse = api.get("/connections");
-    if let Some(conn) = body
+    let resp = block(api.client().connections().list()).unwrap_or_else(|e| e.exit());
+    if let Some(conn) = resp
         .connections
         .iter()
         .find(|c| c.id == name_or_id || c.name == name_or_id)
