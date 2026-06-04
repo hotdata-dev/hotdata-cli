@@ -14,9 +14,17 @@ pub struct QueryResponse {
     pub warning: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct AsyncResponse {
-    query_run_id: String,
+/// Convert the SDK's inline `QueryResponse` (200 path) into the CLI's display
+/// model. The async path decodes Arrow instead (see `fetch_arrow_result`).
+fn query_response_from_sdk(resp: hotdata::models::QueryResponse) -> QueryResponse {
+    QueryResponse {
+        result_id: resp.result_id.flatten(),
+        columns: resp.columns,
+        rows: resp.rows,
+        row_count: resp.row_count.max(0) as u64,
+        execution_time_ms: Some(resp.execution_time_ms.max(0) as u64),
+        warning: resp.warning.flatten(),
+    }
 }
 
 fn value_to_string(v: &Value) -> String {
@@ -147,117 +155,100 @@ pub fn execute(
     database: Option<&str>,
     format: &str,
 ) {
-    let mut api = Api::new(Some(workspace_id));
-    if let Some(db_id) = database {
-        api = api.with_database(db_id);
-    }
+    let api = Api::new(Some(workspace_id));
 
-    let mut body = serde_json::json!({
-        "sql": sql,
-        "async": true,
-        "async_after_ms": 1000,
-    });
-    if let Some(conn) = connection {
-        body["connection_id"] = Value::String(conn.to_string());
-    }
+    // `--connection` is a no-op: /query is database-scoped and the endpoint has
+    // no connection_id field. Accepted for compatibility (see follow-up issue
+    // to remove it).
+    let _ = connection;
 
-    // The /query 202 async-submit branch (AsyncResponse{query_run_id}) is not
-    // exposed by the SDK's typed query() op, so submit raw through the seam.
+    // Scope to the explicit --database flag, else the active database resolved
+    // at construction (HOTDATA_DATABASE / current database). submit_query sends
+    // it as the X-Database-Id header.
+    let database = database.or(api.database_id());
+
+    let mut request = hotdata::models::QueryRequest::new(sql.to_string());
+    request.r#async = Some(true);
+    request.async_after_ms = Some(Some(1000));
+
     let spinner = crate::util::spinner("running query...");
-    let (status, resp_body) = api.post_raw("/query", &body).unwrap_or_else(|e| e.exit());
+    let outcome = crate::sdk::block(api.client().submit_query(request, database))
+        .unwrap_or_else(|e| e.exit());
     spinner.finish_and_clear();
 
-    if status.as_u16() == 202 {
-        // Query didn't complete within async_after_ms — poll until done, then
-        // fetch the result as Arrow IPC.
-        let async_resp: AsyncResponse = match serde_json::from_str(&resp_body) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error parsing async response: {e}");
-                std::process::exit(1);
-            }
-        };
-
-        let run_id = &async_resp.query_run_id;
-        let spinner = crate::util::spinner("waiting for query...");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-
-        loop {
-            // Drive the poll loop ourselves to preserve the 5-minute deadline
-            // and 500ms cadence (NOT the SDK's PollConfig defaults).
-            let run = crate::sdk::block(api.client().query_runs().get(run_id))
-                .unwrap_or_else(|e| e.exit());
-            match run.status.as_str() {
-                "succeeded" => {
-                    spinner.finish_and_clear();
-                    match run.result_id.flatten() {
-                        Some(ref result_id) => {
-                            let result = fetch_arrow_result(&api, result_id);
-                            print_result(&result, format);
-                        }
-                        None => {
-                            use crossterm::style::Stylize;
-                            println!("{}", "Query succeeded but no result available.".yellow());
-                        }
-                    }
-                    return;
-                }
-                "failed" => {
-                    spinner.finish_and_clear();
-                    use crossterm::style::Stylize;
-                    let err = run
-                        .error_message
-                        .flatten()
-                        .unwrap_or_else(|| "unknown error".to_string());
-                    eprintln!("{}", format!("query failed: {err}").red());
-                    std::process::exit(1);
-                }
-                "running" | "queued" | "pending" => {}
-                status => {
-                    spinner.finish_and_clear();
-                    use crossterm::style::Stylize;
-                    eprintln!("{}", format!("query status: {status}").yellow());
-                    eprintln!(
-                        "{}",
-                        format!("Check status with: hotdata query status {run_id}").dark_grey()
-                    );
-                    std::process::exit(2);
-                }
-            }
-            if std::time::Instant::now() > deadline {
-                spinner.finish_and_clear();
-                use crossterm::style::Stylize;
-                eprintln!("{}", "query timed out after 5 minutes".red());
-                eprintln!(
-                    "{}",
-                    format!("Check status with: hotdata query status {run_id}").dark_grey()
-                );
-                std::process::exit(1);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+    let async_resp = match outcome {
+        // Completed within async_after_ms — inline results.
+        hotdata::QueryOutcome::Inline(resp) => {
+            print_result(&query_response_from_sdk(resp), format);
+            return;
         }
-    }
-
-    if !status.is_success() {
-        let message = serde_json::from_str::<Value>(&resp_body)
-            .ok()
-            .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-            .unwrap_or(resp_body);
-        use crossterm::style::Stylize;
-        eprintln!("{}", message.red());
-        std::process::exit(1);
-    }
-
-    // Fast path: query completed synchronously — response is JSON from /query.
-    let result: QueryResponse = match serde_json::from_str(&resp_body) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
+        // Still running — poll the query run, then fetch the result as Arrow.
+        hotdata::QueryOutcome::Submitted(async_resp) => async_resp,
+        // QueryOutcome is #[non_exhaustive]; guard against future variants.
+        _ => {
+            eprintln!("unexpected query response from server");
             std::process::exit(1);
         }
     };
 
-    print_result(&result, format);
+    let run_id = &async_resp.query_run_id;
+    let spinner = crate::util::spinner("waiting for query...");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+
+    loop {
+        // Drive the poll loop ourselves to preserve the 5-minute deadline and
+        // 500ms cadence (NOT the SDK's PollConfig defaults).
+        let run = crate::sdk::block(api.client().query_runs().get(run_id))
+            .unwrap_or_else(|e| e.exit());
+        match run.status.as_str() {
+            "succeeded" => {
+                spinner.finish_and_clear();
+                match run.result_id.flatten() {
+                    Some(ref result_id) => {
+                        let result = fetch_arrow_result(&api, result_id);
+                        print_result(&result, format);
+                    }
+                    None => {
+                        use crossterm::style::Stylize;
+                        println!("{}", "Query succeeded but no result available.".yellow());
+                    }
+                }
+                return;
+            }
+            "failed" => {
+                spinner.finish_and_clear();
+                use crossterm::style::Stylize;
+                let err = run
+                    .error_message
+                    .flatten()
+                    .unwrap_or_else(|| "unknown error".to_string());
+                eprintln!("{}", format!("query failed: {err}").red());
+                std::process::exit(1);
+            }
+            "running" | "queued" | "pending" => {}
+            status => {
+                spinner.finish_and_clear();
+                use crossterm::style::Stylize;
+                eprintln!("{}", format!("query status: {status}").yellow());
+                eprintln!(
+                    "{}",
+                    format!("Check status with: hotdata query status {run_id}").dark_grey()
+                );
+                std::process::exit(2);
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            spinner.finish_and_clear();
+            use crossterm::style::Stylize;
+            eprintln!("{}", "query timed out after 5 minutes".red());
+            eprintln!(
+                "{}",
+                format!("Check status with: hotdata query status {run_id}").dark_grey()
+            );
+            std::process::exit(1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 }
 
 /// Poll a query run by ID. If succeeded and has a result_id, fetch and display the result.
