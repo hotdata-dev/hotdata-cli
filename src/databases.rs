@@ -24,6 +24,8 @@ pub struct Database {
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub default_catalog: Option<String>,
     pub default_connection_id: String,
     #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
@@ -225,11 +227,11 @@ pub fn is_parquet_path(path: &str) -> bool {
         || Path::new(path).extension().and_then(|e| e.to_str()) == Some("parquet")
 }
 
-fn table_rows(tables: Vec<InfoTable>) -> Vec<TableRow> {
+fn table_rows(catalog: &str, tables: Vec<InfoTable>) -> Vec<TableRow> {
     tables
         .into_iter()
         .map(|t| TableRow {
-            full_name: format!("default.{}.{}", t.schema, t.table),
+            full_name: format!("{catalog}.{}.{}", t.schema, t.table),
             schema: t.schema,
             table: t.table,
             synced: t.synced,
@@ -393,7 +395,7 @@ pub fn list(workspace_id: &str, format: &str) {
                 eprintln!("{}", "No databases found.".dark_grey());
                 eprintln!(
                     "{}",
-                    "Create one with: hotdata databases create --name <catalog_name>".dark_grey()
+                    "Create one with: hotdata databases create --catalog <alias>".dark_grey()
                 );
             } else {
                 let rows: Vec<Vec<String>> = body
@@ -427,12 +429,17 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
             if let Some(n) = &db.name {
                 println!("{}{}", label("name:"), n.clone().cyan());
             }
+            if let Some(c) = &db.default_catalog {
+                println!("{}{}", label("catalog:"), c.clone().cyan());
+            }
             println!(
                 "{}{}",
                 label("default_connection_id:"),
                 db.default_connection_id.clone().dark_cyan()
             );
-            let catalog = db.name.as_deref().unwrap_or("default");
+            let catalog = db.default_catalog.as_deref()
+                .or(db.name.as_deref())
+                .unwrap_or("default");
             println!(
                 "{}{}",
                 label("sql_prefix:"),
@@ -694,9 +701,10 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
     let database = resolve_current_database(database, workspace_id);
     let api = ApiClient::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
+    let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
     let tables = collect_tables(&api, &db.default_connection_id, schema);
 
-    let rows = table_rows(tables);
+    let rows = table_rows(catalog, tables);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
@@ -785,7 +793,8 @@ pub fn tables_load(
         }
     };
 
-    let full_name = format!("default.{}.{}", result.schema_name, result.table_name);
+    let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
+    let full_name = format!("{catalog}.{}.{}", result.schema_name, result.table_name);
     println!("{}", "Table loaded".green());
     println!("full_name: {}", full_name.clone().green());
     println!("rows:      {}", result.row_count);
@@ -821,9 +830,10 @@ pub fn tables_delete(workspace_id: &str, database: Option<&str>, table: &str, sc
         std::process::exit(1);
     }
 
+    let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
     println!(
         "{}",
-        format!("Table 'default.{}.{}' deleted.", schema, table).green()
+        format!("Table '{catalog}.{schema}.{table}' deleted.").green()
     );
 }
 
@@ -1024,7 +1034,7 @@ mod tests {
 
     #[test]
     fn table_rows_uses_default_prefix() {
-        let rows = table_rows(vec![InfoTable {
+        let rows = table_rows("default", vec![InfoTable {
             connection: "ignored".into(),
             schema: "public".into(),
             table: "orders".into(),

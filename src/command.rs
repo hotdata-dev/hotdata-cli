@@ -568,8 +568,7 @@ pub enum DatabasesCommands {
         name: Option<String>,
 
         /// SQL catalog alias used in queries: SELECT … FROM <catalog>.schema.table.
-        /// Must be [a-z_][a-z0-9_]*, globally unique. When provided the database
-        /// defaults to no expiry; omit for an anonymous 24h sandbox.
+        /// Must be [a-z_][a-z0-9_]*, globally unique.
         #[arg(long)]
         catalog: Option<String>,
 

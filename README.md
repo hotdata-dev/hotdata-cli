@@ -130,14 +130,14 @@ hotdata connections create --name "my-conn" --type postgres --config '{"host":".
 
 ## Databases
 
-Managed databases are Hotdata-owned catalogs you create and populate yourself (no remote source to sync). Query them with SQL as `database_name.schema.table` — the database name is the connection name.
+Managed databases are Hotdata-owned catalogs you create and populate yourself (no remote source to sync). Query them with SQL as `<catalog>.schema.table`.
 
 ```sh
 hotdata databases list [-w <id>] [-o table|json|yaml]
-hotdata databases create --name <name> [--table <table> ...] [--schema public] [-o table|json|yaml]
+hotdata databases create [--name <display_name>] [--catalog <alias>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [-o table|json|yaml]
 hotdata databases <name_or_id> [-o table|json|yaml]
 hotdata databases delete <name_or_id>
-hotdata databases run [--database <id>] [--description <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] <cmd> [args...]
+hotdata databases run [--database <id>] [--name <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] <cmd> [args...]
 hotdata databases <id> run <cmd> [args...]
 
 hotdata databases tables list <database> [--schema <name>] [-o table|json|yaml]
@@ -146,15 +146,15 @@ hotdata databases tables load <database> <table> --upload-id <id> [--schema publ
 hotdata databases tables delete <database> <table> [--schema public]
 ```
 
-- `create` registers a managed connection (`source_type: managed`) with no external credentials. Use `--table` to declare tables up front (required before `tables load` on the current API).
+- `create` registers a managed connection with no external credentials. `--name` is a human-readable display name; `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`) and must be `[a-z_][a-z0-9_]*`. Use `--table` to declare tables up front (required before `tables load` on the current API).
 - `tables load` uploads a **parquet** file (or uses a staged `upload_id` from `POST /v1/files`) and publishes it as the table generation (`replace` mode).
-- `run` mints a database-scoped JWT and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected into its environment. Pass a database id (group-positional `<id>` like `sandbox run`, or `--database <id>`) to scope an existing database; omit both to auto-create a scratch one using `--description` / `--schema` / `--table` / `--expires-at`. Useful for launching an agent or child process whose API access is restricted to a single database.
+- `run` mints a database-scoped JWT and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected into its environment. Pass a database id (group-positional `<id>` like `sandbox run`, or `--database <id>`) to scope an existing database; omit both to auto-create a scratch one using `--name` / `--schema` / `--table` / `--expires-at`. Useful for launching an agent or child process whose API access is restricted to a single database.
 - For CSV/JSON uploads without a managed database, use `hotdata datasets create` instead (`datasets.main.*`).
 
 Example:
 
 ```sh
-hotdata databases create --name sales --table orders
+hotdata databases create --name "Sales reporting" --catalog sales --table orders
 hotdata databases tables load sales orders --file ./orders.parquet
 hotdata query "SELECT count(*) FROM sales.public.orders"
 ```
