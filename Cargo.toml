@@ -27,6 +27,11 @@ anstyle = "1.0.13"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
+# Aliased reqwest 0.13 matching the SDK's dependency line, so the sdk seam can
+# build the reqwest::Client backing the SDK Configuration (with a request
+# timeout) as the exact same type the SDK expects. Features mirror sdk-rust so
+# nothing extra is unioned into the shared 0.13 build.
+reqwest013 = { package = "reqwest", version = "0.13", default-features = false, features = ["native-tls", "json", "multipart", "stream", "query", "form"] }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
