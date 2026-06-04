@@ -1,6 +1,7 @@
-use crate::api::ApiClient;
+use crate::sdk::Api;
 use crossterm::style::Stylize;
-use serde::{Deserialize, Serialize};
+use hotdata::models::QueryRunInfo;
+use serde::Serialize;
 
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON", "JOIN", "LEFT",
@@ -110,7 +111,7 @@ fn highlight_sql(sql: &str) -> String {
     result
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 struct QueryRun {
     id: String,
     status: String,
@@ -125,7 +126,6 @@ struct QueryRun {
     sql_hash: String,
     sql_text: String,
     result_id: Option<String>,
-    #[serde(default)]
     database_id: Option<String>,
     error_message: Option<String>,
     warning_message: Option<String>,
@@ -133,12 +133,30 @@ struct QueryRun {
     user_public_id: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct ListResponse {
-    query_runs: Vec<QueryRun>,
-    count: u64,
-    has_more: bool,
-    next_cursor: Option<String>,
+impl From<QueryRunInfo> for QueryRun {
+    fn from(r: QueryRunInfo) -> Self {
+        QueryRun {
+            id: r.id,
+            status: r.status,
+            created_at: r.created_at,
+            completed_at: r.completed_at.flatten(),
+            execution_time_ms: r.execution_time_ms.flatten().map(|v| v.max(0) as u64),
+            server_processing_ms: r.server_processing_ms.flatten().map(|v| v.max(0) as u64),
+            row_count: r.row_count.flatten().map(|v| v.max(0) as u64),
+            saved_query_id: r.saved_query_id.flatten(),
+            saved_query_version: r.saved_query_version.flatten().map(|v| v.max(0) as u64),
+            snapshot_id: r.snapshot_id,
+            sql_hash: r.sql_hash,
+            sql_text: r.sql_text,
+            result_id: r.result_id.flatten(),
+            // Not carried by the API / SDK model; preserved as a serialized null.
+            database_id: None,
+            error_message: r.error_message.flatten(),
+            warning_message: r.warning_message.flatten(),
+            trace_id: r.trace_id.flatten(),
+            user_public_id: r.user_public_id.flatten(),
+        }
+    }
 }
 
 fn truncate_sql(sql: &str, max: usize) -> String {
@@ -158,27 +176,32 @@ pub fn list(
     status: Option<&str>,
     format: &str,
 ) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
-    let params = [
-        ("limit", limit.map(|l| l.to_string())),
-        ("cursor", cursor.map(str::to_string)),
-        ("status", status.map(str::to_string)),
-    ];
-    let body: ListResponse = api.get_with_params("/query-runs", &params);
+    let resp = crate::sdk::block(api.client().query_runs().list(
+        limit.map(|l| l as i32),
+        cursor,
+        status,
+        None,
+    ))
+    .unwrap_or_else(|e| e.exit());
+
+    let query_runs: Vec<QueryRun> = resp.query_runs.into_iter().map(QueryRun::from).collect();
+    let count = resp.count.max(0) as u64;
+    let has_more = resp.has_more;
+    let next_cursor = resp.next_cursor.flatten();
 
     match format {
         "json" => println!(
             "{}",
-            serde_json::to_string_pretty(&body.query_runs).unwrap()
+            serde_json::to_string_pretty(&query_runs).unwrap()
         ),
-        "yaml" => print!("{}", serde_yaml::to_string(&body.query_runs).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&query_runs).unwrap()),
         "table" => {
-            if body.query_runs.is_empty() {
+            if query_runs.is_empty() {
                 eprintln!("{}", "No query runs found.".dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body
-                    .query_runs
+                let rows: Vec<Vec<String>> = query_runs
                     .iter()
                     .map(|r| {
                         vec![
@@ -201,13 +224,12 @@ pub fn list(
                     &rows,
                 );
             }
-            if body.has_more {
-                let next = body.next_cursor.as_deref().unwrap_or("");
+            if has_more {
+                let next = next_cursor.as_deref().unwrap_or("");
                 eprintln!(
                     "{}",
                     format!(
-                        "showing {} results — use --cursor {next} for more",
-                        body.count
+                        "showing {count} results — use --cursor {next} for more"
                     )
                     .dark_grey()
                 );
@@ -218,9 +240,10 @@ pub fn list(
 }
 
 pub fn get(query_run_id: &str, workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let path = format!("/query-runs/{query_run_id}");
-    let run: QueryRun = api.get(&path);
+    let api = Api::new(Some(workspace_id));
+    let run: QueryRun = crate::sdk::block(api.client().query_runs().get(query_run_id))
+        .unwrap_or_else(|e| e.exit())
+        .into();
     print_detail(&run, format);
 }
 
