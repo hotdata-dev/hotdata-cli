@@ -14,6 +14,7 @@ mod jobs;
 mod jwt;
 mod queries;
 mod query;
+mod raw_http;
 mod results;
 mod sandbox;
 mod sandbox_session;
