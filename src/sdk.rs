@@ -325,6 +325,10 @@ impl Api {
         let mut configuration = Configuration {
             base_path: sdk_base_path(api_url),
             client: sdk_http_client(),
+            // Attribute CLI traffic as the CLI, not the SDK default
+            // (`hotdata-rust/...`). The old ApiClient sent no User-Agent; an
+            // explicit CLI agent is the correct attribution.
+            user_agent: Some(format!("hotdata-cli/{}", env!("CARGO_PKG_VERSION"))),
             ..Configuration::default()
         };
         configuration.token_provider = Some(Arc::new(provider));
