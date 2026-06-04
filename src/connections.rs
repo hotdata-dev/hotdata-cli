@@ -172,6 +172,20 @@ pub fn resolve_connection_id(api: &ApiClient, name_or_id: &str) -> String {
         }
     }
 
+    // Before listing connections, check if the active database's catalog or name
+    // matches — prefer it over any stale connection entry with the same name.
+    if let Some(ws) = api.workspace_id() {
+        if let Some(active_id) = crate::config::load_current_database("default", ws) {
+            if let Some(active_db) = api.get_none_if_not_found::<crate::databases::Database>(&format!("/databases/{active_id}")) {
+                if active_db.default_catalog.as_deref() == Some(name_or_id)
+                    || active_db.name.as_deref() == Some(name_or_id)
+                {
+                    return active_db.default_connection_id;
+                }
+            }
+        }
+    }
+
     let body: ListResponse = api.get("/connections");
     if let Some(conn) = body
         .connections

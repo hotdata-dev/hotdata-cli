@@ -219,18 +219,8 @@ pub fn infer_for_search(
 
     let api = ApiClient::new(Some(workspace_id));
 
-    // Resolve connection name → ID
-    let conn_map = connection_lookup(&api);
-    let connection_id = match conn_map.get(connection_name) {
-        Some(id) => id.clone(),
-        None => {
-            eprintln!(
-                "{}",
-                format!("Connection '{}' not found.", connection_name).red()
-            );
-            std::process::exit(1);
-        }
-    };
+    // Resolve connection name → ID (falls back to managed database catalog lookup)
+    let connection_id = crate::connections::resolve_connection_id(&api, connection_name);
 
     // Fetch indexes for this table
     let indexes = list_one_table(&api, &connection_id, schema, table);

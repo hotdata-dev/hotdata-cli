@@ -111,23 +111,8 @@ pub fn try_resolve_database(api: &ApiClient, id_or_name: &str) -> Result<Databas
         return Ok(db);
     }
 
-    // Fall back to listing and matching by name or catalog alias.
+    // Fall back to listing — prefer catalog alias match, then name.
     let body: ListDatabasesResponse = api.get("/databases");
-    let name_matches: Vec<&DatabaseSummary> = body
-        .databases
-        .iter()
-        .filter(|d| d.name.as_deref() == Some(id_or_name))
-        .collect();
-
-    if !name_matches.is_empty() {
-        return match name_matches.len() {
-            1 => Ok(fetch_database(api, &name_matches[0].id)),
-            _ => Err(format!(
-                "multiple databases have name '{}' — use the database id instead",
-                id_or_name
-            )),
-        };
-    }
 
     let catalog_matches: Vec<&DatabaseSummary> = body
         .databases
@@ -135,13 +120,30 @@ pub fn try_resolve_database(api: &ApiClient, id_or_name: &str) -> Result<Databas
         .filter(|d| d.default_catalog.as_deref() == Some(id_or_name))
         .collect();
 
-    match catalog_matches.len() {
+    if !catalog_matches.is_empty() {
+        return match catalog_matches.len() {
+            1 => Ok(fetch_database(api, &catalog_matches[0].id)),
+            _ => Err(format!(
+                "multiple databases have catalog '{}' — use the database id instead",
+                id_or_name
+            )),
+        };
+    }
+
+
+    let name_matches: Vec<&DatabaseSummary> = body
+        .databases
+        .iter()
+        .filter(|d| d.name.as_deref() == Some(id_or_name))
+        .collect();
+
+    match name_matches.len() {
         0 => Err(format!(
-            "no database with id, name, or catalog '{id_or_name}'"
+            "no database with id, catalog, or name '{id_or_name}'"
         )),
-        1 => Ok(fetch_database(api, &catalog_matches[0].id)),
+        1 => Ok(fetch_database(api, &name_matches[0].id)),
         _ => Err(format!(
-            "multiple databases have catalog '{}' — use the database id instead",
+            "multiple databases have name '{}' — use the database id instead",
             id_or_name
         )),
     }
@@ -777,7 +779,26 @@ pub fn tables_load(
 
     let database = resolve_current_database(database, workspace_id);
     let api = ApiClient::new(Some(workspace_id));
-    let db = resolve_database(&api, &database);
+    // Prefer the active database when its catalog or name matches the lookup key,
+    // avoiding ambiguity when multiple databases share the same catalog name.
+    let active_id = crate::config::load_current_database("default", workspace_id);
+    let lookup_key = match active_id.as_deref() {
+        Some(id) => {
+            if let Some(active) = api.get_none_if_not_found::<Database>(&format!("/databases/{id}")) {
+                if active.default_catalog.as_deref() == Some(database.as_str())
+                    || active.name.as_deref() == Some(database.as_str())
+                {
+                    id.to_string()
+                } else {
+                    database.clone()
+                }
+            } else {
+                database.clone()
+            }
+        }
+        None => database.clone(),
+    };
+    let db = resolve_database(&api, &lookup_key);
     let schema = schema_name(schema);
 
     // clap enforces mutual exclusion; only one of these is ever Some.
@@ -1036,7 +1057,7 @@ mod tests {
 
         let api = ApiClient::test_new(&server.url(), "k", None);
         let err = try_resolve_database(&api, "missing").unwrap_err();
-        assert!(err.contains("no database with id or name"));
+        assert!(err.contains("no database with id"));
     }
 
     #[test]
