@@ -195,6 +195,9 @@ pub fn list(
                             r.id.clone(),
                             color_status(&r.status),
                             crate::util::format_date(&r.created_at),
+                            r.execution_time_ms
+                                .map(|ms| ms.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
                             r.row_count
                                 .map(|n| n.to_string())
                                 .unwrap_or_else(|| "-".to_string()),
@@ -204,7 +207,7 @@ pub fn list(
                     })
                     .collect();
                 crate::table::print(
-                    &["ID", "STATUS", "CREATED", "ROWS", "RESULT_ID", "SQL"],
+                    &["ID", "STATUS", "CREATED", "MS", "ROWS", "RESULT_ID", "SQL"],
                     &rows,
                 );
             }
