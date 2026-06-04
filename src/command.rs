@@ -586,8 +586,7 @@ pub enum DatabasesCommands {
         tables: Vec<String>,
 
         /// When the database expires. Accepts a relative duration (e.g. 24h, 7d, 90m)
-        /// or an RFC 3339 timestamp. Omitting with --catalog means no expiry; omitting
-        /// without --catalog defaults to 24h.
+        /// or an RFC 3339 timestamp. Omitting means no expiry.
         #[arg(long)]
         expires_at: Option<String>,
 
