@@ -347,6 +347,61 @@ impl Api {
         &self.client
     }
 
+    /// Issue an authenticated `GET {base}/v1{path}` through the SDK
+    /// `Configuration` and deserialize the JSON body into a CLI-owned type.
+    ///
+    /// Used where the generated SDK model is lossy (drops fields the CLI
+    /// displays) so the seam still owns auth/transport — same reqwest client,
+    /// bearer via the `token_provider`, and `X-Workspace-Id` header as every
+    /// other SDK call — while the CLI keeps its own typed deserialization. The
+    /// `connections_new`-style "keep untyped parsing when the SDK model omits
+    /// fields" escape hatch, applied here for `GET /results`.
+    ///
+    /// `query` is appended verbatim as `(name, value)` pairs (already filtered
+    /// to present values by the caller).
+    pub fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T, ApiError> {
+        let cfg = self.client.configuration();
+        let url = format!("{}/v1{path}", cfg.base_path);
+        rt().block_on(async move {
+            let mut req = cfg.client.request(reqwest::Method::GET, &url);
+            if !query.is_empty() {
+                req = req.query(query);
+            }
+            if let Some(ref user_agent) = cfg.user_agent {
+                req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
+            }
+            if let Some(apikey) = cfg.api_keys.get(hotdata::client::WORKSPACE_ID_HEADER) {
+                let value = match apikey.prefix {
+                    Some(ref prefix) => format!("{} {}", prefix, apikey.key),
+                    None => apikey.key.clone(),
+                };
+                req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
+            }
+            if let Some(token) = cfg.resolve_bearer_token().await {
+                req = req.bearer_auth(token);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
+            if !status.is_success() {
+                return Err(ApiError::Status { status, body });
+            }
+            serde_json::from_str(&body)
+                .map_err(|e| ApiError::Transport(format!("error parsing response: {e}")))
+        })
+    }
+
     // --- Sample migrated call (workspace.rs uses this) -----------------------
 
     /// List workspaces visible to the authenticated principal.
@@ -611,6 +666,66 @@ mod tests {
 
         assert_eq!(results.len(), 8);
         assert!(results.iter().all(|ok| *ok), "every worker must succeed");
+    }
+
+    #[test]
+    fn get_json_sends_bearer_workspace_and_query_then_deserializes() {
+        // The seam's untyped escape hatch (used by results.rs): carry the
+        // bearer + X-Workspace-Id like every SDK call, append query pairs, hit
+        // /v1<path>, and deserialize into a caller-owned type that keeps fields
+        // the generated SDK model would drop.
+        #[derive(serde::Deserialize)]
+        struct Probe {
+            value: u32,
+        }
+
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/v1/results")
+            .match_header("Authorization", "Bearer test-jwt")
+            .match_header("X-Workspace-Id", "ws-1")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("limit".into(), "10".into()),
+                mockito::Matcher::UrlEncoded("offset".into(), "5".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"value":42}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let probe: Probe = api
+            .get_json(
+                "/results",
+                &[("limit", "10".to_string()), ("offset", "5".to_string())],
+            )
+            .expect("get_json should succeed");
+        assert_eq!(probe.value, 42);
+        m.assert();
+    }
+
+    #[test]
+    fn get_json_maps_error_status() {
+        #[derive(serde::Deserialize, Debug)]
+        struct Probe {
+            #[allow(dead_code)]
+            value: u32,
+        }
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/results")
+            .with_status(404)
+            .with_body("missing")
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", None);
+        match api.get_json::<Probe>("/results", &[]).unwrap_err() {
+            ApiError::Status { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+                assert!(body.contains("missing"));
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
     }
 
     #[test]

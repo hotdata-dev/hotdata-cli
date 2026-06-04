@@ -1,4 +1,5 @@
 use crate::api::ApiClient;
+use crate::sdk::Api;
 use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 
@@ -23,13 +24,22 @@ struct ListResponse {
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
-    let params = [
-        ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
-    ];
-    let body: ListResponse = api.get_with_params("/results", &params);
+    let mut params: Vec<(&str, String)> = Vec::new();
+    if let Some(l) = limit {
+        params.push(("limit", l.to_string()));
+    }
+    if let Some(o) = offset {
+        params.push(("offset", o.to_string()));
+    }
+    // The SDK's typed `results().list()` model drops `row_count`,
+    // `query_run_id`, and `expires_at` (the columns the CLI conditionally
+    // shows), so deserialize into the CLI's own `ListResponse` via the seam's
+    // `get_json` to preserve output byte-for-byte.
+    let body: ListResponse = api
+        .get_json("/results", &params)
+        .unwrap_or_else(|e| e.exit());
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.results).unwrap()),
