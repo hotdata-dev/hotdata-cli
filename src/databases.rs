@@ -30,6 +30,8 @@ pub struct Database {
     pub default_catalog: Option<String>,
     pub default_connection_id: String,
     #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
 }
 
@@ -653,12 +655,13 @@ pub fn create(
                 format!(
                     concat!(
                         "Load a table:\n",
-                        "  hotdata databases load --file <path.parquet> {}.<table_name>\n",
+                        "  hotdata databases load --catalog {0} --table <table> --file <path.parquet>\n",
+                        "  hotdata databases load --catalog {0} --table <table> --url <url>\n",
                         "\nQuery with:\n",
-                        "  hotdata query --database {} \"SELECT * FROM {}.public.<table> LIMIT 10\"\n",
+                        "  hotdata query \"SELECT * FROM {0}.public.<table> LIMIT 10\"\n",
                         "\n  Tip: column names are case-sensitive — wrap uppercase names in double quotes",
                     ),
-                    result.id, result.id, catalog
+                    catalog
                 )
                 .dark_grey()
             );
@@ -823,8 +826,19 @@ pub fn tables_load(
     let (status, resp_body) = if !status.is_success()
         && crate::util::api_error(resp_body.clone()).contains("not declared")
     {
-        // The table wasn't declared at create time. Delete the database and
-        // recreate it with the table declared, then retry the load.
+        // The table wasn't declared at create time. Collect existing tables so
+        // they are re-declared in the replacement database, then delete and
+        // recreate with all tables (including the new one) declared.
+        let existing = collect_tables(&api, &db.default_connection_id, None);
+        let mut all_tables: Vec<String> = existing
+            .iter()
+            .map(|t| format!("{}.{}", t.schema, t.table))
+            .collect();
+        let new_table_key = format!("{schema}.{table}");
+        if !all_tables.contains(&new_table_key) {
+            all_tables.push(new_table_key);
+        }
+
         let (del_status, del_body) = api.delete_raw(&format!("/databases/{}", db.id));
         if !del_status.is_success() {
             eprintln!("{}", crate::util::api_error(del_body).red());
@@ -834,8 +848,8 @@ pub fn tables_load(
             db.name.as_deref(),
             db.default_catalog.as_deref(),
             schema,
-            &[table.to_string()],
-            None,
+            &all_tables,
+            db.expires_at.as_deref(),
         );
         let (create_status, create_body_resp) = api.post_raw("/databases", &create_body);
         if !create_status.is_success() {
