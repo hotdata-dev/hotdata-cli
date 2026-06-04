@@ -198,19 +198,13 @@ pub fn list(
                             r.row_count
                                 .map(|n| n.to_string())
                                 .unwrap_or_else(|| "-".to_string()),
-                            r.result_id
-                                .as_deref()
-                                .map(|id| {
-                                    let prefix: String = id.chars().take(8).collect();
-                                    format!("{prefix}…")
-                                })
-                                .unwrap_or_else(|| "-".to_string()),
+                            r.result_id.as_deref().unwrap_or("-").to_string(),
                             truncate_sql(&r.sql_text, 40),
                         ]
                     })
                     .collect();
                 crate::table::print(
-                    &["ID", "STATUS", "CREATED", "ROWS", "RESULT", "SQL"],
+                    &["ID", "STATUS", "CREATED", "ROWS", "RESULT_ID", "SQL"],
                     &rows,
                 );
             }
