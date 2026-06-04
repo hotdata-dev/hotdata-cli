@@ -402,6 +402,50 @@ impl Api {
         })
     }
 
+    /// Issue an authenticated `POST {base}/v1{path}` with a JSON body through
+    /// the SDK `Configuration`, returning the raw status + body text.
+    ///
+    /// The seam's POST counterpart to [`get_json`](Self::get_json): used where
+    /// the generated SDK response model is an untagged enum whose variant
+    /// selection could differ from the CLI's hand-rolled field-probing
+    /// (`/refresh`), so the CLI keeps parsing the raw JSON itself while the seam
+    /// still owns auth/transport (same reqwest client, bearer, `X-Workspace-Id`).
+    pub fn post_raw(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<(reqwest::StatusCode, String), ApiError> {
+        let cfg = self.client.configuration();
+        let url = format!("{}/v1{path}", cfg.base_path);
+        rt().block_on(async move {
+            let mut req = cfg.client.request(reqwest::Method::POST, &url).json(body);
+            if let Some(ref user_agent) = cfg.user_agent {
+                req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
+            }
+            if let Some(apikey) = cfg.api_keys.get(hotdata::client::WORKSPACE_ID_HEADER) {
+                let value = match apikey.prefix {
+                    Some(ref prefix) => format!("{} {}", prefix, apikey.key),
+                    None => apikey.key.clone(),
+                };
+                req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
+            }
+            if let Some(token) = cfg.resolve_bearer_token().await {
+                req = req.bearer_auth(token);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
+            Ok((status, body))
+        })
+    }
+
     // --- Sample migrated call (workspace.rs uses this) -----------------------
 
     /// List workspaces visible to the authenticated principal.
@@ -726,6 +770,51 @@ mod tests {
             }
             other => panic!("expected Status, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn post_raw_sends_bearer_workspace_and_body_then_returns_status() {
+        // The seam's POST escape hatch (used by connections.rs refresh/create):
+        // carry the bearer + X-Workspace-Id like every SDK call, send the JSON
+        // body, and return the raw status + body for caller-side parsing.
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/v1/refresh")
+            .match_header("Authorization", "Bearer test-jwt")
+            .match_header("X-Workspace-Id", "ws-1")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"connection_id":"conn_1","data":true}"#.into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"rows_synced":7}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let body = serde_json::json!({"connection_id": "conn_1", "data": true});
+        let (status, text) = api.post_raw("/refresh", &body).expect("post_raw should succeed");
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert!(text.contains("rows_synced"));
+        m.assert();
+    }
+
+    #[test]
+    fn post_raw_returns_error_status_without_mapping_to_err() {
+        // Non-success is returned as Ok((status, body)) so the caller reproduces
+        // the old `(status, body)` raw-post control flow verbatim.
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/v1/refresh")
+            .with_status(400)
+            .with_body("bad request")
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", None);
+        let (status, text) = api
+            .post_raw("/refresh", &serde_json::json!({}))
+            .expect("post_raw returns Ok even on non-2xx");
+        assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(text, "bad request");
     }
 
     #[test]

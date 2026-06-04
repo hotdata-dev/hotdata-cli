@@ -1,4 +1,5 @@
 use crate::api::ApiClient;
+use crate::sdk::{block, Api, ApiError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -34,19 +35,30 @@ impl Serialize for HealthStatus {
     }
 }
 
-fn fetch_health(api: &ApiClient, connection_id: &str, show_spinner: bool) -> HealthStatus {
+/// Render an [`ApiError`] the way the old raw `fetch_health` path did: the
+/// server body through `api_error`, or the transport message verbatim.
+fn error_text(e: ApiError) -> String {
+    match e {
+        ApiError::Status { body, .. } => crate::util::api_error(body),
+        ApiError::Transport(msg) => msg,
+    }
+}
+
+fn fetch_health(api: &Api, connection_id: &str, show_spinner: bool) -> HealthStatus {
     let spinner = show_spinner.then(|| crate::util::spinner("Checking connection health..."));
-    let (status, body) = api.get_raw(&format!("/connections/{connection_id}/health"));
+    let result = block(api.client().connections().check_health(connection_id));
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
 
-    if !status.is_success() {
-        return HealthStatus::Unavailable(crate::util::api_error(body));
-    }
-    match serde_json::from_str::<HealthResponse>(&body) {
-        Ok(h) => HealthStatus::Available(h),
-        Err(e) => HealthStatus::Unavailable(format!("parse error: {e}")),
+    match result {
+        Ok(h) => HealthStatus::Available(HealthResponse {
+            connection_id: h.connection_id,
+            healthy: h.healthy,
+            latency_ms: Some(h.latency_ms as u64),
+            error: h.error.flatten(),
+        }),
+        Err(e) => HealthStatus::Unavailable(error_text(e)),
     }
 }
 
@@ -87,8 +99,19 @@ struct ConnectionTypeDetail {
 }
 
 pub fn types_list(workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let body: ListConnectionTypesResponse = api.get("/connection-types");
+    let api = Api::new(Some(workspace_id));
+    let resp =
+        block(api.client().connection_types().list()).unwrap_or_else(|e| e.exit());
+    let body = ListConnectionTypesResponse {
+        connection_types: resp
+            .connection_types
+            .into_iter()
+            .map(|t| ConnectionType {
+                name: t.name,
+                label: t.label,
+            })
+            .collect(),
+    };
 
     match format {
         "json" => println!(
@@ -114,8 +137,18 @@ pub fn types_list(workspace_id: &str, format: &str) {
 }
 
 pub fn types_get(workspace_id: &str, name: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let detail: ConnectionTypeDetail = api.get(&format!("/connection-types/{name}"));
+    let api = Api::new(Some(workspace_id));
+    let resp =
+        block(api.client().connection_types().get(name)).unwrap_or_else(|e| e.exit());
+    // The SDK models nullable fields as `Option<Option<Value>>`; flatten and
+    // drop an explicit JSON `null` to match the old behavior (the old struct
+    // deserialized a missing/`null` field to `None`).
+    let detail = ConnectionTypeDetail {
+        name: resp.name,
+        label: resp.label,
+        config_schema: resp.config_schema.flatten().filter(|v| !v.is_null()),
+        auth: resp.auth.flatten().filter(|v| !v.is_null()),
+    };
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&detail).unwrap()),
@@ -208,14 +241,22 @@ pub fn resolve_connection_id(api: &ApiClient, name_or_id: &str) -> String {
 }
 
 pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let is_table = format == "table";
 
     let spinner = is_table.then(|| crate::util::spinner("Fetching connection..."));
-    let detail: ConnectionDetail = api.get(&format!("/connections/{connection_id}"));
+    let resp =
+        block(api.client().connections().get(connection_id)).unwrap_or_else(|e| e.exit());
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
+    let detail = ConnectionDetail {
+        id: resp.id,
+        name: resp.name,
+        source_type: resp.source_type,
+        table_count: resp.table_count as u64,
+        synced_table_count: resp.synced_table_count as u64,
+    };
 
     let health = fetch_health(&api, connection_id, is_table);
 
@@ -285,11 +326,19 @@ pub fn create(workspace_id: &str, name: &str, source_type: &str, config: &str, f
         "config": config_value,
     });
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let is_table = format == "table";
 
     let spinner = is_table.then(|| crate::util::spinner("Creating connection..."));
-    let (status, resp_body) = api.post_raw("/connections", &body);
+    let (status, resp_body) = api
+        .post_raw("/connections", &body)
+        .unwrap_or_else(|e| {
+            if let Some(s) = &spinner {
+                s.finish_and_clear();
+            }
+            eprintln!("{}", error_text(e));
+            std::process::exit(1);
+        });
     if let Some(s) = &spinner {
         s.finish_and_clear();
     }
@@ -364,8 +413,19 @@ pub fn create(workspace_id: &str, name: &str, source_type: &str, config: &str, f
 }
 
 pub fn list(workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let body: ListResponse = api.get("/connections");
+    let api = Api::new(Some(workspace_id));
+    let resp = block(api.client().connections().list()).unwrap_or_else(|e| e.exit());
+    let body = ListResponse {
+        connections: resp
+            .connections
+            .into_iter()
+            .map(|c| Connection {
+                id: c.id,
+                name: c.name,
+                source_type: c.source_type,
+            })
+            .collect(),
+    };
 
     match format {
         "json" => {
@@ -452,8 +512,11 @@ pub fn refresh(
         body["include_uncached"] = serde_json::Value::Bool(true);
     }
 
-    let api = ApiClient::new(Some(workspace_id));
-    let (status, resp_body) = api.post_raw("/refresh", &body);
+    let api = Api::new(Some(workspace_id));
+    let (status, resp_body) = api.post_raw("/refresh", &body).unwrap_or_else(|e| {
+        eprintln!("{}", error_text(e).red());
+        std::process::exit(1);
+    });
 
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
