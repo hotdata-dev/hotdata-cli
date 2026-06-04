@@ -1,5 +1,5 @@
 use crate::api::ApiClient;
-use crossterm::style::{Color, Stylize};
+use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 
 const SQL_KEYWORDS: &[&str] = &[
@@ -141,16 +141,6 @@ struct ListResponse {
     next_cursor: Option<String>,
 }
 
-fn color_status(status: &str) -> String {
-    let color = match status {
-        "succeeded" => Color::Green,
-        "failed" => Color::Red,
-        "running" | "queued" | "pending" => Color::Yellow,
-        _ => Color::Reset,
-    };
-    status.with(color).to_string()
-}
-
 fn truncate_sql(sql: &str, max: usize) -> String {
     let flat = sql.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
@@ -193,7 +183,7 @@ pub fn list(
                     .map(|r| {
                         vec![
                             r.id.clone(),
-                            color_status(&r.status),
+                            crate::util::color_status(&r.status),
                             crate::util::format_date(&r.created_at),
                             r.execution_time_ms
                                 .map(|ms| ms.to_string())
@@ -241,7 +231,7 @@ fn print_detail(r: &QueryRun, format: &str) {
         "table" => {
             let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
             println!("{}{}", label("id:"), r.id);
-            println!("{}{}", label("status:"), color_status(&r.status));
+            println!("{}{}", label("status:"), crate::util::color_status(&r.status));
             println!(
                 "{}{}",
                 label("created:"),

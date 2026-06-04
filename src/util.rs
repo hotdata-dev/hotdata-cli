@@ -328,6 +328,20 @@ fn colorize_json_value(v: &str) -> String {
     format!("{colored}{comma}")
 }
 
+/// Color a status string for terminal output. Covers vocabulary from both
+/// query runs (succeeded/failed/running/queued/pending) and results (ready/expired/processing).
+pub fn color_status(status: &str) -> String {
+    use crossterm::style::{Color, Stylize};
+    let color = match status {
+        "succeeded" | "ready" => Color::Green,
+        "failed" => Color::Red,
+        "running" | "queued" | "pending" | "processing" => Color::Yellow,
+        "expired" => Color::DarkGrey,
+        _ => Color::Reset,
+    };
+    status.with(color).to_string()
+}
+
 /// Format an ISO date string compactly: "2024-03-15 14:23" (no seconds, no timezone).
 pub fn format_date(s: &str) -> String {
     let s = s.split('.').next().unwrap_or(s).trim_end_matches('Z');

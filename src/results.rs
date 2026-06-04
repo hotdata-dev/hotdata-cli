@@ -1,5 +1,5 @@
 use crate::api::ApiClient;
-use crossterm::style::{Color, Stylize};
+use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -20,17 +20,6 @@ struct ListResponse {
     results: Vec<ResultEntry>,
     count: u64,
     has_more: bool,
-}
-
-fn color_status(status: &str) -> String {
-    let color = match status {
-        "ready" => Color::Green,
-        "failed" => Color::Red,
-        "pending" | "processing" => Color::Yellow,
-        "expired" => Color::DarkGrey,
-        _ => Color::Reset,
-    };
-    status.with(color).to_string()
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
@@ -59,7 +48,7 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                     .map(|r| {
                         let mut row = vec![
                             r.id.clone(),
-                            color_status(&r.status),
+                            crate::util::color_status(&r.status),
                             crate::util::format_date(&r.created_at),
                         ];
                         if has_rows {
