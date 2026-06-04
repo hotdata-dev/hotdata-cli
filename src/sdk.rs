@@ -33,9 +33,9 @@
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+use hotdata::Client;
 use hotdata::apis::configuration::{ApiKey, Configuration};
 use hotdata::apis::{Error, ResponseContent};
-use hotdata::Client;
 
 use crate::auth;
 use crate::config;
@@ -84,7 +84,10 @@ const _: fn() = || {
 #[derive(Debug)]
 pub enum ApiError {
     /// The server returned a non-success status.
-    Status { status: reqwest::StatusCode, body: String },
+    Status {
+        status: reqwest::StatusCode,
+        body: String,
+    },
     /// Transport/serialization/IO failure with no HTTP status.
     Transport(String),
 }
@@ -98,12 +101,12 @@ impl ApiError {
     /// parsing response" paths).
     pub fn from_sdk<T: std::fmt::Debug>(err: Error<T>) -> Self {
         match err {
-            Error::ResponseError(ResponseContent { status, content, .. }) => {
-                ApiError::Status {
-                    status,
-                    body: content,
-                }
-            }
+            Error::ResponseError(ResponseContent {
+                status, content, ..
+            }) => ApiError::Status {
+                status,
+                body: content,
+            },
             Error::Reqwest(e) => ApiError::Transport(format!("error connecting to API: {e}")),
             Error::Serde(e) => ApiError::Transport(format!("error parsing response: {e}")),
             Error::Io(e) => ApiError::Transport(format!("error connecting to API: {e}")),
@@ -118,7 +121,9 @@ impl ApiError {
         match self {
             ApiError::Status { status, body } => {
                 let auth_status = if status.is_client_error() {
-                    config::load("default").ok().map(|pc| auth::check_status(&pc))
+                    config::load("default")
+                        .ok()
+                        .map(|pc| auth::check_status(&pc))
                 } else {
                     None
                 };
@@ -153,13 +158,25 @@ where
 pub fn none_if_404<T>(r: Result<T, ApiError>) -> Result<Option<T>, ApiError> {
     match r {
         Ok(v) => Ok(Some(v)),
-        Err(ApiError::Status { status, .. })
-            if status == reqwest::StatusCode::NOT_FOUND =>
-        {
+        Err(ApiError::Status { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
             Ok(None)
         }
         Err(e) => Err(e),
     }
+}
+
+/// Normalize a configured `api_url` into the SDK `base_path`.
+///
+/// The CLI's `api_url` carries a `/v1` suffix (`DEFAULT_API_URL`), but every
+/// generated SDK op appends its own `/v1` to `base_path`, and the seam's raw
+/// helpers ([`Api::get_json`] etc.) prepend `/v1` too. Passing the `/v1`-suffixed
+/// url through verbatim would produce `/v1/v1/...` on every call. Strip one
+/// trailing `/v1` (and any trailing slash) so both paths resolve to a single
+/// `/v1`. Session-token mints are unaffected: they use the full `self.api_url`
+/// to hit `/v1/auth/*` directly.
+fn sdk_base_path(api_url: &str) -> String {
+    let trimmed = api_url.trim_end_matches('/');
+    trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string()
 }
 
 impl Api {
@@ -234,7 +251,10 @@ impl Api {
             {
                 use crossterm::style::Stylize;
                 eprintln!("{}", format!("error: {e}").red());
-                eprintln!("Run {} to log in, or pass --api-key.", "hotdata auth".cyan());
+                eprintln!(
+                    "Run {} to log in, or pass --api-key.",
+                    "hotdata auth".cyan()
+                );
                 std::process::exit(1);
             }
             AuthMode::Session {
@@ -258,13 +278,12 @@ impl Api {
             workspace_id.and_then(|ws| crate::config::load_current_database("default", ws))
         });
 
-        let api = Self::from_configuration(
+        Self::from_configuration(
             &api_url,
             workspace_id.map(String::from),
             database_id,
             CliTokenProvider::new(mode),
-        );
-        api
+        )
     }
 
     /// Build the SDK `Configuration` directly (base_path, token_provider,
@@ -276,7 +295,7 @@ impl Api {
         provider: CliTokenProvider,
     ) -> Self {
         let mut configuration = Configuration {
-            base_path: api_url.to_string(),
+            base_path: sdk_base_path(api_url),
             ..Configuration::default()
         };
         configuration.token_provider = Some(Arc::new(provider));
@@ -305,7 +324,7 @@ impl Api {
     #[cfg(test)]
     pub(crate) fn test_new(api_url: &str, bearer: &str, workspace_id: Option<&str>) -> Self {
         let mut configuration = Configuration {
-            base_path: api_url.to_string(),
+            base_path: sdk_base_path(api_url),
             bearer_access_token: Some(bearer.to_string()),
             ..Configuration::default()
         };
@@ -378,6 +397,7 @@ impl Api {
     ) -> Result<T, ApiError> {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
+        let database_id = self.database_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::GET, &url);
             if !query.is_empty() {
@@ -392,6 +412,12 @@ impl Api {
                     None => apikey.key.clone(),
                 };
                 req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
+            }
+            // X-Database-Id scopes the request to a database. The old ApiClient
+            // attached it to every request when set; the SDK does not forward
+            // it, so the seam must (e.g. `hotdata query --database`).
+            if let Some(ref db) = database_id {
+                req = req.header("X-Database-Id", db.clone());
             }
             if let Some(token) = cfg.resolve_bearer_token().await {
                 req = req.bearer_auth(token);
@@ -429,6 +455,7 @@ impl Api {
     ) -> Result<(reqwest::StatusCode, String), ApiError> {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
+        let database_id = self.database_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::POST, &url).json(body);
             if let Some(ref user_agent) = cfg.user_agent {
@@ -440,6 +467,12 @@ impl Api {
                     None => apikey.key.clone(),
                 };
                 req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
+            }
+            // X-Database-Id scopes the request to a database. The old ApiClient
+            // attached it to every request when set; the SDK does not forward
+            // it, so the seam must (e.g. `hotdata query --database`).
+            if let Some(ref db) = database_id {
+                req = req.header("X-Database-Id", db.clone());
             }
             if let Some(token) = cfg.resolve_bearer_token().await {
                 req = req.bearer_auth(token);
@@ -466,12 +499,10 @@ impl Api {
     /// `(status, body)` control flow as the old raw `delete_raw` (e.g. the
     /// delete+recreate path inspects the failure body), so non-success is
     /// returned as `Ok((status, body))` rather than an error.
-    pub fn delete_raw(
-        &self,
-        path: &str,
-    ) -> Result<(reqwest::StatusCode, String), ApiError> {
+    pub fn delete_raw(&self, path: &str) -> Result<(reqwest::StatusCode, String), ApiError> {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
+        let database_id = self.database_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::DELETE, &url);
             if let Some(ref user_agent) = cfg.user_agent {
@@ -483,6 +514,12 @@ impl Api {
                     None => apikey.key.clone(),
                 };
                 req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
+            }
+            // X-Database-Id scopes the request to a database. The old ApiClient
+            // attached it to every request when set; the SDK does not forward
+            // it, so the seam must (e.g. `hotdata query --database`).
+            if let Some(ref db) = database_id {
+                req = req.header("X-Database-Id", db.clone());
             }
             if let Some(token) = cfg.resolve_bearer_token().await {
                 req = req.bearer_auth(token);
@@ -518,6 +555,7 @@ impl Api {
     ) -> Result<(reqwest::StatusCode, Vec<u8>), ApiError> {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
+        let database_id = self.database_id.clone();
         let accept = accept.to_string();
         rt().block_on(async move {
             let mut req = cfg
@@ -533,6 +571,12 @@ impl Api {
                     None => apikey.key.clone(),
                 };
                 req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
+            }
+            // X-Database-Id scopes the request to a database. The old ApiClient
+            // attached it to every request when set; the SDK does not forward
+            // it, so the seam must (e.g. `hotdata query --database`).
+            if let Some(ref db) = database_id {
+                req = req.header("X-Database-Id", db.clone());
             }
             if let Some(token) = cfg.resolve_bearer_token().await {
                 req = req.bearer_auth(token);
@@ -897,7 +941,9 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let body = serde_json::json!({"connection_id": "conn_1", "data": true});
-        let (status, text) = api.post_raw("/refresh", &body).expect("post_raw should succeed");
+        let (status, text) = api
+            .post_raw("/refresh", &body)
+            .expect("post_raw should succeed");
         assert_eq!(status, reqwest::StatusCode::OK);
         assert!(text.contains("rows_synced"));
         m.assert();
@@ -974,5 +1020,74 @@ mod tests {
         let clone = api.clone();
         // Cheap clone: both share the same underlying Arc<Client>.
         assert!(Arc::ptr_eq(&api.client, &clone.client));
+    }
+
+    // --- base path: no double /v1 -------------------------------------------
+
+    #[test]
+    fn sdk_base_path_strips_one_trailing_v1() {
+        // The configured api_url carries /v1; base_path must not, so a single
+        // /v1 is appended downstream.
+        assert_eq!(
+            sdk_base_path("https://api.hotdata.dev/v1"),
+            "https://api.hotdata.dev"
+        );
+        assert_eq!(
+            sdk_base_path("https://api.hotdata.dev/v1/"),
+            "https://api.hotdata.dev"
+        );
+        // A host without /v1 is left alone.
+        assert_eq!(
+            sdk_base_path("http://127.0.0.1:1234"),
+            "http://127.0.0.1:1234"
+        );
+        // Only ONE trailing /v1 is stripped.
+        assert_eq!(sdk_base_path("https://h/v1/v1"), "https://h/v1");
+    }
+
+    #[test]
+    fn calls_hit_single_v1_when_api_url_has_v1_suffix() {
+        // Regression for the production-breaking double-/v1 bug: DEFAULT_API_URL
+        // ends in /v1 and the SDK appends its own /v1, so an Api built from a
+        // /v1-suffixed url must still land on a single /v1 (not /v1/v1/...).
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/v1/workspaces")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(WS_BODY)
+            .create();
+
+        // api_url WITH the /v1 suffix the real profile uses.
+        let api = Api::test_new(&format!("{}/v1", server.url()), "test-jwt", None);
+        api.list_workspaces(None)
+            .expect("call must resolve to a single /v1");
+        m.assert(); // before the fix this 404s at /v1/v1/workspaces
+    }
+
+    // --- database scope header ----------------------------------------------
+
+    #[test]
+    fn database_scope_sends_x_database_id_on_raw_calls() {
+        // Regression: `hotdata query --database X` must scope the request. The
+        // old ApiClient sent X-Database-Id on every request; the seam must too,
+        // and the raw /query submit path is where the scope is applied.
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/v1/query")
+            .match_header("Authorization", "Bearer test-jwt")
+            .match_header("X-Workspace-Id", "ws-1")
+            .match_header("X-Database-Id", "db-1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ok":true}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1")).with_database("db-1");
+        let (status, _body) = api
+            .post_raw("/query", &serde_json::json!({"sql": "select 1"}))
+            .expect("post_raw should succeed");
+        assert_eq!(status, reqwest::StatusCode::OK);
+        m.assert();
     }
 }
