@@ -1,3 +1,21 @@
+## [0.3.4] - 2026-06-04
+
+### 🚀 Features
+
+- *(databases)* Add databases run command for and isolated database CLI (#118)
+
+### 🐛 Bug Fixes
+
+- Handle pre-existing draft release in host job (#116)
+- *(api)* Add API timeout relaxation and refresh token retry ability
+- *(databases)* Rename --description to --name in databases run (#122)
+- *(skills)* Update --description to --name in databases commands (#123)
+
+### 💼 Other
+
+- Allow dirty ci in dist-workspace config
+- *(ci)* Bump Node 20 actions to Node 24 runtime
+
 ## [0.3.3] - 2026-05-28
 
 ### 🐛 Bug Fixes
