@@ -1185,13 +1185,14 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 [[package]]
 name = "hotdata"
 version = "0.1.0"
-source = "git+file:///Users/zacfarrell/Projects/hotdata/sdk-rust?rev=fed2cb0a03c91abda17814b3fecdc7b1f910eefa#fed2cb0a03c91abda17814b3fecdc7b1f910eefa"
+source = "git+https://github.com/hotdata-dev/sdk-rust?rev=8d4018fb899ba52228db44eaffa6caa0eb5b603f#8d4018fb899ba52228db44eaffa6caa0eb5b603f"
 dependencies = [
  "arrow-array 55.2.0",
  "arrow-ipc 55.2.0",
  "arrow-schema 55.2.0",
  "async-trait",
  "bytes",
+ "futures-core",
  "log",
  "reqwest 0.13.4",
  "serde",

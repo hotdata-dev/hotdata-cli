@@ -13,11 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 # Hotdata Rust SDK. The CLI's sync wrapper (src/sdk.rs) drives this async SDK
-# behind a shared multi-thread tokio runtime. Pinned to the enhancement rev
-# that adds TokenManagerOptions (CLI attribution). Uses a local git checkout
-# because the enhancement rev is not yet pushed; swap the `git` URL to the
-# GitHub remote in the final chore(deps) commit once the rev lands upstream.
-hotdata = { git = "file:///Users/zacfarrell/Projects/hotdata/sdk-rust", rev = "fed2cb0a03c91abda17814b3fecdc7b1f910eefa", features = ["arrow"] }
+# behind a shared multi-thread tokio runtime. Pinned to the rev that adds the
+# CLI-consumption surface (attribution client_id, async submit_query, streaming
+# upload_stream) — merged via hotdata-dev/sdk-rust#32.
+hotdata = { git = "https://github.com/hotdata-dev/sdk-rust", rev = "8d4018fb899ba52228db44eaffa6caa0eb5b603f", features = ["arrow"] }
 # Shared multi-thread runtime for the sync wrapper; block_on is called
 # concurrently from rayon worker threads (see src/indexes.rs).
 tokio = { version = "1", features = ["rt-multi-thread"] }
