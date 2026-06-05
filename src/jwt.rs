@@ -368,9 +368,8 @@ pub fn ensure_access_token(
 
 /// Which credential source the [`CliTokenProvider`] serves bearers from.
 ///
-/// Mirrors the 4-level auth-source precedence the old `ApiClient::new`
-/// applied (database env -> sandbox env -> on-disk sandbox session ->
-/// user session/api_key). The wrapper (`src/sdk.rs`) picks the variant at
+/// Mirrors the auth-source precedence the wrapper (`src/sdk.rs`) applies
+/// (database env -> user session/api_key). The wrapper picks the variant at
 /// construction time; the provider re-runs the corresponding *existing*
 /// blocking CLI function on every request so session.json, the 30s leeway
 /// table, no-clobber for Flag/Env, and clear-on-dead-refresh stay owned by
@@ -379,10 +378,6 @@ pub fn ensure_access_token(
 pub enum AuthMode {
     /// `HOTDATA_DATABASE_TOKEN` env var (a `databases run` child).
     DatabaseEnv { api_url: String },
-    /// `HOTDATA_SANDBOX_TOKEN` env var (a `sandbox run` child).
-    SandboxEnv { api_url: String },
-    /// `~/.hotdata/sandbox_session.json` is present (`sandbox set <id>`).
-    SandboxSession { api_url: String },
     /// Normal user-scoped CLI session in `~/.hotdata/session.json`, with an
     /// optional `hd_...` api-key fallback to mint from.
     Session {
@@ -418,12 +413,6 @@ impl CliTokenProvider {
         match mode {
             AuthMode::DatabaseEnv { api_url } => crate::database_session::refresh_from_env(api_url)
                 .ok_or_else(|| "HOTDATA_DATABASE_TOKEN is empty".to_string()),
-            AuthMode::SandboxEnv { api_url } => crate::sandbox_session::refresh_from_env(api_url)
-                .ok_or_else(|| "HOTDATA_SANDBOX_TOKEN is empty".to_string()),
-            AuthMode::SandboxSession { api_url } => {
-                crate::sandbox_session::ensure_access_token(api_url)
-                    .ok_or_else(|| "sandbox session expired".to_string())
-            }
             AuthMode::Session {
                 profile,
                 api_key_fallback,
