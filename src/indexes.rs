@@ -1,4 +1,4 @@
-use crate::api::ApiClient;
+use crate::sdk::{Api, block, none_if_404};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -36,21 +36,9 @@ struct InfoTable {
 }
 
 #[derive(Deserialize)]
-struct InfoListResponse {
-    tables: Vec<InfoTable>,
-    has_more: bool,
-    next_cursor: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct ConnectionRef {
     id: String,
     name: String,
-}
-
-#[derive(Deserialize)]
-struct ConnectionsBody {
-    connections: Vec<ConnectionRef>,
 }
 
 fn connection_label_to_id_map(connections: &[ConnectionRef]) -> HashMap<String, String> {
@@ -61,9 +49,17 @@ fn connection_label_to_id_map(connections: &[ConnectionRef]) -> HashMap<String, 
     m
 }
 
-fn connection_lookup(api: &ApiClient) -> HashMap<String, String> {
-    let body: ConnectionsBody = api.get("/connections");
-    connection_label_to_id_map(&body.connections)
+fn connection_lookup(api: &Api) -> HashMap<String, String> {
+    let resp = block(api.client().connections().list()).unwrap_or_else(|e| e.exit());
+    let refs: Vec<ConnectionRef> = resp
+        .connections
+        .into_iter()
+        .map(|c| ConnectionRef {
+            id: c.id,
+            name: c.name,
+        })
+        .collect();
+    connection_label_to_id_map(&refs)
 }
 
 /// How to continue after merging one `/information_schema` page.
@@ -90,7 +86,7 @@ fn sort_info_tables(tables: &mut [InfoTable]) {
 }
 
 fn collect_tables(
-    api: &ApiClient,
+    api: &Api,
     connection_id: Option<&str>,
     schema: Option<&str>,
     table: Option<&str>,
@@ -98,22 +94,22 @@ fn collect_tables(
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let mut params: Vec<(&str, Option<String>)> = Vec::new();
-        if let Some(id) = connection_id {
-            params.push(("connection_id", Some(id.to_string())));
-        }
-        if let Some(s) = schema {
-            params.push(("schema", Some(s.to_string())));
-        }
-        if let Some(t) = table {
-            params.push(("table", Some(t.to_string())));
-        }
-        if let Some(ref c) = cursor {
-            params.push(("cursor", Some(c.clone())));
-        }
-        let body: InfoListResponse = api.get_with_params("/information_schema", &params);
-        out.extend(body.tables);
-        match information_schema_followup(body.has_more, body.next_cursor) {
+        let resp = block(api.client().information_schema().get(
+            connection_id,
+            schema,
+            table,
+            None,
+            None,
+            cursor.as_deref(),
+        ))
+        .unwrap_or_else(|e| e.exit());
+        out.extend(resp.tables.into_iter().map(|t| InfoTable {
+            connection: t.connection,
+            schema: t.schema,
+            table: t.table,
+        }));
+        let next_cursor = resp.next_cursor.flatten();
+        match information_schema_followup(resp.has_more, next_cursor) {
             ControlFlow::Break(()) => break,
             ControlFlow::Continue(c) => cursor = Some(c),
         }
@@ -122,26 +118,24 @@ fn collect_tables(
     out
 }
 
-fn list_one_table(api: &ApiClient, connection_id: &str, schema: &str, table: &str) -> Vec<Index> {
+fn list_one_table(api: &Api, connection_id: &str, schema: &str, table: &str) -> Vec<Index> {
+    // The SDK's typed `IndexInfoResponse.status` is a closed `ready`/`pending`
+    // enum; the CLI accepts any status string for display. Keep the CLI's own
+    // tolerant deserialization via the seam's untyped GET escape hatch.
     let path = format!("/connections/{connection_id}/tables/{schema}/{table}/indexes");
-    let body: ListResponse = api.get(&path);
+    let body: ListResponse = api.get_json(&path, &[]).unwrap_or_else(|e| e.exit());
     body.indexes
 }
 
-fn list_one_dataset(api: &ApiClient, dataset_id: &str) -> Vec<Index> {
+fn list_one_dataset(api: &Api, dataset_id: &str) -> Vec<Index> {
     let path = format!("/datasets/{dataset_id}/indexes");
-    let body: ListResponse = api.get(&path);
+    let body: ListResponse = api.get_json(&path, &[]).unwrap_or_else(|e| e.exit());
     body.indexes
 }
 
-fn list_one_table_scan(
-    api: &ApiClient,
-    connection_id: &str,
-    schema: &str,
-    table: &str,
-) -> Vec<Index> {
+fn list_one_table_scan(api: &Api, connection_id: &str, schema: &str, table: &str) -> Vec<Index> {
     let path = format!("/connections/{connection_id}/tables/{schema}/{table}/indexes");
-    match api.get_none_if_not_found::<ListResponse>(&path) {
+    match none_if_404(api.get_json::<ListResponse>(&path, &[])).unwrap_or_else(|e| e.exit()) {
         Some(body) => body.indexes,
         None => Vec::new(),
     }
@@ -164,8 +158,8 @@ fn resolve_search_params(
         .filter(|i| {
             let t = i.index_type.as_str();
             (t == "bm25" || t == "vector")
-                && hint_type.map_or(true, |ht| ht == t)
-                && hint_column.map_or(true, |hc| i.columns.iter().any(|c| c == hc))
+                && hint_type.is_none_or(|ht| ht == t)
+                && hint_column.is_none_or(|hc| i.columns.iter().any(|c| c == hc))
         })
         .collect();
 
@@ -182,9 +176,11 @@ fn resolve_search_params(
         }
         [one] => {
             let index_type = one.index_type.clone();
-            let column = one.columns.first().cloned().ok_or_else(|| {
-                format!("Index '{}' has no columns.", one.index_name)
-            })?;
+            let column = one
+                .columns
+                .first()
+                .cloned()
+                .ok_or_else(|| format!("Index '{}' has no columns.", one.index_name))?;
             Ok((index_type, column))
         }
         _ => {
@@ -217,7 +213,7 @@ pub fn infer_for_search(
 ) -> (String, String) {
     use crossterm::style::Stylize;
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
     // Resolve connection name → ID (falls back to managed database catalog lookup)
     let connection_id = crate::connections::resolve_connection_id(&api, connection_name);
@@ -243,7 +239,7 @@ pub fn list(
     dataset_id: Option<&str>,
     format: &str,
 ) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
     let (rows, multi_table) = match (dataset_id, connection_id, schema, table) {
         (Some(did), _, _, _) => {
@@ -373,15 +369,18 @@ impl IndexScope<'_> {
         }
     }
 
+    // Retained for path-shape regression tests; delete now routes through the
+    // SDK `indexes()` handle by scope variant rather than a formatted path.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn delete_path(&self, index_name: &str) -> String {
         match self {
             IndexScope::Connection {
                 connection_id,
                 schema,
                 table,
-            } => format!(
-                "/connections/{connection_id}/tables/{schema}/{table}/indexes/{index_name}"
-            ),
+            } => {
+                format!("/connections/{connection_id}/tables/{schema}/{table}/indexes/{index_name}")
+            }
             IndexScope::Dataset { dataset_id } => {
                 format!("/datasets/{dataset_id}/indexes/{index_name}")
             }
@@ -426,7 +425,7 @@ pub fn create(
         std::process::exit(1);
     }
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
     let mut body = serde_json::json!({
         "index_name": name,
@@ -450,7 +449,12 @@ pub fn create(
         body["description"] = serde_json::json!(d);
     }
 
-    let (status, resp_body) = api.post_raw(&scope.create_path(), &body);
+    // POST stays on the seam's raw helper: the SDK's `create_index` deserializes
+    // into `IndexInfoResponse`, which has no job `id` field, so the async-mode
+    // `job_id` output below could not be recovered from the typed model.
+    let (status, resp_body) = api
+        .post_raw(&scope.create_path(), &body)
+        .unwrap_or_else(|e| e.exit());
 
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
@@ -474,11 +478,30 @@ pub fn create(
 pub fn delete(workspace_id: &str, scope: IndexScope<'_>, index_name: &str) {
     use crossterm::style::Stylize;
 
-    let api = ApiClient::new(Some(workspace_id));
-    let (status, resp_body) = api.delete_raw(&scope.delete_path(index_name));
+    let api = Api::new(Some(workspace_id));
+    let result = match scope {
+        IndexScope::Connection {
+            connection_id,
+            schema,
+            table,
+        } => block(
+            api.client()
+                .indexes()
+                .delete_index(connection_id, schema, table, index_name),
+        ),
+        IndexScope::Dataset { dataset_id } => block(
+            api.client()
+                .indexes()
+                .delete_dataset_index(dataset_id, index_name),
+        ),
+    };
 
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
+    if let Err(e) = result {
+        let body = match e {
+            crate::sdk::ApiError::Status { body, .. } => body,
+            crate::sdk::ApiError::Transport(msg) => msg,
+        };
+        eprintln!("{}", crate::util::api_error(body).red());
         std::process::exit(1);
     }
 
@@ -583,19 +606,20 @@ mod tests {
     fn collect_tables_single_page() {
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("GET", "/information_schema")
+            .mock("GET", "/v1/information_schema")
             .match_header("Authorization", "Bearer k")
             .match_header("X-Workspace-Id", "ws1")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(
-                r#"{"tables":[
-                {"connection":"c1","schema":"public","table":"z"},
-                {"connection":"c1","schema":"public","table":"a"}
+                r#"{"count":2,"limit":100,"tables":[
+                {"connection":"c1","schema":"public","table":"z","synced":true},
+                {"connection":"c1","schema":"public","table":"a","synced":true}
             ],"has_more":false,"next_cursor":null}"#,
             )
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", Some("ws1"));
+        let api = Api::test_new(&server.url(), "k", Some("ws1"));
         let tables = collect_tables(&api, None, None, None);
         mock.assert();
         assert_eq!(tables.len(), 2);
@@ -609,13 +633,13 @@ mod tests {
         let mock = server
             .mock(
                 "GET",
-                mockito::Matcher::Regex(r"^/connections/.+/tables/.+/.+/indexes$".into()),
+                mockito::Matcher::Regex(r"^/v1/connections/.+/tables/.+/.+/indexes$".into()),
             )
             .match_header("Authorization", "Bearer k")
             .with_status(404)
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
         let rows = list_one_table_scan(&api, "cid", "sch", "tbl");
         mock.assert();
         assert!(rows.is_empty());
@@ -625,9 +649,10 @@ mod tests {
     fn list_one_table_returns_indexes() {
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("GET", "/connections/cid/tables/sch/tbl/indexes")
+            .mock("GET", "/v1/connections/cid/tables/sch/tbl/indexes")
             .match_header("Authorization", "Bearer k")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(
                 r#"{"indexes":[{
                 "index_name":"ix1",
@@ -641,7 +666,7 @@ mod tests {
             )
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", None);
+        let api = Api::test_new(&server.url(), "k", None);
         let rows = list_one_table(&api, "cid", "sch", "tbl");
         mock.assert();
         assert_eq!(rows.len(), 1);
@@ -649,15 +674,46 @@ mod tests {
     }
 
     #[test]
+    fn list_one_table_keeps_non_enum_status_via_untyped_parse() {
+        // Regression: the SDK's typed `IndexStatus` only models `ready`/`pending`.
+        // The CLI's untyped `get_json` path must still accept any status string so
+        // the list display never breaks on a backend status the SDK can't model.
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/v1/connections/cid/tables/sch/tbl/indexes")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"indexes":[{
+                "index_name":"ix1",
+                "index_type":"bm25",
+                "columns":["c1"],
+                "metric":null,
+                "status":"building",
+                "created_at":"2020-01-01T00:00:00Z",
+                "updated_at":"2020-01-01T00:00:00Z"
+            }]}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", None);
+        let rows = list_one_table(&api, "cid", "sch", "tbl");
+        mock.assert();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "building");
+    }
+
+    #[test]
     fn list_one_table_scan_returns_indexes_on_200() {
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("GET", "/connections/x/tables/s/t/indexes")
+            .mock("GET", "/v1/connections/x/tables/s/t/indexes")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(r#"{"indexes":[]}"#)
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", None);
+        let api = Api::test_new(&server.url(), "k", None);
         let rows = list_one_table_scan(&api, "x", "s", "t");
         mock.assert();
         assert!(rows.is_empty());
@@ -724,7 +780,11 @@ mod tests {
         let indexes = vec![make_index("sorted_idx", "sorted", &["id"])];
         let result = resolve_search_params(&indexes, None, None, "db.public.t");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("No BM25 or vector index found"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("No BM25 or vector index found")
+        );
     }
 
     #[test]
@@ -743,7 +803,11 @@ mod tests {
         ];
         let result = resolve_search_params(&indexes, None, None, "db.public.t");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Multiple search indexes found"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Multiple search indexes found")
+        );
     }
 
     #[test]

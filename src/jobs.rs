@@ -1,4 +1,5 @@
-use crate::api::ApiClient;
+use crate::sdk::Api;
+use hotdata::models::{JobStatusResponse, JobType};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -13,14 +14,44 @@ struct Job {
     result: Option<serde_json::Value>,
 }
 
-#[derive(Deserialize)]
-struct ListResponse {
-    jobs: Vec<Job>,
+impl From<JobStatusResponse> for Job {
+    fn from(j: JobStatusResponse) -> Self {
+        Job {
+            id: j.id,
+            job_type: j.job_type.to_string(),
+            status: j.status.to_string(),
+            attempts: j.attempts.max(0) as u64,
+            created_at: j.created_at,
+            completed_at: j.completed_at.flatten(),
+            error_message: j.error_message.flatten(),
+            result: j
+                .result
+                .flatten()
+                .and_then(|r| serde_json::to_value(*r).ok()),
+        }
+    }
+}
+
+/// Map the clap-validated job-type string to the SDK enum. The CLI already
+/// restricts `--type` to these values, so an unknown string is unreachable;
+/// fall back to `None` (no filter) rather than panic if that ever changes.
+fn parse_job_type(s: &str) -> Option<JobType> {
+    match s {
+        "noop" => Some(JobType::Noop),
+        "data_refresh_table" => Some(JobType::DataRefreshTable),
+        "data_refresh_connection" => Some(JobType::DataRefreshConnection),
+        "dataset_refresh" => Some(JobType::DatasetRefresh),
+        "create_index" => Some(JobType::CreateIndex),
+        "create_dataset_index" => Some(JobType::CreateDatasetIndex),
+        _ => None,
+    }
 }
 
 pub fn get(job_id: &str, workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let job: Job = api.get(&format!("/jobs/{job_id}"));
+    let api = Api::new(Some(workspace_id));
+    let job: Job = crate::sdk::block(api.client().jobs().get(job_id))
+        .unwrap_or_else(|e| e.exit())
+        .into();
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&job).unwrap()),
@@ -74,20 +105,20 @@ pub fn get(job_id: &str, workspace_id: &str, format: &str) {
 }
 
 fn fetch_jobs(
-    api: &ApiClient,
+    api: &Api,
     job_type: Option<&str>,
     status: Option<&str>,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Vec<Job> {
-    let params = [
-        ("job_type", job_type.map(String::from)),
-        ("status", status.map(String::from)),
-        ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
-    ];
-    let resp: ListResponse = api.get_with_params("/jobs", &params);
-    resp.jobs
+    let resp = crate::sdk::block(api.client().jobs().list(
+        job_type.and_then(parse_job_type),
+        status,
+        limit.map(|l| l as i32),
+        offset.map(|o| o as i32),
+    ))
+    .unwrap_or_else(|e| e.exit());
+    resp.jobs.into_iter().map(Job::from).collect()
 }
 
 pub fn list(
@@ -99,7 +130,7 @@ pub fn list(
     offset: Option<u32>,
     format: &str,
 ) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
     let jobs = if !all && status.is_none() {
         // Default: show only active jobs (pending + running)
@@ -108,13 +139,11 @@ pub fn list(
         fetch_jobs(&api, job_type, status, limit, offset)
     };
 
-    let body = ListResponse { jobs };
-
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&body.jobs).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&body.jobs).unwrap()),
+        "json" => println!("{}", serde_json::to_string_pretty(&jobs).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&jobs).unwrap()),
         "table" => {
-            if body.jobs.is_empty() {
+            if jobs.is_empty() {
                 use crossterm::style::Stylize;
                 let msg = if !all && status.is_none() {
                     "No active jobs found."
@@ -123,8 +152,7 @@ pub fn list(
                 };
                 eprintln!("{}", msg.dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body
-                    .jobs
+                let rows: Vec<Vec<String>> = jobs
                     .iter()
                     .map(|j| {
                         vec![

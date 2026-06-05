@@ -1,4 +1,7 @@
-use crate::api::ApiClient;
+use crate::sdk::Api;
+use hotdata::models::{
+    CreateEmbeddingProviderRequest, EmbeddingProviderResponse, UpdateEmbeddingProviderRequest,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -13,9 +16,19 @@ struct Provider {
     updated_at: String,
 }
 
-#[derive(Deserialize)]
-struct ListResponse {
-    embedding_providers: Vec<Provider>,
+impl From<EmbeddingProviderResponse> for Provider {
+    fn from(p: EmbeddingProviderResponse) -> Self {
+        Provider {
+            id: p.id,
+            name: p.name,
+            provider_type: p.provider_type,
+            config: p.config.unwrap_or(serde_json::Value::Null),
+            has_secret: p.has_secret,
+            source: p.source,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+        }
+    }
 }
 
 fn parse_config(raw: Option<&str>) -> Option<serde_json::Value> {
@@ -30,26 +43,24 @@ fn parse_config(raw: Option<&str>) -> Option<serde_json::Value> {
 }
 
 pub fn list(workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let body: ListResponse = api.get("/embedding-providers");
+    let api = Api::new(Some(workspace_id));
+    let providers: Vec<Provider> = crate::sdk::block(api.client().embedding_providers().list())
+        .unwrap_or_else(|e| e.exit())
+        .embedding_providers
+        .into_iter()
+        .map(Provider::from)
+        .collect();
 
     use crossterm::style::Stylize;
     match format {
-        "json" => println!(
-            "{}",
-            serde_json::to_string_pretty(&body.embedding_providers).unwrap()
-        ),
-        "yaml" => print!(
-            "{}",
-            serde_yaml::to_string(&body.embedding_providers).unwrap()
-        ),
+        "json" => println!("{}", serde_json::to_string_pretty(&providers).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&providers).unwrap()),
         "table" => {
-            if body.embedding_providers.is_empty() {
+            if providers.is_empty() {
                 eprintln!("{}", "No embedding providers found.".dark_grey());
                 return;
             }
-            let rows: Vec<Vec<String>> = body
-                .embedding_providers
+            let rows: Vec<Vec<String>> = providers
                 .iter()
                 .map(|p| {
                     vec![
@@ -68,8 +79,10 @@ pub fn list(workspace_id: &str, format: &str) {
 }
 
 pub fn get(workspace_id: &str, id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let p: Provider = api.get(&format!("/embedding-providers/{id}"));
+    let api = Api::new(Some(workspace_id));
+    let p: Provider = crate::sdk::block(api.client().embedding_providers().get(id))
+        .unwrap_or_else(|e| e.exit())
+        .into();
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&p).unwrap()),
@@ -103,28 +116,22 @@ pub fn create(
 ) {
     use crossterm::style::Stylize;
 
-    let api = ApiClient::new(Some(workspace_id));
-    let mut body = serde_json::json!({
-        "name": name,
-        "provider_type": provider_type,
-    });
+    let api = Api::new(Some(workspace_id));
+    let mut req = CreateEmbeddingProviderRequest::new(name.to_string(), provider_type.to_string());
     if let Some(cfg) = parse_config(config) {
-        body["config"] = cfg;
+        req.config = Some(Some(cfg));
     }
     if let Some(k) = api_key {
-        body["api_key"] = serde_json::json!(k);
+        req.api_key = Some(Some(k.to_string()));
     }
     if let Some(s) = secret_name {
-        body["secret_name"] = serde_json::json!(s);
+        req.secret_name = Some(Some(s.to_string()));
     }
 
-    let (status, resp_body) = api.post_raw("/embedding-providers", &body);
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
+    let resp = crate::sdk::block(api.client().embedding_providers().create(req))
+        .unwrap_or_else(|e| e.exit());
+    let parsed = serde_json::to_value(&resp).unwrap_or_default();
 
-    let parsed: serde_json::Value = serde_json::from_str(&resp_body).unwrap_or_default();
     eprintln!("{}", "Embedding provider created.".green());
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&parsed).unwrap()),
@@ -132,10 +139,7 @@ pub fn create(
         "table" => {
             println!("id:    {}", parsed["id"].as_str().unwrap_or(""));
             println!("name:  {}", parsed["name"].as_str().unwrap_or(""));
-            println!(
-                "type:  {}",
-                parsed["provider_type"].as_str().unwrap_or("")
-            );
+            println!("type:  {}", parsed["provider_type"].as_str().unwrap_or(""));
         }
         _ => unreachable!(),
     }
@@ -160,22 +164,25 @@ pub fn update(
         std::process::exit(1);
     }
 
-    let api = ApiClient::new(Some(workspace_id));
-    let mut body = serde_json::json!({});
+    let api = Api::new(Some(workspace_id));
+    let mut req = UpdateEmbeddingProviderRequest::new();
     if let Some(n) = name {
-        body["name"] = serde_json::json!(n);
+        req.name = Some(Some(n.to_string()));
     }
     if let Some(cfg) = parse_config(config) {
-        body["config"] = cfg;
+        req.config = Some(Some(cfg));
     }
     if let Some(k) = api_key {
-        body["api_key"] = serde_json::json!(k);
+        req.api_key = Some(Some(k.to_string()));
     }
     if let Some(s) = secret_name {
-        body["secret_name"] = serde_json::json!(s);
+        req.secret_name = Some(Some(s.to_string()));
     }
 
-    let resp: serde_json::Value = api.put(&format!("/embedding-providers/{id}"), &body);
+    let resp = crate::sdk::block(api.client().embedding_providers().update(id, req))
+        .unwrap_or_else(|e| e.exit());
+    let resp = serde_json::to_value(&resp).unwrap_or_default();
+
     eprintln!("{}", "Embedding provider updated.".green());
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&resp).unwrap()),
@@ -193,12 +200,8 @@ pub fn update(
 
 pub fn delete(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
-    let api = ApiClient::new(Some(workspace_id));
-    let (status, resp_body) = api.delete_raw(&format!("/embedding-providers/{id}"));
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
+    let api = Api::new(Some(workspace_id));
+    crate::sdk::block(api.client().embedding_providers().delete(id)).unwrap_or_else(|e| e.exit());
     println!("{}", format!("Embedding provider '{id}' deleted.").green());
 }
 
@@ -232,26 +235,37 @@ mod tests {
         assert_eq!(p.config["model"], "text-embedding-3-small");
     }
 
-    /// Mirrors runtimedb's `ListEmbeddingProvidersResponse`.
+    /// The SDK `EmbeddingProviderResponse` converts into the CLI `Provider`
+    /// display struct, preserving the fields the CLI prints. A null `config`
+    /// from the SDK collapses to JSON null so table/json output stays stable.
     #[test]
-    fn list_response_deserializes_runtimedb_payload() {
-        let body = serde_json::json!({
-            "embedding_providers": [
-                {
-                    "id": "sys_emb_openai",
-                    "name": "openai",
-                    "provider_type": "service",
-                    "config": {},
-                    "has_secret": true,
-                    "source": "system",
-                    "created_at": "2026-04-29T08:19:57Z",
-                    "updated_at": "2026-04-29T08:19:57Z"
-                }
-            ]
-        });
-        let resp: ListResponse = serde_json::from_value(body).unwrap();
-        assert_eq!(resp.embedding_providers.len(), 1);
-        assert_eq!(resp.embedding_providers[0].name, "openai");
+    fn sdk_response_converts_to_provider() {
+        let sdk = EmbeddingProviderResponse {
+            config: Some(serde_json::json!({"model": "text-embedding-3-small"})),
+            created_at: "2026-04-29T08:19:57Z".to_string(),
+            has_secret: true,
+            id: "sys_emb_openai".to_string(),
+            name: "openai".to_string(),
+            provider_type: "service".to_string(),
+            source: "system".to_string(),
+            updated_at: "2026-04-29T08:19:57Z".to_string(),
+        };
+        let p: Provider = sdk.into();
+        assert_eq!(p.id, "sys_emb_openai");
+        assert_eq!(p.config["model"], "text-embedding-3-small");
+
+        let sdk_null = EmbeddingProviderResponse {
+            config: None,
+            created_at: String::new(),
+            has_secret: false,
+            id: "x".to_string(),
+            name: "n".to_string(),
+            provider_type: "local".to_string(),
+            source: "user".to_string(),
+            updated_at: String::new(),
+        };
+        let p: Provider = sdk_null.into();
+        assert!(p.config.is_null());
     }
 
     #[test]

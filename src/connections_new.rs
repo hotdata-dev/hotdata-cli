@@ -2,9 +2,9 @@ use inquire::validator::Validation;
 use inquire::{Confirm, Password, Select, Text};
 use serde_json::{Map, Number, Value};
 
-use crate::api::ApiClient;
+use crate::sdk::{block, Api, ApiError};
 
-// ── HTTP helpers ──────────────────────────────────────────────────────────────
+// ── SDK helpers ─────────────────────────────────────────────────────────────
 
 struct ConnectionTypeSummary {
     name: String,
@@ -16,34 +16,27 @@ struct ConnectionTypeDetail {
     auth: Option<Value>,
 }
 
-fn fetch_types(api: &ApiClient) -> Vec<ConnectionTypeSummary> {
-    let body: Value = api.get("/connection-types");
-    body["connection_types"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|v| {
-            Some(ConnectionTypeSummary {
-                name: v["name"].as_str()?.to_string(),
-                label: v["label"].as_str()?.to_string(),
-            })
+fn fetch_types(api: &Api) -> Vec<ConnectionTypeSummary> {
+    let resp = block(api.client().connection_types().list()).unwrap_or_else(|e| e.exit());
+    resp.connection_types
+        .into_iter()
+        .map(|t| ConnectionTypeSummary {
+            name: t.name,
+            label: t.label,
         })
         .collect()
 }
 
-fn fetch_detail(api: &ApiClient, name: &str) -> ConnectionTypeDetail {
-    let body: Value = api.get(&format!("/connection-types/{name}"));
+fn fetch_detail(api: &Api, name: &str) -> ConnectionTypeDetail {
+    let detail = block(api.client().connection_types().get(name)).unwrap_or_else(|e| e.exit());
+    // The SDK models nullable fields as `Option<Option<Value>>`; flatten and
+    // treat an explicit JSON `null` as absent to match the old `is_null()` check.
+    let flatten = |field: Option<Option<Value>>| -> Option<Value> {
+        field.flatten().filter(|v| !v.is_null())
+    };
     ConnectionTypeDetail {
-        config_schema: if body["config_schema"].is_null() {
-            None
-        } else {
-            Some(body["config_schema"].clone())
-        },
-        auth: if body["auth"].is_null() {
-            None
-        } else {
-            Some(body["auth"].clone())
-        },
+        config_schema: flatten(detail.config_schema),
+        auth: flatten(detail.auth),
     }
 }
 
@@ -269,7 +262,7 @@ pub fn run(workspace_id: &str) {
         std::process::exit(1);
     }
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
     // Phase 1: Select connection type
     let types = fetch_types(&api);
@@ -312,65 +305,47 @@ pub fn run(workspace_id: &str) {
     }
 
     // Phase 6: Submit
-    let body = serde_json::json!({
-        "name": conn_name,
-        "source_type": source_type,
-        "config": Value::Object(config),
-    });
+    let request = hotdata::models::CreateConnectionRequest::new(
+        config.into_iter().collect(),
+        conn_name,
+        source_type.clone(),
+    );
 
-    #[derive(serde::Deserialize)]
-    struct CreateResponse {
-        id: String,
-        name: String,
-        source_type: String,
-        tables_discovered: u64,
-        discovery_status: String,
-        discovery_error: Option<String>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct HealthResponse {
-        healthy: bool,
-        #[serde(default)]
-        latency_ms: Option<u64>,
-        #[serde(default)]
-        error: Option<String>,
-    }
-
+    /// Health outcome: a fetched response, or an unavailable reason string.
     enum HealthStatus {
-        Available(HealthResponse),
+        Available(hotdata::models::ConnectionHealthResponse),
         Unavailable(String),
     }
 
+    /// Render an [`ApiError`] the way the old raw paths did: the server body
+    /// through `api_error`, or the transport message verbatim.
+    fn error_text(e: ApiError) -> String {
+        match e {
+            ApiError::Status { body, .. } => crate::util::api_error(body),
+            ApiError::Transport(msg) => msg,
+        }
+    }
+
     let create_spinner = crate::util::spinner("Creating connection...");
-    let (status_code, resp_body) = api.post_raw("/connections", &body);
+    let result = block(api.client().connections().create(request));
     create_spinner.finish_and_clear();
 
     use crossterm::style::Stylize;
-    if !status_code.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
-
-    let result: CreateResponse = match serde_json::from_str(&resp_body) {
+    let result = match result {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("error parsing response: {e}");
+            eprintln!("{}", error_text(e).red());
             std::process::exit(1);
         }
     };
 
     let health_spinner = crate::util::spinner("Checking connection health...");
-    let (hstatus, hbody) = api.get_raw(&format!("/connections/{}/health", result.id));
+    let health_result = block(api.client().connections().check_health(&result.id));
     health_spinner.finish_and_clear();
 
-    let health = if !hstatus.is_success() {
-        HealthStatus::Unavailable(crate::util::api_error(hbody))
-    } else {
-        match serde_json::from_str::<HealthResponse>(&hbody) {
-            Ok(h) => HealthStatus::Available(h),
-            Err(e) => HealthStatus::Unavailable(format!("parse error: {e}")),
-        }
+    let health = match health_result {
+        Ok(h) => HealthStatus::Available(h),
+        Err(e) => HealthStatus::Unavailable(error_text(e)),
     };
 
     println!("{}", "Connection created".green());
@@ -378,24 +353,26 @@ pub fn run(workspace_id: &str) {
     println!("name:              {}", result.name);
     println!("source_type:       {}", result.source_type);
     println!("tables_discovered: {}", result.tables_discovered);
-    let status = match result.discovery_status.as_str() {
-        "success" => result.discovery_status.green().to_string(),
+    let discovery_status = result.discovery_status.to_string();
+    let status = match discovery_status.as_str() {
+        "success" => discovery_status.green().to_string(),
         "failed" => result
             .discovery_error
+            .flatten()
             .as_deref()
             .unwrap_or("failed")
             .red()
             .to_string(),
-        _ => result.discovery_status.yellow().to_string(),
+        _ => discovery_status.yellow().to_string(),
     };
     println!("discovery_status:  {status}");
     let health_str = match &health {
-        HealthStatus::Available(h) if h.healthy => match h.latency_ms {
-            Some(ms) => format!("{} {}", "healthy".green(), format!("({ms}ms)").dark_grey()),
-            None => "healthy".green().to_string(),
-        },
+        HealthStatus::Available(h) if h.healthy => {
+            let ms = h.latency_ms;
+            format!("{} {}", "healthy".green(), format!("({ms}ms)").dark_grey())
+        }
         HealthStatus::Available(h) => {
-            let err = h.error.as_deref().unwrap_or("unknown error");
+            let err = h.error.as_ref().and_then(|e| e.as_deref()).unwrap_or("unknown error");
             format!("{} — {}", "unhealthy".red(), err)
         }
         HealthStatus::Unavailable(err) => {

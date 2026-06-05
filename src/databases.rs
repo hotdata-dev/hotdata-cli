@@ -1,4 +1,4 @@
-use crate::api::ApiClient;
+use crate::sdk::{none_if_404, Api};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -51,13 +51,6 @@ struct InfoTable {
     last_sync: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct InfoListResponse {
-    tables: Vec<InfoTable>,
-    has_more: bool,
-    next_cursor: Option<String>,
-}
-
 #[derive(Deserialize, Serialize)]
 struct TableRow {
     full_name: String,
@@ -100,21 +93,25 @@ struct LoadManagedTableResponse {
     arrow_schema_json: String,
 }
 
-fn fetch_database(api: &ApiClient, id: &str) -> Database {
-    api.get(&format!("/databases/{id}"))
+fn fetch_database(api: &Api, id: &str) -> Database {
+    api.get_json(&format!("/databases/{id}"), &[])
+        .unwrap_or_else(|e| e.exit())
 }
 
-pub fn try_resolve_database(api: &ApiClient, id_or_name: &str) -> Result<Database, String> {
+pub fn try_resolve_database(api: &Api, id_or_name: &str) -> Result<Database, String> {
     // Try a direct id lookup first — avoids the list round-trip for the common case.
     // Percent-encode the segment so names containing spaces or other URL-unsafe
     // characters don't cause a URL parse error before the list fallback can run.
     let encoded = urlencoding::encode(id_or_name);
-    if let Some(db) = api.get_none_if_not_found(&format!("/databases/{encoded}")) {
+    if let Some(db) =
+        none_if_404(api.get_json::<Database>(&format!("/databases/{encoded}"), &[]))
+            .unwrap_or_else(|e| e.exit())
+    {
         return Ok(db);
     }
 
     // Fall back to listing — prefer catalog alias match, then name.
-    let body: ListDatabasesResponse = api.get("/databases");
+    let body: ListDatabasesResponse = api.get_json("/databases", &[]).unwrap_or_else(|e| e.exit());
 
     let catalog_matches: Vec<&DatabaseSummary> = body
         .databases
@@ -151,7 +148,7 @@ pub fn try_resolve_database(api: &ApiClient, id_or_name: &str) -> Result<Databas
     }
 }
 
-pub fn resolve_database(api: &ApiClient, id_or_name: &str) -> Database {
+pub fn resolve_database(api: &Api, id_or_name: &str) -> Database {
     match try_resolve_database(api, id_or_name) {
         Ok(db) => db,
         Err(e) => {
@@ -263,12 +260,43 @@ fn table_rows(catalog: &str, tables: Vec<InfoTable>) -> Vec<TableRow> {
 }
 
 fn finish_upload(
-    api: &ApiClient,
+    api: &Api,
     reader: impl std::io::Read + Send + 'static,
     size: Option<u64>,
     pb: &ProgressBar,
 ) -> String {
-    let (status, resp_body) = api.post_body("/files", "application/octet-stream", reader, size);
+    // The streaming `/files` upload stays on the slim raw-HTTP helper: it
+    // needs no request timeout (a 10 GB+ parquet far outlives the seam's
+    // 300s default), is one-shot (no 401-retry — the body is consumed on the
+    // first send), and the SDK's `uploads().upload` is `PathBuf`-only with no
+    // progress hook or `--url` source. We still carry the same
+    // `Authorization: Bearer <jwt>` (resolved through the seam's installed
+    // token provider) and `X-Workspace-Id` header every other call uses.
+    let upload_client = crate::raw_http::build_upload_client();
+    let url = format!("{}/files", api.api_url);
+    let mut req = upload_client
+        .post(&url)
+        .header("Content-Type", "application/octet-stream");
+    if let Some(bearer) = api.current_bearer() {
+        req = req.header("Authorization", format!("Bearer {bearer}"));
+    }
+    if let Some(ws) = api.workspace_id() {
+        req = req.header("X-Workspace-Id", ws);
+    }
+    if let Some(len) = size {
+        req = req.header("Content-Length", len);
+    }
+    let req = req.body(reqwest::blocking::Body::new(reader));
+
+    // Body is an opaque stream, so pass `None` for logging; headers
+    // (including the masked Authorization) still log.
+    let (status, resp_body) = match crate::util::send_debug(&upload_client, req, None) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("error connecting to API: {e}");
+            std::process::exit(1);
+        }
+    };
     pb.finish_and_clear();
 
     if !status.is_success() {
@@ -293,7 +321,7 @@ fn finish_upload(
     }
 }
 
-fn upload_parquet_file(api: &ApiClient, path: &str) -> String {
+fn upload_parquet_file(api: &Api, path: &str) -> String {
     if !is_parquet_path(path) {
         eprintln!(
             "error: managed table loads require a parquet file (got '{}'). \
@@ -324,7 +352,7 @@ fn upload_parquet_file(api: &ApiClient, path: &str) -> String {
     finish_upload(api, reader, Some(file_size), &pb)
 }
 
-fn upload_parquet_url(api: &ApiClient, url: &str) -> String {
+fn upload_parquet_url(api: &Api, url: &str) -> String {
     if !is_parquet_path(url) {
         eprintln!(
             "error: managed table loads require a parquet URL ending in .parquet (got '{url}')."
@@ -374,24 +402,30 @@ fn upload_parquet_url(api: &ApiClient, url: &str) -> String {
     finish_upload(api, reader, content_length, &pb)
 }
 
-fn collect_tables(api: &ApiClient, connection_id: &str, schema: Option<&str>) -> Vec<InfoTable> {
+fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<InfoTable> {
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let mut params: Vec<(&str, Option<String>)> =
-            vec![("connection_id", Some(connection_id.to_string()))];
-        if let Some(s) = schema {
-            params.push(("schema", Some(s.to_string())));
-        }
-        if let Some(ref c) = cursor {
-            params.push(("cursor", Some(c.clone())));
-        }
-        let body: InfoListResponse = api.get_with_params("/information_schema", &params);
-        out.extend(body.tables);
-        if !body.has_more {
+        let resp = crate::sdk::block(api.client().information_schema().get(
+            Some(connection_id),
+            schema,
+            None,
+            None,
+            None,
+            cursor.as_deref(),
+        ))
+        .unwrap_or_else(|e| e.exit());
+        out.extend(resp.tables.into_iter().map(|t| InfoTable {
+            connection: t.connection,
+            schema: t.schema,
+            table: t.table,
+            synced: t.synced,
+            last_sync: t.last_sync.flatten(),
+        }));
+        if !resp.has_more {
             break;
         }
-        let Some(c) = body.next_cursor else {
+        let Some(c) = resp.next_cursor.flatten() else {
             break;
         };
         cursor = Some(c);
@@ -405,8 +439,9 @@ fn collect_tables(api: &ApiClient, connection_id: &str, schema: Option<&str>) ->
 }
 
 pub fn list(workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let body: ListDatabasesResponse = api.get("/databases");
+    let api = Api::new(Some(workspace_id));
+    let body: ListDatabasesResponse =
+        api.get_json("/databases", &[]).unwrap_or_else(|e| e.exit());
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.databases).unwrap()),
@@ -441,7 +476,7 @@ pub fn list(workspace_id: &str, format: &str) {
 }
 
 pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, id_or_name);
 
     match format {
@@ -494,7 +529,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
 /// `--database` is given. Mirrors `create`'s request path but returns
 /// the id instead of printing.
 fn create_and_return_id(
-    api: &ApiClient,
+    api: &Api,
     name: Option<&str>,
     schema: &str,
     tables: &[String],
@@ -502,7 +537,7 @@ fn create_and_return_id(
 ) -> String {
     use crossterm::style::Stylize;
     let body = create_database_request(name, None, schema, tables, expires_at);
-    let (status, resp_body) = api.post_raw("/databases", &body);
+    let (status, resp_body) = api.post_raw("/databases", &body).unwrap_or_else(|e| e.exit());
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
@@ -521,12 +556,30 @@ fn create_and_return_id(
 /// `POST /v1/auth/database` (grant_type=existing_database). The call
 /// doubles as an existence + access check (the server 404s an unknown
 /// or unreachable database).
-fn mint_database_token(api: &ApiClient, database_id: &str) -> DatabaseTokenResponse {
+fn mint_database_token(api: &Api, database_id: &str) -> DatabaseTokenResponse {
     let body = serde_json::json!({
         "grant_type": "existing_database",
         "database_id": database_id,
     });
-    api.post("/auth/database", &body)
+    let (status, resp_body) =
+        api.post_raw("/auth/database", &body).unwrap_or_else(|e| e.exit());
+    if !status.is_success() {
+        // The old typed `api.post` routed non-success through `fail_response`,
+        // which upgrades a masked 401/403/404 into the re-auth hint. Reproduce
+        // that via the seam's auth-aware exit.
+        crate::sdk::ApiError::Status {
+            status,
+            body: resp_body,
+        }
+        .exit();
+    }
+    match serde_json::from_str(&resp_body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Run a command with a database-scoped token. Creates a new database
@@ -544,7 +597,7 @@ pub fn run(
     use crossterm::style::Stylize;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
     // Unlike `create`, we don't persist the auto-created database as the
     // workspace's "current" database: a `run` database is scratch/ephemeral
@@ -606,9 +659,14 @@ pub fn create(
 
     let body = create_database_request(name, catalog, schema, tables, expires_at);
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let spinner = (format == "table").then(|| crate::util::spinner("Creating database..."));
-    let (status, resp_body) = api.post_raw("/databases", &body);
+    let (status, resp_body) = api.post_raw("/databases", &body).unwrap_or_else(|e| {
+        if let Some(s) = &spinner {
+            s.finish_and_clear();
+        }
+        e.exit()
+    });
     if let Some(s) = &spinner {
         s.finish_and_clear();
     }
@@ -681,9 +739,12 @@ pub fn unset(workspace_id: &str) {
 
 pub fn set(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let encoded = urlencoding::encode(id);
-    if api.get_none_if_not_found::<Database>(&format!("/databases/{encoded}")).is_none() {
+    if none_if_404(api.get_json::<Database>(&format!("/databases/{encoded}"), &[]))
+        .unwrap_or_else(|e| e.exit())
+        .is_none()
+    {
         eprintln!("{}", format!("error: no database with id '{id}'").red());
         std::process::exit(1);
     }
@@ -714,9 +775,11 @@ fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> Strin
 pub fn delete(workspace_id: &str, id_or_name: &str) {
     use crossterm::style::Stylize;
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, id_or_name);
-    let (status, resp_body) = api.delete_raw(&format!("/databases/{}", db.id));
+    let (status, resp_body) = api
+        .delete_raw(&format!("/databases/{}", db.id))
+        .unwrap_or_else(|e| e.exit());
 
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
@@ -734,7 +797,7 @@ pub fn delete(workspace_id: &str, id_or_name: &str) {
 
 pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&str>, format: &str) {
     let database = resolve_current_database(database, workspace_id);
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
     let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
     let tables = collect_tables(&api, &db.default_connection_id, schema);
@@ -781,13 +844,16 @@ pub fn tables_load(
     use crossterm::style::Stylize;
 
     let database = resolve_current_database(database, workspace_id);
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     // Prefer the active database when its catalog or name matches the lookup key,
     // avoiding ambiguity when multiple databases share the same catalog name.
     let active_id = crate::config::load_current_database("default", workspace_id);
     let lookup_key = match active_id.as_deref() {
         Some(id) => {
-            if let Some(active) = api.get_none_if_not_found::<Database>(&format!("/databases/{id}")) {
+            if let Some(active) =
+                none_if_404(api.get_json::<Database>(&format!("/databases/{id}"), &[]))
+                    .unwrap_or_else(|e| e.exit())
+            {
                 if active.default_catalog.as_deref() == Some(database.as_str())
                     || active.name.as_deref() == Some(database.as_str())
                 {
@@ -820,7 +886,10 @@ pub fn tables_load(
     let body = load_table_request(&upload_id);
 
     let spinner = crate::util::spinner("Loading table...");
-    let (status, resp_body) = api.post_raw(&path, &body);
+    let (status, resp_body) = api.post_raw(&path, &body).unwrap_or_else(|e| {
+        spinner.finish_and_clear();
+        e.exit()
+    });
     spinner.finish_and_clear();
 
     let (status, resp_body) = if !status.is_success()
@@ -879,7 +948,9 @@ pub fn tables_load(
             }
         }
 
-        let (del_status, del_body) = api.delete_raw(&format!("/databases/{}", db.id));
+        let (del_status, del_body) = api
+            .delete_raw(&format!("/databases/{}", db.id))
+            .unwrap_or_else(|e| e.exit());
         if !del_status.is_success() {
             eprintln!("{}", crate::util::api_error(del_body).red());
             std::process::exit(1);
@@ -891,7 +962,8 @@ pub fn tables_load(
             &all_tables,
             db.expires_at.as_deref(),
         );
-        let (create_status, create_body_resp) = api.post_raw("/databases", &create_body);
+        let (create_status, create_body_resp) =
+            api.post_raw("/databases", &create_body).unwrap_or_else(|e| e.exit());
         if !create_status.is_success() {
             eprintln!("{}", crate::util::api_error(create_body_resp).red());
             std::process::exit(1);
@@ -906,7 +978,10 @@ pub fn tables_load(
         let _ = crate::config::save_current_database("default", workspace_id, &new_db.id);
         let new_path = managed_table_load_path(&new_db.default_connection_id, schema, table);
         let spinner = crate::util::spinner("Loading table...");
-        let result = api.post_raw(&new_path, &body);
+        let result = api.post_raw(&new_path, &body).unwrap_or_else(|e| {
+            spinner.finish_and_clear();
+            e.exit()
+        });
         spinner.finish_and_clear();
         result
     } else {
@@ -951,12 +1026,12 @@ pub fn tables_delete(workspace_id: &str, database: Option<&str>, table: &str, sc
     use crossterm::style::Stylize;
 
     let database = resolve_current_database(database, workspace_id);
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
     let schema = schema_name(schema);
 
     let path = managed_table_delete_path(&db.default_connection_id, schema, table);
-    let (status, resp_body) = api.delete_raw(&path);
+    let (status, resp_body) = api.delete_raw(&path).unwrap_or_else(|e| e.exit());
 
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
@@ -1059,30 +1134,30 @@ mod tests {
         let mut server = mockito::Server::new();
         // by-id path: direct GET /databases/db_abc succeeds
         let by_id_mock = server
-            .mock("GET", "/databases/db_abc")
+            .mock("GET", "/v1/databases/db_abc")
             .with_status(200)
             .with_body(full_detail("db_abc", "sales", "conn_1"))
             .create();
         // by-name path: GET /databases/warehouse → 404, then list, then detail
         let not_id = server
-            .mock("GET", "/databases/warehouse")
+            .mock("GET", "/v1/databases/warehouse")
             .with_status(404)
             .with_body(r#"{"error":"not found"}"#)
             .create();
         let list = server
-            .mock("GET", "/databases")
+            .mock("GET", "/v1/databases")
             .with_status(200)
             .with_body(
                 r#"{"databases":[{"id":"db_abc","name":"sales"},{"id":"db_xyz","name":"warehouse"}]}"#,
             )
             .create();
         let detail = server
-            .mock("GET", "/databases/db_xyz")
+            .mock("GET", "/v1/databases/db_xyz")
             .with_status(200)
             .with_body(full_detail("db_xyz", "warehouse", "conn_2"))
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
         let by_id = resolve_database(&api, "db_abc");
         assert_eq!(by_id.default_connection_id, "conn_1");
         let by_name = resolve_database(&api, "warehouse");
@@ -1098,18 +1173,18 @@ mod tests {
         let mut server = mockito::Server::new();
         // Direct id lookup returns 404
         server
-            .mock("GET", "/databases/missing")
+            .mock("GET", "/v1/databases/missing")
             .with_status(404)
             .with_body(r#"{"error":"not found"}"#)
             .create();
         // List also returns nothing
         server
-            .mock("GET", "/databases")
+            .mock("GET", "/v1/databases")
             .with_status(200)
             .with_body(r#"{"databases":[]}"#)
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", None);
+        let api = Api::test_new(&server.url(), "k", None);
         let err = try_resolve_database(&api, "missing").unwrap_err();
         assert!(err.contains("no database with id"));
     }
@@ -1119,20 +1194,20 @@ mod tests {
         let mut server = mockito::Server::new();
         // Direct id lookup returns 404 (name isn't a valid id)
         server
-            .mock("GET", "/databases/sales")
+            .mock("GET", "/v1/databases/sales")
             .with_status(404)
             .with_body(r#"{"error":"not found"}"#)
             .create();
         // List returns two entries with the same name
         server
-            .mock("GET", "/databases")
+            .mock("GET", "/v1/databases")
             .with_status(200)
             .with_body(
                 r#"{"databases":[{"id":"db_1","name":"sales"},{"id":"db_2","name":"sales"}]}"#,
             )
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", None);
+        let api = Api::test_new(&server.url(), "k", None);
         let err = try_resolve_database(&api, "sales").unwrap_err();
         assert!(err.contains("multiple databases"));
     }
@@ -1183,29 +1258,31 @@ mod tests {
     fn collect_tables_follows_cursor() {
         let mut server = mockito::Server::new();
         let page1 = server
-            .mock("GET", "/information_schema")
+            .mock("GET", "/v1/information_schema")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("connection_id".into(), "conn1".into()),
                 mockito::Matcher::UrlEncoded("cursor".into(), "cur2".into()),
             ]))
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(
-                r#"{"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
         let page0 = server
-            .mock("GET", "/information_schema")
+            .mock("GET", "/v1/information_schema")
             .match_query(mockito::Matcher::UrlEncoded(
                 "connection_id".into(),
                 "conn1".into(),
             ))
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(
-                r#"{"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
             )
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
         let tables = collect_tables(&api, "conn1", None);
         page0.assert();
         page1.assert();
@@ -1218,7 +1295,7 @@ mod tests {
     fn create_posts_to_databases_endpoint() {
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("POST", "/databases")
+            .mock("POST", "/v1/databases")
             .match_header("X-Workspace-Id", "ws-test")
             .with_status(201)
             .with_body(
@@ -1236,9 +1313,9 @@ mod tests {
             ))
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", Some("ws-test"));
+        let api = Api::test_new(&server.url(), "k", Some("ws-test"));
         let body = create_database_request(Some("mydb"), None, "public", &["gdp".to_string()], None);
-        let (status, resp_body) = api.post_raw("/databases", &body);
+        let (status, resp_body) = api.post_raw("/databases", &body).unwrap();
         assert_eq!(status.as_u16(), 201);
         let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();
         assert_eq!(parsed.name.as_deref(), Some("mydb"));
@@ -1251,14 +1328,14 @@ mod tests {
         let mut server = mockito::Server::new();
         // resolve_database resolves by id directly
         let resolve = server
-            .mock("GET", "/databases/db_1")
+            .mock("GET", "/v1/databases/db_1")
             .with_status(200)
             .with_body(full_detail("db_1", "sales", "conn_default"))
             .create();
         let load = server
             .mock(
                 "POST",
-                "/connections/conn_default/schemas/public/tables/orders/loads",
+                "/v1/connections/conn_default/schemas/public/tables/orders/loads",
             )
             .match_body(mockito::Matcher::JsonString(
                 serde_json::to_string(&load_table_request("upl_123")).unwrap(),
@@ -1275,11 +1352,11 @@ mod tests {
             )
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", Some("ws1"));
+        let api = Api::test_new(&server.url(), "k", Some("ws1"));
         let db = resolve_database(&api, "db_1");
         let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
         let body = load_table_request("upl_123");
-        let (status, resp_body) = api.post_raw(&path, &body);
+        let (status, resp_body) = api.post_raw(&path, &body).unwrap();
         assert!(status.is_success());
         let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();
         assert_eq!(parsed.row_count, 42);
@@ -1292,23 +1369,23 @@ mod tests {
     fn tables_delete_uses_default_connection_id() {
         let mut server = mockito::Server::new();
         let resolve = server
-            .mock("GET", "/databases/db_1")
+            .mock("GET", "/v1/databases/db_1")
             .with_status(200)
             .with_body(full_detail("db_1", "sales", "conn_default"))
             .create();
         let delete = server
             .mock(
                 "DELETE",
-                "/connections/conn_default/schemas/public/tables/orders",
+                "/v1/connections/conn_default/schemas/public/tables/orders",
             )
             .with_status(204)
             .with_body("")
             .create();
 
-        let api = ApiClient::test_new(&server.url(), "k", None);
+        let api = Api::test_new(&server.url(), "k", None);
         let db = resolve_database(&api, "db_1");
         let path = managed_table_delete_path(&db.default_connection_id, "public", "orders");
-        let (status, _) = api.delete_raw(&path);
+        let (status, _) = api.delete_raw(&path).unwrap();
         assert_eq!(status.as_u16(), 204);
         resolve.assert();
         delete.assert();
@@ -1343,7 +1420,7 @@ mod tests {
     fn create_and_return_id_parses_id() {
         let mut server = mockito::Server::new();
         let m = server
-            .mock("POST", "/databases")
+            .mock("POST", "/v1/databases")
             .match_body(mockito::Matcher::Json(create_database_request(
                 Some("scratch"),
                 None,
@@ -1355,7 +1432,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(r#"{"id":"dbid_new","description":"scratch","default_connection_id":"conn_1"}"#)
             .create();
-        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
         let id = create_and_return_id(&api, Some("scratch"), "public", &[], None);
         m.assert();
         assert_eq!(id, "dbid_new");
@@ -1365,7 +1442,7 @@ mod tests {
     fn mint_database_token_posts_existing_database_grant() {
         let mut server = mockito::Server::new();
         let m = server
-            .mock("POST", "/auth/database")
+            .mock("POST", "/v1/auth/database")
             .match_body(mockito::Matcher::JsonString(
                 r#"{"grant_type":"existing_database","database_id":"dbid_abc"}"#.to_string(),
             ))
@@ -1373,7 +1450,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(r#"{"ok":true,"token":"jwt-x","refresh_token":"rt-x","database_id":"dbid_abc","expires_in":300,"refresh_expires_in":259200}"#)
             .create();
-        let api = ApiClient::test_new(&server.url(), "k", Some("ws"));
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
         let resp = mint_database_token(&api, "dbid_abc");
         m.assert();
         assert_eq!(resp.token, "jwt-x");

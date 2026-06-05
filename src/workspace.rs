@@ -1,8 +1,8 @@
-use crate::api::ApiClient;
 use crate::config;
-use serde::{Deserialize, Serialize};
+use crate::sdk::Api;
+use serde::Serialize;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 struct Workspace {
     public_id: String,
     name: String,
@@ -11,9 +11,24 @@ struct Workspace {
     provision_status: String,
 }
 
-#[derive(Deserialize)]
-struct ListResponse {
-    workspaces: Vec<Workspace>,
+impl From<&hotdata::models::WorkspaceListItem> for Workspace {
+    fn from(w: &hotdata::models::WorkspaceListItem) -> Self {
+        Workspace {
+            public_id: w.public_id.clone(),
+            name: w.name.clone(),
+            active: w.active,
+            favorite: w.favorite,
+            provision_status: w.provision_status.clone(),
+        }
+    }
+}
+
+fn fetch_workspaces() -> Vec<Workspace> {
+    let api = Api::new(None);
+    let body = api
+        .list_workspaces(None)
+        .unwrap_or_else(|e| e.exit());
+    body.workspaces.iter().map(Workspace::from).collect()
 }
 
 pub fn set(workspace_id: Option<&str>) {
@@ -23,9 +38,7 @@ pub fn set(workspace_id: Option<&str>) {
         eprintln!("error: workspace cannot be changed inside a sandbox");
         std::process::exit(1);
     }
-    let api = ApiClient::new(None);
-    let body: ListResponse = api.get("/workspaces");
-    let workspaces = body.workspaces;
+    let workspaces = fetch_workspaces();
 
     let chosen = match workspace_id {
         Some(id) => match workspaces.iter().find(|w| w.public_id == id) {
@@ -96,26 +109,21 @@ pub fn list(format: &str) {
             .unwrap_or_default()
     });
 
-    let api = ApiClient::new(None);
-    let body: ListResponse = api.get("/workspaces");
+    let workspaces = fetch_workspaces();
 
     match format {
         "json" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&body.workspaces).unwrap()
-            );
+            println!("{}", serde_json::to_string_pretty(&workspaces).unwrap());
         }
         "yaml" => {
-            print!("{}", serde_yaml::to_string(&body.workspaces).unwrap());
+            print!("{}", serde_yaml::to_string(&workspaces).unwrap());
         }
         "table" => {
-            if body.workspaces.is_empty() {
+            if workspaces.is_empty() {
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No workspaces found.".dark_grey());
             } else {
-                let rows: Vec<Vec<String>> = body
-                    .workspaces
+                let rows: Vec<Vec<String>> = workspaces
                     .iter()
                     .map(|w| {
                         let marker = if w.public_id == default_id { "*" } else { "" };

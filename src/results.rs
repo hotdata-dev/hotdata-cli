@@ -1,4 +1,4 @@
-use crate::api::ApiClient;
+use crate::sdk::Api;
 use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 
@@ -23,13 +23,22 @@ struct ListResponse {
 }
 
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
 
-    let params = [
-        ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
-    ];
-    let body: ListResponse = api.get_with_params("/results", &params);
+    let mut params: Vec<(&str, String)> = Vec::new();
+    if let Some(l) = limit {
+        params.push(("limit", l.to_string()));
+    }
+    if let Some(o) = offset {
+        params.push(("offset", o.to_string()));
+    }
+    // The SDK's typed `results().list()` model drops `row_count`,
+    // `query_run_id`, and `expires_at` (the columns the CLI conditionally
+    // shows), so deserialize into the CLI's own `ListResponse` via the seam's
+    // `get_json` to preserve output byte-for-byte.
+    let body: ListResponse = api
+        .get_json("/results", &params)
+        .unwrap_or_else(|e| e.exit());
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.results).unwrap()),
@@ -52,7 +61,11 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                             crate::util::format_date(&r.created_at),
                         ];
                         if has_rows {
-                            row.push(r.row_count.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string()));
+                            row.push(
+                                r.row_count
+                                    .map(|n| n.to_string())
+                                    .unwrap_or_else(|| "-".to_string()),
+                            );
                         }
                         if has_query_run {
                             row.push(r.query_run_id.as_deref().unwrap_or("-").to_string());
@@ -61,7 +74,7 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                             row.push(
                                 r.expires_at
                                     .as_deref()
-                                    .map(|s| crate::util::format_date(s))
+                                    .map(crate::util::format_date)
                                     .unwrap_or_else(|| "-".to_string()),
                             );
                         }
@@ -70,9 +83,15 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                     .collect();
 
                 let mut headers = vec!["ID", "STATUS", "CREATED"];
-                if has_rows { headers.push("ROWS"); }
-                if has_query_run { headers.push("QUERY_RUN_ID"); }
-                if has_expires { headers.push("EXPIRES"); }
+                if has_rows {
+                    headers.push("ROWS");
+                }
+                if has_query_run {
+                    headers.push("QUERY_RUN_ID");
+                }
+                if has_expires {
+                    headers.push("EXPIRES");
+                }
 
                 crate::table::print(&headers, &rows);
             }
@@ -93,7 +112,7 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
 }
 
 pub fn get(result_id: &str, workspace_id: &str, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let result = crate::query::fetch_arrow_result(&api, result_id);
     crate::query::print_result(&result, format);
 }

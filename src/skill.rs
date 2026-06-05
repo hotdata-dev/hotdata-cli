@@ -27,18 +27,12 @@ fn home_dir() -> PathBuf {
 
 /// The canonical store location: ~/.hotdata/skills/<skill>
 fn skill_store_path(skill_name: &str) -> PathBuf {
-    home_dir()
-        .join(".hotdata")
-        .join("skills")
-        .join(skill_name)
+    home_dir().join(".hotdata").join("skills").join(skill_name)
 }
 
 /// Canonical agents layer: ~/.agents/skills/<skill>
 fn agents_skill_path(skill_name: &str) -> PathBuf {
-    home_dir()
-        .join(".agents")
-        .join("skills")
-        .join(skill_name)
+    home_dir().join(".agents").join("skills").join(skill_name)
 }
 
 fn agents_lock_path() -> PathBuf {
@@ -176,10 +170,7 @@ pub fn maybe_auto_update_after_cli_upgrade() {
     }
 
     clear_skill_auto_update_suppression();
-    eprintln!(
-        "{}",
-        format!("Agent skills updated to v{current}.").green()
-    );
+    eprintln!("{}", format!("Agent skills updated to v{current}.").green());
 }
 
 fn is_managed_by_skills_agent() -> bool {
@@ -450,10 +441,7 @@ pub fn install_project() {
                     format!("./{root} ({skill_name}):"),
                     rel_link.display().to_string().cyan()
                 ),
-                Err(e) => eprintln!(
-                    "{}",
-                    format!("./{root} ({skill_name}): failed: {e}").red()
-                ),
+                Err(e) => eprintln!("{}", format!("./{root} ({skill_name}): failed: {e}").red()),
             }
         }
     }
@@ -579,7 +567,7 @@ pub fn status() {
             } else {
                 "No".red().to_string()
             };
-            row(&format!("{skill_name}"), &status);
+            row(skill_name, &status);
         }
     } else {
         row("Installed", &"Yes".green().to_string());

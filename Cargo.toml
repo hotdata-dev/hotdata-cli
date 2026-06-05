@@ -12,10 +12,23 @@ name = "hotdata"
 path = "src/main.rs"
 
 [dependencies]
+# Hotdata Rust SDK. The CLI's sync wrapper (src/sdk.rs) drives this async SDK
+# behind a shared multi-thread tokio runtime. Pinned to the rev that adds the
+# CLI-consumption surface (attribution client_id, async submit_query, streaming
+# upload_stream) — merged via hotdata-dev/sdk-rust#32.
+hotdata = { git = "https://github.com/hotdata-dev/sdk-rust", rev = "8d4018fb899ba52228db44eaffa6caa0eb5b603f", features = ["arrow"] }
+# Shared multi-thread runtime for the sync wrapper; block_on is called
+# concurrently from rayon worker threads (see src/indexes.rs).
+tokio = { version = "1", features = ["rt-multi-thread"] }
+# CliTokenProvider implements the SDK's #[async_trait] BearerTokenProvider.
+async-trait = "0.1"
 anstyle = "1.0.13"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+# Matches the SDK's reqwest 0.13 so the sdk seam can name the `reqwest::Client`
+# type backing `Configuration.client`; `blocking` serves the CLI's own
+# synchronous paths (PKCE/token mints in jwt.rs + the streaming /files upload).
+reqwest = { version = "0.13", features = ["blocking", "json"] }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,9 +1,8 @@
 //! Database context: `/v1/databases/{id}/context` sync with `./{NAME}.md` in the current directory.
 
-use crate::api::ApiClient;
+use crate::sdk::{Api, ApiError};
 use crossterm::style::Stylize;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use hotdata::models::{DatabaseContextEntry, UpsertDatabaseContextRequest};
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
@@ -27,26 +26,23 @@ static RESERVED_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     .collect()
 });
 
-#[derive(Debug, Deserialize, Serialize)]
-struct DatabaseContextEntry {
+/// Output shape for `list`, preserving the CLI's `name, content, updated_at`
+/// field order (the generated SDK model orders them `content, name, updated_at`).
+#[derive(serde::Serialize)]
+struct ContextRow {
     name: String,
     content: String,
     updated_at: String,
 }
 
-#[derive(Deserialize)]
-struct ListResponse {
-    contexts: Vec<DatabaseContextEntry>,
-}
-
-#[derive(Deserialize)]
-struct GetResponse {
-    context: DatabaseContextEntry,
-}
-
-#[derive(Deserialize)]
-struct UpsertResponse {
-    context: DatabaseContextEntry,
+impl From<DatabaseContextEntry> for ContextRow {
+    fn from(e: DatabaseContextEntry) -> Self {
+        ContextRow {
+            name: e.name,
+            content: e.content,
+            updated_at: e.updated_at,
+        }
+    }
 }
 
 /// Normalizes a context name from the CLI: trims, takes the final path segment, and strips a
@@ -122,33 +118,23 @@ fn local_md_path(name: &str) -> PathBuf {
         .join(format!("{name}.md"))
 }
 
-fn fetch_context(
-    api: &ApiClient,
-    database_id: &str,
-    name: &str,
-) -> Result<DatabaseContextEntry, reqwest::StatusCode> {
-    let path = format!("/databases/{database_id}/context/{name}");
-    let (status, body) = api.get_raw(&path);
-    if status == reqwest::StatusCode::NOT_FOUND {
-        return Err(status);
+/// Fetch a named context document. Returns `Ok(None)` on 404 (not found);
+/// exits the process on any other error, matching the old behavior.
+fn fetch_context(api: &Api, database_id: &str, name: &str) -> Option<DatabaseContextEntry> {
+    let result = crate::sdk::block(api.client().database_context().get(database_id, name));
+    match crate::sdk::none_if_404(result) {
+        Ok(Some(resp)) => Some(*resp.context),
+        Ok(None) => None,
+        Err(e) => e.exit(),
     }
-    if !status.is_success() {
-        eprintln!("{}", format!("error: HTTP {status}").red());
-        eprintln!("{body}");
-        std::process::exit(1);
-    }
-    let parsed: GetResponse = serde_json::from_str(&body).unwrap_or_else(|e| {
-        eprintln!("error parsing response: {e}");
-        std::process::exit(1);
-    });
-    Ok(parsed.context)
 }
 
 pub fn list(workspace_id: &str, database_id: &str, prefix: Option<&str>, format: &str) {
-    let api = ApiClient::new(Some(workspace_id));
-    let body: ListResponse = api.get(&format!("/databases/{database_id}/context"));
+    let api = Api::new(Some(workspace_id));
+    let body = crate::sdk::block(api.client().database_context().list(database_id))
+        .unwrap_or_else(|e| e.exit());
 
-    let mut rows: Vec<DatabaseContextEntry> = body.contexts;
+    let mut rows: Vec<ContextRow> = body.contexts.into_iter().map(ContextRow::from).collect();
     if let Some(p) = prefix {
         rows.retain(|c| c.name.starts_with(p));
     }
@@ -184,15 +170,15 @@ pub fn show(workspace_id: &str, database_id: &str, name: &str) {
         std::process::exit(1);
     }
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     match fetch_context(&api, database_id, &name) {
-        Ok(ctx) => {
+        Some(ctx) => {
             print!("{}", ctx.content);
             if !ctx.content.ends_with('\n') {
                 println!();
             }
         }
-        Err(reqwest::StatusCode::NOT_FOUND) => {
+        None => {
             eprintln!(
                 "{}",
                 format!("error: no context named '{name}' in this database.").red()
@@ -204,7 +190,6 @@ pub fn show(workspace_id: &str, database_id: &str, name: &str) {
             );
             std::process::exit(1);
         }
-        Err(status) => panic!("unexpected error status from fetch_context: {status}"),
     }
 }
 
@@ -229,17 +214,16 @@ pub fn pull(workspace_id: &str, database_id: &str, name: &str, force: bool, dry_
         std::process::exit(1);
     }
 
-    let api = ApiClient::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id));
     let ctx = match fetch_context(&api, database_id, &name) {
-        Ok(c) => c,
-        Err(reqwest::StatusCode::NOT_FOUND) => {
+        Some(c) => c,
+        None => {
             eprintln!(
                 "{}",
                 format!("error: no context named '{name}' in this database.").red()
             );
             std::process::exit(1);
         }
-        Err(status) => panic!("unexpected error status from fetch_context: {status}"),
     };
 
     let n_chars = ctx.content.chars().count();
@@ -309,30 +293,29 @@ pub fn push(workspace_id: &str, database_id: &str, name: &str, dry_run: bool) {
         return;
     }
 
-    let api = ApiClient::new(Some(workspace_id));
-    let body = json!({ "name": &name, "content": content });
-    let (status, resp_body) = api.post_raw(&format!("/databases/{database_id}/context"), &body);
-
-    if !status.is_success() {
-        let msg = crate::util::api_error(resp_body.clone());
-        if msg.to_lowercase().contains("not allowed within a session") {
-            eprintln!("{}", msg.red());
-            eprintln!(
-                "{}",
-                "hint: context push is blocked inside an active sandbox. \
+    let api = Api::new(Some(workspace_id));
+    let request = UpsertDatabaseContextRequest::new(content, name.clone());
+    let resp = match crate::sdk::block(
+        api.client().database_context().upsert(database_id, request),
+    ) {
+        Ok(resp) => resp,
+        Err(ApiError::Status { status: _, body }) => {
+            let msg = crate::util::api_error(body);
+            if msg.to_lowercase().contains("not allowed within a session") {
+                eprintln!("{}", msg.red());
+                eprintln!(
+                    "{}",
+                    "hint: context push is blocked inside an active sandbox. \
 Run 'hotdata sandbox set' (no args) to clear the active sandbox first."
-                    .dark_grey()
-            );
-        } else {
-            eprintln!("{}", msg.red());
+                        .dark_grey()
+                );
+            } else {
+                eprintln!("{}", msg.red());
+            }
+            std::process::exit(1);
         }
-        std::process::exit(1);
-    }
-
-    let resp: UpsertResponse = serde_json::from_str(&resp_body).unwrap_or_else(|e| {
-        eprintln!("error parsing response: {e}");
-        std::process::exit(1);
-    });
+        Err(e @ ApiError::Transport(_)) => e.exit(),
+    };
 
     println!(
         "{}",
