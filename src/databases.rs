@@ -5,7 +5,10 @@ use std::path::Path;
 
 const DEFAULT_SCHEMA: &str = "public";
 
-/// Summary row returned by `GET /databases` (no `default_connection_id`).
+/// CLI output shape for `databases list` rows. A curated, stably-ordered view
+/// mapped from the SDK's `DatabaseSummary` (see the `From` impl) so the
+/// `-o json`/`-o yaml` contract stays decoupled from generated-model field
+/// order and nullability.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct DatabaseSummary {
     id: String,
@@ -15,7 +18,10 @@ struct DatabaseSummary {
     default_catalog: Option<String>,
 }
 
-/// Full record returned by `GET /databases/{id}`.
+/// CLI output shape for `databases get`. A curated, stably-ordered view mapped
+/// from the SDK's `DatabaseDetailResponse` (see the `From` impl), keeping the
+/// `-o json`/`-o yaml` contract independent of the generated model's field order
+/// and `Option<Option<_>>` nullability.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Database {
     pub id: String,
@@ -88,10 +94,11 @@ struct LoadManagedTableResponse {
     arrow_schema_json: String,
 }
 
-impl Database {
-    /// Map the SDK's typed `DatabaseDetailResponse` into the CLI's `Database`,
-    /// flattening the SDK's `Option<Option<_>>` nullable fields.
-    fn from_detail(d: hotdata::models::DatabaseDetailResponse) -> Self {
+impl From<hotdata::models::DatabaseDetailResponse> for Database {
+    /// Map the SDK's typed detail response into the CLI output shape, flattening
+    /// the SDK's `Option<Option<_>>` nullable fields and wrapping the
+    /// SDK-required `default_catalog` as `Some`.
+    fn from(d: hotdata::models::DatabaseDetailResponse) -> Self {
         Database {
             id: d.id,
             name: d.name.flatten(),
@@ -110,9 +117,9 @@ impl Database {
     }
 }
 
-impl DatabaseSummary {
-    /// Map the SDK's typed `DatabaseSummary` into the CLI's summary row.
-    fn from_sdk(s: hotdata::models::DatabaseSummary) -> Self {
+impl From<hotdata::models::DatabaseSummary> for DatabaseSummary {
+    /// Map the SDK's typed summary into the CLI's list-row output shape.
+    fn from(s: hotdata::models::DatabaseSummary) -> Self {
         DatabaseSummary {
             id: s.id,
             name: s.name.flatten(),
@@ -127,18 +134,14 @@ impl DatabaseSummary {
 /// of the id segment, so callers no longer hand-roll the path. The result is
 /// mapped into the CLI's `Database`.
 pub(crate) fn get_database(api: &Api, id: &str) -> Result<Database, ApiError> {
-    block(api.client().databases().get(id)).map(Database::from_detail)
+    block(api.client().databases().get(id)).map(Database::from)
 }
 
 /// List databases through the SDK's typed `databases().list` handle, mapped
 /// into the CLI's summary rows.
 fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> {
-    block(api.client().databases().list()).map(|r| {
-        r.databases
-            .into_iter()
-            .map(DatabaseSummary::from_sdk)
-            .collect()
-    })
+    block(api.client().databases().list())
+        .map(|r| r.databases.into_iter().map(DatabaseSummary::from).collect())
 }
 
 fn fetch_database(api: &Api, id: &str) -> Database {
