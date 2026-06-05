@@ -494,7 +494,7 @@ impl Api {
     /// wall-clock cap would abort a healthy-but-slow transfer. We clone the
     /// configured `Configuration` (same base_path, token_provider, scope
     /// api_keys, user-agent) and swap only the reqwest client, so the upload
-    /// carries the identical auth + `X-Workspace-Id`/`X-Session-Id` headers.
+    /// carries the identical auth + headers.
     ///
     /// `reader` is the progress-wrapped blocking source (file or URL response);
     /// it is bridged into the async byte stream the SDK consumes by
