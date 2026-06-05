@@ -1,12 +1,15 @@
-use crate::sdk::{Api, none_if_404};
+use crate::sdk::{Api, ApiError, block, none_if_404};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 const DEFAULT_SCHEMA: &str = "public";
 
-/// Summary row returned by `GET /databases` (no `default_connection_id`).
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// CLI output shape for `databases list` rows. A curated, stably-ordered view
+/// mapped from the SDK's `DatabaseSummary` (see the `From` impl) so the
+/// `-o json`/`-o yaml` contract stays decoupled from generated-model field
+/// order and nullability.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct DatabaseSummary {
     id: String,
     #[serde(default)]
@@ -15,13 +18,11 @@ struct DatabaseSummary {
     default_catalog: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct ListDatabasesResponse {
-    databases: Vec<DatabaseSummary>,
-}
-
-/// Full record returned by `GET /databases/{id}`.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// CLI output shape for `databases get`. A curated, stably-ordered view mapped
+/// from the SDK's `DatabaseDetailResponse` (see the `From` impl), keeping the
+/// `-o json`/`-o yaml` contract independent of the generated model's field order
+/// and `Option<Option<_>>` nullability.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Database {
     pub id: String,
     #[serde(default)]
@@ -35,7 +36,7 @@ pub struct Database {
     attachments: Vec<DatabaseAttachment>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct DatabaseAttachment {
     connection_id: String,
     alias: Option<String>,
@@ -93,27 +94,73 @@ struct LoadManagedTableResponse {
     arrow_schema_json: String,
 }
 
+impl From<hotdata::models::DatabaseDetailResponse> for Database {
+    /// Map the SDK's typed detail response into the CLI output shape, flattening
+    /// the SDK's `Option<Option<_>>` nullable fields and wrapping the
+    /// SDK-required `default_catalog` as `Some`.
+    fn from(d: hotdata::models::DatabaseDetailResponse) -> Self {
+        Database {
+            id: d.id,
+            name: d.name.flatten(),
+            default_catalog: Some(d.default_catalog),
+            default_connection_id: d.default_connection_id,
+            expires_at: d.expires_at.flatten(),
+            attachments: d
+                .attachments
+                .into_iter()
+                .map(|a| DatabaseAttachment {
+                    connection_id: a.connection_id,
+                    alias: a.alias.flatten(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<hotdata::models::DatabaseSummary> for DatabaseSummary {
+    /// Map the SDK's typed summary into the CLI's list-row output shape.
+    fn from(s: hotdata::models::DatabaseSummary) -> Self {
+        DatabaseSummary {
+            id: s.id,
+            name: s.name.flatten(),
+            default_catalog: Some(s.default_catalog),
+        }
+    }
+}
+
+/// Fetch a database by id through the SDK's typed `databases().get` handle.
+///
+/// The handle owns auth, scope headers, URL construction, and percent-encoding
+/// of the id segment, so callers no longer hand-roll the path. The result is
+/// mapped into the CLI's `Database`.
+pub(crate) fn get_database(api: &Api, id: &str) -> Result<Database, ApiError> {
+    block(api.client().databases().get(id)).map(Database::from)
+}
+
+/// List databases through the SDK's typed `databases().list` handle, mapped
+/// into the CLI's summary rows.
+fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> {
+    block(api.client().databases().list())
+        .map(|r| r.databases.into_iter().map(DatabaseSummary::from).collect())
+}
+
 fn fetch_database(api: &Api, id: &str) -> Database {
-    api.get_json(&format!("/databases/{id}"), &[])
-        .unwrap_or_else(|e| e.exit())
+    get_database(api, id).unwrap_or_else(|e| e.exit())
 }
 
 pub fn try_resolve_database(api: &Api, id_or_name: &str) -> Result<Database, String> {
-    // Try a direct id lookup first — avoids the list round-trip for the common case.
-    // Percent-encode the segment so names containing spaces or other URL-unsafe
-    // characters don't cause a URL parse error before the list fallback can run.
-    let encoded = urlencoding::encode(id_or_name);
-    if let Some(db) = none_if_404(api.get_json::<Database>(&format!("/databases/{encoded}"), &[]))
-        .unwrap_or_else(|e| e.exit())
-    {
+    // Try a direct id lookup first — avoids the list round-trip for the common
+    // case. The typed handle percent-encodes the id segment, so names with
+    // spaces or other URL-unsafe characters resolve (or 404 cleanly) without
+    // manual encoding before the list fallback runs.
+    if let Some(db) = none_if_404(get_database(api, id_or_name)).unwrap_or_else(|e| e.exit()) {
         return Ok(db);
     }
 
     // Fall back to listing — prefer catalog alias match, then name.
-    let body: ListDatabasesResponse = api.get_json("/databases", &[]).unwrap_or_else(|e| e.exit());
+    let databases = list_database_summaries(api).unwrap_or_else(|e| e.exit());
 
-    let catalog_matches: Vec<&DatabaseSummary> = body
-        .databases
+    let catalog_matches: Vec<&DatabaseSummary> = databases
         .iter()
         .filter(|d| d.default_catalog.as_deref() == Some(id_or_name))
         .collect();
@@ -128,8 +175,7 @@ pub fn try_resolve_database(api: &Api, id_or_name: &str) -> Result<Database, Str
         };
     }
 
-    let name_matches: Vec<&DatabaseSummary> = body
-        .databases
+    let name_matches: Vec<&DatabaseSummary> = databases
         .iter()
         .filter(|d| d.name.as_deref() == Some(id_or_name))
         .collect();
@@ -221,6 +267,24 @@ pub fn create_database_request(
     }
 
     serde_json::Value::Object(req)
+}
+
+/// Build the typed `CreateDatabaseRequest` for the SDK's `databases().create`
+/// handle, reusing [`create_database_request`] as the single source of truth for
+/// the body shape. The delete+recreate path still consumes the raw JSON form
+/// (it inspects raw error bodies), so the JSON builder stays; this just adapts
+/// it for the typed call sites.
+fn create_database_typed_request(
+    name: Option<&str>,
+    catalog: Option<&str>,
+    schema: &str,
+    tables: &[String],
+    expires_at: Option<&str>,
+) -> hotdata::models::CreateDatabaseRequest {
+    serde_json::from_value(create_database_request(
+        name, catalog, schema, tables, expires_at,
+    ))
+    .expect("create_database_request always emits a valid CreateDatabaseRequest body")
 }
 
 pub fn managed_table_load_path(connection_id: &str, schema: &str, table: &str) -> String {
@@ -434,13 +498,13 @@ fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<I
 
 pub fn list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let body: ListDatabasesResponse = api.get_json("/databases", &[]).unwrap_or_else(|e| e.exit());
+    let databases = list_database_summaries(&api).unwrap_or_else(|e| e.exit());
 
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&body.databases).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&body.databases).unwrap()),
+        "json" => println!("{}", serde_json::to_string_pretty(&databases).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&databases).unwrap()),
         "table" => {
-            if body.databases.is_empty() {
+            if databases.is_empty() {
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No databases found.".dark_grey());
                 eprintln!(
@@ -449,8 +513,7 @@ pub fn list(workspace_id: &str, format: &str) {
                 );
             } else {
                 let current = crate::config::load_current_database("default", workspace_id);
-                let rows: Vec<Vec<String>> = body
-                    .databases
+                let rows: Vec<Vec<String>> = databases
                     .iter()
                     .map(|d| {
                         let marker = if current.as_deref() == Some(d.id.as_str()) {
@@ -537,23 +600,10 @@ fn create_and_return_id(
     tables: &[String],
     expires_at: Option<&str>,
 ) -> String {
-    use crossterm::style::Stylize;
-    let body = create_database_request(name, None, schema, tables, expires_at);
-    let (status, resp_body) = api
-        .post_raw("/databases", &body)
-        .unwrap_or_else(|e| e.exit());
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
-    let result: CreateDatabaseResponse = match serde_json::from_str(&resp_body) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing create response: {e}");
-            std::process::exit(1);
-        }
-    };
-    result.id
+    let request = create_database_typed_request(name, None, schema, tables, expires_at);
+    block(api.client().databases().create(request))
+        .unwrap_or_else(|e| e.exit())
+        .id
 }
 
 /// Mint a database-scoped JWT for an existing database id via
@@ -665,11 +715,11 @@ pub fn create(
 ) {
     use crossterm::style::Stylize;
 
-    let body = create_database_request(name, catalog, schema, tables, expires_at);
+    let request = create_database_typed_request(name, catalog, schema, tables, expires_at);
 
     let api = Api::new(Some(workspace_id));
     let spinner = (format == "table").then(|| crate::util::spinner("Creating database..."));
-    let (status, resp_body) = api.post_raw("/databases", &body).unwrap_or_else(|e| {
+    let resp = block(api.client().databases().create(request)).unwrap_or_else(|e| {
         if let Some(s) = &spinner {
             s.finish_and_clear();
         }
@@ -679,17 +729,12 @@ pub fn create(
         s.finish_and_clear();
     }
 
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
-
-    let result: CreateDatabaseResponse = match serde_json::from_str(&resp_body) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
+    let result = CreateDatabaseResponse {
+        id: resp.id,
+        name: resp.name.flatten(),
+        default_catalog: Some(resp.default_catalog),
+        default_connection_id: resp.default_connection_id,
+        expires_at: resp.expires_at.flatten(),
     };
 
     if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
@@ -753,8 +798,7 @@ pub fn unset(workspace_id: &str) {
 pub fn set(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     let api = Api::new(Some(workspace_id));
-    let encoded = urlencoding::encode(id);
-    if none_if_404(api.get_json::<Database>(&format!("/databases/{encoded}"), &[]))
+    if none_if_404(get_database(&api, id))
         .unwrap_or_else(|e| e.exit())
         .is_none()
     {
@@ -790,14 +834,7 @@ pub fn delete(workspace_id: &str, id_or_name: &str) {
 
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, id_or_name);
-    let (status, resp_body) = api
-        .delete_raw(&format!("/databases/{}", db.id))
-        .unwrap_or_else(|e| e.exit());
-
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
+    block(api.client().databases().delete(&db.id)).unwrap_or_else(|e| e.exit());
 
     // If the deleted database was the current one, clear it so subsequent
     // commands don't silently send a stale X-Database-Id header.
@@ -867,10 +904,7 @@ pub fn tables_load(
     let active_id = crate::config::load_current_database("default", workspace_id);
     let lookup_key = match active_id.as_deref() {
         Some(id) => {
-            if let Some(active) =
-                none_if_404(api.get_json::<Database>(&format!("/databases/{id}"), &[]))
-                    .unwrap_or_else(|e| e.exit())
-            {
+            if let Some(active) = none_if_404(get_database(&api, id)).unwrap_or_else(|e| e.exit()) {
                 if active.default_catalog.as_deref() == Some(database.as_str())
                     || active.name.as_deref() == Some(database.as_str())
                 {
@@ -1160,7 +1194,7 @@ mod tests {
 
     fn full_detail(id: &str, name: &str, conn_id: &str) -> String {
         format!(
-            r#"{{"id":"{id}","name":"{name}","default_connection_id":"{conn_id}","attachments":[]}}"#
+            r#"{{"id":"{id}","name":"{name}","default_catalog":"default","default_connection_id":"{conn_id}","attachments":[]}}"#
         )
     }
 
@@ -1171,6 +1205,7 @@ mod tests {
         let by_id_mock = server
             .mock("GET", "/v1/databases/db_abc")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(full_detail("db_abc", "sales", "conn_1"))
             .create();
         // by-name path: GET /databases/warehouse → 404, then list, then detail
@@ -1182,13 +1217,15 @@ mod tests {
         let list = server
             .mock("GET", "/v1/databases")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(
-                r#"{"databases":[{"id":"db_abc","name":"sales"},{"id":"db_xyz","name":"warehouse"}]}"#,
+                r#"{"databases":[{"id":"db_abc","name":"sales","default_catalog":"db_abc"},{"id":"db_xyz","name":"warehouse","default_catalog":"db_xyz"}]}"#,
             )
             .create();
         let detail = server
             .mock("GET", "/v1/databases/db_xyz")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(full_detail("db_xyz", "warehouse", "conn_2"))
             .create();
 
@@ -1216,6 +1253,7 @@ mod tests {
         server
             .mock("GET", "/v1/databases")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(r#"{"databases":[]}"#)
             .create();
 
@@ -1237,8 +1275,9 @@ mod tests {
         server
             .mock("GET", "/v1/databases")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(
-                r#"{"databases":[{"id":"db_1","name":"sales"},{"id":"db_2","name":"sales"}]}"#,
+                r#"{"databases":[{"id":"db_1","name":"sales","default_catalog":"db_1"},{"id":"db_2","name":"sales","default_catalog":"db_2"}]}"#,
             )
             .create();
 
@@ -1367,6 +1406,7 @@ mod tests {
         let resolve = server
             .mock("GET", "/v1/databases/db_1")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(full_detail("db_1", "sales", "conn_default"))
             .create();
         let load = server
@@ -1408,6 +1448,7 @@ mod tests {
         let resolve = server
             .mock("GET", "/v1/databases/db_1")
             .with_status(200)
+            .with_header("content-type", "application/json")
             .with_body(full_detail("db_1", "sales", "conn_default"))
             .create();
         let delete = server
@@ -1468,7 +1509,7 @@ mod tests {
             .with_status(201)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"dbid_new","description":"scratch","default_connection_id":"conn_1"}"#,
+                r#"{"id":"dbid_new","name":"scratch","default_catalog":"default","default_connection_id":"conn_1"}"#,
             )
             .create();
         let api = Api::test_new(&server.url(), "k", Some("ws"));

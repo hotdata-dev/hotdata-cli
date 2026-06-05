@@ -210,10 +210,8 @@ pub fn resolve_connection_id(api: &Api, name_or_id: &str) -> String {
     // matches — prefer it over any stale connection entry with the same name.
     if let Some(ws) = api.workspace_id()
         && let Some(active_id) = crate::config::load_current_database("default", ws)
-        && let Some(active_db) = none_if_404(
-            api.get_json::<crate::databases::Database>(&format!("/databases/{active_id}"), &[]),
-        )
-        .unwrap_or_else(|e| e.exit())
+        && let Some(active_db) = none_if_404(crate::databases::get_database(api, &active_id))
+            .unwrap_or_else(|e| e.exit())
         && (active_db.default_catalog.as_deref() == Some(name_or_id)
             || active_db.name.as_deref() == Some(name_or_id))
     {
@@ -301,7 +299,6 @@ pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
     }
 }
 
-#[derive(Deserialize, Serialize)]
 struct CreateResponse {
     id: String,
     name: String,
@@ -312,47 +309,42 @@ struct CreateResponse {
 }
 
 pub fn create(workspace_id: &str, name: &str, source_type: &str, config: &str, format: &str) {
-    let config_value: serde_json::Value = match serde_json::from_str(config) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: --config must be a valid JSON object: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    let body = serde_json::json!({
-        "name": name,
-        "source_type": source_type,
-        "config": config_value,
-    });
+    let config_map: std::collections::HashMap<String, serde_json::Value> =
+        match serde_json::from_str(config) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error: --config must be a valid JSON object: {e}");
+                std::process::exit(1);
+            }
+        };
 
     let api = Api::new(Some(workspace_id));
     let is_table = format == "table";
 
+    let request = hotdata::models::CreateConnectionRequest::new(
+        config_map,
+        name.to_string(),
+        source_type.to_string(),
+    );
+
     let spinner = is_table.then(|| crate::util::spinner("Creating connection..."));
-    let (status, resp_body) = api.post_raw("/connections", &body).unwrap_or_else(|e| {
+    let resp = block(api.client().connections().create(request)).unwrap_or_else(|e| {
         if let Some(s) = &spinner {
             s.finish_and_clear();
         }
-        eprintln!("{}", error_text(e));
-        std::process::exit(1);
+        e.exit()
     });
     if let Some(s) = &spinner {
         s.finish_and_clear();
     }
 
-    if !status.is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
-
-    let result: CreateResponse = match serde_json::from_str(&resp_body) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
+    let result = CreateResponse {
+        id: resp.id,
+        name: resp.name,
+        source_type: resp.source_type,
+        tables_discovered: resp.tables_discovered.max(0) as u64,
+        discovery_status: resp.discovery_status.to_string(),
+        discovery_error: resp.discovery_error.flatten(),
     };
 
     let health = fetch_health(&api, &result.id, is_table);
