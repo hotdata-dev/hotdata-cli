@@ -14,10 +14,9 @@ path = "src/main.rs"
 [dependencies]
 # Hotdata Rust SDK. The CLI's sync wrapper (src/sdk.rs) drives this async SDK
 # behind a shared multi-thread tokio runtime. The `arrow` feature backs result
-# decode; the pinned rev is the first to carry `content_length` on the streaming
-# `upload_stream` (sized body, not chunked, so the server can fast-fail an
-# oversized upload — see src/sdk.rs::Api::upload_stream).
-hotdata = { git = "https://github.com/hotdata-dev/sdk-rust", rev = "1687ba2ffb8f816540d00d7c1fdfe165a8fbd150", features = ["arrow"] }
+# decode; `upload_stream` carries `content_length` (sized body, not chunked, so
+# the server can fast-fail an oversized upload — see src/sdk.rs::Api::upload_stream).
+hotdata = { version = "0.1.1", features = ["arrow"] }
 # Shared multi-thread runtime for the sync wrapper; block_on is called
 # concurrently from rayon worker threads (see src/indexes.rs). `sync` backs the
 # mpsc channel that bridges the blocking upload reader into an async byte stream.
