@@ -15,8 +15,6 @@ mod queries;
 mod query;
 mod raw_http;
 mod results;
-mod sandbox;
-mod sandbox_session;
 mod sdk;
 mod skill;
 mod table;
@@ -30,8 +28,8 @@ use clap::{Parser, builder::Styles};
 use command::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
     DatabaseTablesCommands, DatabasesCommands, DatasetsCommands, EmbeddingProvidersCommands,
-    IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands,
-    SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands,
+    IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SkillCommands,
+    TablesCommands, WorkspaceCommands,
 };
 
 #[derive(Parser)]
@@ -76,10 +74,6 @@ fn resolve_workspace(provided: Option<String>) -> String {
         let _ = ACTIVE_WORKSPACE_ID.set(ws.clone());
         return ws;
     }
-    if sandbox::find_sandbox_run_ancestor().is_some() {
-        eprintln!("error: workspace has been lost -- restart the process");
-        std::process::exit(1);
-    }
     match config::load("default") {
         Ok(profile) => match config::resolve_workspace_id(provided, &profile) {
             Ok(id) => {
@@ -105,40 +99,10 @@ unsafe extern "C" {
     fn atexit(callback: extern "C" fn()) -> i32;
 }
 
-/// Runs once at process exit. Prints a sandbox footer on stderr when
-/// the CLI is running under an on-disk sandbox session (i.e. the user
-/// ran `hotdata sandbox set <id>` to enter it from this shell). Stays
-/// silent when the sandbox comes from `HOTDATA_SANDBOX_TOKEN` in the
-/// environment: that means we're inside a `sandbox run` child, and
-/// the parent already announced the sandbox once at spawn time.
-/// Stderr keeps stdout clean for callers parsing JSON/YAML output.
-extern "C" fn print_sandbox_footer() {
-    use crossterm::style::Stylize;
-
-    // Inside a `sandbox run` child — parent printed the banner already.
-    if sandbox_session::sandbox_token_in_use().is_some() {
-        return;
-    }
-    let Some(session) = sandbox_session::load() else {
-        return;
-    };
-    if session.sandbox_id.is_empty() {
-        return;
-    }
-    eprintln!(
-        "{}",
-        format!(
-            "current sandbox: {} use 'hotdata sandbox set' to change",
-            session.sandbox_id
-        )
-        .dark_grey(),
-    );
-}
-
 extern "C" fn print_database_footer() {
     use crossterm::style::Stylize;
     // Inside a `databases run` child the parent already announced the
-    // database at spawn; mirror sandbox's footer suppression.
+    // database at spawn, so stay silent here.
     if database_session::database_token_in_use().is_some() {
         return;
     }
@@ -156,7 +120,6 @@ fn main() {
     // Register before `Cli::parse`, since `--help` / `--version` exit
     // from inside the parser. Safety: `atexit` is async-signal-safe;
     // the callback only reads env vars / files and writes to stderr.
-    unsafe { atexit(print_sandbox_footer) };
     unsafe { atexit(print_database_footer) };
 
     dotenvy::dotenv().ok();
@@ -941,80 +904,6 @@ fn main() {
                                 .unwrap();
                         }
                     }
-                }
-            }
-            Commands::Sandbox {
-                id,
-                workspace_id,
-                output,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                match command {
-                    Some(SandboxCommands::Run { name, cmd }) => {
-                        sandbox::run(id.as_deref(), &workspace_id, name.as_deref(), &cmd)
-                    }
-                    Some(SandboxCommands::List { output }) => sandbox::list(&workspace_id, &output),
-                    Some(SandboxCommands::New { name, output }) => {
-                        sandbox::new(&workspace_id, name.as_deref(), &output)
-                    }
-                    Some(SandboxCommands::Update {
-                        id: update_id,
-                        name,
-                        markdown,
-                        output,
-                    }) => {
-                        let sandbox_id = update_id
-                            .or(id)
-                            .or_else(|| config::load("default").ok().and_then(|p| p.sandbox));
-                        match sandbox_id {
-                            Some(sid) => sandbox::update(
-                                &workspace_id,
-                                &sid,
-                                name.as_deref(),
-                                markdown.as_deref(),
-                                &output,
-                            ),
-                            None => {
-                                eprintln!(
-                                    "error: no sandbox ID provided and no active sandbox set. Use 'sandbox new' or 'sandbox set <id>'."
-                                );
-                                std::process::exit(1);
-                            }
-                        }
-                    }
-                    Some(SandboxCommands::Read) => {
-                        let sandbox_id = id
-                            .or_else(|| std::env::var("HOTDATA_SANDBOX").ok())
-                            .or_else(|| config::load("default").ok().and_then(|p| p.sandbox));
-                        match sandbox_id {
-                            Some(sid) => sandbox::read(&sid, &workspace_id),
-                            None => {
-                                eprintln!(
-                                    "error: no active sandbox. Use 'sandbox new' or 'sandbox set <id>'."
-                                );
-                                std::process::exit(1);
-                            }
-                        }
-                    }
-                    Some(SandboxCommands::Set { id: set_id }) => {
-                        sandbox::set(set_id.as_deref(), &workspace_id)
-                    }
-                    Some(SandboxCommands::Delete { id: delete_id }) => {
-                        sandbox::delete(&delete_id, &workspace_id)
-                    }
-                    None => match id {
-                        Some(id) => sandbox::get(&id, &workspace_id, &output),
-                        None => {
-                            use clap::CommandFactory;
-                            let mut cmd = Cli::command();
-                            cmd.build();
-                            cmd.find_subcommand_mut("sandbox")
-                                .unwrap()
-                                .print_help()
-                                .unwrap();
-                        }
-                    },
                 }
             }
             Commands::Context {

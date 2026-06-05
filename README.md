@@ -76,7 +76,6 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `embedding-providers` | `list`, `get`, `create`, `update`, `delete` | Manage embedding providers used by vector indexes |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
-| `sandbox` | `list`, `new`, `set`, `read`, `update`, `run` | Manage sandboxes |
 | `skills` | `install`, `status` | Manage the hotdata agent skill |
 
 ## Global options
@@ -320,28 +319,6 @@ hotdata jobs <job_id> [--workspace-id <id>] [--format table|json|yaml]
 - `list` shows only active jobs (`pending` and `running`) by default. Use `--all` to see all jobs.
 - `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`, `create_dataset_index`.
 - `--status` accepts: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
-
-## Sandboxes
-
-Sandboxes group related CLI activity (queries, dataset operations, etc.) under a single context.
-
-```sh
-hotdata sandbox list [-w <id>] [-o table|json|yaml]
-hotdata sandbox <sandbox_id> [-w <id>] [-o table|json|yaml]
-hotdata sandbox new [--name "My Sandbox"] [-o table|json|yaml]
-hotdata sandbox set [<sandbox_id>]
-hotdata sandbox read
-hotdata sandbox update [<sandbox_id>] [--name "New Name"] [--markdown "..."] [-o table|json|yaml]
-hotdata sandbox run <cmd> [args...]
-hotdata sandbox <sandbox_id> run <cmd> [args...]
-```
-
-- `list` shows all sandboxes with a `*` marker on the active one.
-- `new` creates a sandbox and sets it as active.
-- `set` switches the active sandbox. Omit the ID to clear the active sandbox.
-- `read` prints the markdown content of the current sandbox.
-- `update` modifies the name or markdown of a sandbox (defaults to the active sandbox).
-- `run` runs a command with the hotdata CLI scoped to a sandbox. Creates a new sandbox unless a sandbox ID is provided before `run`. Useful for launching an agent that can only access sandbox data. Nesting sandboxes is not allowed.
 
 ## Configuration
 

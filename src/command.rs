@@ -211,23 +211,6 @@ pub enum Commands {
         command: Option<QueriesCommands>,
     },
 
-    /// Manage sandboxes
-    Sandbox {
-        /// Sandbox ID to show details
-        id: Option<String>,
-
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, short = 'w', global = true)]
-        workspace_id: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-
-        #[command(subcommand)]
-        command: Option<SandboxCommands>,
-    },
-
     /// Sync database context with local Markdown (`./<NAME>.md` in the current directory)
     Context {
         /// Workspace ID (defaults to first workspace from login)
@@ -841,73 +824,6 @@ pub enum QueriesCommands {
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum SandboxCommands {
-    /// List all sandboxes in a workspace
-    List {
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Create a new sandbox and set it as active
-    New {
-        /// Sandbox name
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Update a sandbox's markdown or name
-    Update {
-        /// Sandbox ID (defaults to active sandbox)
-        id: Option<String>,
-
-        /// New sandbox name
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Markdown content
-        #[arg(long)]
-        markdown: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Print the markdown content of the current sandbox
-    Read,
-
-    /// Set the active sandbox (omit ID to clear)
-    Set {
-        /// Sandbox ID to set as active (omit to clear)
-        id: Option<String>,
-    },
-
-    /// Run a command inside a hotdata sandbox. Creates a new sandbox unless an ID was provided.
-    /// Example: hotdata sandbox run claude
-    /// Example: hotdata sandbox <id> run claude
-    Run {
-        /// Sandbox name (only used when creating a new sandbox)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Command and arguments to execute
-        #[arg(trailing_var_arg = true, required = true)]
-        cmd: Vec<String>,
-    },
-
-    /// Delete a sandbox permanently
-    Delete {
-        /// Sandbox ID to delete
-        id: String,
     },
 }
 

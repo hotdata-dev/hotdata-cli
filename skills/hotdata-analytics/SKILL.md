@@ -117,8 +117,3 @@ hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
 
 List and delete use the same `hotdata indexes` commands as in the search skill; only **`--type sorted`** is the analytics focus here.
 
----
-
-## Sandboxes and chains
-
-Sandbox datasets use **`datasets.<sandbox_id>.<table>`**, not `datasets.main`. Run queries with active sandbox config or `hotdata sandbox <id> run hotdata query "..."`. See **`hotdata`** skill **Sandboxes**.

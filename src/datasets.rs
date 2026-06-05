@@ -59,8 +59,8 @@ struct Column {
 
 /// Output shape for `update`, preserving the CLI's field order and optional
 /// `schema_name`. runtimedb's `UpdateDatasetResponse` does not currently send
-/// `schema_name`, so we don't synthesize one — sandbox-scoped datasets live
-/// under `datasets.<sandbox_id>.<table>`, not `datasets.main.*`.
+/// `schema_name`, so we don't synthesize one — schema-scoped datasets live
+/// under `datasets.<schema>.<table>`, not `datasets.main.*`.
 #[derive(Serialize)]
 struct UpdateView {
     id: String,
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(view.label, "url_test");
         assert_eq!(view.table_name, "url_test");
         // The server doesn't send schema_name and we never synthesize "main",
-        // so sandbox-scoped datasets aren't mislabeled.
+        // so schema-scoped datasets aren't mislabeled.
         assert!(view.schema_name.is_none());
         assert_eq!(view.latest_version, Some(3));
         assert!(view.pinned_version.is_none());

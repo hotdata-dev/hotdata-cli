@@ -63,9 +63,6 @@ pub struct Api {
     /// session-token mints, which target `/v1/auth/*` directly).
     pub api_url: String,
     workspace_id: Option<String>,
-    /// Sandbox/session id, sent as `X-Session-Id` to scope requests to a
-    /// sandbox. `None` when no sandbox is active.
-    session_id: Option<String>,
     database_id: Option<String>,
 }
 
@@ -280,15 +277,13 @@ fn sdk_base_path(api_url: &str) -> String {
 }
 
 /// Apply the seam's common request headers to a raw `RequestBuilder`: User-Agent,
-/// the `X-Workspace-Id` api_key, the sandbox `X-Session-Id` and database
-/// `X-Database-Id` scope, and the resolved bearer. Generated SDK ops inject the
-/// api_key headers themselves; the raw seam helpers ([`Api::get_json`] etc.)
-/// bypass the generated client, so they funnel through this one place rather
-/// than repeating the block per verb.
+/// the `X-Workspace-Id` api_key, the database `X-Database-Id` scope, and the
+/// resolved bearer. Generated SDK ops inject the api_key headers themselves; the
+/// raw seam helpers ([`Api::get_json`] etc.) bypass the generated client, so
+/// they funnel through this one place rather than repeating the block per verb.
 async fn apply_seam_headers(
     mut req: reqwest::RequestBuilder,
     cfg: &Configuration,
-    session_id: Option<&str>,
     database_id: Option<&str>,
 ) -> reqwest::RequestBuilder {
     if let Some(ref user_agent) = cfg.user_agent {
@@ -300,10 +295,6 @@ async fn apply_seam_headers(
             None => apikey.key.clone(),
         };
         req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
-    }
-    // Sandbox session scope (also forwarded from api_keys on generated ops).
-    if let Some(sid) = session_id {
-        req = req.header("X-Session-Id", sid);
     }
     // Database scope — generated ops don't forward it, so the seam must
     // (e.g. `hotdata query --database`).
@@ -331,15 +322,13 @@ impl Api {
         };
         let api_url = profile_config.api_url.to_string();
 
-        // Auth-source precedence (verbatim from the old ApiClient::new):
+        // Auth-source precedence:
         //   1. HOTDATA_DATABASE_TOKEN env (databases run child)
-        //   2. HOTDATA_SANDBOX_TOKEN env (sandbox run child)
-        //   3. ~/.hotdata/sandbox_session.json present (sandbox set <id>)
-        //   4. ~/.hotdata/session.json + optional api_key fallback
+        //   2. ~/.hotdata/session.json + optional api_key fallback
         //
-        // We pre-flight the same way the old client did (so a dead/unusable
-        // credential exits at startup with the right hint), then hand the
-        // CliTokenProvider the matching mode to re-resolve on every request.
+        // We pre-flight (so a dead/unusable credential exits at startup with
+        // the right hint), then hand the CliTokenProvider the matching mode to
+        // re-resolve on every request.
         let mode = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
             if crate::database_session::refresh_from_env(&api_url).is_none() {
                 eprintln!(
@@ -349,31 +338,6 @@ impl Api {
                 std::process::exit(1);
             }
             AuthMode::DatabaseEnv {
-                api_url: api_url.clone(),
-            }
-        } else if std::env::var("HOTDATA_SANDBOX_TOKEN").is_ok() {
-            if crate::sandbox_session::refresh_from_env(&api_url).is_none() {
-                eprintln!(
-                    "{}",
-                    crossterm::style::Stylize::red("error: HOTDATA_SANDBOX_TOKEN is empty")
-                );
-                std::process::exit(1);
-            }
-            AuthMode::SandboxEnv {
-                api_url: api_url.clone(),
-            }
-        } else if crate::sandbox_session::load().is_some() {
-            if crate::sandbox_session::ensure_access_token(&api_url).is_none() {
-                use crossterm::style::Stylize;
-                eprintln!("{}", "error: sandbox session expired".red());
-                eprintln!(
-                    "Run {} to clear it, or {} to re-mint.",
-                    "hotdata sandbox set".cyan(),
-                    "hotdata sandbox set <id>".cyan(),
-                );
-                std::process::exit(1);
-            }
-            AuthMode::SandboxSession {
                 api_url: api_url.clone(),
             }
         } else {
@@ -400,19 +364,6 @@ impl Api {
             }
         };
 
-        // Resolve the sandbox/session id exactly as the old ApiClient::new did:
-        // HOTDATA_SANDBOX wins; otherwise, if we are a descendant of a
-        // `sandbox run` whose sandbox context was lost, exit (a restart is
-        // required); else fall back to the persisted sandbox in config. This id
-        // is sent as X-Session-Id to scope requests to the sandbox.
-        let session_id = std::env::var("HOTDATA_SANDBOX").ok().or_else(|| {
-            if crate::sandbox::find_sandbox_run_ancestor().is_some() {
-                eprintln!("error: sandbox has been lost -- restart the process");
-                std::process::exit(1);
-            }
-            profile_config.sandbox.clone()
-        });
-
         let database_id = std::env::var("HOTDATA_DATABASE").ok().or_else(|| {
             workspace_id.and_then(|ws| crate::config::load_current_database("default", ws))
         });
@@ -420,7 +371,6 @@ impl Api {
         Self::from_configuration(
             &api_url,
             workspace_id.map(String::from),
-            session_id,
             database_id,
             CliTokenProvider::new(mode),
         )
@@ -431,7 +381,6 @@ impl Api {
     fn from_configuration(
         api_url: &str,
         workspace_id: Option<String>,
-        session_id: Option<String>,
         database_id: Option<String>,
         provider: CliTokenProvider,
     ) -> Self {
@@ -454,23 +403,10 @@ impl Api {
                 },
             );
         }
-        // Scope generated SDK ops to the sandbox session: the SDK forwards
-        // X-Session-Id from api_keys.
-        if let Some(ref sid) = session_id {
-            configuration.api_keys.insert(
-                hotdata::client::SESSION_ID_HEADER.to_string(),
-                ApiKey {
-                    prefix: None,
-                    key: sid.clone(),
-                },
-            );
-        }
-
         Api {
             client: Arc::new(Client::from_configuration(configuration)),
             api_url: api_url.to_string(),
             workspace_id,
-            session_id,
             database_id,
         }
     }
@@ -500,20 +436,17 @@ impl Api {
             client: Arc::new(Client::from_configuration(configuration)),
             api_url: api_url.to_string(),
             workspace_id,
-            session_id: None,
             database_id: None,
         }
     }
 
-    /// Test-only constructor that also scopes the client to a sandbox session
-    /// and/or database, so tests can assert the `X-Session-Id` (api_keys, on
-    /// generated ops) and `X-Database-Id` headers reach the wire.
+    /// Test-only constructor that also scopes the client to a database, so tests
+    /// can assert the `X-Database-Id` header reaches the wire.
     #[cfg(test)]
     pub(crate) fn test_new_scoped(
         api_url: &str,
         bearer: &str,
         workspace_id: Option<&str>,
-        session_id: Option<&str>,
         database_id: Option<&str>,
     ) -> Self {
         let mut configuration = Configuration {
@@ -530,20 +463,10 @@ impl Api {
                 },
             );
         }
-        if let Some(sid) = session_id {
-            configuration.api_keys.insert(
-                hotdata::client::SESSION_ID_HEADER.to_string(),
-                ApiKey {
-                    prefix: None,
-                    key: sid.to_string(),
-                },
-            );
-        }
         Api {
             client: Arc::new(Client::from_configuration(configuration)),
             api_url: api_url.to_string(),
             workspace_id: workspace_id.map(String::from),
-            session_id: session_id.map(String::from),
             database_id: database_id.map(String::from),
         }
     }
@@ -571,7 +494,7 @@ impl Api {
     /// wall-clock cap would abort a healthy-but-slow transfer. We clone the
     /// configured `Configuration` (same base_path, token_provider, scope
     /// api_keys, user-agent) and swap only the reqwest client, so the upload
-    /// carries the identical auth + `X-Workspace-Id`/`X-Session-Id` headers.
+    /// carries the identical auth + headers.
     ///
     /// `reader` is the progress-wrapped blocking source (file or URL response);
     /// it is bridged into the async byte stream the SDK consumes by
@@ -618,13 +541,12 @@ impl Api {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
-        let session_id = self.session_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::GET, &url);
             if !query.is_empty() {
                 req = req.query(query);
             }
-            req = apply_seam_headers(req, cfg, session_id.as_deref(), database_id.as_deref()).await;
+            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
 
             let resp = req
                 .send()
@@ -659,10 +581,9 @@ impl Api {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
-        let session_id = self.session_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::POST, &url).json(body);
-            req = apply_seam_headers(req, cfg, session_id.as_deref(), database_id.as_deref()).await;
+            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
 
             let resp = req
                 .send()
@@ -689,10 +610,9 @@ impl Api {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
-        let session_id = self.session_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::DELETE, &url);
-            req = apply_seam_headers(req, cfg, session_id.as_deref(), database_id.as_deref()).await;
+            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
 
             let resp = req
                 .send()
@@ -711,7 +631,7 @@ impl Api {
     /// `get_result_arrow`, returning the fully-buffered [`hotdata::ArrowResult`].
     ///
     /// The SDK owns transport (same reqwest client, bearer via the
-    /// `token_provider`, `X-Workspace-Id`/`X-Session-Id`) and decode. Its
+    /// `token_provider`, `X-Workspace-Id`) and decode. Its
     /// `ArrowError` (the Arrow-path error type, which is not an `Error<T>`) is
     /// mapped to [`ApiError`] via [`from_arrow`](ApiError::from_arrow) so callers
     /// keep the same `.exit()` handling.
@@ -1261,54 +1181,11 @@ mod tests {
             .with_body(r#"{"ok":true}"#)
             .create();
 
-        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), None, Some("db-1"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
         let (status, _body) = api
             .post_raw("/query", &serde_json::json!({"sql": "select 1"}))
             .expect("post_raw should succeed");
         assert_eq!(status, reqwest::StatusCode::OK);
-        m.assert();
-    }
-
-    // --- sandbox session scope headers --------------------------------------
-
-    #[test]
-    fn sandbox_scope_sends_session_id() {
-        // When a sandbox is active the seam scopes the request with X-Session-Id.
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/v1/query")
-            .match_header("X-Session-Id", "sb-1")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"ok":true}"#)
-            .create();
-
-        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("sb-1"), None);
-        let (status, _body) = api
-            .post_raw("/query", &serde_json::json!({"sql": "select 1"}))
-            .expect("post_raw should succeed");
-        assert_eq!(status, reqwest::StatusCode::OK);
-        m.assert();
-    }
-
-    #[test]
-    fn session_id_header_installed_on_scoped_sdk_calls() {
-        // Generated SDK ops carry X-Session-Id via the apiKey-header auth block,
-        // the same mechanism as X-Workspace-Id. Assert it reaches the wire on a
-        // typed call when a sandbox is active.
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("GET", "/v1/datasets")
-            .match_header("X-Workspace-Id", "ws-1")
-            .match_header("X-Session-Id", "sb-1")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"count":0,"datasets":[],"has_more":false,"limit":50,"offset":0}"#)
-            .create();
-
-        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("sb-1"), None);
-        let resp = block(api.client.datasets().list(None, None)).expect("list datasets");
-        assert_eq!(resp.count, 0);
         m.assert();
     }
 

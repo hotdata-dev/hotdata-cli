@@ -30,12 +30,6 @@ fn fetch_workspaces() -> Vec<Workspace> {
 }
 
 pub fn set(workspace_id: Option<&str>) {
-    if std::env::var("HOTDATA_SANDBOX").is_ok()
-        || crate::sandbox::find_sandbox_run_ancestor().is_some()
-    {
-        eprintln!("error: workspace cannot be changed inside a sandbox");
-        std::process::exit(1);
-    }
     let workspaces = fetch_workspaces();
 
     let chosen = match workspace_id {
