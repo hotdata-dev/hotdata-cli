@@ -629,13 +629,11 @@ impl Api {
     /// Fetch `/v1/results/{id}` as Arrow IPC and decode it through the SDK's
     /// `get_result_arrow`, returning the fully-buffered [`hotdata::ArrowResult`].
     ///
-    /// Replaces the seam's old raw `get_bytes` Arrow path: the SDK now owns both
-    /// transport (same reqwest client, bearer via the `token_provider`,
-    /// `X-Workspace-Id`/`X-Session-Id`) and decode, so the CLI shares one
-    /// `arrow` major version with the SDK rather than decoding raw IPC bytes
-    /// with its own pinned copy. `ArrowError` (the SDK's Arrow-path error type,
-    /// which is not an `Error<T>`) is mapped to [`ApiError`] so callers keep the
-    /// same `.exit()` handling.
+    /// The SDK owns transport (same reqwest client, bearer via the
+    /// `token_provider`, `X-Workspace-Id`/`X-Session-Id`) and decode. Its
+    /// `ArrowError` (the Arrow-path error type, which is not an `Error<T>`) is
+    /// mapped to [`ApiError`] via [`from_arrow`](ApiError::from_arrow) so callers
+    /// keep the same `.exit()` handling.
     pub fn get_result_arrow(&self, id: &str) -> Result<hotdata::ArrowResult, ApiError> {
         rt().block_on(self.client.get_result_arrow(id, None, None))
             .map_err(ApiError::from_arrow)
@@ -1071,7 +1069,7 @@ mod tests {
     #[test]
     fn get_result_arrow_maps_not_found_to_status() {
         // A 404 surfaces as ApiError::Status so the CLI's 4xx re-auth hint path
-        // still fires (mirrors the old get_bytes non-success handling).
+        // still fires.
         let mut server = mockito::Server::new();
         let _m = server
             .mock("GET", "/v1/results/missing")

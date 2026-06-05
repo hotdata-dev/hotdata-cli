@@ -195,11 +195,11 @@ fn arrow_result_to_query_response(
     }
 }
 
-/// Fetch `/results/{result_id}` as Arrow IPC and return a `QueryResponse`.
+/// Fetch `/results/{result_id}` as Arrow and return a `QueryResponse`.
 ///
 /// Both transport and decode are owned by the SDK's `get_result_arrow` (via the
 /// [`Api::get_result_arrow`] seam), so the CLI shares one `arrow` major version
-/// with the SDK instead of decoding raw IPC bytes with its own pinned copy.
+/// with the SDK.
 pub(crate) fn fetch_arrow_result(api: &Api, result_id: &str) -> QueryResponse {
     let result = api.get_result_arrow(result_id).unwrap_or_else(|e| e.exit());
     arrow_result_to_query_response(result, result_id.to_owned())
