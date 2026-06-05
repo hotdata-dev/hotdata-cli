@@ -300,17 +300,7 @@ pub fn push(workspace_id: &str, database_id: &str, name: &str, dry_run: bool) {
         Ok(resp) => resp,
         Err(ApiError::Status { status: _, body }) => {
             let msg = crate::util::api_error(body);
-            if msg.to_lowercase().contains("not allowed within a session") {
-                eprintln!("{}", msg.red());
-                eprintln!(
-                    "{}",
-                    "hint: context push is blocked inside an active sandbox. \
-Run 'hotdata sandbox set' (no args) to clear the active sandbox first."
-                        .dark_grey()
-                );
-            } else {
-                eprintln!("{}", msg.red());
-            }
+            eprintln!("{}", msg.red());
             std::process::exit(1);
         }
         Err(e @ ApiError::Transport(_)) => e.exit(),
