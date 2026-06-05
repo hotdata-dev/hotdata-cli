@@ -578,11 +578,14 @@ impl Api {
     /// [`reader_into_stream`]. `content_length`, when known, is sent as
     /// `Content-Length` so the server can reject an oversized upload up front
     /// (the `--url` path may not know the length, hence `Option`).
+    ///
+    /// The `Content-Type` is left to the SDK default (`application/octet-stream`):
+    /// the managed-table load keys off the parquet file extension, not the
+    /// upload's recorded content type.
     pub fn upload_stream(
         &self,
         reader: impl std::io::Read + Send + 'static,
         content_length: Option<u64>,
-        content_type: &str,
     ) -> Result<String, ApiError> {
         let mut cfg = self.client.configuration().clone();
         cfg.client = upload_reqwest_client();
@@ -590,7 +593,7 @@ impl Api {
 
         let stream = reader_into_stream(reader);
         let resp = rt()
-            .block_on(upload_client.upload_stream(stream, Some(content_type), content_length))
+            .block_on(upload_client.upload_stream(stream, None, content_length))
             .map_err(ApiError::from_sdk)?;
         Ok(resp.id)
     }
@@ -1350,11 +1353,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let id = api
-            .upload_stream(
-                std::io::Cursor::new(payload),
-                Some(len as u64),
-                "application/octet-stream",
-            )
+            .upload_stream(std::io::Cursor::new(payload), Some(len as u64))
             .expect("sized upload should succeed");
 
         assert_eq!(id, "upload_sized");
@@ -1382,11 +1381,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let id = api
-            .upload_stream(
-                std::io::Cursor::new(payload),
-                None,
-                "application/octet-stream",
-            )
+            .upload_stream(std::io::Cursor::new(payload), None)
             .expect("chunked upload should succeed");
 
         assert_eq!(id, "upload_chunked");
@@ -1411,11 +1406,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let err = api
-            .upload_stream(
-                std::io::Cursor::new(payload),
-                Some(len as u64),
-                "application/octet-stream",
-            )
+            .upload_stream(std::io::Cursor::new(payload), Some(len as u64))
             .expect_err("a 400 should map to an error");
 
         match err {

@@ -334,7 +334,7 @@ fn finish_upload(
     // `size` becomes the `Content-Length` so the server fast-fails an oversized
     // upload before writing bytes; the `--url` source may not know it, hence
     // `Option`. Carries the same auth + scope headers as every other SDK call.
-    let result = api.upload_stream(reader, size, "application/octet-stream");
+    let result = api.upload_stream(reader, size);
     pb.finish_and_clear();
 
     match result {
