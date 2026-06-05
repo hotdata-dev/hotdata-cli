@@ -1,0 +1,93 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # Parity check runs on every PR and push: confirms every scenario in
+  # www.hotdata.dev/api/test-scenarios.yaml that is NOT opted out for the CLI
+  # has a matching test file here. www.hotdata.dev is private, so we fetch the
+  # manifest via the GitHub App token. hotdata-cli convention: tests/<name>.rs.
+  # Scenarios listing `cli` in optional_for are skipped (the CLI's surface
+  # doesn't cover them, e.g. datasets/secrets/saved-queries).
+  scenario-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOTDATA_AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.HOTDATA_AUTOMATION_PRIVATE_KEY }}
+          owner: hotdata-dev
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+      - name: Fetch scenarios manifest
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl -sS -f -L \
+            -H "Accept: application/vnd.github.v3.raw" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/hotdata-dev/www.hotdata.dev/contents/api/test-scenarios.yaml \
+            -o test-scenarios.yaml
+      - name: Check parity
+        run: |
+          python3 - <<'PY'
+          import sys, pathlib, yaml
+          scenarios = yaml.safe_load(pathlib.Path("test-scenarios.yaml").read_text())["scenarios"]
+          missing = []
+          required = 0
+          for s in scenarios:
+              if "cli" in (s.get("optional_for") or []):
+                  continue
+              required += 1
+              expected = pathlib.Path("tests") / f"{s['name']}.rs"
+              if not expected.exists():
+                  missing.append(str(expected))
+          if missing:
+              print(f"::error::hotdata-cli is missing tests for {len(missing)} scenarios:")
+              for m in missing:
+                  print(f"  - {m}")
+              sys.exit(1)
+          print(f"All {required} required scenarios have corresponding test files (of {len(scenarios)} total).")
+          PY
+          rm -f test-scenarios.yaml
+
+  # Integration tests run against production. The shared harness
+  # (tests/common/mod.rs) skips cleanly when HOTDATA_SDK_TEST_API_KEY /
+  # HOTDATA_SDK_TEST_WORKSPACE_ID are absent (e.g. PRs from forks where secrets
+  # aren't injected), so this job stays green without credentials.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Cache cargo
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Run integration tests
+        env:
+          HOTDATA_SDK_TEST_API_URL: ${{ vars.HOTDATA_SDK_TEST_API_URL }}
+          HOTDATA_SDK_TEST_API_KEY: ${{ secrets.HOTDATA_SDK_TEST_API_KEY }}
+          HOTDATA_SDK_TEST_WORKSPACE_ID: ${{ vars.HOTDATA_SDK_TEST_WORKSPACE_ID }}
+          HOTDATA_SDK_TEST_CONNECTION_ID: ${{ vars.HOTDATA_SDK_TEST_CONNECTION_ID }}
+        # --no-fail-fast runs every scenario binary even after one fails, so a
+        # red run surfaces all failing scenarios at once.
+        run: cargo test --test '*' --no-fail-fast -- --nocapture
