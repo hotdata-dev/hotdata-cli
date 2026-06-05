@@ -8,16 +8,16 @@
 //! * the session-token mints (`/v1/auth/database`, `/v1/auth/sandbox`) — a
 //!   distinct grant on distinct endpoints (`database_session.rs` /
 //!   `sandbox_session.rs`);
-//! * the streaming `/files` upload (10 GB+, `--url` source, progress bar, no
-//!   request timeout, no 401-retry) — the SDK's `uploads().upload` is
-//!   `PathBuf`-only;
 //! * `skill.rs`'s arbitrary-URL markdown fetch.
 //!
-//! This module owns the two blocking client builders (one timeout-bounded, one
-//! no-timeout for uploads) and a thin bearer/header request builder. It does
-//! NOT carry the old `ApiClient`'s 401-retry loop: token freshness is now the
-//! `CliTokenProvider`'s job (proactive refresh at the 30s leeway), and the
-//! upload path was always one-shot anyway.
+//! (The streaming `/files` upload moved onto the SDK seam's
+//! [`Api::upload_stream`](crate::sdk::Api::upload_stream), which owns its own
+//! no-timeout client.)
+//!
+//! This module owns the timeout-bounded blocking client builder and a thin
+//! bearer/header request builder. It does NOT carry the old `ApiClient`'s
+//! 401-retry loop: token freshness is now the `CliTokenProvider`'s job
+//! (proactive refresh at the 30s leeway).
 
 // Consumers (jwt.rs token mints, session mints, the streaming upload,
 // skill.rs) are migrated to this helper incrementally; the allow keeps the
@@ -50,19 +50,6 @@ pub fn build_http_client() -> reqwest::blocking::Client {
         .expect("reqwest blocking client should always build with these defaults")
 }
 
-/// Client used only for streaming file uploads. Deliberately has **no** request
-/// timeout: an upload's duration scales with file size and uplink (a 10 GB
-/// parquet takes far longer than `HTTP_REQUEST_TIMEOUT`, which is sized for
-/// slow server-side work), so a wall-clock cap would abort healthy-but-slow
-/// transfers. TCP keepalive is kept so a genuinely dead peer is still reaped by
-/// the OS; a live-but-slow upload runs to completion and the user can Ctrl-C.
-pub fn build_upload_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .tcp_keepalive(TCP_KEEPALIVE_INTERVAL)
-        .build()
-        .expect("reqwest blocking client should always build with these defaults")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,11 +57,6 @@ mod tests {
     #[test]
     fn http_client_builds() {
         let _ = build_http_client();
-    }
-
-    #[test]
-    fn upload_client_builds() {
-        let _ = build_upload_client();
     }
 
     #[test]

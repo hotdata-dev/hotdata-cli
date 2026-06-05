@@ -16,12 +16,23 @@ path = "src/main.rs"
 # behind a shared multi-thread tokio runtime. Pinned to the rev that adds the
 # CLI-consumption surface (attribution client_id, async submit_query, streaming
 # upload_stream) — merged via hotdata-dev/sdk-rust#32.
-hotdata = { git = "https://github.com/hotdata-dev/sdk-rust", rev = "8d4018fb899ba52228db44eaffa6caa0eb5b603f", features = ["arrow"] }
+# TEMP: local path dep while sdk-rust#35 (content_length on upload_stream) is in
+# review. Flip back to a `git + rev` pin once that PR squash-merges to main.
+hotdata = { path = "/tmp/sdk-rust-133", features = ["arrow"] }
 # Shared multi-thread runtime for the sync wrapper; block_on is called
-# concurrently from rayon worker threads (see src/indexes.rs).
-tokio = { version = "1", features = ["rt-multi-thread"] }
+# concurrently from rayon worker threads (see src/indexes.rs). `sync` backs the
+# mpsc channel that bridges the blocking upload reader into an async byte stream.
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 # CliTokenProvider implements the SDK's #[async_trait] BearerTokenProvider.
 async-trait = "0.1"
+# Bridge the progress-wrapped blocking upload reader into the async
+# `Stream<Item = Result<Bytes, _>>` the SDK's `upload_stream` consumes: a
+# spawn_blocking task feeds chunks through a tokio mpsc channel, wrapped as a
+# Stream by tokio-stream's ReceiverStream. `futures-core` names the Stream
+# bound; `bytes` matches the SDK's chunk type.
+bytes = "1"
+futures-core = "0.3"
+tokio-stream = "0.1"
 anstyle = "1.0.13"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
