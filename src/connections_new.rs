@@ -2,7 +2,7 @@ use inquire::validator::Validation;
 use inquire::{Confirm, Password, Select, Text};
 use serde_json::{Map, Number, Value};
 
-use crate::sdk::{block, Api, ApiError};
+use crate::sdk::{Api, ApiError, block};
 
 // ── SDK helpers ─────────────────────────────────────────────────────────────
 
@@ -372,7 +372,11 @@ pub fn run(workspace_id: &str) {
             format!("{} {}", "healthy".green(), format!("({ms}ms)").dark_grey())
         }
         HealthStatus::Available(h) => {
-            let err = h.error.as_ref().and_then(|e| e.as_deref()).unwrap_or("unknown error");
+            let err = h
+                .error
+                .as_ref()
+                .and_then(|e| e.as_deref())
+                .unwrap_or("unknown error");
             format!("{} — {}", "unhealthy".red(), err)
         }
         HealthStatus::Unavailable(err) => {

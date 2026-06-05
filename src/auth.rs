@@ -31,33 +31,32 @@ pub fn check_status(profile_config: &config::ProfileConfig) -> AuthStatus {
     // 2. on-disk sandbox session (sandbox set <id>)
     // 3. user-scoped CLI session / api_key fallback
     let api_url = profile_config.api_url.to_string();
-    let access_token = if let Some((sandbox_jwt, _)) =
-        crate::sandbox_session::sandbox_token_in_use()
-    {
-        sandbox_jwt
-    } else if crate::sandbox_session::load().is_some() {
-        match crate::sandbox_session::ensure_access_token(&api_url) {
-            Some(t) => t,
-            None => return AuthStatus::Invalid(401),
-        }
-    } else {
-        let api_key_fallback = profile_config
-            .api_key
-            .as_deref()
-            .filter(|k| !k.is_empty() && *k != "PLACEHOLDER");
+    let access_token =
+        if let Some((sandbox_jwt, _)) = crate::sandbox_session::sandbox_token_in_use() {
+            sandbox_jwt
+        } else if crate::sandbox_session::load().is_some() {
+            match crate::sandbox_session::ensure_access_token(&api_url) {
+                Some(t) => t,
+                None => return AuthStatus::Invalid(401),
+            }
+        } else {
+            let api_key_fallback = profile_config
+                .api_key
+                .as_deref()
+                .filter(|k| !k.is_empty() && *k != "PLACEHOLDER");
 
-        // PKCE-origin sessions don't write an api_key, so absence of a key
-        // alone isn't "not configured" — only true if there's also no
-        // cached JWT session to validate.
-        if api_key_fallback.is_none() && crate::jwt::load_session().is_none() {
-            return AuthStatus::NotConfigured;
-        }
+            // PKCE-origin sessions don't write an api_key, so absence of a key
+            // alone isn't "not configured" — only true if there's also no
+            // cached JWT session to validate.
+            if api_key_fallback.is_none() && crate::jwt::load_session().is_none() {
+                return AuthStatus::NotConfigured;
+            }
 
-        match crate::jwt::ensure_access_token(profile_config, api_key_fallback) {
-            Ok(t) => t,
-            Err(_) => return AuthStatus::Invalid(401),
-        }
-    };
+            match crate::jwt::ensure_access_token(profile_config, api_key_fallback) {
+                Ok(t) => t,
+                Err(_) => return AuthStatus::Invalid(401),
+            }
+        };
 
     let url = format!("{}/workspaces", profile_config.api_url);
     let client = reqwest::blocking::Client::new();
@@ -120,8 +119,9 @@ pub fn status(profile: &str) {
                 .api_key
                 .as_deref()
                 .map(crate::util::mask_credential),
-            ApiKeySource::Config => crate::jwt::load_session()
-                .map(|s| crate::util::mask_credential(&s.refresh_token)),
+            ApiKeySource::Config => {
+                crate::jwt::load_session().map(|s| crate::util::mask_credential(&s.refresh_token))
+            }
         };
         (label.to_string(), tail)
     };
@@ -142,8 +142,20 @@ pub fn status(profile: &str) {
             );
             match profile_config.workspaces.first() {
                 Some(w) => {
-                    print_row("Workspace", &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()));
-                    print_row("", &"use 'hotdata workspaces set' to switch workspaces".dark_grey().to_string());
+                    print_row(
+                        "Workspace",
+                        &format!(
+                            "{} {}",
+                            w.name.as_str().cyan(),
+                            format!("({})", w.public_id).dark_grey()
+                        ),
+                    );
+                    print_row(
+                        "",
+                        &"use 'hotdata workspaces set' to switch workspaces"
+                            .dark_grey()
+                            .to_string(),
+                    );
                 }
                 None => print_row("Current Workspace", &"None".dark_grey().to_string()),
             }
@@ -163,10 +175,15 @@ pub fn status(profile: &str) {
 }
 
 #[derive(Deserialize)]
-struct WsListResponse { workspaces: Vec<WsItem> }
+struct WsListResponse {
+    workspaces: Vec<WsItem>,
+}
 
 #[derive(Deserialize)]
-struct WsItem { public_id: String, name: String }
+struct WsItem {
+    public_id: String,
+    name: String,
+}
 
 /// Wait for the browser callback, verify state, and extract the authorization code.
 ///
@@ -179,12 +196,16 @@ fn receive_callback(
     success_title: &str,
     success_body: &str,
 ) -> Result<String, String> {
-    let request = server.recv().map_err(|e| format!("failed to receive callback: {e}"))?;
+    let request = server
+        .recv()
+        .map_err(|e| format!("failed to receive callback: {e}"))?;
     let raw_url = request.url().to_string();
     let params = parse_query_params(&raw_url);
 
     if params.get("state").map(String::as_str) != Some(expected_state) {
-        let _ = request.respond(tiny_http::Response::from_string("Login failed: state mismatch"));
+        let _ = request.respond(tiny_http::Response::from_string(
+            "Login failed: state mismatch",
+        ));
         return Err("state mismatch — possible CSRF attack".into());
     }
 
@@ -338,11 +359,17 @@ fn run_browser_auth(
                 Some(w) => {
                     print_row(
                         "Workspace",
-                        &format!("{} {}", w.name.as_str().cyan(), format!("({})", w.public_id).dark_grey()),
+                        &format!(
+                            "{} {}",
+                            w.name.as_str().cyan(),
+                            format!("({})", w.public_id).dark_grey()
+                        ),
                     );
                     print_row(
                         "",
-                        &"use 'hotdata workspaces set' to switch workspaces".dark_grey().to_string(),
+                        &"use 'hotdata workspaces set' to switch workspaces"
+                            .dark_grey()
+                            .to_string(),
                     );
                 }
                 None => print_row("Workspace", &"None".dark_grey().to_string()),
@@ -619,10 +646,7 @@ mod tests {
         let (_tmp, _guard) = with_temp_config_dir();
         save_test_session("revoked-jwt");
         let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/workspaces")
-            .with_status(401)
-            .create();
+        let mock = server.mock("GET", "/workspaces").with_status(401).create();
 
         let profile = mock_profile(&server.url(), None);
         assert_eq!(check_status(&profile), AuthStatus::Invalid(401));
@@ -634,10 +658,7 @@ mod tests {
         let (_tmp, _guard) = with_temp_config_dir();
         save_test_session("jwt");
         let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/workspaces")
-            .with_status(403)
-            .create();
+        let mock = server.mock("GET", "/workspaces").with_status(403).create();
 
         let profile = mock_profile(&server.url(), None);
         assert_eq!(check_status(&profile), AuthStatus::Invalid(403));
@@ -651,10 +672,7 @@ mod tests {
         // the user they need to re-auth.
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
-        let mock = server
-            .mock("POST", "/o/token/")
-            .with_status(401)
-            .create();
+        let mock = server.mock("POST", "/o/token/").with_status(401).create();
 
         let profile = mock_profile(&server.url(), Some("hd_revoked"));
         assert_eq!(check_status(&profile), AuthStatus::Invalid(401));
@@ -703,10 +721,7 @@ mod tests {
         let (_tmp, _guard) = with_temp_config_dir();
         save_test_session("expired-jwt");
         let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/workspaces")
-            .with_status(401)
-            .create();
+        let mock = server.mock("GET", "/workspaces").with_status(401).create();
 
         let profile = mock_profile(&server.url(), None);
         assert!(!is_already_signed_in(&profile));

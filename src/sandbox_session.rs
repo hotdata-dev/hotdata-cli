@@ -37,7 +37,9 @@ pub struct SandboxSession {
 }
 
 pub fn session_path() -> Option<PathBuf> {
-    config::config_dir().ok().map(|d| d.join("sandbox_session.json"))
+    config::config_dir()
+        .ok()
+        .map(|d| d.join("sandbox_session.json"))
 }
 
 #[allow(dead_code)] // Reserved for parent-side flows that resurrect a session.
@@ -52,8 +54,8 @@ pub fn save(session: &SandboxSession) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
     }
-    let json = serde_json::to_string_pretty(session)
-        .map_err(|e| format!("serialize failed: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(session).map_err(|e| format!("serialize failed: {e}"))?;
 
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = fs::OpenOptions::new()
@@ -113,19 +115,20 @@ pub fn refresh(api_url: &str, refresh_token: &str) -> Result<SandboxSession, Str
 
     let client = reqwest::blocking::Client::new();
     let req = client.post(&url).json(&body);
-    let (status, body_text) = util::send_debug_with_redaction(
-        &client,
-        req,
-        Some(&body_log),
-        &["token", "refresh_token"],
-    )
-    .map_err(|e| format!("connection error: {e}"))?;
+    let (status, body_text) =
+        util::send_debug_with_redaction(&client, req, Some(&body_log), &["token", "refresh_token"])
+            .map_err(|e| format!("connection error: {e}"))?;
     if !status.is_success() {
-        return Err(format!("sandbox refresh failed: HTTP {status}: {body_text}"));
+        return Err(format!(
+            "sandbox refresh failed: HTTP {status}: {body_text}"
+        ));
     }
-    let resp: MintResponse = serde_json::from_str(&body_text)
-        .map_err(|e| format!("malformed refresh response: {e}"))?;
-    Ok(session_from_response(resp, /*workspace_id*/ String::new()))
+    let resp: MintResponse =
+        serde_json::from_str(&body_text).map_err(|e| format!("malformed refresh response: {e}"))?;
+    Ok(session_from_response(
+        resp,
+        /*workspace_id*/ String::new(),
+    ))
 }
 
 /// Build a [`SandboxSession`] from a mint/refresh response. The mint
@@ -230,7 +233,8 @@ pub fn ensure_access_token(api_url: &str) -> Option<String> {
     let session = load()?;
     let now = now_unix();
 
-    if !session.access_token.is_empty() && now + REFRESH_LEEWAY_SECONDS < session.access_expires_at {
+    if !session.access_token.is_empty() && now + REFRESH_LEEWAY_SECONDS < session.access_expires_at
+    {
         return Some(session.access_token);
     }
 
@@ -286,7 +290,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (_tmp, _guard) = with_temp_config_dir();
         save(&mk_session(60, 60)).unwrap();
-        let mode = fs::metadata(session_path().unwrap()).unwrap().permissions().mode() & 0o777;
+        let mode = fs::metadata(session_path().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600);
     }
 

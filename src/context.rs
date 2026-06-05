@@ -295,9 +295,8 @@ pub fn push(workspace_id: &str, database_id: &str, name: &str, dry_run: bool) {
 
     let api = Api::new(Some(workspace_id));
     let request = UpsertDatabaseContextRequest::new(content, name.clone());
-    let resp = match crate::sdk::block(
-        api.client().database_context().upsert(database_id, request),
-    ) {
+    let resp = match crate::sdk::block(api.client().database_context().upsert(database_id, request))
+    {
         Ok(resp) => resp,
         Err(ApiError::Status { status: _, body }) => {
             let msg = crate::util::api_error(body);

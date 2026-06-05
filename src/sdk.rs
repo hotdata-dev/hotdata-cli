@@ -464,7 +464,6 @@ impl Api {
         }
     }
 
-
     pub fn workspace_id(&self) -> Option<&str> {
         self.workspace_id.as_deref()
     }

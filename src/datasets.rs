@@ -91,14 +91,18 @@ impl From<UpdateDatasetResponse> for UpdateView {
     }
 }
 
-fn create_dataset(api: &Api, description: Option<&str>, name: &str, source: DatasetSource, format: &str) {
+fn create_dataset(
+    api: &Api,
+    description: Option<&str>,
+    name: &str,
+    source: DatasetSource,
+    format: &str,
+) {
     let label = description.unwrap_or(name).to_string();
     let mut request = CreateDatasetRequest::new(label, source);
     request.table_name = Some(Some(name.to_string()));
 
-    let resp = match crate::sdk::block(
-        api.client().datasets().create(request, api.database_id()),
-    ) {
+    let resp = match crate::sdk::block(api.client().datasets().create(request, api.database_id())) {
         Ok(r) => r,
         Err(e) => e.exit(),
     };
@@ -121,7 +125,13 @@ fn create_dataset(api: &Api, description: Option<&str>, name: &str, source: Data
     }
 }
 
-pub fn create_from_query(workspace_id: &str, sql: &str, description: Option<&str>, name: &str, format: &str) {
+pub fn create_from_query(
+    workspace_id: &str,
+    sql: &str,
+    description: Option<&str>,
+    name: &str,
+    format: &str,
+) {
     let api = Api::new(Some(workspace_id));
     let source = DatasetSource::DatasetSourceOneOf2(Box::new(DatasetSourceOneOf2::new(
         sql.to_string(),
@@ -331,8 +341,8 @@ pub fn refresh(workspace_id: &str, dataset_id: &str, async_mode: bool) {
         request.r#async = Some(true);
     }
 
-    let resp = crate::sdk::block(api.client().refresh().refresh(request))
-        .unwrap_or_else(|e| e.exit());
+    let resp =
+        crate::sdk::block(api.client().refresh().refresh(request)).unwrap_or_else(|e| e.exit());
 
     if async_mode {
         let job_id = match &resp {
@@ -352,9 +362,7 @@ pub fn refresh(workspace_id: &str, dataset_id: &str, async_mode: bool) {
         RefreshResponse::RefreshDatasetResponse(r) => {
             (r.id.clone(), r.version as i64, r.status.clone())
         }
-        RefreshResponse::SubmitJobResponse(j) => {
-            (j.id.clone(), 0, j.status.to_string())
-        }
+        RefreshResponse::SubmitJobResponse(j) => (j.id.clone(), 0, j.status.to_string()),
         _ => ("unknown".to_string(), 0, String::new()),
     };
     println!("{}", "Dataset refresh completed.".green());

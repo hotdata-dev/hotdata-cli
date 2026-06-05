@@ -469,7 +469,11 @@ pub enum DatasetsCommands {
         description: Option<String>,
 
         /// SQL query to create the dataset from
-        #[arg(long, conflicts_with = "query_id", required_unless_present = "query_id")]
+        #[arg(
+            long,
+            conflicts_with = "query_id",
+            required_unless_present = "query_id"
+        )]
         sql: Option<String>,
 
         /// Saved query ID to create the dataset from
