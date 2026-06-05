@@ -129,6 +129,33 @@ impl ApiError {
         }
     }
 
+    /// Map the SDK's [`hotdata::ArrowError`] (the Arrow result-fetch error type,
+    /// which is *not* an `Error<T>`) into an [`ApiError`].
+    ///
+    /// Status-bearing variants are preserved as [`ApiError::Status`] so the 4xx
+    /// re-auth hint in [`exit`](Self::exit) still fires; the statusless variants
+    /// (decode/transport/not-ready/failed) collapse to [`ApiError::Transport`]
+    /// carrying the SDK's own descriptive message. `ArrowError` is
+    /// `#[non_exhaustive]`, hence the wildcard arm.
+    pub fn from_arrow(err: hotdata::ArrowError) -> Self {
+        use hotdata::ArrowError;
+        match err {
+            ArrowError::NotFound => ApiError::Status {
+                status: reqwest::StatusCode::NOT_FOUND,
+                body: "result not found".to_string(),
+            },
+            ArrowError::InvalidParams { ref message } => ApiError::Status {
+                status: reqwest::StatusCode::BAD_REQUEST,
+                body: message.clone(),
+            },
+            ArrowError::Http { status, ref body } => ApiError::Status {
+                status,
+                body: body.clone(),
+            },
+            other => ApiError::Transport(other.to_string()),
+        }
+    }
+
     /// Print the standard error and exit, reproducing `ApiClient::fail_response`.
     ///
     /// On a 4xx, re-probe the auth status so a masked 404/403 is upgraded into
@@ -599,44 +626,19 @@ impl Api {
         })
     }
 
-    /// Issue an authenticated `GET {base}/v1{path}` with a custom `Accept`
-    /// header through the SDK `Configuration`, returning the raw status + body
-    /// bytes.
+    /// Fetch `/v1/results/{id}` as Arrow IPC and decode it through the SDK's
+    /// `get_result_arrow`, returning the fully-buffered [`hotdata::ArrowResult`].
     ///
-    /// The seam's binary-body counterpart to [`get_json`](Self::get_json): used
-    /// for the Arrow IPC result fetch (`/results/{id}`), where the CLI decodes
-    /// the stream itself with its own pinned `arrow` crate version rather than
-    /// the SDK's `get_result_arrow` (which returns a `RecordBatch` from a
-    /// different `arrow` major). The seam still owns auth/transport (same
-    /// reqwest client, bearer via the `token_provider`, `X-Workspace-Id`).
-    pub fn get_bytes(
-        &self,
-        path: &str,
-        accept: &str,
-    ) -> Result<(reqwest::StatusCode, Vec<u8>), ApiError> {
-        let cfg = self.client.configuration();
-        let url = format!("{}/v1{path}", cfg.base_path);
-        let database_id = self.database_id.clone();
-        let session_id = self.session_id.clone();
-        let accept = accept.to_string();
-        rt().block_on(async move {
-            let mut req = cfg
-                .client
-                .request(reqwest::Method::GET, &url)
-                .header(reqwest::header::ACCEPT, accept);
-            req = apply_seam_headers(req, cfg, session_id.as_deref(), database_id.as_deref()).await;
-
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
-            let status = resp.status();
-            let bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
-            Ok((status, bytes.to_vec()))
-        })
+    /// Replaces the seam's old raw `get_bytes` Arrow path: the SDK now owns both
+    /// transport (same reqwest client, bearer via the `token_provider`,
+    /// `X-Workspace-Id`/`X-Session-Id`) and decode, so the CLI shares one
+    /// `arrow` major version with the SDK rather than decoding raw IPC bytes
+    /// with its own pinned copy. `ArrowError` (the SDK's Arrow-path error type,
+    /// which is not an `Error<T>`) is mapped to [`ApiError`] so callers keep the
+    /// same `.exit()` handling.
+    pub fn get_result_arrow(&self, id: &str) -> Result<hotdata::ArrowResult, ApiError> {
+        rt().block_on(self.client.get_result_arrow(id, None, None))
+            .map_err(ApiError::from_arrow)
     }
 
     // --- Sample migrated call (workspace.rs uses this) -----------------------
@@ -1013,49 +1015,78 @@ mod tests {
     }
 
     #[test]
-    fn get_bytes_sends_bearer_workspace_accept_then_returns_body() {
-        // The seam's binary-body escape hatch (used by query.rs for the Arrow
-        // result fetch): carry the bearer + X-Workspace-Id + the custom Accept
-        // like every SDK call, and return the raw status + bytes for CLI-side
-        // Arrow decoding.
+    fn get_result_arrow_fetches_decodes_and_forwards_headers() {
+        use arrow::array::{Int64Array, RecordBatch, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+
+        // Build a small Arrow IPC stream the mock server can hand back.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let mut ipc: Vec<u8> = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut ipc, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        // The SDK's get_result_arrow carries the bearer + X-Workspace-Id like
+        // every SDK call and negotiates Arrow via ?format=arrow + Accept.
         let mut server = mockito::Server::new();
         let m = server
             .mock("GET", "/v1/results/res_1")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "format".into(),
+                "arrow".into(),
+            ))
             .match_header("Authorization", "Bearer test-jwt")
             .match_header("X-Workspace-Id", "ws-1")
             .match_header("Accept", "application/vnd.apache.arrow.stream")
             .with_status(200)
             .with_header("content-type", "application/vnd.apache.arrow.stream")
-            .with_body(&[0u8, 1, 2, 3][..])
+            .with_body(ipc)
             .create();
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
-        let (status, bytes) = api
-            .get_bytes("/results/res_1", "application/vnd.apache.arrow.stream")
-            .expect("get_bytes should succeed");
-        assert_eq!(status, reqwest::StatusCode::OK);
-        assert_eq!(bytes, vec![0u8, 1, 2, 3]);
+        let result = api
+            .get_result_arrow("res_1")
+            .expect("get_result_arrow should succeed");
+        assert_eq!(result.num_rows(), 3);
+        assert_eq!(result.schema.fields().len(), 2);
+        assert_eq!(result.schema.field(0).name(), "id");
+        assert_eq!(result.schema.field(1).name(), "name");
         m.assert();
     }
 
     #[test]
-    fn get_bytes_returns_non_success_status_with_body() {
-        // A failed Arrow fetch surfaces the status + body so the caller can
-        // print the server error (reproducing the old get_bytes control flow,
-        // which returned (status, bytes) rather than erroring on non-2xx).
+    fn get_result_arrow_maps_not_found_to_status() {
+        // A 404 surfaces as ApiError::Status so the CLI's 4xx re-auth hint path
+        // still fires (mirrors the old get_bytes non-success handling).
         let mut server = mockito::Server::new();
         let _m = server
             .mock("GET", "/v1/results/missing")
+            .match_query(mockito::Matcher::Any)
             .with_status(404)
             .with_body("not found")
             .create();
 
         let api = Api::test_new(&server.url(), "test-jwt", None);
-        let (status, bytes) = api
-            .get_bytes("/results/missing", "application/vnd.apache.arrow.stream")
-            .expect("get_bytes returns Ok even on non-2xx");
-        assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
-        assert_eq!(String::from_utf8_lossy(&bytes), "not found");
+        match api.get_result_arrow("missing").unwrap_err() {
+            ApiError::Status { status, .. } => {
+                assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+            }
+            other => panic!("expected ApiError::Status, got {other:?}"),
+        }
     }
 
     #[test]

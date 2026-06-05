@@ -2,8 +2,6 @@ use crate::sdk::Api;
 use serde::Deserialize;
 use serde_json::Value;
 
-const ACCEPT_ARROW: &str = "application/vnd.apache.arrow.stream";
-
 #[derive(Deserialize)]
 pub struct QueryResponse {
     pub result_id: Option<String>,
@@ -162,35 +160,21 @@ fn arrow_cell(col: &dyn arrow::array::Array, row: usize) -> Value {
     }
 }
 
-/// Decode an Arrow IPC stream into a `QueryResponse` suitable for display.
-fn arrow_ipc_to_query_response(bytes: Vec<u8>, result_id: String) -> QueryResponse {
-    use arrow::ipc::reader::StreamReader;
-    use std::io::Cursor;
-
-    let reader = match StreamReader::try_new(Cursor::new(&bytes), None) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error reading Arrow IPC stream: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    let columns: Vec<String> = reader
-        .schema()
+/// Convert an SDK-decoded [`hotdata::ArrowResult`] into a `QueryResponse`
+/// suitable for display.
+fn arrow_result_to_query_response(
+    result: hotdata::ArrowResult,
+    result_id: String,
+) -> QueryResponse {
+    let columns: Vec<String> = result
+        .schema
         .fields()
         .iter()
         .map(|f| f.name().clone())
         .collect();
     let mut rows: Vec<Vec<Value>> = Vec::new();
 
-    for batch_result in reader {
-        let batch = match batch_result {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("error reading Arrow batch: {e}");
-                std::process::exit(1);
-            }
-        };
+    for batch in &result.batches {
         for row in 0..batch.num_rows() {
             rows.push(
                 (0..batch.num_columns())
@@ -213,21 +197,12 @@ fn arrow_ipc_to_query_response(bytes: Vec<u8>, result_id: String) -> QueryRespon
 
 /// Fetch `/results/{result_id}` as Arrow IPC and return a `QueryResponse`.
 ///
-/// The Arrow stream is fetched through the SDK seam ([`Api::get_bytes`]) — same
-/// auth/transport as every other call — but decoded here with the CLI's own
-/// pinned `arrow` crate rather than the SDK's `get_result_arrow` (whose
-/// `RecordBatch` comes from a different `arrow` major version).
+/// Both transport and decode are owned by the SDK's `get_result_arrow` (via the
+/// [`Api::get_result_arrow`] seam), so the CLI shares one `arrow` major version
+/// with the SDK instead of decoding raw IPC bytes with its own pinned copy.
 pub(crate) fn fetch_arrow_result(api: &Api, result_id: &str) -> QueryResponse {
-    let (status, bytes) = api
-        .get_bytes(&format!("/results/{result_id}"), ACCEPT_ARROW)
-        .unwrap_or_else(|e| e.exit());
-    if !status.is_success() {
-        use crossterm::style::Stylize;
-        let msg = String::from_utf8_lossy(&bytes);
-        eprintln!("{}", format!("error fetching result: {status} {msg}").red());
-        std::process::exit(1);
-    }
-    arrow_ipc_to_query_response(bytes, result_id.to_owned())
+    let result = api.get_result_arrow(result_id).unwrap_or_else(|e| e.exit());
+    arrow_result_to_query_response(result, result_id.to_owned())
 }
 
 pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &str) {
