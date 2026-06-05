@@ -77,10 +77,10 @@ const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const TCP_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Build the `reqwest::Client` backing every SDK call, with a request timeout +
-/// TCP keepalive. Built via the aliased `reqwest013` crate so the type matches
-/// the SDK's `Configuration.client` exactly (same reqwest 0.13 build).
-fn sdk_http_client() -> reqwest013::Client {
-    reqwest013::Client::builder()
+/// TCP keepalive. The CLI shares the SDK's reqwest 0.13, so this is the exact
+/// type `Configuration.client` expects.
+fn sdk_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
         .timeout(HTTP_REQUEST_TIMEOUT)
         .tcp_keepalive(TCP_KEEPALIVE_INTERVAL)
         .build()
@@ -202,11 +202,11 @@ fn sdk_base_path(api_url: &str) -> String {
 /// bypass the generated client, so they funnel through this one place rather
 /// than repeating the block per verb.
 async fn apply_seam_headers(
-    mut req: reqwest013::RequestBuilder,
+    mut req: reqwest::RequestBuilder,
     cfg: &Configuration,
     session_id: Option<&str>,
     database_id: Option<&str>,
-) -> reqwest013::RequestBuilder {
+) -> reqwest::RequestBuilder {
     if let Some(ref user_agent) = cfg.user_agent {
         req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
     }
