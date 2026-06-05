@@ -99,8 +99,6 @@ pub struct ProfileConfig {
     pub api_key_source: ApiKeySource,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspaces: Vec<WorkspaceEntry>,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "session")]
-    pub sandbox: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub current_databases: HashMap<String, String>,
 }
@@ -184,51 +182,6 @@ pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Resul
         .workspaces
         .retain(|w| w.public_id != workspace.public_id);
     entry.workspaces.insert(0, workspace);
-
-    let content = serde_yaml::to_string(&config_file)
-        .map_err(|e| format!("error serializing config: {e}"))?;
-    write_config(&config_path, &content)
-}
-
-pub fn save_sandbox(profile: &str, sandbox_id: &str) -> Result<(), String> {
-    let config_path = config_path()?;
-
-    let mut config_file: ConfigFile = if config_path.exists() {
-        let content = fs::read_to_string(&config_path)
-            .map_err(|e| format!("error reading config file: {e}"))?;
-        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
-    } else {
-        ConfigFile {
-            profiles: HashMap::new(),
-        }
-    };
-
-    config_file
-        .profiles
-        .entry(profile.to_string())
-        .or_default()
-        .sandbox = Some(sandbox_id.to_string());
-
-    let content = serde_yaml::to_string(&config_file)
-        .map_err(|e| format!("error serializing config: {e}"))?;
-    write_config(&config_path, &content)
-}
-
-pub fn clear_sandbox(profile: &str) -> Result<(), String> {
-    let config_path = config_path()?;
-
-    if !config_path.exists() {
-        return Ok(());
-    }
-
-    let content =
-        fs::read_to_string(&config_path).map_err(|e| format!("error reading config file: {e}"))?;
-    let mut config_file: ConfigFile =
-        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
-
-    if let Some(entry) = config_file.profiles.get_mut(profile) {
-        entry.sandbox = None;
-    }
 
     let content = serde_yaml::to_string(&config_file)
         .map_err(|e| format!("error serializing config: {e}"))?;
