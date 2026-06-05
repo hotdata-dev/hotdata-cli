@@ -25,9 +25,7 @@ impl From<&hotdata::models::WorkspaceListItem> for Workspace {
 
 fn fetch_workspaces() -> Vec<Workspace> {
     let api = Api::new(None);
-    let body = api
-        .list_workspaces(None)
-        .unwrap_or_else(|e| e.exit());
+    let body = api.list_workspaces(None).unwrap_or_else(|e| e.exit());
     body.workspaces.iter().map(Workspace::from).collect()
 }
 

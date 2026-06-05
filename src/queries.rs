@@ -192,10 +192,7 @@ pub fn list(
     let next_cursor = resp.next_cursor.flatten();
 
     match format {
-        "json" => println!(
-            "{}",
-            serde_json::to_string_pretty(&query_runs).unwrap()
-        ),
+        "json" => println!("{}", serde_json::to_string_pretty(&query_runs).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&query_runs).unwrap()),
         "table" => {
             if query_runs.is_empty() {
@@ -228,10 +225,7 @@ pub fn list(
                 let next = next_cursor.as_deref().unwrap_or("");
                 eprintln!(
                     "{}",
-                    format!(
-                        "showing {count} results — use --cursor {next} for more"
-                    )
-                    .dark_grey()
+                    format!("showing {count} results — use --cursor {next} for more").dark_grey()
                 );
             }
         }
@@ -254,7 +248,11 @@ fn print_detail(r: &QueryRun, format: &str) {
         "table" => {
             let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
             println!("{}{}", label("id:"), r.id);
-            println!("{}{}", label("status:"), crate::util::color_status(&r.status));
+            println!(
+                "{}{}",
+                label("status:"),
+                crate::util::color_status(&r.status)
+            );
             println!(
                 "{}{}",
                 label("created:"),

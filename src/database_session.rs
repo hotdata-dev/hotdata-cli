@@ -30,7 +30,9 @@ pub struct DatabaseSession {
 }
 
 pub fn session_path() -> Option<PathBuf> {
-    config::config_dir().ok().map(|d| d.join("database_session.json"))
+    config::config_dir()
+        .ok()
+        .map(|d| d.join("database_session.json"))
 }
 
 #[allow(dead_code)] // Reserved for flows that re-use a cached database session.
@@ -45,8 +47,8 @@ pub fn save(session: &DatabaseSession) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
     }
-    let json = serde_json::to_string_pretty(session)
-        .map_err(|e| format!("serialize failed: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(session).map_err(|e| format!("serialize failed: {e}"))?;
 
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = fs::OpenOptions::new()
@@ -104,18 +106,16 @@ pub fn refresh(api_url: &str, refresh_token: &str) -> Result<DatabaseSession, St
 
     let client = reqwest::blocking::Client::new();
     let req = client.post(&url).json(&body);
-    let (status, body_text) = util::send_debug_with_redaction(
-        &client,
-        req,
-        Some(&body_log),
-        &["token", "refresh_token"],
-    )
-    .map_err(|e| format!("connection error: {e}"))?;
+    let (status, body_text) =
+        util::send_debug_with_redaction(&client, req, Some(&body_log), &["token", "refresh_token"])
+            .map_err(|e| format!("connection error: {e}"))?;
     if !status.is_success() {
-        return Err(format!("database refresh failed: HTTP {status}: {body_text}"));
+        return Err(format!(
+            "database refresh failed: HTTP {status}: {body_text}"
+        ));
     }
-    let resp: MintResponse = serde_json::from_str(&body_text)
-        .map_err(|e| format!("malformed refresh response: {e}"))?;
+    let resp: MintResponse =
+        serde_json::from_str(&body_text).map_err(|e| format!("malformed refresh response: {e}"))?;
     Ok(session_from_response(resp, String::new()))
 }
 
@@ -245,7 +245,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (_tmp, _guard) = with_temp_config_dir();
         save(&mk_session(60, 60)).unwrap();
-        let mode = fs::metadata(session_path().unwrap()).unwrap().permissions().mode() & 0o777;
+        let mode = fs::metadata(session_path().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600);
     }
 
@@ -274,7 +278,10 @@ mod tests {
     #[test]
     fn refresh_http_error() {
         let mut server = mockito::Server::new();
-        let m = server.mock("POST", "/auth/database").with_status(401).create();
+        let m = server
+            .mock("POST", "/auth/database")
+            .with_status(401)
+            .create();
         let err = refresh(&server.url(), "x").unwrap_err();
         m.assert();
         assert!(err.contains("401"));

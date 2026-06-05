@@ -1,4 +1,4 @@
-use crate::sdk::{none_if_404, Api};
+use crate::sdk::{Api, none_if_404};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -103,9 +103,8 @@ pub fn try_resolve_database(api: &Api, id_or_name: &str) -> Result<Database, Str
     // Percent-encode the segment so names containing spaces or other URL-unsafe
     // characters don't cause a URL parse error before the list fallback can run.
     let encoded = urlencoding::encode(id_or_name);
-    if let Some(db) =
-        none_if_404(api.get_json::<Database>(&format!("/databases/{encoded}"), &[]))
-            .unwrap_or_else(|e| e.exit())
+    if let Some(db) = none_if_404(api.get_json::<Database>(&format!("/databases/{encoded}"), &[]))
+        .unwrap_or_else(|e| e.exit())
     {
         return Ok(db);
     }
@@ -128,7 +127,6 @@ pub fn try_resolve_database(api: &Api, id_or_name: &str) -> Result<Database, Str
             )),
         };
     }
-
 
     let name_matches: Vec<&DatabaseSummary> = body
         .databases
@@ -174,10 +172,7 @@ pub fn create_database_request(
     let mut req = serde_json::Map::new();
 
     if let Some(n) = name {
-        req.insert(
-            "name".to_string(),
-            serde_json::Value::String(n.to_string()),
-        );
+        req.insert("name".to_string(), serde_json::Value::String(n.to_string()));
     }
 
     if let Some(c) = catalog {
@@ -212,7 +207,10 @@ pub fn create_database_request(
                 })
             })
             .collect();
-        req.insert("schemas".to_string(), serde_json::Value::Array(schemas_json));
+        req.insert(
+            "schemas".to_string(),
+            serde_json::Value::Array(schemas_json),
+        );
     }
 
     if let Some(exp) = expires_at {
@@ -430,18 +428,13 @@ fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<I
         };
         cursor = Some(c);
     }
-    out.sort_by(|a, b| {
-        a.schema
-            .cmp(&b.schema)
-            .then_with(|| a.table.cmp(&b.table))
-    });
+    out.sort_by(|a, b| a.schema.cmp(&b.schema).then_with(|| a.table.cmp(&b.table)));
     out
 }
 
 pub fn list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let body: ListDatabasesResponse =
-        api.get_json("/databases", &[]).unwrap_or_else(|e| e.exit());
+    let body: ListDatabasesResponse = api.get_json("/databases", &[]).unwrap_or_else(|e| e.exit());
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&body.databases).unwrap()),
@@ -460,7 +453,11 @@ pub fn list(workspace_id: &str, format: &str) {
                     .databases
                     .iter()
                     .map(|d| {
-                        let marker = if current.as_deref() == Some(d.id.as_str()) { "*" } else { "" };
+                        let marker = if current.as_deref() == Some(d.id.as_str()) {
+                            "*"
+                        } else {
+                            ""
+                        };
                         vec![
                             marker.to_string(),
                             d.id.clone(),
@@ -497,13 +494,18 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                 label("default_connection_id:"),
                 db.default_connection_id.clone().dark_cyan()
             );
-            let catalog = db.default_catalog.as_deref()
+            let catalog = db
+                .default_catalog
+                .as_deref()
                 .or(db.name.as_deref())
                 .unwrap_or("default");
             println!(
                 "{}{}",
                 label("sql_prefix:"),
-                format!("{catalog}.{{schema}}.{{table}}  (pass X-Database-Id header when querying)").green()
+                format!(
+                    "{catalog}.{{schema}}.{{table}}  (pass X-Database-Id header when querying)"
+                )
+                .green()
             );
             if !db.attachments.is_empty() {
                 println!("{}({})", label("attached catalogs:"), db.attachments.len());
@@ -537,7 +539,9 @@ fn create_and_return_id(
 ) -> String {
     use crossterm::style::Stylize;
     let body = create_database_request(name, None, schema, tables, expires_at);
-    let (status, resp_body) = api.post_raw("/databases", &body).unwrap_or_else(|e| e.exit());
+    let (status, resp_body) = api
+        .post_raw("/databases", &body)
+        .unwrap_or_else(|e| e.exit());
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
@@ -561,8 +565,9 @@ fn mint_database_token(api: &Api, database_id: &str) -> DatabaseTokenResponse {
         "grant_type": "existing_database",
         "database_id": database_id,
     });
-    let (status, resp_body) =
-        api.post_raw("/auth/database", &body).unwrap_or_else(|e| e.exit());
+    let (status, resp_body) = api
+        .post_raw("/auth/database", &body)
+        .unwrap_or_else(|e| e.exit());
     if !status.is_success() {
         // The old typed `api.post` routed non-success through `fail_response`,
         // which upgrades a masked 401/403/404 into the re-auth hint. Reproduce
@@ -612,7 +617,10 @@ pub fn run(
     let db_jwt = resp.token.clone();
     let db_refresh = resp.refresh_token.clone();
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let session = crate::database_session::DatabaseSession {
         access_token: db_jwt.clone(),
         refresh_token: db_refresh.clone(),
@@ -686,7 +694,10 @@ pub fn create(
 
     if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
         use crossterm::style::Stylize;
-        eprintln!("{}", format!("warning: database created but could not set as current: {e}").yellow());
+        eprintln!(
+            "{}",
+            format!("warning: database created but could not set as current: {e}").yellow()
+        );
     }
 
     match format {
@@ -705,7 +716,9 @@ pub fn create(
                 println!("expires_at:  {exp}");
             }
             println!();
-            let catalog = result.default_catalog.as_deref()
+            let catalog = result
+                .default_catalog
+                .as_deref()
                 .or(result.name.as_deref())
                 .unwrap_or("default");
             println!(
@@ -799,7 +812,11 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
     let database = resolve_current_database(database, workspace_id);
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
-    let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
+    let catalog = db
+        .default_catalog
+        .as_deref()
+        .or(db.name.as_deref())
+        .unwrap_or("default");
     let tables = collect_tables(&api, &db.default_connection_id, schema);
 
     let rows = table_rows(catalog, tables);
@@ -916,7 +933,11 @@ pub fn tables_load(
             .collect();
         if !synced.is_empty() {
             use crossterm::style::Stylize;
-            let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or(&db.id);
+            let catalog = db
+                .default_catalog
+                .as_deref()
+                .or(db.name.as_deref())
+                .unwrap_or(&db.id);
             eprintln!(
                 "{}",
                 format!(
@@ -962,8 +983,9 @@ pub fn tables_load(
             &all_tables,
             db.expires_at.as_deref(),
         );
-        let (create_status, create_body_resp) =
-            api.post_raw("/databases", &create_body).unwrap_or_else(|e| e.exit());
+        let (create_status, create_body_resp) = api
+            .post_raw("/databases", &create_body)
+            .unwrap_or_else(|e| e.exit());
         if !create_status.is_success() {
             eprintln!("{}", crate::util::api_error(create_body_resp).red());
             std::process::exit(1);
@@ -1001,7 +1023,11 @@ pub fn tables_load(
         }
     };
 
-    let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
+    let catalog = db
+        .default_catalog
+        .as_deref()
+        .or(db.name.as_deref())
+        .unwrap_or("default");
     let full_name = format!("{catalog}.{}.{}", result.schema_name, result.table_name);
     println!("{}", "Table loaded".green());
     println!("full_name: {}", full_name.clone().green());
@@ -1022,7 +1048,12 @@ pub fn tables_load(
     );
 }
 
-pub fn tables_delete(workspace_id: &str, database: Option<&str>, table: &str, schema: Option<&str>) {
+pub fn tables_delete(
+    workspace_id: &str,
+    database: Option<&str>,
+    table: &str,
+    schema: Option<&str>,
+) {
     use crossterm::style::Stylize;
 
     let database = resolve_current_database(database, workspace_id);
@@ -1038,7 +1069,11 @@ pub fn tables_delete(workspace_id: &str, database: Option<&str>, table: &str, sc
         std::process::exit(1);
     }
 
-    let catalog = db.default_catalog.as_deref().or(db.name.as_deref()).unwrap_or("default");
+    let catalog = db
+        .default_catalog
+        .as_deref()
+        .or(db.name.as_deref())
+        .unwrap_or("default");
     println!(
         "{}",
         format!("Table '{catalog}.{schema}.{table}' deleted.").green()
@@ -1242,13 +1277,16 @@ mod tests {
 
     #[test]
     fn table_rows_uses_default_prefix() {
-        let rows = table_rows("default", vec![InfoTable {
-            connection: "ignored".into(),
-            schema: "public".into(),
-            table: "orders".into(),
-            synced: true,
-            last_sync: Some("2026-05-19T00:00:00Z".into()),
-        }]);
+        let rows = table_rows(
+            "default",
+            vec![InfoTable {
+                connection: "ignored".into(),
+                schema: "public".into(),
+                table: "orders".into(),
+                synced: true,
+                last_sync: Some("2026-05-19T00:00:00Z".into()),
+            }],
+        );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].full_name, "default.public.orders");
         assert!(rows[0].synced);
@@ -1298,9 +1336,7 @@ mod tests {
             .mock("POST", "/v1/databases")
             .match_header("X-Workspace-Id", "ws-test")
             .with_status(201)
-            .with_body(
-                r#"{"id":"db_new","name":"mydb","default_connection_id":"conn_abc"}"#,
-            )
+            .with_body(r#"{"id":"db_new","name":"mydb","default_connection_id":"conn_abc"}"#)
             .match_body(mockito::Matcher::JsonString(
                 serde_json::to_string(&create_database_request(
                     Some("mydb"),
@@ -1314,7 +1350,8 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws-test"));
-        let body = create_database_request(Some("mydb"), None, "public", &["gdp".to_string()], None);
+        let body =
+            create_database_request(Some("mydb"), None, "public", &["gdp".to_string()], None);
         let (status, resp_body) = api.post_raw("/databases", &body).unwrap();
         assert_eq!(status.as_u16(), 201);
         let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();
@@ -1430,7 +1467,9 @@ mod tests {
             )))
             .with_status(201)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"dbid_new","description":"scratch","default_connection_id":"conn_1"}"#)
+            .with_body(
+                r#"{"id":"dbid_new","description":"scratch","default_connection_id":"conn_1"}"#,
+            )
             .create();
         let api = Api::test_new(&server.url(), "k", Some("ws"));
         let id = create_and_return_id(&api, Some("scratch"), "public", &[], None);

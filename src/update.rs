@@ -43,7 +43,9 @@ struct UpdateCheckCache {
 }
 
 fn cache_path() -> Option<PathBuf> {
-    crate::config::config_dir().ok().map(|d| d.join(".update_check.json"))
+    crate::config::config_dir()
+        .ok()
+        .map(|d| d.join(".update_check.json"))
 }
 
 fn now_secs() -> u64 {
@@ -76,7 +78,10 @@ fn fetch_latest_version() -> Result<Version, String> {
         .map_err(|e| e.to_string())?;
     let resp = client
         .get(&url)
-        .header("User-Agent", concat!("hotdata-cli/", env!("CARGO_PKG_VERSION")))
+        .header(
+            "User-Agent",
+            concat!("hotdata-cli/", env!("CARGO_PKG_VERSION")),
+        )
         .header("Accept", "application/vnd.github+json")
         .send()
         .map_err(|e| e.to_string())?;
@@ -183,10 +188,7 @@ fn run_homebrew_upgrade() {
         .copied();
 
     let Some(brew_bin) = brew else {
-        eprintln!(
-            "{}",
-            "brew not found — run manually:".yellow()
-        );
+        eprintln!("{}", "brew not found — run manually:".yellow());
         println!("  {}", format!("brew upgrade {HOMEBREW_FORMULA}").cyan());
         return;
     };
@@ -206,10 +208,7 @@ fn run_homebrew_upgrade() {
             }
         }
         Ok(s) => {
-            eprintln!(
-                "{}",
-                format!("brew upgrade exited with status {s}").red()
-            );
+            eprintln!("{}", format!("brew upgrade exited with status {s}").red());
             std::process::exit(s.code().unwrap_or(1));
         }
         Err(e) => {
@@ -241,7 +240,10 @@ pub fn run_update() {
     let latest = match fetch_latest_version() {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("{}", format!("error: could not check for updates: {e}").red());
+            eprintln!(
+                "{}",
+                format!("error: could not check for updates: {e}").red()
+            );
             std::process::exit(1);
         }
     };
@@ -302,9 +304,7 @@ fn perform_update(version: &Version) -> Result<(), String> {
     if !resp.status().is_success() {
         return Err(format!("HTTP {} downloading {asset_name}", resp.status()));
     }
-    let xz_bytes = resp
-        .bytes()
-        .map_err(|e| format!("reading download: {e}"))?;
+    let xz_bytes = resp.bytes().map_err(|e| format!("reading download: {e}"))?;
 
     let mut tar_bytes: Vec<u8> = Vec::with_capacity(xz_bytes.len() * 4);
     lzma_rs::xz_decompress(&mut std::io::Cursor::new(&xz_bytes[..]), &mut tar_bytes)

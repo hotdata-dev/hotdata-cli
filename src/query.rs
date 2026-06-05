@@ -55,28 +55,101 @@ fn arrow_cell(col: &dyn arrow::array::Array, row: usize) -> Value {
     }
 
     match col.data_type() {
-        Boolean => Value::Bool(col.as_any().downcast_ref::<BooleanArray>().unwrap().value(row)),
-        Int8  => Value::Number(col.as_any().downcast_ref::<Int8Array>().unwrap().value(row).into()),
-        Int16 => Value::Number(col.as_any().downcast_ref::<Int16Array>().unwrap().value(row).into()),
-        Int32 => Value::Number(col.as_any().downcast_ref::<Int32Array>().unwrap().value(row).into()),
-        Int64 => Value::Number(col.as_any().downcast_ref::<Int64Array>().unwrap().value(row).into()),
-        UInt8  => Value::Number(col.as_any().downcast_ref::<UInt8Array>().unwrap().value(row).into()),
-        UInt16 => Value::Number(col.as_any().downcast_ref::<UInt16Array>().unwrap().value(row).into()),
-        UInt32 => Value::Number(col.as_any().downcast_ref::<UInt32Array>().unwrap().value(row).into()),
-        UInt64 => Value::Number(col.as_any().downcast_ref::<UInt64Array>().unwrap().value(row).into()),
+        Boolean => Value::Bool(
+            col.as_any()
+                .downcast_ref::<BooleanArray>()
+                .unwrap()
+                .value(row),
+        ),
+        Int8 => Value::Number(
+            col.as_any()
+                .downcast_ref::<Int8Array>()
+                .unwrap()
+                .value(row)
+                .into(),
+        ),
+        Int16 => Value::Number(
+            col.as_any()
+                .downcast_ref::<Int16Array>()
+                .unwrap()
+                .value(row)
+                .into(),
+        ),
+        Int32 => Value::Number(
+            col.as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(row)
+                .into(),
+        ),
+        Int64 => Value::Number(
+            col.as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(row)
+                .into(),
+        ),
+        UInt8 => Value::Number(
+            col.as_any()
+                .downcast_ref::<UInt8Array>()
+                .unwrap()
+                .value(row)
+                .into(),
+        ),
+        UInt16 => Value::Number(
+            col.as_any()
+                .downcast_ref::<UInt16Array>()
+                .unwrap()
+                .value(row)
+                .into(),
+        ),
+        UInt32 => Value::Number(
+            col.as_any()
+                .downcast_ref::<UInt32Array>()
+                .unwrap()
+                .value(row)
+                .into(),
+        ),
+        UInt64 => Value::Number(
+            col.as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap()
+                .value(row)
+                .into(),
+        ),
         Float32 => {
-            let v = col.as_any().downcast_ref::<Float32Array>().unwrap().value(row) as f64;
-            Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null)
+            let v = col
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .unwrap()
+                .value(row) as f64;
+            Number::from_f64(v)
+                .map(Value::Number)
+                .unwrap_or(Value::Null)
         }
         Float64 => {
-            let v = col.as_any().downcast_ref::<Float64Array>().unwrap().value(row);
-            Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null)
+            let v = col
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap()
+                .value(row);
+            Number::from_f64(v)
+                .map(Value::Number)
+                .unwrap_or(Value::Null)
         }
         Utf8 => Value::String(
-            col.as_any().downcast_ref::<StringArray>().unwrap().value(row).to_owned(),
+            col.as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(row)
+                .to_owned(),
         ),
         LargeUtf8 => Value::String(
-            col.as_any().downcast_ref::<LargeStringArray>().unwrap().value(row).to_owned(),
+            col.as_any()
+                .downcast_ref::<LargeStringArray>()
+                .unwrap()
+                .value(row)
+                .to_owned(),
         ),
         // Dates, timestamps, decimals, etc. — format via Arrow's display helper.
         _ => {
@@ -102,7 +175,12 @@ fn arrow_ipc_to_query_response(bytes: Vec<u8>, result_id: String) -> QueryRespon
         }
     };
 
-    let columns: Vec<String> = reader.schema().fields().iter().map(|f| f.name().clone()).collect();
+    let columns: Vec<String> = reader
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
     let mut rows: Vec<Vec<Value>> = Vec::new();
 
     for batch_result in reader {
@@ -114,7 +192,11 @@ fn arrow_ipc_to_query_response(bytes: Vec<u8>, result_id: String) -> QueryRespon
             }
         };
         for row in 0..batch.num_rows() {
-            rows.push((0..batch.num_columns()).map(|c| arrow_cell(batch.column(c).as_ref(), row)).collect());
+            rows.push(
+                (0..batch.num_columns())
+                    .map(|c| arrow_cell(batch.column(c).as_ref(), row))
+                    .collect(),
+            );
         }
     }
 
@@ -198,8 +280,8 @@ pub fn execute(
     loop {
         // Drive the poll loop ourselves to preserve the 5-minute deadline and
         // 500ms cadence (NOT the SDK's PollConfig defaults).
-        let run = crate::sdk::block(api.client().query_runs().get(run_id))
-            .unwrap_or_else(|e| e.exit());
+        let run =
+            crate::sdk::block(api.client().query_runs().get(run_id)).unwrap_or_else(|e| e.exit());
         match run.status.as_str() {
             "succeeded" => {
                 spinner.finish_and_clear();
@@ -255,8 +337,8 @@ pub fn execute(
 pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
 
-    let run = crate::sdk::block(api.client().query_runs().get(query_run_id))
-        .unwrap_or_else(|e| e.exit());
+    let run =
+        crate::sdk::block(api.client().query_runs().get(query_run_id)).unwrap_or_else(|e| e.exit());
 
     match run.status.as_str() {
         "succeeded" => match run.result_id.flatten() {
@@ -351,4 +433,3 @@ pub fn print_result(result: &QueryResponse, format: &str) {
         _ => unreachable!(),
     }
 }
-

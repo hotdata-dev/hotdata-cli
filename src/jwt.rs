@@ -64,7 +64,8 @@ pub fn save_session(session: &Session) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
     }
-    let json = serde_json::to_string_pretty(session).map_err(|e| format!("serialize failed: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(session).map_err(|e| format!("serialize failed: {e}"))?;
 
     // mode 0600 — session file contains a refresh token, treat it like a
     // credential on disk.
@@ -101,7 +102,11 @@ struct TokenResponse {
     refresh_token: Option<String>,
 }
 
-fn session_from_response(resp: TokenResponse, fallback_refresh: Option<String>, source: &str) -> Session {
+fn session_from_response(
+    resp: TokenResponse,
+    fallback_refresh: Option<String>,
+    source: &str,
+) -> Session {
     let refresh_token = resp.refresh_token.or(fallback_refresh).unwrap_or_default();
     // We don't know the exact refresh TTL server-side (7 d or 36 h
     // depending on origin). Store a conservative estimate so we don't
@@ -125,7 +130,11 @@ fn oauth_base(profile: &config::ProfileConfig) -> String {
     // DOT (`/o/authorize/`, `/o/token/`, …) is mounted on the webapp
     // (app_url), not the API. The api_url host typically only serves
     // the `/v1` runtimedb routes.
-    profile.app_url.to_string().trim_end_matches('/').to_string()
+    profile
+        .app_url
+        .to_string()
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// Build a redacted JSON view of a form body for `--debug` printing.
@@ -173,13 +182,9 @@ pub fn exchange_cli_register_code(
 
     let client = reqwest::blocking::Client::new();
     let req = client.post(&url).json(&body);
-    let (status, body_text) = util::send_debug_with_redaction(
-        &client,
-        req,
-        Some(&body_log),
-        &["token"],
-    )
-    .map_err(|e| format!("connection error: {e}"))?;
+    let (status, body_text) =
+        util::send_debug_with_redaction(&client, req, Some(&body_log), &["token"])
+            .map_err(|e| format!("connection error: {e}"))?;
     if !status.is_success() {
         return Err(format!(
             "registration token exchange failed: HTTP {status}: {body_text}"
@@ -190,8 +195,8 @@ pub fn exchange_cli_register_code(
     struct RegisterResponse {
         token: String,
     }
-    let resp: RegisterResponse = serde_json::from_str(&body_text)
-        .map_err(|e| format!("malformed token response: {e}"))?;
+    let resp: RegisterResponse =
+        serde_json::from_str(&body_text).map_err(|e| format!("malformed token response: {e}"))?;
 
     mint_from_api_token(profile, &resp.token)
 }
@@ -215,18 +220,14 @@ pub fn mint_from_pkce_code(
     let client = reqwest::blocking::Client::new();
     let req = client.post(&url).form(&params);
     let body_log = redacted_form_body(&params);
-    let (status, body_text) = util::send_debug_with_redaction(
-        &client,
-        req,
-        Some(&body_log),
-        TOKEN_REDACT_KEYS,
-    )
-    .map_err(|e| format!("connection error: {e}"))?;
+    let (status, body_text) =
+        util::send_debug_with_redaction(&client, req, Some(&body_log), TOKEN_REDACT_KEYS)
+            .map_err(|e| format!("connection error: {e}"))?;
     if !status.is_success() {
         return Err(format!("token exchange failed: HTTP {status}: {body_text}"));
     }
-    let body: TokenResponse = serde_json::from_str(&body_text)
-        .map_err(|e| format!("malformed token response: {e}"))?;
+    let body: TokenResponse =
+        serde_json::from_str(&body_text).map_err(|e| format!("malformed token response: {e}"))?;
     Ok(session_from_response(body, None, "pkce"))
 }
 
@@ -245,18 +246,16 @@ pub fn mint_from_api_token(
     let client = reqwest::blocking::Client::new();
     let req = client.post(&url).form(&params);
     let body_log = redacted_form_body(&params);
-    let (status, body_text) = util::send_debug_with_redaction(
-        &client,
-        req,
-        Some(&body_log),
-        TOKEN_REDACT_KEYS,
-    )
-    .map_err(|e| format!("connection error: {e}"))?;
+    let (status, body_text) =
+        util::send_debug_with_redaction(&client, req, Some(&body_log), TOKEN_REDACT_KEYS)
+            .map_err(|e| format!("connection error: {e}"))?;
     if !status.is_success() {
-        return Err(format!("api_token exchange failed: HTTP {status}: {body_text}"));
+        return Err(format!(
+            "api_token exchange failed: HTTP {status}: {body_text}"
+        ));
     }
-    let body: TokenResponse = serde_json::from_str(&body_text)
-        .map_err(|e| format!("malformed token response: {e}"))?;
+    let body: TokenResponse =
+        serde_json::from_str(&body_text).map_err(|e| format!("malformed token response: {e}"))?;
     Ok(session_from_response(body, None, "api_token"))
 }
 
@@ -272,18 +271,14 @@ pub fn refresh(profile: &config::ProfileConfig, session: &Session) -> Result<Ses
     let client = reqwest::blocking::Client::new();
     let req = client.post(&url).form(&params);
     let body_log = redacted_form_body(&params);
-    let (status, body_text) = util::send_debug_with_redaction(
-        &client,
-        req,
-        Some(&body_log),
-        TOKEN_REDACT_KEYS,
-    )
-    .map_err(|e| format!("connection error: {e}"))?;
+    let (status, body_text) =
+        util::send_debug_with_redaction(&client, req, Some(&body_log), TOKEN_REDACT_KEYS)
+            .map_err(|e| format!("connection error: {e}"))?;
     if !status.is_success() {
         return Err(format!("refresh failed: HTTP {status}: {body_text}"));
     }
-    let body: TokenResponse = serde_json::from_str(&body_text)
-        .map_err(|e| format!("malformed token response: {e}"))?;
+    let body: TokenResponse =
+        serde_json::from_str(&body_text).map_err(|e| format!("malformed token response: {e}"))?;
     Ok(session_from_response(
         body,
         // Rotation is off server-side, so the same refresh token
@@ -329,7 +324,9 @@ pub fn ensure_access_token(
 
     // 1) Cached session is still good.
     if let Some(session) = load_session() {
-        if !session.access_token.is_empty() && now + REFRESH_LEEWAY_SECONDS < session.access_expires_at {
+        if !session.access_token.is_empty()
+            && now + REFRESH_LEEWAY_SECONDS < session.access_expires_at
+        {
             return Ok(session.access_token);
         }
 
@@ -419,14 +416,10 @@ impl CliTokenProvider {
     /// string describing why no token could be obtained.
     fn resolve_blocking(mode: &AuthMode) -> Result<String, String> {
         match mode {
-            AuthMode::DatabaseEnv { api_url } => {
-                crate::database_session::refresh_from_env(api_url)
-                    .ok_or_else(|| "HOTDATA_DATABASE_TOKEN is empty".to_string())
-            }
-            AuthMode::SandboxEnv { api_url } => {
-                crate::sandbox_session::refresh_from_env(api_url)
-                    .ok_or_else(|| "HOTDATA_SANDBOX_TOKEN is empty".to_string())
-            }
+            AuthMode::DatabaseEnv { api_url } => crate::database_session::refresh_from_env(api_url)
+                .ok_or_else(|| "HOTDATA_DATABASE_TOKEN is empty".to_string()),
+            AuthMode::SandboxEnv { api_url } => crate::sandbox_session::refresh_from_env(api_url)
+                .ok_or_else(|| "HOTDATA_SANDBOX_TOKEN is empty".to_string()),
             AuthMode::SandboxSession { api_url } => {
                 crate::sandbox_session::ensure_access_token(api_url)
                     .ok_or_else(|| "sandbox session expired".to_string())
@@ -512,7 +505,10 @@ mod tests {
         save_session(&Session::default()).unwrap();
         let path = session_path().unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "session file must be 0600 (contains refresh token)");
+        assert_eq!(
+            mode, 0o600,
+            "session file must be 0600 (contains refresh token)"
+        );
     }
 
     #[test]
@@ -786,9 +782,7 @@ mod tests {
             .mock("POST", "/o/token/")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"access_token":"new-jwt","expires_in":300,"refresh_token":"rotated"}"#,
-            )
+            .with_body(r#"{"access_token":"new-jwt","expires_in":300,"refresh_token":"rotated"}"#)
             .create();
 
         let profile = mock_profile(&server.url());
