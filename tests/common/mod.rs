@@ -102,7 +102,7 @@ impl Cli {
     }
 
     /// Base command: the binary, an isolated config dir, the test API URL, and a
-    /// cleared environment so an ambient sandbox/database token can't leak in.
+    /// cleared environment so an ambient database token can't leak in.
     /// Does NOT set credentials or a workspace.
     fn base(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_hotdata"));
@@ -110,8 +110,6 @@ impl Cli {
             .env("HOTDATA_API_URL", &self.env.api_url)
             .env_remove("HOTDATA_API_KEY")
             .env_remove("HOTDATA_WORKSPACE")
-            .env_remove("HOTDATA_SANDBOX")
-            .env_remove("HOTDATA_SANDBOX_TOKEN")
             .env_remove("HOTDATA_DATABASE")
             .env_remove("HOTDATA_DATABASE_TOKEN")
             .arg("--no-input");
@@ -167,8 +165,6 @@ pub fn unauthenticated_output(api_url: &str, args: &[&str]) -> Output {
         .env("HOTDATA_API_URL", api_url)
         .env_remove("HOTDATA_API_KEY")
         .env_remove("HOTDATA_WORKSPACE")
-        .env_remove("HOTDATA_SANDBOX")
-        .env_remove("HOTDATA_SANDBOX_TOKEN")
         .env_remove("HOTDATA_DATABASE")
         .env_remove("HOTDATA_DATABASE_TOKEN")
         .arg("--no-input")

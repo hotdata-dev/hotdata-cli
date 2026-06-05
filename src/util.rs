@@ -109,7 +109,7 @@ pub fn debug_response_redacted(
 /// Mask a credential to its first + last 4 characters
 /// (`XXXX...YYYY`), or `***` if it's too short to reveal anything
 /// safely. The tail makes it easy to distinguish which token is on
-/// the wire (e.g. user JWT vs sandbox-scoped JWT vs opaque API token).
+/// the wire (e.g. user JWT vs database-scoped JWT vs opaque API token).
 pub fn mask_credential(s: &str) -> String {
     if s.len() >= 12 {
         format!("{}...{}", &s[..4], &s[s.len() - 4..])
@@ -341,7 +341,7 @@ pub fn api_error(body: String) -> String {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
         // Two shapes in the wild:
         //   {"error": {"message": "..."}}   — RuntimeDB-style
-        //   {"error": "snake_case_code"}    — Django-style (e.g. sandbox endpoints)
+        //   {"error": "snake_case_code"}    — Django-style (e.g. workspace endpoints)
         if let Some(m) = v["error"]["message"].as_str() {
             return m.to_string();
         }
@@ -356,7 +356,7 @@ pub fn api_error(body: String) -> String {
 }
 
 /// Turn a snake_case error code into a human-friendly sentence:
-/// ``sandbox_not_found`` → ``Sandbox not found``. Cheap heuristic — if
+/// ``workspace_not_found`` → ``Workspace not found``. Cheap heuristic — if
 /// a code reads badly after this, the server should be the one to fix
 /// it by returning a real message.
 fn humanize_error_code(code: &str) -> String {
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn mask_credential_long_shows_prefix_and_suffix() {
         // 12+ chars: show both ends so the user can tell which token
-        // is on the wire (sandbox JWT vs user JWT vs opaque API token).
+        // is on the wire (database JWT vs user JWT vs opaque API token).
         assert_eq!(mask_credential("abcdefghijkl"), "abcd...ijkl");
         assert_eq!(mask_credential("eyJhMIDDLEYwxyz"), "eyJh...wxyz");
     }
@@ -395,10 +395,10 @@ mod tests {
 
     #[test]
     fn api_error_humanizes_snake_case_code() {
-        // Django-style flat shape — `sandbox_not_found` should render
+        // Django-style flat shape — `workspace_not_found` should render
         // as a readable sentence, not a raw JSON blob.
-        let body = r#"{"error": "sandbox_not_found"}"#.to_string();
-        assert_eq!(api_error(body), "Sandbox not found");
+        let body = r#"{"error": "workspace_not_found"}"#.to_string();
+        assert_eq!(api_error(body), "Workspace not found");
     }
 
     #[test]
