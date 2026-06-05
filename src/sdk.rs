@@ -1,9 +1,8 @@
 //! Synchronous wrapper over the async Hotdata Rust SDK.
 //!
-//! This module is the seam that replaces the hand-rolled legacy
-//! `ApiClient`. The 15 command modules stay
-//! synchronous and call [`Api`] methods; [`Api`] drives the async SDK behind a
-//! process-global multi-thread tokio runtime via `block_on`.
+//! This module is the seam between the CLI and the SDK. The 15 command modules
+//! stay synchronous and call [`Api`] methods; [`Api`] drives the async SDK
+//! behind a process-global multi-thread tokio runtime via `block_on`.
 //!
 //! # Concurrency contract
 //!
@@ -17,8 +16,8 @@
 //!
 //! # Auth
 //!
-//! Construction reproduces the old `ApiClient::new` 4-level auth-source
-//! precedence by choosing the [`AuthMode`](crate::jwt::AuthMode) the installed
+//! Construction follows a 4-level auth-source precedence, choosing the
+//! [`AuthMode`](crate::jwt::AuthMode) the installed
 //! [`CliTokenProvider`](crate::jwt::CliTokenProvider) will serve. The provider
 //! returns a ready CLI-minted JWT (`client_id=hotdata-cli`, `/o/token/`), which
 //! the SDK passes through unchanged; the CLI keeps full ownership of
@@ -69,11 +68,12 @@ pub struct Api {
     database_id: Option<String>,
 }
 
-/// Request timeout for SDK-routed calls. Mirrors the old `ApiClient` so a hung
-/// server cannot stall the CLI indefinitely. The streaming `/files` upload
-/// keeps its own no-timeout client on the raw-HTTP path.
+/// Request timeout for SDK-routed calls, so a hung server cannot stall the CLI
+/// indefinitely. The streaming `/files` upload runs on its own no-timeout
+/// client ([`upload_reqwest_client`]), since a large upload legitimately
+/// outlives this cap.
 const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-/// TCP keepalive probe interval, matching the old client.
+/// TCP keepalive probe interval.
 const TCP_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Build the `reqwest::Client` backing every SDK call, with a request timeout +
@@ -152,8 +152,8 @@ const _: fn() = || {
 
 /// SDK -> CLI error after mapping an `Error<T>`.
 ///
-/// Carries enough to reproduce the old `fail_response` behavior: the HTTP
-/// status and a printable body, or a transport/parse description.
+/// Carries enough for the CLI's failure rendering: the HTTP status and a
+/// printable body, or a transport/parse description.
 #[derive(Debug)]
 pub enum ApiError {
     /// The server returned a non-success status.
@@ -170,8 +170,8 @@ impl ApiError {
     ///
     /// `ResponseError` carries the HTTP status + raw body the CLI's
     /// `format_fail_message` consumes; everything else collapses to a
-    /// transport description (the old "error connecting to API" / "error
-    /// parsing response" paths).
+    /// transport description (the "error connecting to API" / "error parsing
+    /// response" messages).
     pub fn from_sdk<T: std::fmt::Debug>(err: Error<T>) -> Self {
         match err {
             Error::ResponseError(ResponseContent {
@@ -253,8 +253,8 @@ where
 
 /// Map a result, returning `Ok(None)` on HTTP 404 instead of an error.
 ///
-/// Reproduces `ApiClient::get_none_if_not_found` / the context-404 / indexes-404
-/// semantics: a missing resource is normal for these probes.
+/// Used by the context-404 / indexes-404 probes, where a missing resource is
+/// normal rather than an error.
 pub fn none_if_404<T>(r: Result<T, ApiError>) -> Result<Option<T>, ApiError> {
     match r {
         Ok(v) => Ok(Some(v)),
@@ -317,10 +317,9 @@ async fn apply_seam_headers(
 }
 
 impl Api {
-    /// Build an [`Api`], reproducing `ApiClient::new`'s auth-source precedence
-    /// by selecting the [`AuthMode`] the installed provider will serve. Exits
-    /// with a diagnostic if config can't load or no usable credential exists,
-    /// matching the old startup behavior.
+    /// Build an [`Api`], selecting the [`AuthMode`] the installed provider will
+    /// serve from the auth-source precedence below. Exits with a diagnostic if
+    /// config can't load or no usable credential exists.
     pub fn new(workspace_id: Option<&str>) -> Self {
         let profile_config = match config::load("default") {
             Ok(c) => c,
@@ -331,15 +330,15 @@ impl Api {
         };
         let api_url = profile_config.api_url.to_string();
 
-        // Auth-source precedence (verbatim from the old ApiClient::new):
+        // Auth-source precedence:
         //   1. HOTDATA_DATABASE_TOKEN env (databases run child)
         //   2. HOTDATA_SANDBOX_TOKEN env (sandbox run child)
         //   3. ~/.hotdata/sandbox_session.json present (sandbox set <id>)
         //   4. ~/.hotdata/session.json + optional api_key fallback
         //
-        // We pre-flight the same way the old client did (so a dead/unusable
-        // credential exits at startup with the right hint), then hand the
-        // CliTokenProvider the matching mode to re-resolve on every request.
+        // Pre-flight the chosen source here (so a dead/unusable credential
+        // exits at startup with the right hint), then hand the CliTokenProvider
+        // the matching mode to re-resolve on every request.
         let mode = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
             if crate::database_session::refresh_from_env(&api_url).is_none() {
                 eprintln!(
@@ -400,8 +399,8 @@ impl Api {
             }
         };
 
-        // Resolve the sandbox/session id exactly as the old ApiClient::new did:
-        // HOTDATA_SANDBOX wins; otherwise, if we are a descendant of a
+        // Resolve the sandbox/session id: HOTDATA_SANDBOX wins; otherwise, if
+        // we are a descendant of a
         // `sandbox run` whose sandbox context was lost, exit (a restart is
         // required); else fall back to the persisted sandbox in config. This id
         // is sent as X-Session-Id to scope requests to the sandbox.
@@ -439,8 +438,7 @@ impl Api {
             base_path: sdk_base_path(api_url),
             client: sdk_http_client(),
             // Attribute CLI traffic as the CLI, not the SDK default
-            // (`hotdata-rust/...`). The old ApiClient sent no User-Agent; an
-            // explicit CLI agent is the correct attribution.
+            // (`hotdata-rust/...`), so server-side request logs name the CLI.
             user_agent: Some(format!("hotdata-cli/{}", env!("CARGO_PKG_VERSION"))),
             ..Configuration::default()
         };
@@ -681,10 +679,9 @@ impl Api {
     /// `Configuration`, returning the raw status + body text.
     ///
     /// The seam's DELETE counterpart to [`post_raw`](Self::post_raw): used by
-    /// `databases.rs`, where the delete bodies feed the same CLI-side
-    /// `(status, body)` control flow as the old raw `delete_raw` (e.g. the
-    /// delete+recreate path inspects the failure body), so non-success is
-    /// returned as `Ok((status, body))` rather than an error.
+    /// `databases.rs`, where the delete+recreate path inspects the failure
+    /// body, so non-success is returned as `Ok((status, body))` rather than an
+    /// error for the caller's `(status, body)` control flow.
     pub fn delete_raw(&self, path: &str) -> Result<(reqwest::StatusCode, String), ApiError> {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
@@ -733,8 +730,6 @@ impl Api {
 
 /// Decide what error text to print for a failed response. Pure function so the
 /// 4xx-to-re-auth-hint heuristic is unit-testable without HTTP or `exit`.
-///
-/// Relocated verbatim from the old `api.rs`.
 pub fn format_fail_message(
     status: reqwest::StatusCode,
     body: &str,
@@ -753,7 +748,7 @@ mod tests {
     use super::*;
     use auth::AuthStatus;
 
-    // --- format_fail_message: ported verbatim from api.rs (9 cases) ----------
+    // --- format_fail_message (9 cases) ---------------------------------------
 
     #[test]
     fn format_fail_message_401_with_invalid_key_shows_reauth_hint() {
@@ -919,8 +914,8 @@ mod tests {
 
     #[test]
     fn workspace_id_header_is_installed_on_scoped_calls() {
-        // Regression for the old api.rs:598 header assertion. `datasets().list`
-        // carries the X-Workspace-Id api_key; assert it reaches the wire.
+        // `datasets().list` carries the X-Workspace-Id api_key; assert it
+        // reaches the wire.
         let mut server = mockito::Server::new();
         let m = server
             .mock("GET", "/v1/datasets")
@@ -1076,8 +1071,8 @@ mod tests {
 
     #[test]
     fn post_raw_returns_error_status_without_mapping_to_err() {
-        // Non-success is returned as Ok((status, body)) so the caller reproduces
-        // the old `(status, body)` raw-post control flow verbatim.
+        // Non-success is returned as Ok((status, body)) so the caller can drive
+        // its own `(status, body)` control flow (e.g. inspect the failure body).
         let mut server = mockito::Server::new();
         let _m = server
             .mock("POST", "/v1/refresh")
@@ -1247,9 +1242,8 @@ mod tests {
 
     #[test]
     fn database_scope_sends_x_database_id_on_raw_calls() {
-        // Regression: `hotdata query --database X` must scope the request. The
-        // old ApiClient sent X-Database-Id on every request; the seam must too,
-        // and the raw /query submit path is where the scope is applied.
+        // `hotdata query --database X` must scope the request: the raw /query
+        // submit path is where X-Database-Id is applied.
         let mut server = mockito::Server::new();
         let m = server
             .mock("POST", "/v1/query")

@@ -119,7 +119,7 @@ fn local_md_path(name: &str) -> PathBuf {
 }
 
 /// Fetch a named context document. Returns `Ok(None)` on 404 (not found);
-/// exits the process on any other error, matching the old behavior.
+/// exits the process on any other error.
 fn fetch_context(api: &Api, database_id: &str, name: &str) -> Option<DatabaseContextEntry> {
     let result = crate::sdk::block(api.client().database_context().get(database_id, name));
     match crate::sdk::none_if_404(result) {

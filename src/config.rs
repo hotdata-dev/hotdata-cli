@@ -484,11 +484,10 @@ mod tests {
 
     #[test]
     fn legacy_api_key_in_yaml_is_ignored_on_load() {
-        // Older configs (pre-jwt-branch) had `api_key: hd_xxx` written
-        // to disk. After the migration, the api_key field is purely
-        // transient — `#[serde(skip)]` must drop any value present in
-        // YAML on load. This pins down the migration behavior so a
-        // stale entry can't silently reappear in profile.api_key.
+        // Some config files on disk carry `api_key: hd_xxx`. The api_key field
+        // is transient (`#[serde(skip)]`), so any value present in the YAML must
+        // be dropped on load — a stale entry must not silently reappear in
+        // profile.api_key.
         let (_tmp, _guard) = with_temp_config_dir();
         let path = config_path().unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();

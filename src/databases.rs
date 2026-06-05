@@ -131,8 +131,8 @@ impl From<hotdata::models::DatabaseSummary> for DatabaseSummary {
 /// Fetch a database by id through the SDK's typed `databases().get` handle.
 ///
 /// The handle owns auth, scope headers, URL construction, and percent-encoding
-/// of the id segment, so callers no longer hand-roll the path. The result is
-/// mapped into the CLI's `Database`.
+/// of the id segment, so the caller passes a bare id. The result is mapped into
+/// the CLI's `Database`.
 pub(crate) fn get_database(api: &Api, id: &str) -> Result<Database, ApiError> {
     block(api.client().databases().get(id)).map(Database::from)
 }
@@ -579,9 +579,8 @@ fn mint_database_token(api: &Api, database_id: &str) -> DatabaseTokenResponse {
         .post_raw("/auth/database", &body)
         .unwrap_or_else(|e| e.exit());
     if !status.is_success() {
-        // The old typed `api.post` routed non-success through `fail_response`,
-        // which upgrades a masked 401/403/404 into the re-auth hint. Reproduce
-        // that via the seam's auth-aware exit.
+        // Route non-success through the seam's auth-aware exit, which upgrades a
+        // masked 401/403/404 into the re-auth hint.
         crate::sdk::ApiError::Status {
             status,
             body: resp_body,

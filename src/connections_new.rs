@@ -30,7 +30,7 @@ fn fetch_types(api: &Api) -> Vec<ConnectionTypeSummary> {
 fn fetch_detail(api: &Api, name: &str) -> ConnectionTypeDetail {
     let detail = block(api.client().connection_types().get(name)).unwrap_or_else(|e| e.exit());
     // The SDK models nullable fields as `Option<Option<Value>>`; flatten and
-    // treat an explicit JSON `null` as absent to match the old `is_null()` check.
+    // treat an explicit JSON `null` as absent.
     let flatten = |field: Option<Option<Value>>| -> Option<Value> {
         field.flatten().filter(|v| !v.is_null())
     };
@@ -317,8 +317,8 @@ pub fn run(workspace_id: &str) {
         Unavailable(String),
     }
 
-    /// Render an [`ApiError`] the way the old raw paths did: the server body
-    /// through `api_error`, or the transport message verbatim.
+    /// Render an [`ApiError`] as text: the server body through `api_error`, or
+    /// the transport message verbatim.
     fn error_text(e: ApiError) -> String {
         match e {
             ApiError::Status { body, .. } => crate::util::api_error(body),

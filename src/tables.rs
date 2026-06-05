@@ -38,8 +38,8 @@ pub fn list(
 ) {
     let api = Api::new(Some(workspace_id));
 
-    // The CLI only requests columns when a connection is specified, matching
-    // the old behavior (include_columns=true iff connection_id is set).
+    // Request columns only when a connection is specified
+    // (include_columns=true iff connection_id is set).
     let include_columns = connection_id.map(|_| true);
 
     let body = crate::sdk::block(api.client().information_schema().get(

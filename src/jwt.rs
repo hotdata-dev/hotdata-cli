@@ -368,11 +368,11 @@ pub fn ensure_access_token(
 
 /// Which credential source the [`CliTokenProvider`] serves bearers from.
 ///
-/// Mirrors the 4-level auth-source precedence the old `ApiClient::new`
-/// applied (database env -> sandbox env -> on-disk sandbox session ->
-/// user session/api_key). The wrapper (`src/sdk.rs`) picks the variant at
-/// construction time; the provider re-runs the corresponding *existing*
-/// blocking CLI function on every request so session.json, the 30s leeway
+/// Carries the 4-level auth-source precedence (database env -> sandbox env ->
+/// on-disk sandbox session -> user session/api_key). The wrapper (`src/sdk.rs`)
+/// picks the variant at construction time; the provider re-runs the
+/// corresponding blocking CLI function on every request so session.json, the
+/// 30s leeway
 /// table, no-clobber for Flag/Env, and clear-on-dead-refresh stay owned by
 /// the CLI — the SDK never re-implements JWT exchange.
 #[derive(Debug, Clone)]
@@ -446,8 +446,7 @@ impl hotdata::auth::BearerTokenProvider for CliTokenProvider {
         resolved.map_err(|body| {
             // Surface as a 401 so `Configuration::resolve_bearer_token` logs the
             // cause and the request proceeds to a 401 the wrapper shapes into
-            // the "run hotdata auth" hint (the same end-state as the old
-            // ApiClient refresher returning None).
+            // the "run hotdata auth" hint.
             hotdata::auth::TokenExchangeError::Status { status: 401, body }
         })
     }

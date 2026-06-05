@@ -34,8 +34,8 @@ impl Serialize for HealthStatus {
     }
 }
 
-/// Render an [`ApiError`] the way the old raw `fetch_health` path did: the
-/// server body through `api_error`, or the transport message verbatim.
+/// Render an [`ApiError`] as text: the server body through `api_error`, or the
+/// transport message verbatim.
 fn error_text(e: ApiError) -> String {
     match e {
         ApiError::Status { body, .. } => crate::util::api_error(body),
@@ -138,8 +138,7 @@ pub fn types_get(workspace_id: &str, name: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
     let resp = block(api.client().connection_types().get(name)).unwrap_or_else(|e| e.exit());
     // The SDK models nullable fields as `Option<Option<Value>>`; flatten and
-    // drop an explicit JSON `null` to match the old behavior (the old struct
-    // deserialized a missing/`null` field to `None`).
+    // drop an explicit JSON `null` so a missing or null field renders as absent.
     let detail = ConnectionTypeDetail {
         name: resp.name,
         label: resp.label,

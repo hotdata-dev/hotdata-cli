@@ -25,11 +25,10 @@ fn now_unix() -> u64 {
 
 /// Mint (or re-mint) a sandbox-scoped JWT via `POST /v1/auth/sandbox`.
 ///
-/// This token-mint endpoint has no SDK operation, so it stays on the raw seam.
-/// [`Api::post_raw`] still carries the user bearer + `X-Workspace-Id` like every
-/// SDK call. Reproduces the old `ApiClient::post` behavior exactly: a transport
-/// error or a non-success status prints the standard error and exits, and a
-/// malformed body exits the same way `parse_json` did.
+/// This token-mint endpoint has no SDK operation, so it uses the raw seam.
+/// [`Api::post_raw`] carries the user bearer + `X-Workspace-Id` like every SDK
+/// call. A transport error or a non-success status prints the standard error
+/// and exits; a malformed body exits the same way.
 fn mint_sandbox_token(api: &Api, body: &serde_json::Value) -> SandboxTokenResponse {
     let (status, resp_body) = api
         .post_raw("/auth/sandbox", body)
@@ -191,8 +190,8 @@ pub fn new(workspace_id: &str, name: Option<&str>, format: &str) {
 
     // POST /auth/sandbox creates the sandbox AND mints a sandbox-scoped
     // JWT (+ refresh token) in one round-trip. This token-mint endpoint has
-    // no SDK operation, so it stays on the raw seam (which still carries the
-    // user bearer + X-Workspace-Id like every SDK call).
+    // no SDK operation, so it uses the raw seam (which carries the user bearer
+    // + X-Workspace-Id like every SDK call).
     let resp = mint_sandbox_token(&api, &body);
     let sandbox_id = resp.sandbox_id.clone();
     persist_sandbox_session(resp, workspace_id);
