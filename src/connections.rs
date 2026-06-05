@@ -299,7 +299,6 @@ pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
     }
 }
 
-#[derive(Deserialize, Serialize)]
 struct CreateResponse {
     id: String,
     name: String,

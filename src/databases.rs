@@ -9,7 +9,7 @@ const DEFAULT_SCHEMA: &str = "public";
 /// mapped from the SDK's `DatabaseSummary` (see the `From` impl) so the
 /// `-o json`/`-o yaml` contract stays decoupled from generated-model field
 /// order and nullability.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct DatabaseSummary {
     id: String,
     #[serde(default)]
@@ -22,7 +22,7 @@ struct DatabaseSummary {
 /// from the SDK's `DatabaseDetailResponse` (see the `From` impl), keeping the
 /// `-o json`/`-o yaml` contract independent of the generated model's field order
 /// and `Option<Option<_>>` nullability.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Database {
     pub id: String,
     #[serde(default)]
@@ -36,7 +36,7 @@ pub struct Database {
     attachments: Vec<DatabaseAttachment>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct DatabaseAttachment {
     connection_id: String,
     alias: Option<String>,
