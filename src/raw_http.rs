@@ -10,18 +10,13 @@
 //!   `sandbox_session.rs`);
 //! * `skill.rs`'s arbitrary-URL markdown fetch.
 //!
-//! (The streaming `/files` upload moved onto the SDK seam's
-//! [`Api::upload_stream`](crate::sdk::Api::upload_stream), which owns its own
-//! no-timeout client.)
-//!
 //! This module owns the timeout-bounded blocking client builder and a thin
-//! bearer/header request builder. It does NOT carry the old `ApiClient`'s
-//! 401-retry loop: token freshness is now the `CliTokenProvider`'s job
-//! (proactive refresh at the 30s leeway).
+//! bearer/header request builder. Token freshness is the `CliTokenProvider`'s
+//! job (proactive refresh at the 30s leeway), so these helpers carry no
+//! 401-retry loop.
 
-// Consumers (jwt.rs token mints, session mints, the streaming upload,
-// skill.rs) are migrated to this helper incrementally; the allow keeps the
-// build warning-free until those call sites land.
+// Not every helper here is wired to a call site yet; the allow keeps the build
+// warning-free.
 #![allow(dead_code)]
 
 use std::time::Duration;
