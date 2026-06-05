@@ -31,7 +31,7 @@ use command::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
     DatabaseTablesCommands, DatabasesCommands, DatasetsCommands, EmbeddingProvidersCommands,
     IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands,
-    SandboxCommands, SkillCommands, TablesCommands, WorkspaceCommands,
+    SkillCommands, TablesCommands, WorkspaceCommands,
 };
 
 #[derive(Parser)]
@@ -941,80 +941,6 @@ fn main() {
                                 .unwrap();
                         }
                     }
-                }
-            }
-            Commands::Sandbox {
-                id,
-                workspace_id,
-                output,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                match command {
-                    Some(SandboxCommands::Run { name, cmd }) => {
-                        sandbox::run(id.as_deref(), &workspace_id, name.as_deref(), &cmd)
-                    }
-                    Some(SandboxCommands::List { output }) => sandbox::list(&workspace_id, &output),
-                    Some(SandboxCommands::New { name, output }) => {
-                        sandbox::new(&workspace_id, name.as_deref(), &output)
-                    }
-                    Some(SandboxCommands::Update {
-                        id: update_id,
-                        name,
-                        markdown,
-                        output,
-                    }) => {
-                        let sandbox_id = update_id
-                            .or(id)
-                            .or_else(|| config::load("default").ok().and_then(|p| p.sandbox));
-                        match sandbox_id {
-                            Some(sid) => sandbox::update(
-                                &workspace_id,
-                                &sid,
-                                name.as_deref(),
-                                markdown.as_deref(),
-                                &output,
-                            ),
-                            None => {
-                                eprintln!(
-                                    "error: no sandbox ID provided and no active sandbox set. Use 'sandbox new' or 'sandbox set <id>'."
-                                );
-                                std::process::exit(1);
-                            }
-                        }
-                    }
-                    Some(SandboxCommands::Read) => {
-                        let sandbox_id = id
-                            .or_else(|| std::env::var("HOTDATA_SANDBOX").ok())
-                            .or_else(|| config::load("default").ok().and_then(|p| p.sandbox));
-                        match sandbox_id {
-                            Some(sid) => sandbox::read(&sid, &workspace_id),
-                            None => {
-                                eprintln!(
-                                    "error: no active sandbox. Use 'sandbox new' or 'sandbox set <id>'."
-                                );
-                                std::process::exit(1);
-                            }
-                        }
-                    }
-                    Some(SandboxCommands::Set { id: set_id }) => {
-                        sandbox::set(set_id.as_deref(), &workspace_id)
-                    }
-                    Some(SandboxCommands::Delete { id: delete_id }) => {
-                        sandbox::delete(&delete_id, &workspace_id)
-                    }
-                    None => match id {
-                        Some(id) => sandbox::get(&id, &workspace_id, &output),
-                        None => {
-                            use clap::CommandFactory;
-                            let mut cmd = Cli::command();
-                            cmd.build();
-                            cmd.find_subcommand_mut("sandbox")
-                                .unwrap()
-                                .print_help()
-                                .unwrap();
-                        }
-                    },
                 }
             }
             Commands::Context {
