@@ -201,6 +201,43 @@ fn sdk_base_path(api_url: &str) -> String {
     trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string()
 }
 
+/// Apply the seam's common request headers to a raw `RequestBuilder`: User-Agent,
+/// the `X-Workspace-Id` api_key, the sandbox `X-Session-Id` and database
+/// `X-Database-Id` scope, and the resolved bearer. Generated SDK ops inject the
+/// api_key headers themselves; the raw seam helpers ([`Api::get_json`] etc.)
+/// bypass the generated client, so they funnel through this one place rather
+/// than repeating the block per verb.
+async fn apply_seam_headers(
+    mut req: reqwest013::RequestBuilder,
+    cfg: &Configuration,
+    session_id: Option<&str>,
+    database_id: Option<&str>,
+) -> reqwest013::RequestBuilder {
+    if let Some(ref user_agent) = cfg.user_agent {
+        req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    if let Some(apikey) = cfg.api_keys.get(hotdata::client::WORKSPACE_ID_HEADER) {
+        let value = match apikey.prefix {
+            Some(ref prefix) => format!("{} {}", prefix, apikey.key),
+            None => apikey.key.clone(),
+        };
+        req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
+    }
+    // Sandbox session scope (also forwarded from api_keys on generated ops).
+    if let Some(sid) = session_id {
+        req = req.header("X-Session-Id", sid);
+    }
+    // Database scope — generated ops don't forward it, so the seam must
+    // (e.g. `hotdata query --database`).
+    if let Some(db) = database_id {
+        req = req.header("X-Database-Id", db);
+    }
+    if let Some(token) = cfg.resolve_bearer_token().await {
+        req = req.bearer_auth(token);
+    }
+    req
+}
+
 impl Api {
     /// Build an [`Api`], reproducing `ApiClient::new`'s auth-source precedence
     /// by selecting the [`AuthMode`] the installed provider will serve. Exits
@@ -491,30 +528,7 @@ impl Api {
             if !query.is_empty() {
                 req = req.query(query);
             }
-            if let Some(ref user_agent) = cfg.user_agent {
-                req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
-            }
-            if let Some(apikey) = cfg.api_keys.get(hotdata::client::WORKSPACE_ID_HEADER) {
-                let value = match apikey.prefix {
-                    Some(ref prefix) => format!("{} {}", prefix, apikey.key),
-                    None => apikey.key.clone(),
-                };
-                req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
-            }
-            // Sandbox session scope (also forwarded from api_keys on generated
-            // ops; set here for the raw seam paths).
-            if let Some(ref sid) = session_id {
-                req = req.header("X-Session-Id", sid.clone());
-            }
-            // X-Database-Id scopes the request to a database. The old ApiClient
-            // attached it to every request when set; the SDK does not forward
-            // it, so the seam must (e.g. `hotdata query --database`).
-            if let Some(ref db) = database_id {
-                req = req.header("X-Database-Id", db.clone());
-            }
-            if let Some(token) = cfg.resolve_bearer_token().await {
-                req = req.bearer_auth(token);
-            }
+            req = apply_seam_headers(req, cfg, session_id.as_deref(), database_id.as_deref()).await;
 
             let resp = req
                 .send()
@@ -552,30 +566,7 @@ impl Api {
         let session_id = self.session_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::POST, &url).json(body);
-            if let Some(ref user_agent) = cfg.user_agent {
-                req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
-            }
-            if let Some(apikey) = cfg.api_keys.get(hotdata::client::WORKSPACE_ID_HEADER) {
-                let value = match apikey.prefix {
-                    Some(ref prefix) => format!("{} {}", prefix, apikey.key),
-                    None => apikey.key.clone(),
-                };
-                req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
-            }
-            // Sandbox session scope (also forwarded from api_keys on generated
-            // ops; set here for the raw seam paths).
-            if let Some(ref sid) = session_id {
-                req = req.header("X-Session-Id", sid.clone());
-            }
-            // X-Database-Id scopes the request to a database. The old ApiClient
-            // attached it to every request when set; the SDK does not forward
-            // it, so the seam must (e.g. `hotdata query --database`).
-            if let Some(ref db) = database_id {
-                req = req.header("X-Database-Id", db.clone());
-            }
-            if let Some(token) = cfg.resolve_bearer_token().await {
-                req = req.bearer_auth(token);
-            }
+            req = apply_seam_headers(req, cfg, session_id.as_deref(), database_id.as_deref()).await;
 
             let resp = req
                 .send()
@@ -605,30 +596,7 @@ impl Api {
         let session_id = self.session_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::DELETE, &url);
-            if let Some(ref user_agent) = cfg.user_agent {
-                req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
-            }
-            if let Some(apikey) = cfg.api_keys.get(hotdata::client::WORKSPACE_ID_HEADER) {
-                let value = match apikey.prefix {
-                    Some(ref prefix) => format!("{} {}", prefix, apikey.key),
-                    None => apikey.key.clone(),
-                };
-                req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
-            }
-            // Sandbox session scope (also forwarded from api_keys on generated
-            // ops; set here for the raw seam paths).
-            if let Some(ref sid) = session_id {
-                req = req.header("X-Session-Id", sid.clone());
-            }
-            // X-Database-Id scopes the request to a database. The old ApiClient
-            // attached it to every request when set; the SDK does not forward
-            // it, so the seam must (e.g. `hotdata query --database`).
-            if let Some(ref db) = database_id {
-                req = req.header("X-Database-Id", db.clone());
-            }
-            if let Some(token) = cfg.resolve_bearer_token().await {
-                req = req.bearer_auth(token);
-            }
+            req = apply_seam_headers(req, cfg, session_id.as_deref(), database_id.as_deref()).await;
 
             let resp = req
                 .send()
@@ -668,30 +636,7 @@ impl Api {
                 .client
                 .request(reqwest::Method::GET, &url)
                 .header(reqwest::header::ACCEPT, accept);
-            if let Some(ref user_agent) = cfg.user_agent {
-                req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
-            }
-            if let Some(apikey) = cfg.api_keys.get(hotdata::client::WORKSPACE_ID_HEADER) {
-                let value = match apikey.prefix {
-                    Some(ref prefix) => format!("{} {}", prefix, apikey.key),
-                    None => apikey.key.clone(),
-                };
-                req = req.header(hotdata::client::WORKSPACE_ID_HEADER, value);
-            }
-            // Sandbox session scope (also forwarded from api_keys on generated
-            // ops; set here for the raw seam paths).
-            if let Some(ref sid) = session_id {
-                req = req.header("X-Session-Id", sid.clone());
-            }
-            // X-Database-Id scopes the request to a database. The old ApiClient
-            // attached it to every request when set; the SDK does not forward
-            // it, so the seam must (e.g. `hotdata query --database`).
-            if let Some(ref db) = database_id {
-                req = req.header("X-Database-Id", db.clone());
-            }
-            if let Some(token) = cfg.resolve_bearer_token().await {
-                req = req.bearer_auth(token);
-            }
+            req = apply_seam_headers(req, cfg, session_id.as_deref(), database_id.as_deref()).await;
 
             let resp = req
                 .send()
