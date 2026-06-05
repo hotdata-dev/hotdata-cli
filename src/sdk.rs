@@ -1090,6 +1090,30 @@ mod tests {
     }
 
     #[test]
+    fn get_result_arrow_preserves_generic_http_status() {
+        // Statuses outside the SDK's explicitly-mapped set (404/400/409/202)
+        // come back as ArrowError::Http; from_arrow must preserve them so a
+        // 401/403 still reaches the CLI's 4xx re-auth hint. 403 stands in for
+        // that family.
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/results/forbidden")
+            .match_query(mockito::Matcher::Any)
+            .with_status(403)
+            .with_body("forbidden")
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", None);
+        match api.get_result_arrow("forbidden").unwrap_err() {
+            ApiError::Status { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+                assert_eq!(body, "forbidden");
+            }
+            other => panic!("expected ApiError::Status, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn clones_share_one_client_arc() {
         let api = Api::test_new("http://127.0.0.1:1", "jwt", None);
         let clone = api.clone();
