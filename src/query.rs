@@ -230,19 +230,8 @@ pub(crate) fn fetch_arrow_result(api: &Api, result_id: &str) -> QueryResponse {
     arrow_ipc_to_query_response(bytes, result_id.to_owned())
 }
 
-pub fn execute(
-    sql: &str,
-    workspace_id: &str,
-    connection: Option<&str>,
-    database: Option<&str>,
-    format: &str,
-) {
+pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &str) {
     let api = Api::new(Some(workspace_id));
-
-    // `--connection` is a no-op: /query is database-scoped and the endpoint has
-    // no connection_id field. Accepted for compatibility (see follow-up issue
-    // to remove it).
-    let _ = connection;
 
     // Scope to the explicit --database flag, else the active database resolved
     // at construction (HOTDATA_DATABASE / current database). submit_query sends

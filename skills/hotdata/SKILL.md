@@ -315,7 +315,7 @@ hotdata context push <name> [--database-id <id>] [--dry-run]
 ### Execute SQL Query
 
 ```
-hotdata query "<sql>" [--workspace-id <workspace_id>] [--connection <connection_id>] [--output table|json|csv]
+hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--output table|json|csv]
 hotdata query status <query_run_id> [--output table|json|csv]
 ```
 
