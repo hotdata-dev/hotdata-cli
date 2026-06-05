@@ -87,6 +87,63 @@ fn sdk_http_client() -> reqwest::Client {
         .expect("reqwest client with timeout should build")
 }
 
+/// The `reqwest::Client` backing the streaming `/files` upload. Deliberately has
+/// **no** request timeout: an upload's duration scales with file size and uplink
+/// (a 10 GB parquet far outlives [`HTTP_REQUEST_TIMEOUT`], which is sized for
+/// slow server-side work), so a wall-clock cap would abort a healthy-but-slow
+/// transfer. TCP keepalive is kept so a genuinely dead peer is still reaped by
+/// the OS; a live-but-slow upload runs to completion and the user can Ctrl-C.
+fn upload_reqwest_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .tcp_keepalive(TCP_KEEPALIVE_INTERVAL)
+        .build()
+        .expect("reqwest client should build without a timeout")
+}
+
+/// Size of each chunk pulled from the blocking reader (1 MiB). Large enough to
+/// keep per-chunk overhead negligible on a multi-GB upload, small enough that an
+/// in-flight chunk is a trivial allocation.
+const UPLOAD_CHUNK_SIZE: usize = 1 << 20;
+/// Bound on chunks buffered between the blocking reader and the async sender.
+/// Caps in-flight memory so a fast local disk can't outrun a slow uplink; the
+/// read task blocks on a full channel (back-pressure).
+const UPLOAD_CHANNEL_DEPTH: usize = 4;
+
+/// Bridge a blocking [`Read`](std::io::Read) source into the async
+/// `Stream<Item = Result<Bytes, _>>` the SDK's `upload_stream` consumes.
+///
+/// A `spawn_blocking` task reads fixed-size chunks and forwards them through a
+/// bounded tokio mpsc channel; the returned [`ReceiverStream`] yields them to
+/// the request body. The blocking task lives on the runtime's blocking pool, so
+/// it does not stall an async worker, and a full channel back-pressures the
+/// reader (which keeps the caller's progress bar — wrapped around `reader` —
+/// honest). If the receiver is dropped (request aborted/failed) the send errors
+/// and the task exits; a read error is forwarded as the stream's terminal item.
+fn reader_into_stream(
+    mut reader: impl std::io::Read + Send + 'static,
+) -> impl futures_core::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send + 'static {
+    let (tx, rx) = tokio::sync::mpsc::channel(UPLOAD_CHANNEL_DEPTH);
+    rt().spawn_blocking(move || {
+        let mut buf = vec![0u8; UPLOAD_CHUNK_SIZE];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = bytes::Bytes::copy_from_slice(&buf[..n]);
+                    if tx.blocking_send(Ok(chunk)).is_err() {
+                        break; // receiver gone — request aborted
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
+    tokio_stream::wrappers::ReceiverStream::new(rx)
+}
+
 // Compile-time guarantee that the rayon bound can never silently regress.
 const _: fn() = || {
     fn assert_send_sync_clone<T: Send + Sync + Clone>() {}
@@ -505,16 +562,40 @@ impl Api {
         &self.client
     }
 
-    /// Resolve the current bearer token synchronously by driving the installed
-    /// `token_provider` on the shared runtime.
+    /// Stream a file/URL body to `POST /v1/files` through the SDK's
+    /// [`Client::upload_stream`], returning the upload id.
     ///
-    /// Used by raw-HTTP paths that the SDK can't serve (the streaming `/files`
-    /// upload) but that still need the same `Authorization: Bearer <jwt>` the
-    /// SDK installs on every call. Returns `None` if no provider/static token
-    /// is configured.
-    pub fn current_bearer(&self) -> Option<String> {
-        let cfg = self.client.configuration();
-        rt().block_on(cfg.resolve_bearer_token())
+    /// Drives the async SDK from the CLI's synchronous call site, like every
+    /// other seam method, but on a **dedicated no-timeout client**: a 10 GB+
+    /// parquet far outlives the shared client's 300s request timeout, so a
+    /// wall-clock cap would abort a healthy-but-slow transfer. We clone the
+    /// configured `Configuration` (same base_path, token_provider, scope
+    /// api_keys, user-agent) and swap only the reqwest client, so the upload
+    /// carries the identical auth + `X-Workspace-Id`/`X-Session-Id` headers.
+    ///
+    /// `reader` is the progress-wrapped blocking source (file or URL response);
+    /// it is bridged into the async byte stream the SDK consumes by
+    /// [`reader_into_stream`]. `content_length`, when known, is sent as
+    /// `Content-Length` so the server can reject an oversized upload up front
+    /// (the `--url` path may not know the length, hence `Option`).
+    ///
+    /// The `Content-Type` is left to the SDK default (`application/octet-stream`):
+    /// the managed-table load keys off the parquet file extension, not the
+    /// upload's recorded content type.
+    pub fn upload_stream(
+        &self,
+        reader: impl std::io::Read + Send + 'static,
+        content_length: Option<u64>,
+    ) -> Result<String, ApiError> {
+        let mut cfg = self.client.configuration().clone();
+        cfg.client = upload_reqwest_client();
+        let upload_client = Client::from_configuration(cfg);
+
+        let stream = reader_into_stream(reader);
+        let resp = rt()
+            .block_on(upload_client.upload_stream(stream, None, content_length))
+            .map_err(ApiError::from_sdk)?;
+        Ok(resp.id)
     }
 
     /// Issue an authenticated `GET {base}/v1{path}` through the SDK
@@ -1229,5 +1310,111 @@ mod tests {
         let resp = block(api.client.datasets().list(None, None)).expect("list datasets");
         assert_eq!(resp.count, 0);
         m.assert();
+    }
+
+    // --- streaming /files upload --------------------------------------------
+
+    /// A deterministic ASCII payload of `len` bytes, so a body can be matched
+    /// exactly to prove the bridged stream delivered every byte in order.
+    fn upload_payload(len: usize) -> Vec<u8> {
+        (0..len).map(|i| b'a' + (i % 26) as u8).collect()
+    }
+
+    fn upload_response_body(id: &str, size: usize) -> String {
+        format!(
+            r#"{{"id":"{id}","status":"ready","size_bytes":{size},"content_type":"application/octet-stream","created_at":"2026-06-05T00:00:00Z"}}"#
+        )
+    }
+
+    /// A sized upload (`content_length = Some`) streams the blocking reader
+    /// through the bridge to `POST /v1/files`, sends a matching `Content-Length`
+    /// (so the server can fast-fail oversize before reading), and delivers every
+    /// byte intact. The 5 MiB payload spans several `UPLOAD_CHUNK_SIZE` chunks
+    /// and overruns `UPLOAD_CHANNEL_DEPTH`, exercising the channel back-pressure.
+    #[test]
+    fn upload_stream_sends_sized_body_with_content_length() {
+        let payload = upload_payload(5 * 1024 * 1024);
+        let len = payload.len();
+
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/v1/files")
+            .match_header("Authorization", "Bearer test-jwt")
+            .match_header("X-Workspace-Id", "ws-1")
+            .match_header("Content-Type", "application/octet-stream")
+            .match_header("Content-Length", len.to_string().as_str())
+            .match_body(mockito::Matcher::Exact(
+                String::from_utf8(payload.clone()).unwrap(),
+            ))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(upload_response_body("upload_sized", len))
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let id = api
+            .upload_stream(std::io::Cursor::new(payload), Some(len as u64))
+            .expect("sized upload should succeed");
+
+        assert_eq!(id, "upload_sized");
+        m.assert();
+    }
+
+    /// With an unknown length (`content_length = None`, the `--url` source) the
+    /// body streams chunked and still arrives intact. Multiple chunks, so the
+    /// bridge is genuinely streaming rather than buffering a single read.
+    #[test]
+    fn upload_stream_streams_chunked_when_length_unknown() {
+        let payload = upload_payload(3 * 1024 * 1024);
+        let len = payload.len();
+
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/v1/files")
+            .match_body(mockito::Matcher::Exact(
+                String::from_utf8(payload.clone()).unwrap(),
+            ))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(upload_response_body("upload_chunked", len))
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let id = api
+            .upload_stream(std::io::Cursor::new(payload), None)
+            .expect("chunked upload should succeed");
+
+        assert_eq!(id, "upload_chunked");
+        m.assert();
+    }
+
+    /// A non-success status surfaces as an `ApiError::Status` carrying the body,
+    /// the same mapping every other seam call uses (so the CLI prints the server
+    /// message and the 4xx re-auth hint still fires).
+    #[test]
+    fn upload_stream_maps_error_status() {
+        let payload = upload_payload(64);
+        let len = payload.len();
+
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/v1/files")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"Upload exceeds maximum size"}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let err = api
+            .upload_stream(std::io::Cursor::new(payload), Some(len as u64))
+            .expect_err("a 400 should map to an error");
+
+        match err {
+            ApiError::Status { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+                assert!(body.contains("Upload exceeds maximum size"));
+            }
+            other => panic!("expected Status error, got {other:?}"),
+        }
     }
 }

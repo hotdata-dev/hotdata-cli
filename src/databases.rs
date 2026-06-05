@@ -327,59 +327,19 @@ fn finish_upload(
     size: Option<u64>,
     pb: &ProgressBar,
 ) -> String {
-    // The streaming `/files` upload stays on the slim raw-HTTP helper: it
-    // needs no request timeout (a 10 GB+ parquet far outlives the seam's
-    // 300s default), is one-shot (no 401-retry — the body is consumed on the
-    // first send), and the SDK's `uploads().upload` is `PathBuf`-only with no
-    // progress hook or `--url` source. We still carry the same
-    // `Authorization: Bearer <jwt>` (resolved through the seam's installed
-    // token provider) and `X-Workspace-Id` header every other call uses.
-    let upload_client = crate::raw_http::build_upload_client();
-    let url = format!("{}/files", api.api_url);
-    let mut req = upload_client
-        .post(&url)
-        .header("Content-Type", "application/octet-stream");
-    if let Some(bearer) = api.current_bearer() {
-        req = req.header("Authorization", format!("Bearer {bearer}"));
-    }
-    if let Some(ws) = api.workspace_id() {
-        req = req.header("X-Workspace-Id", ws);
-    }
-    if let Some(len) = size {
-        req = req.header("Content-Length", len);
-    }
-    let req = req.body(reqwest::blocking::Body::new(reader));
-
-    // Body is an opaque stream, so pass `None` for logging; headers
-    // (including the masked Authorization) still log.
-    let (status, resp_body) = match crate::util::send_debug(&upload_client, req, None) {
-        Ok(pair) => pair,
-        Err(e) => {
-            eprintln!("error connecting to API: {e}");
-            std::process::exit(1);
-        }
-    };
+    // Stream the body to `POST /v1/files` through the SDK seam, which drives the
+    // SDK's `upload_stream` on a dedicated no-timeout client (a 10 GB+ parquet
+    // far outlives the shared 300s request timeout) and bridges this blocking,
+    // progress-wrapped `reader` into the async byte stream the SDK consumes.
+    // `size` becomes the `Content-Length` so the server fast-fails an oversized
+    // upload before writing bytes; the `--url` source may not know it, hence
+    // `Option`. Carries the same auth + scope headers as every other SDK call.
+    let result = api.upload_stream(reader, size);
     pb.finish_and_clear();
 
-    if !status.is_success() {
-        use crossterm::style::Stylize;
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
-
-    let body: serde_json::Value = match serde_json::from_str(&resp_body) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing upload response: {e}");
-            std::process::exit(1);
-        }
-    };
-    match body["id"].as_str() {
-        Some(id) => id.to_string(),
-        None => {
-            eprintln!("error: upload response missing id");
-            std::process::exit(1);
-        }
+    match result {
+        Ok(id) => id,
+        Err(e) => e.exit(),
     }
 }
 
