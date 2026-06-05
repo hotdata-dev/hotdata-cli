@@ -274,7 +274,6 @@ fn main() {
             Commands::Query {
                 sql,
                 workspace_id,
-                connection,
                 database,
                 output,
                 command,
@@ -283,13 +282,9 @@ fn main() {
                 match command {
                     Some(QueryCommands::Status { id }) => query::poll(&id, &workspace_id, &output),
                     None => match sql {
-                        Some(sql) => query::execute(
-                            &sql,
-                            &workspace_id,
-                            connection.as_deref(),
-                            database.as_deref(),
-                            &output,
-                        ),
+                        Some(sql) => {
+                            query::execute(&sql, &workspace_id, database.as_deref(), &output)
+                        }
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
@@ -912,7 +907,7 @@ fn main() {
                     ),
                     _ => unreachable!(),
                 };
-                query::execute(&sql, &workspace_id, None, None, &output)
+                query::execute(&sql, &workspace_id, None, &output)
             }
             Commands::Queries {
                 id,

@@ -17,7 +17,7 @@ version: 0.4.0
 ## Execute SQL
 
 ```bash
-hotdata query "<sql>" [--workspace-id <workspace_id>] [--connection <connection_id>] [--output table|json|csv]
+hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--output table|json|csv]
 hotdata query status <query_run_id> [--output table|json|csv]
 ```
 

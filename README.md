@@ -216,12 +216,12 @@ hotdata context push <name> [-w <id>] [--dry-run]
 ## Query
 
 ```sh
-hotdata query "<sql>" [-w <id>] [--connection <connection_id>] [-o table|json|csv]
+hotdata query "<sql>" [-w <id>] [-d <database>] [-o table|json|csv]
 hotdata query status <query_run_id> [-o table|json|csv]
 ```
 
 - Default output is `table`, which prints results with row count and execution time.
-- Use `--connection` to scope the query to a specific connection.
+- Use `-d`/`--database` to run the query against a specific managed database.
 - Long-running queries automatically fall back to async execution and return a `query_run_id`.
 - Use `hotdata query status <query_run_id>` to poll for results.
 - Exit codes for `query status`: `0` = succeeded, `1` = failed, `2` = still running (poll again).

@@ -34,10 +34,6 @@ pub enum Commands {
         #[arg(long, short = 'w')]
         workspace_id: Option<String>,
 
-        /// Scope query to a specific connection
-        #[arg(long)]
-        connection: Option<String>,
-
         /// Run query against a specific managed database (overrides the current database set via `databases set`)
         #[arg(long, short = 'd')]
         database: Option<String>,
