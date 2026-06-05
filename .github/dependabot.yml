@@ -1,0 +1,15 @@
+# Keeps the CLI current with published Hotdata SDK releases. Scoped to the
+# `hotdata` crate so unrelated transitive deps don't churn; when a new version
+# is published to crates.io, Dependabot opens a `chore(deps)` PR (gated by CI).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: "hotdata"
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
