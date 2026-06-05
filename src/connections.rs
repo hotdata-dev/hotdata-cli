@@ -210,8 +210,8 @@ pub fn resolve_connection_id(api: &Api, name_or_id: &str) -> String {
     // matches — prefer it over any stale connection entry with the same name.
     if let Some(ws) = api.workspace_id()
         && let Some(active_id) = crate::config::load_current_database("default", ws)
-        && let Some(active_db) =
-            none_if_404(crate::databases::get_database(api, &active_id)).unwrap_or_else(|e| e.exit())
+        && let Some(active_db) = none_if_404(crate::databases::get_database(api, &active_id))
+            .unwrap_or_else(|e| e.exit())
         && (active_db.default_catalog.as_deref() == Some(name_or_id)
             || active_db.name.as_deref() == Some(name_or_id))
     {

@@ -281,8 +281,10 @@ fn create_database_typed_request(
     tables: &[String],
     expires_at: Option<&str>,
 ) -> hotdata::models::CreateDatabaseRequest {
-    serde_json::from_value(create_database_request(name, catalog, schema, tables, expires_at))
-        .expect("create_database_request always emits a valid CreateDatabaseRequest body")
+    serde_json::from_value(create_database_request(
+        name, catalog, schema, tables, expires_at,
+    ))
+    .expect("create_database_request always emits a valid CreateDatabaseRequest body")
 }
 
 pub fn managed_table_load_path(connection_id: &str, schema: &str, table: &str) -> String {
@@ -902,9 +904,7 @@ pub fn tables_load(
     let active_id = crate::config::load_current_database("default", workspace_id);
     let lookup_key = match active_id.as_deref() {
         Some(id) => {
-            if let Some(active) =
-                none_if_404(get_database(&api, id)).unwrap_or_else(|e| e.exit())
-            {
+            if let Some(active) = none_if_404(get_database(&api, id)).unwrap_or_else(|e| e.exit()) {
                 if active.default_catalog.as_deref() == Some(database.as_str())
                     || active.name.as_deref() == Some(database.as_str())
                 {
