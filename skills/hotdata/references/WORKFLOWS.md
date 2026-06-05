@@ -10,7 +10,7 @@ Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when
 
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
-| Login, workspaces, connections, tables, context, sandboxes | **`hotdata`** | `auth`, `workspaces`, `connections`, `tables`, `context`, `sandbox` |
+| Login, workspaces, connections, tables, context | **`hotdata`** | `auth`, `workspaces`, `connections`, `tables`, `context` |
 | Upload CSV/JSON/URL or SQL-derived tables | **`hotdata`** | `datasets create`, `databases …` (see below) |
 | SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** | `query`, `queries`, `results`, `datasets create --sql` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** | `search`, `indexes create`, `embedding-providers` |
@@ -20,7 +20,6 @@ Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when
 |--------|------------------|
 | **Model** | This file — [Model](#model) |
 | **Upload path (datasets vs databases)** | This file — [Datasets vs managed databases](#datasets-vs-managed-databases) |
-| **Sandboxes** | This file — [Sandboxes and datasets](#sandboxes-and-datasets) |
 | **History / Chain** | **`hotdata-analytics`** — [WORKFLOWS.md](../../hotdata-analytics/references/WORKFLOWS.md) |
 | **Search indexes** | **`hotdata-search`** — [INDEXES.md](../../hotdata-search/references/INDEXES.md) |
 | **Epic flows** | This file — [Epic flows](#epic-flows) |
@@ -56,8 +55,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
    - [ ] **Managed DB:** `hotdata databases create --name … --table …` then `hotdata databases tables load … --file ./….parquet`
 3. [ ] Copy **`full_name`** from create output (or `datasets list` **FULL NAME**)
 4. [ ] Chain: `hotdata query "SELECT … FROM <full_name> WHERE …"`
-5. [ ] (Sandbox) Use `datasets.<sandbox_id>.<table>` and active sandbox or `hotdata sandbox <id> run …`
-6. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
+5. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
 
 **Detail:** [hotdata-analytics WORKFLOWS — Chain](../../hotdata-analytics/references/WORKFLOWS.md#chain)
 
@@ -170,22 +168,6 @@ hotdata databases list
 ```
 
 Use `hotdata tables list` for discovery; do not query `information_schema` for that.
-
----
-
-## Sandboxes and datasets
-
-Use this when work is isolated in a **sandbox** (exploratory runs, ephemeral datasets).
-
-**Active sandbox vs `sandbox run`:** After `sandbox new` or `sandbox set`, run **`datasets create`**, **`query`**, etc. **directly**. **`sandbox run <cmd>`** (no id before `run`) **always creates a new sandbox**.
-
-**Qualified names:** Workspace datasets → **`datasets.main.<table>`**. Sandbox datasets → **`datasets.<sandbox_id>.<table>`**. Use **`full_name`** from create or **FULL NAME** from `datasets list`.
-
-**Access:** Sandbox-only tables need active sandbox config or **`hotdata sandbox <id> run …`**.
-
-**SQL:** Quote mixed-case columns with double quotes.
-
-**Listing:** `datasets list` returns all workspace datasets; use **FULL NAME** to spot sandbox vs `main` rows.
 
 ---
 

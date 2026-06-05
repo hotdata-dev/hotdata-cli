@@ -84,30 +84,20 @@ Note the printed **`full_name`** (e.g. `datasets.main.chain_revenue_slice` or `c
 
 ### 3. Chain query
 
-Query using that name — do not hardcode `datasets.main` if the schema segment is a sandbox id:
+Query using the actual `full_name` from create or list — do not hardcode `datasets.main`; use whatever qualified name was printed:
 
 ```bash
 hotdata datasets list
 hotdata query "SELECT * FROM datasets.main.chain_revenue_slice WHERE ..."
-# Sandbox example (use actual full_name from create or list):
-# hotdata query "SELECT * FROM datasets.s_ufmblmvq.chain_revenue_slice WHERE ..."
 # Managed database:
 # hotdata query "SELECT * FROM chain_db.public.revenue_slice WHERE ..."
 ```
-
-### Sandbox context
-
-For **sandbox-scoped** chain tables:
-
-- Qualified name is **`datasets.<sandbox_id>.<table>`**, not `datasets.main`.
-- Run queries with **active sandbox** in config (`hotdata sandbox set`) **or** inside **`hotdata sandbox <sandbox_id> run hotdata query "…"`**.
-- Without sandbox context, you may get **access denied** on sandbox-only tables.
 
 ### Naming and documentation
 
 - Prefer predictable `--table-name` values: `chain_<topic>_<YYYYMMDD>`.
 - Record long-lived chains in **context:DATAMODEL → Derived tables (Chain)** with the **full** SQL name you use (`datasets.…` or `database.schema.table`).
-- Promote join/grain findings to **context:DATAMODEL** when they should outlive the sandbox (**`hotdata`** skill).
+- Promote join/grain findings to **context:DATAMODEL** when they should be shared or persisted (**`hotdata`** skill).
 
 ### Guardrails
 
