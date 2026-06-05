@@ -24,12 +24,6 @@
 //! the SDK passes through unchanged; the CLI keeps full ownership of
 //! session.json and the refresh table.
 
-// The wrapper is wired into command modules incrementally (one commit per
-// module). Until every call site is migrated, parts of this seam are unused;
-// the allow keeps the build warning-free through the transition and is removed
-// once api.rs is retired.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -470,11 +464,6 @@ impl Api {
         }
     }
 
-    /// Override the database id for a single query without touching config.
-    pub fn with_database(mut self, database_id: &str) -> Self {
-        self.database_id = Some(database_id.to_string());
-        self
-    }
 
     pub fn workspace_id(&self) -> Option<&str> {
         self.workspace_id.as_deref()
@@ -1139,7 +1128,7 @@ mod tests {
             .with_body(r#"{"ok":true}"#)
             .create();
 
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1")).with_database("db-1");
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), None, Some("db-1"));
         let (status, _body) = api
             .post_raw("/query", &serde_json::json!({"sql": "select 1"}))
             .expect("post_raw should succeed");

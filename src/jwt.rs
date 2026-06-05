@@ -378,9 +378,6 @@ pub fn ensure_access_token(
 /// blocking CLI function on every request so session.json, the 30s leeway
 /// table, no-clobber for Flag/Env, and clear-on-dead-refresh stay owned by
 /// the CLI — the SDK never re-implements JWT exchange.
-// Wired into command modules via `sdk::Api::new` incrementally; unused until
-// the first module migrates off the legacy ApiClient.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum AuthMode {
     /// `HOTDATA_DATABASE_TOKEN` env var (a `databases run` child).
@@ -407,13 +404,11 @@ pub enum AuthMode {
 /// own `TokenManager` is bypassed for the user-JWT path and the CLI keeps
 /// full ownership of auth. The blocking functions run inside
 /// `spawn_blocking` so they don't stall the wrapper's async runtime.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CliTokenProvider {
     mode: AuthMode,
 }
 
-#[allow(dead_code)]
 impl CliTokenProvider {
     pub fn new(mode: AuthMode) -> Self {
         Self { mode }
