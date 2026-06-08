@@ -68,6 +68,10 @@ jobs:
   # aren't injected), so this job stays green without credentials.
   integration:
     runs-on: ubuntu-latest
+    # Dependabot runs can't read these Actions secrets/vars, so the suite would
+    # skip every scenario and pass green. The dedicated Dependabot Integration
+    # Tests workflow runs the real suite via the Dependabot secrets store instead.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Install Rust

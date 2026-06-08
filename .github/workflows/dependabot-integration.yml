@@ -1,23 +1,28 @@
 name: Dependabot Integration Tests
 
-# Dependabot's pull_request runs are sandboxed: secrets and vars resolve empty,
-# so the normal Integration Tests workflow skips every credentialed scenario and
-# a behavioral regression in a bump would go unnoticed. This workflow runs the
-# real integration suite for Dependabot bumps via pull_request_target, which
-# executes in the base-repo context where the test credentials are available.
+# Dependabot-triggered runs are sandboxed by GitHub: a read-only GITHUB_TOKEN and
+# access only to the *Dependabot* secrets store — Actions secrets and variables
+# resolve to empty strings, and this holds for pull_request and pull_request_target
+# alike (the restriction keys on the PR author being dependabot[bot], not on the
+# trigger). So the normal Integration Tests workflow skips every credentialed
+# scenario on a bump and reports green without testing anything.
 #
-# Security posture (pull_request_target runs trusted-context with secrets):
-#   - Gated to dependabot[bot], so no fork PR can trigger a credentialed run.
-#   - permissions: contents: read only — the suite talks to the Hotdata API, not
-#     GitHub, so no writable GITHUB_TOKEN is ever exposed to the build.
-#   - No shared cargo cache: building the bumped crate runs its build scripts, so
-#     we never persist a cache other workflows could restore.
-# The bumped dependency's code still runs with the (test-scoped) API key present;
-# that is inherent to live coverage and is bounded to Dependabot-authored runs.
+# This job runs the real suite for Dependabot bumps by reading all four test
+# credentials from `secrets.*`, which on a Dependabot run resolve to the
+# Dependabot store. They must be set there:
+#   Settings -> Secrets and variables -> Dependabot
+#     HOTDATA_SDK_TEST_API_URL
+#     HOTDATA_SDK_TEST_API_KEY
+#     HOTDATA_SDK_TEST_WORKSPACE_ID
+#     HOTDATA_SDK_TEST_CONNECTION_ID
+# The non-secret three live in `vars` for normal runs but ride along here as
+# secrets because Dependabot has no variables store. The guard below fails the
+# job loudly if a credential is missing, so it can never pass green while
+# silently skipping every scenario.
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -30,20 +35,23 @@ jobs:
   integration:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HOTDATA_SDK_TEST_API_URL: ${{ secrets.HOTDATA_SDK_TEST_API_URL }}
+      HOTDATA_SDK_TEST_API_KEY: ${{ secrets.HOTDATA_SDK_TEST_API_KEY }}
+      HOTDATA_SDK_TEST_WORKSPACE_ID: ${{ secrets.HOTDATA_SDK_TEST_WORKSPACE_ID }}
+      HOTDATA_SDK_TEST_CONNECTION_ID: ${{ secrets.HOTDATA_SDK_TEST_CONNECTION_ID }}
     steps:
-      # pull_request_target defaults to the base ref; check out the PR head so we
-      # build against the bumped Cargo.lock.
+      - name: Require Dependabot credentials
+        run: |
+          test -n "$HOTDATA_SDK_TEST_API_KEY" || { echo "::error::HOTDATA_SDK_TEST_API_KEY is empty — set it as a *Dependabot* secret (Settings -> Secrets and variables -> Dependabot)."; exit 1; }
+          test -n "$HOTDATA_SDK_TEST_WORKSPACE_ID" || { echo "::error::HOTDATA_SDK_TEST_WORKSPACE_ID is empty — set it as a *Dependabot* secret."; exit 1; }
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      # No cargo cache: building the bumped crate runs its build scripts, so we
+      # never persist a cache a later trusted run could restore.
       - name: Run integration tests
-        env:
-          HOTDATA_SDK_TEST_API_URL: ${{ vars.HOTDATA_SDK_TEST_API_URL }}
-          HOTDATA_SDK_TEST_API_KEY: ${{ secrets.HOTDATA_SDK_TEST_API_KEY }}
-          HOTDATA_SDK_TEST_WORKSPACE_ID: ${{ vars.HOTDATA_SDK_TEST_WORKSPACE_ID }}
-          HOTDATA_SDK_TEST_CONNECTION_ID: ${{ vars.HOTDATA_SDK_TEST_CONNECTION_ID }}
         # --no-fail-fast runs every scenario binary even after one fails, so a
         # red run surfaces all failing scenarios at once.
         run: cargo test --test '*' --no-fail-fast -- --nocapture
