@@ -16,6 +16,10 @@ jobs:
   # doesn't cover them, e.g. datasets/secrets/saved-queries).
   scenario-parity:
     runs-on: ubuntu-latest
+    # Dependabot PRs run with only Dependabot secrets, so the GitHub App
+    # credentials needed to fetch the private scenarios manifest are absent.
+    # A dependency bump can't change scenario/test-file parity anyway, so skip.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
       - name: Generate GitHub App token
         id: app-token
