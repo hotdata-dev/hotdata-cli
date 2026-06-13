@@ -78,7 +78,7 @@ toml = "0.8"
 homebrew_formula = "hotdata-dev/tap/cli"
 
 [package.metadata.release]
-pre-release-hook = ["git-cliff", "-o", "CHANGELOG.md", "--tag", "v{{version}}" ]
+pre-release-hook = ["git-cliff", "--unreleased", "--tag", "v{{version}}", "--prepend", "CHANGELOG.md"]
 publish = false
 pre-release-replacements = [
   { file = "skills/hotdata/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
