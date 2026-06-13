@@ -1,3 +1,75 @@
+## [0.4.1] - 2026-06-13
+
+### 🚀 Features
+
+- *(sdk)* Add sync wrapper and CliTokenProvider
+- *(query)* Remove dead --connection flag
+
+### 🐛 Bug Fixes
+
+- *(sdk)* Avoid double /v1 and scope by database
+- *(sdk)* Restore sandbox scope, guard, timeout
+- *(sdk)* Guard negative numeric casts
+- *(sdk)* Set hotdata-cli user-agent header
+- *(sdk)* Drop dead X-Sandbox-Id header
+- *(ci)* Skip scenario-parity for Dependabot PRs
+- *(release)* Prepend unreleased changelog instead of full regen
+
+### 💼 Other
+
+- Pin third-party github actions to commit SHAs
+- *(deps)* Add hotdata sdk, tokio, async-trait
+- *(deps)* Pin hotdata sdk to merged rev
+- *(deps)* Consolidate CLI on reqwest 0.13
+- Add cargo fmt check job
+- *(deps)* Pin sdk-rust to upload_stream content_length rev
+- Remove sandbox cli commands
+- *(deps)* Use published hotdata 0.1.1 from crates.io
+- *(ci)* Add Dependabot to track published hotdata SDK
+
+### 🚜 Refactor
+
+- *(http)* Add slim raw-http helper
+- *(workspace)* Use sdk workspaces handle
+- *(jobs)* Use sdk jobs handle
+- *(tables)* Use sdk information_schema
+- *(queries)* Use sdk query_runs handle
+- *(results)* Use sdk results handle
+- *(embeddings)* Use sdk providers handle
+- *(context)* Use sdk database_context
+- *(datasets)* Use sdk datasets handle
+- *(connections)* Migrate connections_new
+- *(connections)* Use sdk connections handle
+- *(sandbox)* Use sdk sandboxes handle
+- *(indexes)* Use sdk indexes handle
+- *(query)* Poll+arrow via sdk handles
+- *(databases)* Use sdk databases handle
+- *(api)* Remove legacy ApiClient
+- *(query)* Submit via sdk submit_query
+- *(sdk)* Extract apply_seam_headers helper
+- *(sdk)* Drop stale dead_code allows
+- *(query)* Decode results via SDK get_result_arrow (arrow v55)
+- Migrate raw HTTP to typed SDK (#131)
+- *(databases)* Clarify output DTOs, use From trait
+- Drop dead Deserialize derives on output DTOs
+- *(databases)* Stream /files upload via SDK upload_stream
+- *(databases)* Drop redundant upload content-type param
+
+### 📚 Documentation
+
+- *(sdk)* Drop migration-history notes from comments
+- Describe current behavior, not change history, in comments
+
+### 🎨 Styling
+
+- Clear clippy lints in migrated modules
+- Apply cargo fmt to codebase
+- Apply rustfmt
+
+### 🧪 Testing
+
+- *(sdk)* Cover generic HTTP status preservation in from_arrow
+- *(cli)* Add env-gated scenario integration tests
 ## [0.4.0] - 2026-06-04
 
 ### 🚀 Features
