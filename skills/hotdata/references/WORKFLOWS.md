@@ -52,7 +52,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 1. [ ] Run base SQL: `hotdata query "SELECT …"` — poll `hotdata query status <id>` if async
 2. [ ] Materialize one way:
    - [ ] **Dataset:** `hotdata datasets create --name <name> [--description "…"] --sql "SELECT …"`
-   - [ ] **Managed DB:** `hotdata databases create --name … --table …` then `hotdata databases tables load … --file ./….parquet`
+   - [ ] **Managed DB:** `hotdata databases create --catalog <alias> --table <name>` then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
 3. [ ] Copy **`full_name`** from create output (or `datasets list` **FULL NAME**)
 4. [ ] Chain: `hotdata query "SELECT … FROM <full_name> WHERE …"`
 5. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session

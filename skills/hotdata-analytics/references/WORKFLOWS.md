@@ -66,7 +66,7 @@ hotdata query "SELECT ..."
 
 Land a smaller table — pick one:
 
-**Datasets** (CSV/JSON/URL/SQL snapshot → `datasets.<schema>.<table>`):
+**Datasets** (SQL query or saved query → `datasets.<schema>.<table>`):
 
 ```bash
 hotdata datasets create --name chain_revenue_slice [--description "chain revenue slice"] --sql "SELECT ..."
