@@ -42,26 +42,24 @@ hotdata search "<query>" --table <connection.schema.table> [--type vector] [--co
 
 ## Indexes (BM25 and vector)
 
-Indexes attach to a **connection table** (`--connection-id` + `--schema` + `--table`) or a **dataset** (`--dataset-id`). Scopes are mutually exclusive for create/delete.
+Indexes attach to a **managed database table** (`--catalog`) or a **dataset** (`--dataset-id`). Create is not supported on raw connection tables via CLI. `list` and `delete` accept `--connection-id` for connection-scoped operations.
 
 ```bash
-# List — workspace scan on connection tables (filter with -c / --schema / --table)
+# List — workspace scan (filter by connection, schema, table, or dataset)
 hotdata indexes list [--connection-id <id>] [--schema <schema>] [--table <table>] [--workspace-id <ws>] [--output table|json|yaml]
 hotdata indexes list --dataset-id <dataset_id> [--workspace-id <ws>] [--output table|json|yaml]
 
-# Managed database (catalog alias — uses the active database when the catalog matches)
+# Create — managed database table (catalog alias)
 hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
   --column <col> --type bm25|vector \
   [--name <name>] [--metric l2|cosine|dot] [--async] \
   [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 
-# Connection table (raw connection ID)
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
-  --column <col> --type bm25|vector [--name <name>] ...
-hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
-
-# Dataset
+# Create — dataset
 hotdata indexes create --dataset-id <dataset_id> --column <col> --type bm25|vector [--name <name>] ...
+
+# Delete — connection table or dataset
+hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
 hotdata indexes delete --dataset-id <dataset_id> --name <name>
 ```
 
