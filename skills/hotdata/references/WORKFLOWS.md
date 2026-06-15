@@ -11,7 +11,7 @@ Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
 | Login, workspaces, connections, tables, context | **`hotdata`** | `auth`, `workspaces`, `connections`, `tables`, `context` |
-| Upload CSV/JSON/URL or SQL-derived tables | **`hotdata`** | `datasets create`, `databases …` (see below) |
+| Load parquet files or materialize SQL tables | **`hotdata`** | `databases create` + `databases load`, `datasets create --sql` |
 | SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** | `query`, `queries`, `results`, `datasets create --sql` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** | `search`, `indexes create`, `embedding-providers` |
 | Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** | `query` with `ST_*`, WKB columns |
@@ -84,14 +84,14 @@ Both land queryable tables in the workspace; the path depends on **format** and 
 
 | | **Datasets** | **Managed databases** |
 |---|-------------|------------------------|
-| **Best for** | CSV, JSON, URL import, stdin, SQL/query snapshot | Parquet files you own; catalog-style `name.schema.table` |
-| **SQL prefix** | `datasets.<schema>.<table>` (often `datasets.main.*`) | `<database>.<schema>.<table>` (database = connection name) |
-| **CLI** | `hotdata datasets create` | `hotdata databases create` + `databases tables load` |
-| **Declare schema up front** | No | Yes — `--table` on create (required before load on current API) |
-| **Parquet** | Yes (`--file`, `--url`, `--upload-id`) | **Only** parquet on `tables load` |
-| **Refresh upstream** | `datasets refresh` (URL/query sources) | Replace via `tables load` again |
+| **Best for** | SQL or saved-query snapshot | Parquet files you own; catalog-style `alias.schema.table` |
+| **SQL prefix** | `datasets.<schema>.<table>` (often `datasets.main.*`) | `<catalog>.<schema>.<table>` where catalog = `--catalog` alias |
+| **CLI** | `hotdata datasets create --sql “…”` | `hotdata databases create --catalog` + `databases load` |
+| **Declare schema up front** | No | Yes — `--table` on create (auto-declared on first `databases load`) |
+| **Parquet file uploads** | Not supported via CLI | `databases load --file` / `--url` / `--upload-id` |
+| **Refresh** | `datasets refresh` (re-runs source query) | Replace via `databases load` again |
 
-**Rule of thumb:** CSV/JSON or “upload a file from a URL” → **datasets**. Parquet catalog you control as **`mydb.public.orders`** → **databases**.
+**Rule of thumb:** SQL or saved-query materialization → **datasets**. Parquet files you control as **`mydb.public.orders`** → **databases**.
 
 ### Workflow: dataset upload and query
 
