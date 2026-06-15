@@ -66,11 +66,11 @@ hotdata query "SELECT ..."
 
 Land a smaller table — pick one:
 
-**Datasets** (CSV/JSON/URL/SQL snapshot → `datasets.<schema>.<table>`):
+**Datasets** (SQL query or saved query → `datasets.<schema>.<table>`):
 
 ```bash
-hotdata datasets create --label "chain revenue slice" --sql "SELECT ..." [--table-name chain_revenue_slice]
-hotdata datasets create --label "from saved" --query-id <query_id> [--table-name ...]
+hotdata datasets create --name chain_revenue_slice [--description "chain revenue slice"] --sql "SELECT ..."
+hotdata datasets create --name chain_from_saved [--description "from saved"] --query-id <query_id>
 ```
 
 **Managed database** (parquet → `<database>.<schema>.<table>`):
@@ -95,7 +95,7 @@ hotdata query "SELECT * FROM datasets.main.chain_revenue_slice WHERE ..."
 
 ### Naming and documentation
 
-- Prefer predictable `--table-name` values: `chain_<topic>_<YYYYMMDD>`.
+- Prefer predictable `--name` values: `chain_<topic>_<YYYYMMDD>`.
 - Record long-lived chains in **context:DATAMODEL → Derived tables (Chain)** with the **full** SQL name you use (`datasets.…` or `database.schema.table`).
 - Promote join/grain findings to **context:DATAMODEL** when they should be shared or persisted (**`hotdata`** skill).
 

@@ -11,7 +11,7 @@ Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
 | Login, workspaces, connections, tables, context | **`hotdata`** | `auth`, `workspaces`, `connections`, `tables`, `context` |
-| Upload CSV/JSON/URL or SQL-derived tables | **`hotdata`** | `datasets create`, `databases …` (see below) |
+| Load parquet files or materialize SQL tables | **`hotdata`** | `databases create` + `databases load`, `datasets create --sql` |
 | SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** | `query`, `queries`, `results`, `datasets create --sql` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** | `search`, `indexes create`, `embedding-providers` |
 | Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** | `query` with `ST_*`, WKB columns |
@@ -51,8 +51,8 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 1. [ ] Run base SQL: `hotdata query "SELECT …"` — poll `hotdata query status <id>` if async
 2. [ ] Materialize one way:
-   - [ ] **Dataset:** `hotdata datasets create --label "…" --sql "SELECT …" [--table-name …]`
-   - [ ] **Managed DB:** `hotdata databases create --name … --table …` then `hotdata databases tables load … --file ./….parquet`
+   - [ ] **Dataset:** `hotdata datasets create --name <name> [--description "…"] --sql "SELECT …"`
+   - [ ] **Managed DB:** `hotdata databases create --catalog <alias> --table <name>` then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
 3. [ ] Copy **`full_name`** from create output (or `datasets list` **FULL NAME**)
 4. [ ] Chain: `hotdata query "SELECT … FROM <full_name> WHERE …"`
 5. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
@@ -84,25 +84,26 @@ Both land queryable tables in the workspace; the path depends on **format** and 
 
 | | **Datasets** | **Managed databases** |
 |---|-------------|------------------------|
-| **Best for** | CSV, JSON, URL import, stdin, SQL/query snapshot | Parquet files you own; catalog-style `name.schema.table` |
-| **SQL prefix** | `datasets.<schema>.<table>` (often `datasets.main.*`) | `<database>.<schema>.<table>` (database = connection name) |
-| **CLI** | `hotdata datasets create` | `hotdata databases create` + `databases tables load` |
-| **Declare schema up front** | No | Yes — `--table` on create (required before load on current API) |
-| **Parquet** | Yes (`--file`, `--url`, `--upload-id`) | **Only** parquet on `tables load` |
-| **Refresh upstream** | `datasets refresh` (URL/query sources) | Replace via `tables load` again |
+| **Best for** | SQL or saved-query snapshot | Parquet files you own; catalog-style `alias.schema.table` |
+| **SQL prefix** | `datasets.<schema>.<table>` (often `datasets.main.*`) | `<catalog>.<schema>.<table>` where catalog = `--catalog` alias |
+| **CLI** | `hotdata datasets create --sql “…”` | `hotdata databases create --catalog` + `databases load` |
+| **Declare schema up front** | No | Yes — `--table` on create (auto-declared on first `databases load`) |
+| **Parquet file uploads** | Not supported via CLI | `databases load --file` / `--url` / `--upload-id` |
+| **Refresh** | `datasets refresh` (re-runs source query) | Replace via `databases load` again |
 
-**Rule of thumb:** CSV/JSON or “upload a file from a URL” → **datasets**. Parquet catalog you control as **`mydb.public.orders`** → **databases**.
+**Rule of thumb:** SQL or saved-query materialization → **datasets**. Parquet files you control as **`mydb.public.orders`** → **databases**.
 
 ### Workflow: dataset upload and query
 
 1. Authenticate and set workspace (`hotdata auth`, `hotdata workspaces set` if needed).
-2. Create the dataset (one source):
+2. Create the dataset — `--name` is the SQL table name (required); `--description` is the display label (optional):
 
    ```bash
-   hotdata datasets create --label "Orders" --file ./orders.csv
-   # or: --url "https://example.com/orders.parquet"
-   # or: --sql "SELECT ..."   # materialize from a query
+   hotdata datasets create --name orders --sql "SELECT ..."
+   # or: --query-id <saved_query_id>
    ```
+
+   For parquet file uploads use **managed databases** instead (see below).
 
 3. Note the printed **`full_name`** (e.g. `datasets.main.orders`) — do not assume `datasets.main`.
 4. Inspect if needed: `hotdata datasets list`, `hotdata datasets <dataset_id>`.
