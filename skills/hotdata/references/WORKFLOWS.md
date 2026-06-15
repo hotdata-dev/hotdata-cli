@@ -51,7 +51,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 1. [ ] Run base SQL: `hotdata query "SELECT …"` — poll `hotdata query status <id>` if async
 2. [ ] Materialize one way:
-   - [ ] **Dataset:** `hotdata datasets create --label "…" --sql "SELECT …" [--table-name …]`
+   - [ ] **Dataset:** `hotdata datasets create --name <name> [--description "…"] --sql "SELECT …"`
    - [ ] **Managed DB:** `hotdata databases create --name … --table …` then `hotdata databases tables load … --file ./….parquet`
 3. [ ] Copy **`full_name`** from create output (or `datasets list` **FULL NAME**)
 4. [ ] Chain: `hotdata query "SELECT … FROM <full_name> WHERE …"`
@@ -96,13 +96,14 @@ Both land queryable tables in the workspace; the path depends on **format** and 
 ### Workflow: dataset upload and query
 
 1. Authenticate and set workspace (`hotdata auth`, `hotdata workspaces set` if needed).
-2. Create the dataset (one source):
+2. Create the dataset — `--name` is the SQL table name (required); `--description` is the display label (optional):
 
    ```bash
-   hotdata datasets create --label "Orders" --file ./orders.csv
-   # or: --url "https://example.com/orders.parquet"
-   # or: --sql "SELECT ..."   # materialize from a query
+   hotdata datasets create --name orders --sql "SELECT ..."
+   # or: --query-id <saved_query_id>
    ```
+
+   For parquet file uploads use **managed databases** instead (see below).
 
 3. Note the printed **`full_name`** (e.g. `datasets.main.orders`) — do not assume `datasets.main`.
 4. Inspect if needed: `hotdata datasets list`, `hotdata datasets <dataset_id>`.
