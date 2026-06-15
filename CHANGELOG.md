@@ -1,3 +1,8 @@
+## [0.4.2] - 2026-06-15
+
+### 📚 Documentation
+
+- *(skills)* Fix stale datasets create flags and add --no-input (#153)
 ## [0.4.1] - 2026-06-13
 
 ### 🚀 Features
