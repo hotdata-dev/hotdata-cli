@@ -3,6 +3,7 @@
 ### 🚀 Features
 
 - Follow truncated inline query results to full set
+- Auto-retry queries shed under load (HTTP 429 `OVERLOADED`), honoring `Retry-After`
 
 ### 🐛 Bug Fixes
 
@@ -10,7 +11,7 @@
 
 ### 💼 Other
 
-- Bump hotdata SDK to 0.3.0
+- Bump hotdata SDK to 0.3.1
 ## [0.4.2] - 2026-06-15
 
 ### 📚 Documentation
