@@ -1,7 +1,7 @@
 ---
 name: hotdata
 description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, datasets, tables, basic SQL query, database context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "list datasets", "create a dataset", "execute a query", "database context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
-version: 0.4.2
+version: 0.5.0
 ---
 
 # Hotdata CLI Skill
@@ -323,6 +323,8 @@ hotdata query status <query_run_id> [--output table|json|csv]
 - Use `hotdata tables list` for discovery — not `information_schema` via `query`.
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes.
 - Async runs return `query_run_id` → poll with `query status` (do not re-run the same heavy SQL).
+- **Large results are complete, not a preview.** The server returns inline rows only up to a bounded cap and persists the full set out-of-band; `hotdata query` transparently fetches the full result, so the printed rows and row count are the complete set. (If the full result can't be retrieved, the CLI prints the preview and a `warning:` to stderr.)
+- **Backpressure is handled.** Under heavy concurrent load the server may shed a query with HTTP 429 (`OVERLOADED`); the CLI auto-retries (honoring `Retry-After`) before surfacing an error — no manual retry needed.
 - **OLAP** (aggregations, history, Chain, sorted indexes): **`hotdata-analytics`** skill.
 - **Search** (BM25, vector): **`hotdata-search`** skill.
 

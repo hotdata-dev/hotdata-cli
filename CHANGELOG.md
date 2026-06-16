@@ -1,3 +1,19 @@
+## [0.5.0] - 2026-06-16
+
+### 🚀 Features
+
+- Follow truncated inline query results to full set
+- Auto-retry queries shed under load (HTTP 429 `OVERLOADED`), honoring `Retry-After`
+
+### 🐛 Bug Fixes
+
+- Preserve inline warning and timing when following truncation
+- Stop using deprecated `QueryResponse.row_count`
+
+### 💼 Other
+
+- Bump hotdata SDK to 0.3.1
+
 ## [0.4.2] - 2026-06-15
 
 ### 📚 Documentation
