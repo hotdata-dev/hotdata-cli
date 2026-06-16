@@ -1,3 +1,13 @@
+## [0.5.0] - 2026-06-16
+
+### 🐛 Bug Fixes
+
+- Follow truncated inline query results to full set
+- Preserve inline warning and timing when following truncation
+
+### 💼 Other
+
+- Bump hotdata SDK to 0.2.0
 ## [0.4.2] - 2026-06-15
 
 ### 📚 Documentation
