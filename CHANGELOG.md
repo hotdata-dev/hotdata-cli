@@ -1,8 +1,11 @@
 ## [0.5.0] - 2026-06-16
 
-### 🐛 Bug Fixes
+### 🚀 Features
 
 - Follow truncated inline query results to full set
+
+### 🐛 Bug Fixes
+
 - Preserve inline warning and timing when following truncation
 
 ### 💼 Other
