@@ -223,7 +223,15 @@ fn resolve_inline(api: &Api, resp: hotdata::models::QueryResponse) -> QueryRespo
         return query_response_from_sdk(resp);
     }
     match resp.result_id.clone().flatten() {
-        Some(result_id) => fetch_arrow_result(api, &result_id),
+        Some(result_id) => {
+            // The Arrow fetch returns only schema + rows; carry the query-level
+            // warning and execution time the inline response reported, which
+            // `arrow_result_to_query_response` otherwise hardcodes to None.
+            let mut full = fetch_arrow_result(api, &result_id);
+            full.warning = resp.warning.flatten();
+            full.execution_time_ms = Some(resp.execution_time_ms.max(0) as u64);
+            full
+        }
         None => {
             let mut preview = query_response_from_sdk(resp);
             let note = "result truncated to a preview; full result unavailable (persistence not initiated)";
@@ -487,13 +495,22 @@ mod tests {
             .with_body(ipc)
             .create();
 
+        // The inline response carries a query-level warning and execution time
+        // (execution_time_ms=5 from `truncated_preview`) that must survive the
+        // Arrow follow, which otherwise hardcodes them to None.
+        let mut resp = truncated_preview(Some("res_1"));
+        resp.warning = Some(Some("approximate aggregate".to_string()));
+
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
-        let resolved = resolve_inline(&api, truncated_preview(Some("res_1")));
+        let resolved = resolve_inline(&api, resp);
 
         // Followed the truncated preview to the full 3-row result.
         assert_eq!(resolved.row_count, 3);
         assert_eq!(resolved.rows.len(), 3);
         assert_eq!(resolved.result_id.as_deref(), Some("res_1"));
+        // Inline warning + timing carried through, not dropped by the fetch.
+        assert_eq!(resolved.warning.as_deref(), Some("approximate aggregate"));
+        assert_eq!(resolved.execution_time_ms, Some(5));
         m.assert();
     }
 
