@@ -8,6 +8,7 @@
 ### 🐛 Bug Fixes
 
 - Preserve inline warning and timing when following truncation
+- Stop using deprecated `QueryResponse.row_count`
 
 ### 💼 Other
 
