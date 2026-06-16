@@ -323,6 +323,8 @@ hotdata query status <query_run_id> [--output table|json|csv]
 - Use `hotdata tables list` for discovery — not `information_schema` via `query`.
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes.
 - Async runs return `query_run_id` → poll with `query status` (do not re-run the same heavy SQL).
+- **Large results are complete, not a preview.** The server returns inline rows only up to a bounded cap and persists the full set out-of-band; `hotdata query` transparently fetches the full result, so the printed rows and row count are the complete set. (If the full result can't be retrieved, the CLI prints the preview and a `warning:` to stderr.)
+- **Backpressure is handled.** Under heavy concurrent load the server may shed a query with HTTP 429 (`OVERLOADED`); the CLI auto-retries (honoring `Retry-After`) before surfacing an error — no manual retry needed.
 - **OLAP** (aggregations, history, Chain, sorted indexes): **`hotdata-analytics`** skill.
 - **Search** (BM25, vector): **`hotdata-search`** skill.
 
