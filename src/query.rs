@@ -14,12 +14,20 @@ pub struct QueryResponse {
 
 /// Convert the SDK's inline `QueryResponse` (200 path) into the CLI's display
 /// model. The async path decodes Arrow instead (see `fetch_arrow_result`).
+///
+/// `row_count` is derived from `rows.len()` — the rows actually carried in this
+/// body — rather than the deprecated SDK `row_count` field. This path only ever
+/// renders the rows it holds: a non-truncated response carries the whole result,
+/// and the truncated-without-`result_id` fallback keeps just the preview (with a
+/// warning). A truncated result that *can* be fetched never reaches here — it's
+/// followed to the full set via Arrow in `resolve_inline`. So counting the held
+/// rows can never overstate or understate what the user sees.
 fn query_response_from_sdk(resp: hotdata::models::QueryResponse) -> QueryResponse {
     QueryResponse {
         result_id: resp.result_id.flatten(),
         columns: resp.columns,
+        row_count: resp.rows.len() as u64,
         rows: resp.rows,
-        row_count: resp.row_count.max(0) as u64,
         execution_time_ms: Some(resp.execution_time_ms.max(0) as u64),
         warning: resp.warning.flatten(),
     }
