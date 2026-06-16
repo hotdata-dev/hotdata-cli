@@ -10,7 +10,7 @@
 
 ### 💼 Other
 
-- Bump hotdata SDK to 0.2.0
+- Bump hotdata SDK to 0.3.0
 ## [0.4.2] - 2026-06-15
 
 ### 📚 Documentation
