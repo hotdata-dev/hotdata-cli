@@ -62,6 +62,26 @@ fn connection_lookup(api: &Api) -> HashMap<String, String> {
     connection_label_to_id_map(&refs)
 }
 
+/// Pick the connection id to address a per-table index call with during a
+/// connection-wide scan.
+///
+/// Prefers the caller-supplied `--connection-id`: it always resolves, including
+/// for a database-scoped connection whose `information_schema` `label`
+/// (`__db_*`) is absent from `connections list` (that listing hides
+/// database-scoped connections, so `name_to_id` can't map it — #161). The scan's
+/// tables are already filtered to that connection, so the supplied id is correct
+/// for every row. With no `--connection-id` (the list-everything case), maps the
+/// label back to an id, falling back to the label itself.
+fn scan_connection_id<'a>(
+    supplied: Option<&'a str>,
+    label: &'a str,
+    name_to_id: &'a HashMap<String, String>,
+) -> &'a str {
+    supplied
+        .or_else(|| name_to_id.get(label).map(String::as_str))
+        .unwrap_or(label)
+}
+
 /// How to continue after merging one `/information_schema` page.
 fn information_schema_followup(
     has_more: bool,
@@ -266,15 +286,19 @@ pub fn list(
         }
         _ => {
             let tables = collect_tables(&api, connection_id, schema, table);
-            let conn_ids = connection_lookup(&api);
+            // See `scan_connection_id`: a supplied `--connection-id` is used
+            // directly, so the name→id map is only needed (and only worth a
+            // round-trip) for the unscoped, list-everything case (#161).
+            let conn_ids = if connection_id.is_some() {
+                HashMap::new()
+            } else {
+                connection_lookup(&api)
+            };
             let api = api.clone();
             let per_table: Vec<(String, Vec<Index>)> = tables
                 .par_iter()
                 .map(|t| {
-                    let cid = conn_ids
-                        .get(&t.connection)
-                        .map(String::as_str)
-                        .unwrap_or(t.connection.as_str());
+                    let cid = scan_connection_id(connection_id, &t.connection, &conn_ids);
                     let full = format!("{}.{}.{}", t.connection, t.schema, t.table);
                     let indexes = list_one_table_scan(&api, cid, &t.schema, &t.table);
                     (full, indexes)
@@ -600,6 +624,38 @@ mod tests {
         assert_eq!(m.get("Warehouse").map(String::as_str), Some("conn-id"));
         assert_eq!(m.get("Lake").map(String::as_str), Some("other"));
         assert!(!m.contains_key("conn-id"));
+    }
+
+    #[test]
+    fn scan_connection_id_prefers_supplied_id_over_label_map() {
+        // #161: a managed database's catalog surfaces under an internal
+        // `__db_*` label that `connections list` hides, so the name→id map is
+        // empty for it. The supplied --connection-id must win regardless.
+        let empty = HashMap::new();
+        assert_eq!(
+            scan_connection_id(Some("conn-real"), "__db_jz50abc", &empty),
+            "conn-real"
+        );
+        // Even when the label *is* in the map, the supplied id takes precedence.
+        let mut m = HashMap::new();
+        m.insert("__db_jz50abc".to_string(), "conn-mapped".to_string());
+        assert_eq!(
+            scan_connection_id(Some("conn-real"), "__db_jz50abc", &m),
+            "conn-real"
+        );
+    }
+
+    #[test]
+    fn scan_connection_id_maps_label_when_no_supplied_id() {
+        let mut m = HashMap::new();
+        m.insert("Warehouse".to_string(), "conn-id".to_string());
+        assert_eq!(scan_connection_id(None, "Warehouse", &m), "conn-id");
+    }
+
+    #[test]
+    fn scan_connection_id_falls_back_to_label_when_unmapped() {
+        let empty = HashMap::new();
+        assert_eq!(scan_connection_id(None, "Warehouse", &empty), "Warehouse");
     }
 
     #[test]
