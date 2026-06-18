@@ -10,9 +10,35 @@ struct Index {
     index_type: String,
     columns: Vec<String>,
     metric: Option<String>,
+    /// Source text column for an embedding-backed vector index. Queries name it
+    /// in `vector_distance(<source_column>, …)`, whereas `columns` holds the
+    /// generated embedding column. Absent for BM25, sorted, and direct
+    /// (existing-column) vector indexes. Older servers omit it entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_column: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
+}
+
+impl Index {
+    /// Column a search query targets: the embedding **source** column when the
+    /// index is auto-embed (`source_column` set), otherwise the first indexed
+    /// column. For auto-embed indexes `columns` holds the generated embedding
+    /// column, which the server's `vector_distance` rewrite does not match —
+    /// the source column is what callers must name.
+    fn search_column(&self) -> Option<String> {
+        self.source_column
+            .clone()
+            .or_else(|| self.columns.first().cloned())
+    }
+
+    /// Whether `column` identifies this index for search: matches the embedding
+    /// source column or any indexed column. Lets `--column <source>` resolve an
+    /// auto-embed index even though the source column is not in `columns`.
+    fn matches_search_column(&self, column: &str) -> bool {
+        self.source_column.as_deref() == Some(column) || self.columns.iter().any(|c| c == column)
+    }
 }
 
 #[derive(Serialize)]
@@ -159,7 +185,7 @@ fn resolve_search_params(
             let t = i.index_type.as_str();
             (t == "bm25" || t == "vector")
                 && hint_type.is_none_or(|ht| ht == t)
-                && hint_column.is_none_or(|hc| i.columns.iter().any(|c| c == hc))
+                && hint_column.is_none_or(|hc| i.matches_search_column(hc))
         })
         .collect();
 
@@ -177,9 +203,7 @@ fn resolve_search_params(
         [one] => {
             let index_type = one.index_type.clone();
             let column = one
-                .columns
-                .first()
-                .cloned()
+                .search_column()
                 .ok_or_else(|| format!("Index '{}' has no columns.", one.index_name))?;
             Ok((index_type, column))
         }
@@ -725,9 +749,19 @@ mod tests {
             index_type: index_type.into(),
             columns: columns.iter().map(|c| c.to_string()).collect(),
             metric: None,
+            source_column: None,
             status: "ready".into(),
             created_at: "2020-01-01T00:00:00Z".into(),
             updated_at: "2020-01-01T00:00:00Z".into(),
+        }
+    }
+
+    /// An auto-embed vector index: `columns` holds the generated embedding
+    /// column, while the source text column lives in `source_column`.
+    fn make_embedding_index(name: &str, source: &str, output: &str) -> Index {
+        Index {
+            source_column: Some(source.into()),
+            ..make_index(name, "vector", &[output])
         }
     }
 
@@ -743,6 +777,47 @@ mod tests {
         let indexes = vec![make_index("vec", "vector", &["embedding"])];
         let result = resolve_search_params(&indexes, None, None, "db.public.t");
         assert_eq!(result, Ok(("vector".into(), "embedding".into())));
+    }
+
+    #[test]
+    fn resolve_search_params_embedding_index_returns_source_column() {
+        // #162: auto-embed index — inference must yield the source column
+        // (`content`), not the generated embedding column (`content_embedding`),
+        // since the server's vector_distance rewrite matches the source column.
+        let indexes = vec![make_embedding_index("vec", "content", "content_embedding")];
+        let result = resolve_search_params(&indexes, None, None, "db.public.t");
+        assert_eq!(result, Ok(("vector".into(), "content".into())));
+    }
+
+    #[test]
+    fn resolve_search_params_deserializes_real_server_response() {
+        // #162: guard the serde contract end-to-end. This is a verbatim
+        // `GET .../indexes` body from a runtimedb auto-embed index (note the
+        // generated `content_embedding` in `columns` and the `source_column`
+        // field). Inference must parse it and resolve the source column.
+        let body = r#"{"indexes":[{"index_name":"embed_small_idx","index_type":"vector","columns":["content_embedding"],"status":"ready","updated_at":"2026-06-18T07:33:19.656Z","created_at":"2026-06-18T07:33:19.669550Z","metric":"cosine","source_column":"content"}]}"#;
+        let parsed: ListResponse = serde_json::from_str(body).expect("parse index list");
+        let result = resolve_search_params(&parsed.indexes, None, None, "vtest.public.embed_small");
+        assert_eq!(result, Ok(("vector".into(), "content".into())));
+    }
+
+    #[test]
+    fn resolve_search_params_embedding_index_hint_type_only() {
+        // #162: `--type vector` with `--column` omitted must still resolve the
+        // source column rather than the embedding output column.
+        let indexes = vec![make_embedding_index("vec", "content", "content_embedding")];
+        let result = resolve_search_params(&indexes, Some("vector"), None, "db.public.t");
+        assert_eq!(result, Ok(("vector".into(), "content".into())));
+    }
+
+    #[test]
+    fn resolve_search_params_embedding_index_hint_source_column() {
+        // #162: `--column content` (the source column) with `--type` omitted
+        // must match the auto-embed index even though `content` is not in
+        // `columns` (which holds `content_embedding`).
+        let indexes = vec![make_embedding_index("vec", "content", "content_embedding")];
+        let result = resolve_search_params(&indexes, None, Some("content"), "db.public.t");
+        assert_eq!(result, Ok(("vector".into(), "content".into())));
     }
 
     #[test]
