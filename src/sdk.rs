@@ -210,6 +210,17 @@ impl ApiError {
         }
     }
 
+    /// A printable, single-line description of the failure.
+    ///
+    /// Used where the error is surfaced inline (e.g. folded into a query
+    /// `warning`) rather than printed-and-exited via [`exit`](Self::exit).
+    pub fn message(&self) -> String {
+        match self {
+            ApiError::Status { status, body } => format!("{status}: {body}"),
+            ApiError::Transport(msg) => msg.clone(),
+        }
+    }
+
     /// Print the standard error and exit, reproducing `ApiClient::fail_response`.
     ///
     /// On a 4xx, re-probe the auth status so a masked 404/403 is upgraded into
