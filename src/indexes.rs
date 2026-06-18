@@ -82,6 +82,49 @@ fn scan_connection_id<'a>(
         .unwrap_or(label)
 }
 
+/// Gather index rows across a connection's (or the workspace's) tables — the
+/// `indexes list` path when no full `connection.schema.table` triple is given.
+///
+/// Enumerates tables via `information_schema`, then fetches each table's indexes
+/// by the connection id chosen in [`scan_connection_id`] (the supplied
+/// `--connection-id` wins, fixing the database-scoped case in #161). Skipped
+/// connections / missing tables surface as no rows for that table, not an error.
+fn collect_connection_wide(
+    api: &Api,
+    connection_id: Option<&str>,
+    schema: Option<&str>,
+    table: Option<&str>,
+) -> Vec<IndexRow> {
+    let tables = collect_tables(api, connection_id, schema, table);
+    // See `scan_connection_id`: a supplied `--connection-id` is used directly,
+    // so the name→id map is only needed (and only worth a round-trip) for the
+    // unscoped, list-everything case (#161).
+    let conn_ids = if connection_id.is_some() {
+        HashMap::new()
+    } else {
+        connection_lookup(api)
+    };
+    let per_table: Vec<(String, Vec<Index>)> = tables
+        .par_iter()
+        .map(|t| {
+            let cid = scan_connection_id(connection_id, &t.connection, &conn_ids);
+            let full = format!("{}.{}.{}", t.connection, t.schema, t.table);
+            let indexes = list_one_table_scan(api, cid, &t.schema, &t.table);
+            (full, indexes)
+        })
+        .collect();
+    let mut rows: Vec<IndexRow> = Vec::new();
+    for (full, indexes) in per_table {
+        for i in indexes {
+            rows.push(IndexRow {
+                inner: i,
+                table: Some(full.clone()),
+            });
+        }
+    }
+    rows
+}
+
 /// How to continue after merging one `/information_schema` page.
 fn information_schema_followup(
     has_more: bool,
@@ -284,37 +327,10 @@ pub fn list(
                 .collect();
             (rows, false)
         }
-        _ => {
-            let tables = collect_tables(&api, connection_id, schema, table);
-            // See `scan_connection_id`: a supplied `--connection-id` is used
-            // directly, so the name→id map is only needed (and only worth a
-            // round-trip) for the unscoped, list-everything case (#161).
-            let conn_ids = if connection_id.is_some() {
-                HashMap::new()
-            } else {
-                connection_lookup(&api)
-            };
-            let api = api.clone();
-            let per_table: Vec<(String, Vec<Index>)> = tables
-                .par_iter()
-                .map(|t| {
-                    let cid = scan_connection_id(connection_id, &t.connection, &conn_ids);
-                    let full = format!("{}.{}.{}", t.connection, t.schema, t.table);
-                    let indexes = list_one_table_scan(&api, cid, &t.schema, &t.table);
-                    (full, indexes)
-                })
-                .collect();
-            let mut rows: Vec<IndexRow> = Vec::new();
-            for (full, indexes) in per_table {
-                for i in indexes {
-                    rows.push(IndexRow {
-                        inner: i,
-                        table: Some(full.clone()),
-                    });
-                }
-            }
-            (rows, true)
-        }
+        _ => (
+            collect_connection_wide(&api, connection_id, schema, table),
+            true,
+        ),
     };
 
     match format {
@@ -656,6 +672,49 @@ mod tests {
     fn scan_connection_id_falls_back_to_label_when_unmapped() {
         let empty = HashMap::new();
         assert_eq!(scan_connection_id(None, "Warehouse", &empty), "Warehouse");
+    }
+
+    #[test]
+    fn collect_connection_wide_uses_supplied_id_for_db_scoped_label() {
+        // #161 regression: information_schema reports a managed database's
+        // catalog under an internal `__db_*` label, but the per-table index
+        // call must use the supplied --connection-id. The indexes endpoint is
+        // mocked ONLY for the real id (`conn-real`); had the scan used the
+        // `__db_*` label (the old behavior), it would miss this mock. No
+        // `connections list` mock is needed — a supplied id skips that lookup.
+        let mut server = mockito::Server::new();
+        let info = server
+            .mock("GET", "/v1/information_schema")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"count":1,"limit":100,"tables":[
+                {"connection":"__db_abc","schema":"public","table":"vec_mid","synced":true}
+            ],"has_more":false,"next_cursor":null}"#,
+            )
+            .create();
+        let idx = server
+            .mock(
+                "GET",
+                "/v1/connections/conn-real/tables/public/vec_mid/indexes",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"indexes":[{"index_name":"vec_mid_idx","index_type":"vector",
+                "columns":["c"],"metric":"cosine","status":"ready",
+                "created_at":"2020-01-01T00:00:00Z","updated_at":"2020-01-01T00:00:00Z"}]}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let rows = collect_connection_wide(&api, Some("conn-real"), None, None);
+        info.assert();
+        idx.assert();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].inner.index_name, "vec_mid_idx");
+        assert_eq!(rows[0].table.as_deref(), Some("__db_abc.public.vec_mid"));
     }
 
     #[test]
