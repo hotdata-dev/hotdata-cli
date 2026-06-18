@@ -684,6 +684,20 @@ mod tests {
     use super::*;
     use auth::AuthStatus;
 
+    #[test]
+    fn api_error_message_formats_status_and_transport() {
+        let status = ApiError::Status {
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            body: "boom".to_string(),
+        };
+        let m = status.message();
+        assert!(m.contains("500"), "{m}");
+        assert!(m.contains("boom"), "{m}");
+
+        let transport = ApiError::Transport("error connecting to API: refused".to_string());
+        assert_eq!(transport.message(), "error connecting to API: refused");
+    }
+
     // --- format_fail_message: ported verbatim from api.rs (9 cases) ----------
 
     #[test]

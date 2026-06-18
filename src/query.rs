@@ -493,6 +493,41 @@ fn result_exit_code(result: &QueryResponse) -> i32 {
     }
 }
 
+/// The unstyled summary line printed under a `table` result.
+///
+/// A complete result reads `N rows (time) [result-id]`. An incomplete preview is
+/// loud — `N of TOTAL rows — INCOMPLETE PREVIEW (...)` — with `?` standing in for
+/// a total the server didn't report. The caller colours it (red vs grey).
+fn table_footer(result: &QueryResponse) -> String {
+    let id_part = result
+        .result_id
+        .as_deref()
+        .map(|id| format!(" [result-id: {id}]"))
+        .unwrap_or_default();
+    let time_part = match result.execution_time_ms {
+        Some(ms) => format!("{ms} ms"),
+        None => "\u{2014}".to_string(), // em dash
+    };
+    if result.truncated {
+        let total = result
+            .total_row_count
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        format!(
+            "{} of {} rows — INCOMPLETE PREVIEW ({}){}",
+            result.row_count, total, time_part, id_part
+        )
+    } else {
+        format!(
+            "{} row{} ({}){}",
+            result.row_count,
+            if result.row_count == 1 { "" } else { "s" },
+            time_part,
+            id_part
+        )
+    }
+}
+
 pub fn print_result(result: &QueryResponse, format: &str) {
     if let Some(ref warning) = result.warning {
         eprintln!("warning: {warning}");
@@ -525,42 +560,13 @@ pub fn print_result(result: &QueryResponse, format: &str) {
         "table" => {
             crate::table::print_json(&result.columns, &result.rows);
             use crossterm::style::Stylize;
-            let id_part = result
-                .result_id
-                .as_deref()
-                .map(|id| format!(" [result-id: {id}]"))
-                .unwrap_or_default();
-            let time_part = match result.execution_time_ms {
-                Some(ms) => format!("{ms} ms"),
-                None => "\u{2014}".to_string(), // em dash
-            };
+            let footer = table_footer(result);
+            // Loud (red) when the preview is incomplete so it can't be mistaken
+            // for a complete result; quiet (grey) otherwise.
             if result.truncated {
-                // Loud: the preview is incomplete. Show held/total and colour it
-                // red so it can't be mistaken for a complete result.
-                let total = result
-                    .total_row_count
-                    .map(|t| t.to_string())
-                    .unwrap_or_else(|| "?".to_string());
-                eprintln!(
-                    "{}",
-                    format!(
-                        "\n{} of {} rows — INCOMPLETE PREVIEW ({}){}",
-                        result.row_count, total, time_part, id_part
-                    )
-                    .red()
-                );
+                eprintln!("\n{}", footer.red());
             } else {
-                eprintln!(
-                    "{}",
-                    format!(
-                        "\n{} row{} ({}){}",
-                        result.row_count,
-                        if result.row_count == 1 { "" } else { "s" },
-                        time_part,
-                        id_part
-                    )
-                    .dark_grey()
-                );
+                eprintln!("\n{}", footer.dark_grey());
             }
         }
         _ => unreachable!(),
@@ -808,6 +814,46 @@ mod tests {
         // Distinct from the generic failure codes used elsewhere in this module.
         assert_ne!(EXIT_INCOMPLETE_RESULT, 1);
         assert_ne!(EXIT_INCOMPLETE_RESULT, 2);
+    }
+
+    /// Build a minimal display `QueryResponse` for footer rendering tests.
+    fn display_result(
+        row_count: u64,
+        total_row_count: Option<u64>,
+        truncated: bool,
+    ) -> QueryResponse {
+        QueryResponse {
+            result_id: None,
+            columns: vec!["id".to_string()],
+            rows: Vec::new(),
+            row_count,
+            total_row_count,
+            truncated,
+            execution_time_ms: Some(5),
+            warning: None,
+        }
+    }
+
+    #[test]
+    fn table_footer_marks_incomplete_preview_loudly() {
+        let footer = table_footer(&display_result(1, Some(100), true));
+        assert!(footer.contains("INCOMPLETE PREVIEW"), "footer: {footer}");
+        assert!(footer.contains("1 of 100 rows"), "footer: {footer}");
+    }
+
+    #[test]
+    fn table_footer_renders_question_mark_for_unknown_total() {
+        // Truncated with no server-reported total → "1 of ? rows".
+        let footer = table_footer(&display_result(1, None, true));
+        assert!(footer.contains("1 of ? rows"), "footer: {footer}");
+        assert!(footer.contains("INCOMPLETE PREVIEW"), "footer: {footer}");
+    }
+
+    #[test]
+    fn table_footer_for_complete_result_is_plain() {
+        let footer = table_footer(&display_result(2, Some(2), false));
+        assert!(!footer.contains("INCOMPLETE"), "footer: {footer}");
+        assert!(footer.starts_with("2 rows"), "footer: {footer}");
     }
 
     #[test]
