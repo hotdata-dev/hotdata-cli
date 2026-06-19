@@ -23,7 +23,6 @@ High-cardinality **text** (`title`, `body`, …) → **bm25**. **Embedding** / f
 
 ```bash
 hotdata indexes list [--connection-id <id>] [--schema <schema>] [--table <table>]
-hotdata indexes list --dataset-id <dataset_id>
 ```
 
 Skip duplicates (same table, column, and purpose).
@@ -40,13 +39,13 @@ hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
   --column embedding --type vector --metric cosine
 ```
 
-For regular connections (explicit connection ID):
+For a regular connection, pass its name or ID to `--catalog`:
 
 ```bash
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
+hotdata indexes create --catalog <connection-name-or-id> --schema <schema> --table <table> \
   --name idx_posts_body_bm25 --column body --type bm25
 
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
+hotdata indexes create --catalog <connection-name-or-id> --schema <schema> --table <table> \
   --name idx_chunks_embedding --column embedding --type vector --metric cosine
 ```
 

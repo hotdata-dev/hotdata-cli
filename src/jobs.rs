@@ -40,9 +40,7 @@ fn parse_job_type(s: &str) -> Option<JobType> {
         "noop" => Some(JobType::Noop),
         "data_refresh_table" => Some(JobType::DataRefreshTable),
         "data_refresh_connection" => Some(JobType::DataRefreshConnection),
-        "dataset_refresh" => Some(JobType::DatasetRefresh),
         "create_index" => Some(JobType::CreateIndex),
-        "create_dataset_index" => Some(JobType::CreateDatasetIndex),
         _ => None,
     }
 }

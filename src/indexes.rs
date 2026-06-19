@@ -216,12 +216,6 @@ fn list_one_table(api: &Api, connection_id: &str, schema: &str, table: &str) -> 
     body.indexes
 }
 
-fn list_one_dataset(api: &Api, dataset_id: &str) -> Vec<Index> {
-    let path = format!("/datasets/{dataset_id}/indexes");
-    let body: ListResponse = api.get_json(&path, &[]).unwrap_or_else(|e| e.exit());
-    body.indexes
-}
-
 fn list_one_table_scan(api: &Api, connection_id: &str, schema: &str, table: &str) -> Vec<Index> {
     let path = format!("/connections/{connection_id}/tables/{schema}/{table}/indexes");
     match none_if_404(api.get_json::<ListResponse>(&path, &[])).unwrap_or_else(|e| e.exit()) {
@@ -323,24 +317,12 @@ pub fn list(
     connection_id: Option<&str>,
     schema: Option<&str>,
     table: Option<&str>,
-    dataset_id: Option<&str>,
     format: &str,
 ) {
     let api = Api::new(Some(workspace_id));
 
-    let (rows, multi_table) = match (dataset_id, connection_id, schema, table) {
-        (Some(did), _, _, _) => {
-            let indexes = list_one_dataset(&api, did);
-            let rows: Vec<IndexRow> = indexes
-                .into_iter()
-                .map(|i| IndexRow {
-                    inner: i,
-                    table: None,
-                })
-                .collect();
-            (rows, false)
-        }
-        (None, Some(cid), Some(sch), Some(tbl)) => {
+    let (rows, multi_table) = match (connection_id, schema, table) {
+        (Some(cid), Some(sch), Some(tbl)) => {
             let indexes = list_one_table(&api, cid, sch, tbl);
             let rows: Vec<IndexRow> = indexes
                 .into_iter()
@@ -416,9 +398,6 @@ pub enum IndexScope<'a> {
         schema: &'a str,
         table: &'a str,
     },
-    Dataset {
-        dataset_id: &'a str,
-    },
 }
 
 impl IndexScope<'_> {
@@ -429,7 +408,6 @@ impl IndexScope<'_> {
                 schema,
                 table,
             } => format!("/connections/{connection_id}/tables/{schema}/{table}/indexes"),
-            IndexScope::Dataset { dataset_id } => format!("/datasets/{dataset_id}/indexes"),
         }
     }
 
@@ -444,9 +422,6 @@ impl IndexScope<'_> {
                 table,
             } => {
                 format!("/connections/{connection_id}/tables/{schema}/{table}/indexes/{index_name}")
-            }
-            IndexScope::Dataset { dataset_id } => {
-                format!("/datasets/{dataset_id}/indexes/{index_name}")
             }
         }
     }
@@ -555,13 +530,6 @@ pub fn delete(workspace_id: &str, scope: IndexScope<'_>, index_name: &str) {
                 .indexes()
                 .delete_index(connection_id, schema, table, index_name),
         ),
-        IndexScope::Dataset { dataset_id } => block_with_wakeup(
-            &api,
-            "Deleting index…",
-            api.client()
-                .indexes()
-                .delete_dataset_index(dataset_id, index_name),
-        ),
     };
 
     if let Err(e) = result {
@@ -602,18 +570,6 @@ mod tests {
         assert_eq!(
             scope.delete_path("idx_email"),
             "/connections/conn1/tables/public/users/indexes/idx_email"
-        );
-    }
-
-    #[test]
-    fn index_scope_dataset_paths() {
-        let scope = IndexScope::Dataset {
-            dataset_id: "data_xyz",
-        };
-        assert_eq!(scope.create_path(), "/datasets/data_xyz/indexes");
-        assert_eq!(
-            scope.delete_path("idx_title"),
-            "/datasets/data_xyz/indexes/idx_title"
         );
     }
 

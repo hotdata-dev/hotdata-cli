@@ -60,17 +60,17 @@ Document safe join paths and caveats (fan-out, timing, different refresh cadence
 
 _Use `hotdata indexes list` for connection tables (see **hotdata-search** skill). Record bm25/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
 
-## Datasets (uploaded)
+## Managed databases (uploaded)
 
-Catalog from `hotdata datasets list` / `hotdata datasets <id>`:
+Catalog from `hotdata databases list` / `hotdata databases tables list`:
 
-| Label | Table name (`datasets.main.…`) | Grain | Notes |
-|-------|-------------------------------|-------|-------|
+| Catalog | Table name (`<catalog>.public.…`) | Grain | Notes |
+|---------|----------------------------------|-------|-------|
 | | | | |
 
 ## Derived tables (Chain)
 
-Stable `datasets.main.*` tables built for **Chain** workflows (not necessarily uploaded file datasets):
+Stable `<catalog>.public.*` tables built for **Chain** workflows (materialized into managed databases):
 
 | Table name | Built from | Purpose | Owner / TTL |
 |------------|------------|---------|-------------|

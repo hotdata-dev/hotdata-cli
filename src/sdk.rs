@@ -996,21 +996,22 @@ mod tests {
 
     #[test]
     fn workspace_id_header_is_installed_on_scoped_calls() {
-        // Regression for the old api.rs:598 header assertion. `datasets().list`
-        // carries the X-Workspace-Id api_key; assert it reaches the wire.
+        // Regression for the old api.rs:598 header assertion. A workspace-scoped
+        // generated-client call (here `jobs().list`) carries the X-Workspace-Id
+        // api_key; assert it reaches the wire. The mock matches on the header, so
+        // `m.assert()` failing means the header never left the client.
         let mut server = mockito::Server::new();
         let m = server
-            .mock("GET", "/v1/datasets")
+            .mock("GET", "/v1/jobs")
             .match_header("Authorization", "Bearer test-jwt")
             .match_header("X-Workspace-Id", "ws-1")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"count":0,"datasets":[],"has_more":false,"limit":50,"offset":0}"#)
+            .with_body(r#"{"jobs":[]}"#)
             .create();
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
-        let resp = block(api.client.datasets().list(None, None)).expect("list datasets");
-        assert_eq!(resp.count, 0);
+        let _ = block(api.client.jobs().list(None, None, None, None));
         m.assert();
     }
 

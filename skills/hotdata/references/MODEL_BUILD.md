@@ -18,7 +18,7 @@ For each connection, record `id`, `name`, and `source_type`.
 
 ---
 
-## 2. Enumerate tables, columns, and datasets
+## 2. Enumerate tables and columns
 
 If the catalog may be **stale** (recent DDL, new tables missing), run **`hotdata connections refresh <connection_id>`** for affected connections **before** relying on `tables list`.
 
@@ -28,14 +28,14 @@ If the catalog may be **stale** (recent DDL, new tables missing), run **`hotdata
 hotdata tables list --connection-id <connection_id>
 ```
 
-**Uploaded datasets:**
+**Managed databases:**
 
 ```bash
-hotdata datasets list
-hotdata datasets <dataset_id>
+hotdata databases list
+hotdata databases tables list
 ```
 
-Capture schema for each dataset (columns, types) from the detail view.
+Capture schema for each managed-database table (columns, types) from the table listing.
 
 You can also refresh after enumeration if you discover drift:
 
@@ -92,7 +92,7 @@ Per table when you only need one:
 hotdata indexes list -c <connection_id> --schema <schema> --table <table> [-w <workspace_id>]
 ```
 
-For dataset-backed indexes: `hotdata indexes list --dataset-id <dataset_id>` (not merged into the workspace-wide connection-table list).
+Managed-database tables (`--catalog`) are covered by the same `indexes list` scan; filter with `--connection-id` / `--schema` / `--table` as above.
 
 Note:
 
@@ -110,7 +110,7 @@ This Markdown body is what you store as **context:DATAMODEL** (`hotdata context 
 
 - **Overview** — Domains and what the workspace is for.
 - **Per connection** — Optional subsection per source; for **deep** models, **repeat** one block per `connection.schema.table` (grain, column table with name/type/nullable/PK-FK/notes, relationships, queryability, caveats)—the template’s single `####` heading is a pattern to copy for each table.
-- **Datasets** — Same treatment as connection tables where relevant.
+- **Managed databases** — Same treatment as connection tables where relevant.
 - **Cross-connection joins** — Keys, semantics, type caveats.
 - **Search / index summary** — Table, column, index status, intended use.
 

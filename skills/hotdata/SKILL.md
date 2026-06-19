@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, datasets, tables, basic SQL query, database context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "list datasets", "create a dataset", "execute a query", "database context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "execute a query", "database context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
 version: 0.5.0
 ---
 
@@ -20,7 +20,7 @@ Install all skills with **`hotdata skills install`**. Load specialized skills on
 
 | Skill | Use for |
 |-------|---------|
-| **`hotdata`** (this file) | Auth, workspaces, connections, databases, datasets, tables, basic `query`, context, jobs |
+| **`hotdata`** (this file) | Auth, workspaces, connections, databases, tables, basic `query`, context, jobs |
 | **`hotdata-search`** | BM25, vector search, `hotdata search`, bm25/vector indexes, embedding providers |
 | **`hotdata-analytics`** | OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes |
 | **`hotdata-geospatial`** | PostGIS-style `ST_*`, WKB, spatial joins |
@@ -72,7 +72,7 @@ Keep two layers separate:
 
 - **Analysis modeling (day to day)** — Understanding data *for the current task*: exploratory SQL, join checks, column semantics for one report, hypotheses, scratch notes. Often conversational or short-lived. **The conversation or local scratch notes** are the right home while you explore; keep them there until you decide they are worth promoting.
 
-- **context:DATAMODEL (Hotdata database data model)** — A **durable, database-scoped** map stored only via the **context API**: entities and tables across connections, PK/FK relationships, how datasets tie back to sources, naming and query conventions the **whole team** should rely on. This is **higher-level shared structure**, not a transcript of one investigation.
+- **context:DATAMODEL (Hotdata database data model)** — A **durable, database-scoped** map stored only via the **context API**: entities and tables across connections, PK/FK relationships, how derived tables tie back to sources, naming and query conventions the **whole team** should rely on. This is **higher-level shared structure**, not a transcript of one investigation.
 
 **Promotion:** When analysis findings should **outlive the current session** and **guide everyone**, merge them into **context:DATAMODEL** (`hotdata context list` → if `DATAMODEL` is listed, `hotdata context show DATAMODEL` → reconcile → `hotdata context push DATAMODEL`). You do **not** need to update **context:DATAMODEL** after every ad-hoc query—only when the database story or join graph meaningfully changes.
 
@@ -82,15 +82,15 @@ Use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [
 
 These are **patterns** built from the commands below—not separate CLI subcommands:
 
-- **Model (`context:DATAMODEL`)** — The **shared** Markdown semantic map of the active database (entities, keys, joins across connections). **Store and read it only via database context** (`hotdata context list`, then `hotdata context show DATAMODEL` **only when listed**, `context push DATAMODEL`); refresh using `connections`, `connections refresh`, `tables list`, and `datasets list`. For a **deep** pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Contrast **analysis modeling** in the conversation or local scratch (see [Analysis modeling vs context:DATAMODEL](#analysis-modeling-vs-contextdatamodel)).
+- **Model (`context:DATAMODEL`)** — The **shared** Markdown semantic map of the active database (entities, keys, joins across connections). **Store and read it only via database context** (`hotdata context list`, then `hotdata context show DATAMODEL` **only when listed**, `context push DATAMODEL`); refresh using `connections`, `connections refresh`, and `tables list`. For a **deep** pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Contrast **analysis modeling** in the conversation or local scratch (see [Analysis modeling vs context:DATAMODEL](#analysis-modeling-vs-contextdatamodel)).
 - **History / Chain / OLAP SQL** — See **`hotdata-analytics`** and [references/WORKFLOWS.md](references/WORKFLOWS.md).
 - **Search / retrieval indexes** — See **`hotdata-search`**.
 
-Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and datasets vs databases: [references/WORKFLOWS.md](references/WORKFLOWS.md).
+Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and managed databases: [references/WORKFLOWS.md](references/WORKFLOWS.md).
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`datasets`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`completions`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`completions`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -181,7 +181,7 @@ hotdata connections create \
 
 **Managed databases** are Hotdata-owned catalogs you create and populate yourself — no remote source to sync. Query them in SQL as **`<database_id>.<schema>.<table>`**. Prefer **`hotdata databases`** for this workflow.
 
-**Parquet vs datasets:** `databases tables load` accepts **parquet only**. For SQL-query or saved-query materializations, use **`hotdata datasets create`**.
+**Parquet only:** `databases tables load` accepts **parquet** files (local `--file`, remote `--url`, or a pre-staged `--upload-id`).
 
 **Active database:** `hotdata databases set <id_or_description>` saves the active database to config. All `databases tables` subcommands and all `context` commands default to the active database; pass **`--database <id>`** to override per-command.
 
@@ -236,64 +236,6 @@ hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection
 - `--schema` and `--table` support SQL `%` wildcard patterns (e.g. `--table order%` matches `orders`, `order_items`, etc.).
 - Results are paginated (default 100 per page). If more results are available, a `--cursor` token is printed — pass it to fetch the next page.
 
-### Datasets
-
-Datasets are managed files uploaded to Hotdata and queryable as tables.
-
-#### List datasets
-```
-hotdata datasets list [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--output table|json|yaml]
-```
-- Default format is `table`.
-- Returns `id`, `label`, and `created_at`; table output includes a **`FULL NAME`** column (`datasets.<schema>.<table>`).
-- Results are paginated (default 100). Use `--offset` to fetch further pages.
-- `datasets list` always returns **all** datasets in the workspace. Read **`FULL NAME`** to identify the schema: the middle segment is usually **`main`** (e.g. `datasets.main.my_table`) for ordinary uploads.
-
-#### Get dataset details
-```
-hotdata datasets <dataset_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
-```
-- Shows dataset metadata and a full column listing with `name`, `data_type`, `nullable`.
-- Use this to inspect schema before querying.
-- For the **qualified SQL name**, prefer **`FULL NAME` from `datasets list`** or the **`full_name` printed by `datasets create`**—do not assume `datasets.main`.
-
-#### Update a dataset
-```
-hotdata datasets update <dataset_id> [--description <label>] [--name <table_name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-```
-- The CLI requires **at least one** of **`--description`** or **`--name`**.
-
-#### Create a dataset
-```
-hotdata datasets create --name <table_name> [--description "My Dataset"] (--sql "SELECT ..." | --query-id <saved_query_id>) [--workspace-id <workspace_id>]
-```
-- **`--name`** (required) — SQL table name the dataset is addressable as (e.g. `my_view`).
-- **`--description`** (optional) — human-readable display label; defaults to `--name` when omitted.
-- **Exactly one** of **`--sql`** or **`--query-id`** is required:
-  - `--sql` — create from an inline SQL query result.
-  - `--query-id` — create from a previously saved query.
-- For parquet/CSV file uploads use **`hotdata databases tables load`** instead.
-- After **`datasets create`**, the CLI prints a **`full_name`** line (e.g. `datasets.main.my_view`). **Always use that `full_name` in SQL**—do not assume `datasets.main`.
-
-#### Refresh a dataset
-```
-hotdata datasets refresh <dataset_id> [--workspace-id <workspace_id>] [--async]
-```
-- Re-runs the dataset's source (URL fetch or saved query) and creates a **new version**. Use after the upstream source has changed.
-- **Not supported for upload-source datasets** — those have no remote source to re-pull from. The CLI surfaces the server's `400` directly.
-- `--async` submits the refresh as a background job and returns a `job_id`; poll with **`hotdata jobs <job_id>`**.
-
-#### Querying datasets
-
-Qualified dataset tables are **`datasets.<schema>.<table_name>`**, normally **`datasets.main.<table_name>`**. The create output’s **`full_name`** is authoritative—copy it into `FROM` / `JOIN` clauses instead of guessing `datasets.main.…`.
-
-Example (workspace dataset on `main`):
-```
-hotdata query "SELECT * FROM datasets.main.my_dataset LIMIT 10"
-```
-
-Use `hotdata datasets <dataset_id>` to inspect schema and names before writing queries.
-
 ### Database context (named Markdown)
 
 Reads and writes **database-scoped context API** documents. Context is tied to the **active database** (set via `hotdata databases set`); pass **`--database-id <id>`** (short: **`-d`**) to target a specific database. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Database context (API)](#database-context-api).
@@ -328,15 +270,13 @@ hotdata query status <query_run_id> [--output table|json|csv]
 - **OLAP** (aggregations, history, Chain, sorted indexes): **`hotdata-analytics`** skill.
 - **Search** (BM25, vector): **`hotdata-search`** skill.
 
-To create a dataset from a saved query: **`hotdata datasets create --query-id <saved_query_id>`**.
-
 ### Jobs
 ```
 hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status <status>] [--all] [--limit <n>] [--offset <n>] [--output table|json|yaml]
 hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
-- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`, `create_dataset_index`.
+- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`.
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 
@@ -392,7 +332,7 @@ Exploratory analysis notes (keys, joins, open questions for the current task) be
 4. Run SQL, quoting **mixed-case or upper-case** column names with **double quotes** (PostgreSQL treats unquoted identifiers as lowercased):
    ```
    hotdata query "SELECT 1"
-   hotdata query "SELECT \"CustomerName\" FROM datasets.main.my_csv LIMIT 10"
+   hotdata query "SELECT \"CustomerName\" FROM mydb.public.customers LIMIT 10"
    ```
 
 ## Workflow: Creating a managed database (parquet)
@@ -411,8 +351,6 @@ Exploratory analysis notes (keys, joins, open questions for the current task) be
    hotdata databases tables list
    hotdata query "SELECT * FROM mydb.public.events LIMIT 10"
    ```
-
-For CSV/JSON file uploads, use **`hotdata datasets create`** instead.
 
 ## Workflow: Creating a Connection
 

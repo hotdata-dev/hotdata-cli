@@ -67,12 +67,11 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
 | `databases` | `list`, `create`, `delete`, `tables` | Managed databases (create and load tables via parquet) |
 | `tables` | `list` | List tables and columns |
-| `datasets` | `list`, `create`, `update` | Manage uploaded datasets |
 | `context` | `list`, `show`, `pull`, `push` | Workspace Markdown context (e.g. data model `DATAMODEL`) via the context API |
 | `query` | | Execute a SQL query |
 | `queries` | `list` | Inspect query run history |
 | `search` | | Full-text search across a table column |
-| `indexes` | `list`, `create`, `delete` | Manage indexes on a table or dataset |
+| `indexes` | `list`, `create`, `delete` | Manage indexes on a table |
 | `embedding-providers` | `list`, `get`, `create`, `update`, `delete` | Manage embedding providers used by vector indexes |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
@@ -155,7 +154,7 @@ hotdata databases tables delete <table> [--database <id_or_name>] [--schema publ
 - `load` (top-level shorthand) — loads a parquet file into `--catalog.--schema.--table`. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
 - `tables load` uploads a **parquet** file (or uses a staged `upload_id` from `POST /v1/files`) and publishes it as the table generation (`replace` mode).
 - `run` mints a database-scoped JWT and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected into its environment.
-- For CSV/JSON uploads without a managed database, use `hotdata datasets create` instead (`datasets.main.*`).
+- Managed table loads accept **parquet** only — convert CSV/JSON to parquet first.
 
 Example:
 
@@ -175,26 +174,6 @@ hotdata tables list [--workspace-id <id>] [--connection-id <id>] [--schema <patt
 - With `--connection-id`: includes column details (`column`, `data_type`, `nullable`).
 - `--schema` and `--table` support SQL `%` wildcard patterns.
 - Tables are displayed as `<connection>.<schema>.<table>` — use this format in SQL queries.
-
-## Datasets
-
-```sh
-hotdata datasets list [--workspace-id <id>] [--limit <n>] [--offset <n>] [--format table|json|yaml]
-hotdata datasets <dataset_id> [--workspace-id <id>] [--format table|json|yaml]
-hotdata datasets create --file data.csv [--label "My Dataset"] [--table-name my_dataset]
-hotdata datasets create --sql "SELECT ..." --label "My Dataset"
-hotdata datasets create --url "https://example.com/data.parquet" --label "My Dataset"
-hotdata datasets update <dataset_id> [--label "New Label"] [--table-name new_table]
-hotdata datasets refresh <dataset_id> [--workspace-id <id>] [--async]
-```
-
-- Datasets are queryable as `datasets.main.<table_name>`.
-- `--file`, `--sql`, `--query-id`, and `--url` are mutually exclusive.
-- `--url` imports data directly from a URL (supports csv, json, parquet).
-- Format is auto-detected from file extension or content.
-- Piped stdin is supported: `cat data.csv | hotdata datasets create --label "My Dataset"`
-- `refresh` re-runs the dataset's source (URL fetch or saved query) and creates a new version. Not supported for upload-source datasets.
-- `--async` submits the refresh as a background job and returns a job ID; poll with `hotdata jobs <job_id>`.
 
 ## Workspace context
 
@@ -260,25 +239,20 @@ hotdata search "<query>" --table <table> [--type vector] [--column <source_text_
 
 ## Indexes
 
-Indexes attach to either a connection-table (`--connection-id` + `--schema` + `--table`) or a dataset (`--dataset-id`). The two scopes are mutually exclusive.
+`create` attaches an index to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` and `delete` accept `--connection-id` (+ `--schema` + `--table`) for connection-scoped operations.
 
 ```sh
-# Managed database scope (catalog alias resolves via active database)
+# Create — by catalog alias (resolves a managed-database catalog or a connection name)
 hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
   --column <cols> --type bm25|vector|sorted \
   [--name <name>] [--metric l2|cosine|dot] [--async] \
   [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 
-# Connection-table scope (for non-managed connections)
-hotdata indexes list   --connection-id <id> --schema <schema> --table <table> [-o table|json|yaml]
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
-  --column <cols> --type sorted|bm25|vector [--name <name>] ...
-hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
+# List — workspace scan, optionally filtered by connection / schema / table
+hotdata indexes list   [--connection-id <id>] [--schema <schema>] [--table <table>] [-o table|json|yaml]
 
-# Dataset scope
-hotdata indexes list   --dataset-id <id> [-o table|json|yaml]
-hotdata indexes create --dataset-id <id> --column <cols> --type sorted|bm25|vector [--name <name>] ...
-hotdata indexes delete --dataset-id <id> --name <name>
+# Delete — connection scope (--connection-id + --schema + --table)
+hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
 ```
 
 - `--type` is **required** — choose `sorted` (B-tree-like), `bm25` (full-text), or `vector` (similarity).
@@ -319,7 +293,7 @@ hotdata jobs <job_id> [--workspace-id <id>] [--format table|json|yaml]
 ```
 
 - `list` shows only active jobs (`pending` and `running`) by default. Use `--all` to see all jobs.
-- `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `dataset_refresh`, `create_index`, `create_dataset_index`.
+- `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `create_index`.
 - `--status` accepts: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 
 ## Configuration

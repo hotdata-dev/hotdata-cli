@@ -11,15 +11,15 @@ Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
 | Login, workspaces, connections, tables, context | **`hotdata`** | `auth`, `workspaces`, `connections`, `tables`, `context` |
-| Load parquet files or materialize SQL tables | **`hotdata`** | `databases create` + `databases load`, `datasets create --sql` |
-| SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** | `query`, `queries`, `results`, `datasets create --sql` |
+| Load parquet files into a managed database | **`hotdata`** | `databases create` + `databases load` |
+| SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** | `query`, `queries`, `results` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** | `search`, `indexes create`, `embedding-providers` |
 | Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** | `query` with `ST_*`, WKB columns |
 
 | Concept | Where documented |
 |--------|------------------|
 | **Model** | This file — [Model](#model) |
-| **Upload path (datasets vs databases)** | This file — [Datasets vs managed databases](#datasets-vs-managed-databases) |
+| **Upload path (managed databases)** | This file — [Managed databases](#managed-databases) |
 | **History / Chain** | **`hotdata-analytics`** — [WORKFLOWS.md](../../hotdata-analytics/references/WORKFLOWS.md) |
 | **Search indexes** | **`hotdata-search`** — [INDEXES.md](../../hotdata-search/references/INDEXES.md) |
 | **Epic flows** | This file — [Epic flows](#epic-flows) |
@@ -43,18 +43,16 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 7. [ ] (Optional) `hotdata context list` — if `DATAMODEL` is listed, `hotdata context show DATAMODEL`; else skip `show`
 8. [ ] (Optional) Bootstrap **context:DATAMODEL** — [Model](#model), [DATA_MODEL.template.md](DATA_MODEL.template.md)
 
-**Next:** upload data ([Datasets vs managed databases](#datasets-vs-managed-databases)) or run analytics (**Chain** below).
+**Next:** upload data ([Managed databases](#managed-databases)) or run analytics (**Chain** below).
 
 ### Chain (materialize then query)
 
 **Skill:** **`hotdata-analytics`** (catalog via **`hotdata`**)
 
 1. [ ] Run base SQL: `hotdata query "SELECT …"` — poll `hotdata query status <id>` if async
-2. [ ] Materialize one way:
-   - [ ] **Dataset:** `hotdata datasets create --name <name> [--description "…"] --sql "SELECT …"`
-   - [ ] **Managed DB:** `hotdata databases create --catalog <alias> --table <name>` then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
-3. [ ] Copy **`full_name`** from create output (or `datasets list` **FULL NAME**)
-4. [ ] Chain: `hotdata query "SELECT … FROM <full_name> WHERE …"`
+2. [ ] Materialize into a managed database: `hotdata databases create --catalog <alias> --table <name>` then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
+3. [ ] Query with the catalog-qualified name `<alias>.public.<name>`
+4. [ ] Chain: `hotdata query "SELECT … FROM <alias>.public.<name> WHERE …"`
 5. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
 
 **Detail:** [hotdata-analytics WORKFLOWS — Chain](../../hotdata-analytics/references/WORKFLOWS.md#chain)
@@ -67,7 +65,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 2. [ ] `hotdata indexes list` — avoid duplicate bm25/vector indexes on the same column
 3. [ ] Create index:
    - [ ] **Managed DB:** `hotdata indexes create --catalog <alias> --table <tbl> --column <text_col> --type bm25|vector`
-   - [ ] **Connection:** `hotdata indexes create --connection-id <id> --schema <s> --table <t> --column <col> --type bm25|vector [--metric cosine|l2|dot]`
+   - [ ] **Connection:** `hotdata indexes create --catalog <connection-name-or-id> --schema <s> --table <t> --column <col> --type bm25|vector [--metric cosine|l2|dot]`
    - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
 4. [ ] Search (--type and --column inferred when one search index exists):
    - [ ] `hotdata search "…" --table <catalog.schema.table>` (auto-infer)
@@ -78,40 +76,20 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 ---
 
-## Datasets vs managed databases
+## Managed databases
 
-Both land queryable tables in the workspace; the path depends on **format** and **how you want to name tables in SQL**.
+**Managed databases** land queryable tables you own in the workspace, addressed in SQL as `<catalog>.<schema>.<table>` where the catalog is the `--catalog` alias.
 
-| | **Datasets** | **Managed databases** |
-|---|-------------|------------------------|
-| **Best for** | SQL or saved-query snapshot | Parquet files you own; catalog-style `alias.schema.table` |
-| **SQL prefix** | `datasets.<schema>.<table>` (often `datasets.main.*`) | `<catalog>.<schema>.<table>` where catalog = `--catalog` alias |
-| **CLI** | `hotdata datasets create --sql “…”` | `hotdata databases create --catalog` + `databases load` |
-| **Declare schema up front** | No | Yes — `--table` on create (auto-declared on first `databases load`) |
-| **Parquet file uploads** | Not supported via CLI | `databases load --file` / `--url` / `--upload-id` |
-| **Refresh** | `datasets refresh` (re-runs source query) | Replace via `databases load` again |
+| | **Managed databases** |
+|---|------------------------|
+| **Best for** | Parquet files you own; catalog-style `alias.schema.table` |
+| **SQL prefix** | `<catalog>.<schema>.<table>` where catalog = `--catalog` alias |
+| **CLI** | `hotdata databases create --catalog` + `databases load` |
+| **Declare schema up front** | Yes — `--table` on create (auto-declared on first `databases load`) |
+| **Parquet file uploads** | `databases load --file` / `--url` / `--upload-id` |
+| **Refresh** | Replace via `databases load` again |
 
-**Rule of thumb:** SQL or saved-query materialization → **datasets**. Parquet files you control as **`mydb.public.orders`** → **databases**.
-
-### Workflow: dataset upload and query
-
-1. Authenticate and set workspace (`hotdata auth`, `hotdata workspaces set` if needed).
-2. Create the dataset — `--name` is the SQL table name (required); `--description` is the display label (optional):
-
-   ```bash
-   hotdata datasets create --name orders --sql "SELECT ..."
-   # or: --query-id <saved_query_id>
-   ```
-
-   For parquet file uploads use **managed databases** instead (see below).
-
-3. Note the printed **`full_name`** (e.g. `datasets.main.orders`) — do not assume `datasets.main`.
-4. Inspect if needed: `hotdata datasets list`, `hotdata datasets <dataset_id>`.
-5. Query:
-
-   ```bash
-   hotdata query "SELECT count(*) FROM datasets.main.orders"
-   ```
+**Rule of thumb:** Parquet files you control as **`mydb.public.orders`** → **managed databases**.
 
 ### Workflow: managed database (parquet)
 
@@ -135,7 +113,7 @@ Both land queryable tables in the workspace; the path depends on **format** and 
    hotdata query "SELECT count(*) FROM sales.public.orders"
    ```
 
-For **Chain** materializations into datasets or databases, see **`hotdata-analytics`**.
+For **Chain** materializations into managed databases, see **`hotdata-analytics`**.
 
 ---
 
@@ -163,8 +141,6 @@ hotdata connections list
 hotdata connections refresh <connection_id>   # after DDL / stale remote metadata
 hotdata tables list
 hotdata tables list --connection-id <connection_id>
-hotdata datasets list
-hotdata datasets <dataset_id>
 hotdata databases list
 ```
 
@@ -175,5 +151,5 @@ Use `hotdata tables list` for discovery; do not query `information_schema` for t
 ## Cross-cutting
 
 - **Workspace:** Active workspace or `--workspace-id`. **`hotdata queries`** uses the active workspace only (no `--workspace-id`).
-- **Jobs:** `hotdata jobs list` / `jobs <id>` for async refreshes, dataset refresh, and index builds.
+- **Jobs:** `hotdata jobs list` / `jobs <id>` for async refreshes and index builds.
 - **Discovery:** `hotdata tables list` — not `query` on `information_schema`.

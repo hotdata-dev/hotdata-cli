@@ -1,6 +1,6 @@
 ---
 name: hotdata-analytics
-description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain via datasets or managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for connections, tables, datasets, and auth.
+description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for connections, tables, and auth.
 version: 0.5.0
 ---
 
@@ -8,7 +8,7 @@ version: 0.5.0
 
 **OLAP-style analytics** in Hotdata: PostgreSQL-dialect SQL, query execution, run history, stored results, **Chain** materializations, and **sorted** indexes for filters and joins.
 
-**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`connections`, `tables`, `datasets`, `databases`).
+**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`connections`, `tables`, `databases`).
 
 **Related skills:** **`hotdata-search`** (BM25, vector, retrieval indexes), **`hotdata-geospatial`** (spatial SQL).
 
@@ -23,7 +23,7 @@ hotdata query status <query_run_id> [--output table|json|csv]
 
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
 - Use **`hotdata tables list`** for schema discovery — not `information_schema` via `query`.
-- Fully qualified names: `<connection>.<schema>.<table>`, `datasets.<schema>.<table>`, `<database>.<schema>.<table>`.
+- Fully qualified names: `<connection>.<schema>.<table>`, `<database>.<schema>.<table>`.
 - Long-running queries may return `query_run_id` → poll with **`query status`** (exit `2` = still running). Do not re-run identical heavy SQL while polling.
 - For **workspace-wide** joins and naming, load **context:DATAMODEL** when listed (`hotdata context list` → `show DATAMODEL`) — see **`hotdata`** skill.
 
@@ -79,24 +79,16 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json
    hotdata query status <query_run_id>   # if async
    ```
 
-2. **Materialize** (pick one)
-
-   ```bash
-   hotdata datasets create --name chain_slice [--description "chain slice"] --sql "SELECT ..."
-   hotdata datasets create --name chain_from_saved [--description "from saved"] --query-id <query_id>
-   ```
-
-   Or managed parquet:
+2. **Materialize** into a managed database (parquet)
 
    ```bash
    hotdata databases create --catalog analytics
    hotdata databases load --catalog analytics --table slice --file ./slice.parquet
    ```
 
-3. **Chain query** — use printed **`full_name`** or `datasets list` **FULL NAME** column:
+3. **Chain query** — use the catalog-qualified name `<catalog>.public.<table>`:
 
    ```bash
-   hotdata query "SELECT * FROM datasets.main.chain_slice WHERE ..."
    hotdata query "SELECT * FROM analytics.public.slice WHERE ..."
    ```
 
@@ -111,7 +103,7 @@ Full procedure: [references/WORKFLOWS.md](references/WORKFLOWS.md).
 For equality, range, and sort-heavy OLAP — not full-text or vector (see **`hotdata-search`**):
 
 ```bash
-hotdata indexes create --connection-id <id> --schema <schema> --table <table> \
+hotdata indexes create --catalog <connection-name-or-id> --schema <schema> --table <table> \
   --name idx_orders_created --column created_at --type sorted [--async]
 ```
 
