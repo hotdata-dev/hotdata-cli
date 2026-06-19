@@ -1,4 +1,4 @@
-use crate::sdk::{Api, ApiError, block, none_if_404};
+use crate::sdk::{Api, ApiError, block, block_with_wakeup, none_if_404};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -99,7 +99,12 @@ struct ConnectionTypeDetail {
 
 pub fn types_list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let resp = block(api.client().connection_types().list()).unwrap_or_else(|e| e.exit());
+    let resp = block_with_wakeup(
+        &api,
+        "Loading connection types…",
+        api.client().connection_types().list(),
+    )
+    .unwrap_or_else(|e| e.exit());
     let body = ListConnectionTypesResponse {
         connection_types: resp
             .connection_types
@@ -136,7 +141,12 @@ pub fn types_list(workspace_id: &str, format: &str) {
 
 pub fn types_get(workspace_id: &str, name: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let resp = block(api.client().connection_types().get(name)).unwrap_or_else(|e| e.exit());
+    let resp = block_with_wakeup(
+        &api,
+        "Loading connection type…",
+        api.client().connection_types().get(name),
+    )
+    .unwrap_or_else(|e| e.exit());
     // The SDK models nullable fields as `Option<Option<Value>>`; flatten and
     // drop an explicit JSON `null` to match the old behavior (the old struct
     // deserialized a missing/`null` field to `None`).
@@ -243,11 +253,18 @@ pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
     let is_table = format == "table";
 
-    let spinner = is_table.then(|| crate::util::spinner("Fetching connection..."));
-    let resp = block(api.client().connections().get(connection_id)).unwrap_or_else(|e| e.exit());
-    if let Some(s) = spinner {
-        s.finish_and_clear();
+    // Keep the spinner table-only (scripting output stays clean), but route the
+    // interactive path through the wakeup hint so a cold KEDA start is explained.
+    let resp = if is_table {
+        block_with_wakeup(
+            &api,
+            "Fetching connection...",
+            api.client().connections().get(connection_id),
+        )
+    } else {
+        block(api.client().connections().get(connection_id))
     }
+    .unwrap_or_else(|e| e.exit());
     let detail = ConnectionDetail {
         id: resp.id,
         name: resp.name,
@@ -327,16 +344,16 @@ pub fn create(workspace_id: &str, name: &str, source_type: &str, config: &str, f
         source_type.to_string(),
     );
 
-    let spinner = is_table.then(|| crate::util::spinner("Creating connection..."));
-    let resp = block(api.client().connections().create(request)).unwrap_or_else(|e| {
-        if let Some(s) = &spinner {
-            s.finish_and_clear();
-        }
-        e.exit()
-    });
-    if let Some(s) = &spinner {
-        s.finish_and_clear();
+    let resp = if is_table {
+        block_with_wakeup(
+            &api,
+            "Creating connection...",
+            api.client().connections().create(request),
+        )
+    } else {
+        block(api.client().connections().create(request))
     }
+    .unwrap_or_else(|e| e.exit());
 
     let result = CreateResponse {
         id: resp.id,
@@ -404,7 +421,12 @@ pub fn create(workspace_id: &str, name: &str, source_type: &str, config: &str, f
 
 pub fn list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let resp = block(api.client().connections().list()).unwrap_or_else(|e| e.exit());
+    let resp = block_with_wakeup(
+        &api,
+        "Loading connections…",
+        api.client().connections().list(),
+    )
+    .unwrap_or_else(|e| e.exit());
     let body = ListResponse {
         connections: resp
             .connections

@@ -1,4 +1,4 @@
-use crate::sdk::{Api, block, none_if_404};
+use crate::sdk::{Api, block, block_with_wakeup, none_if_404};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -523,7 +523,9 @@ pub fn delete(workspace_id: &str, scope: IndexScope<'_>, index_name: &str) {
             connection_id,
             schema,
             table,
-        } => block(
+        } => block_with_wakeup(
+            &api,
+            "Deleting index…",
             api.client()
                 .indexes()
                 .delete_index(connection_id, schema, table, index_name),

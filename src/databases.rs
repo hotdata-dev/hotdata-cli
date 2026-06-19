@@ -1,4 +1,4 @@
-use crate::sdk::{Api, ApiError, block, none_if_404};
+use crate::sdk::{Api, ApiError, block, block_with_wakeup, none_if_404};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -139,8 +139,12 @@ pub(crate) fn get_database(api: &Api, id: &str) -> Result<Database, ApiError> {
 
 /// List databases through the SDK's typed `databases().list` handle, mapped
 /// into the CLI's summary rows.
+///
+/// Routed through [`block_with_wakeup`] so a cold KEDA start surfaces a "waking
+/// up worker" hint instead of an unexplained pause — `databases list` is a
+/// common first command against an idle workspace.
 fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> {
-    block(api.client().databases().list())
+    block_with_wakeup(api, "Loading databases…", api.client().databases().list())
         .map(|r| r.databases.into_iter().map(DatabaseSummary::from).collect())
 }
 
@@ -678,16 +682,16 @@ pub fn create(
     let request = create_database_typed_request(name, catalog, schema, tables, expires_at);
 
     let api = Api::new(Some(workspace_id));
-    let spinner = (format == "table").then(|| crate::util::spinner("Creating database..."));
-    let resp = block(api.client().databases().create(request)).unwrap_or_else(|e| {
-        if let Some(s) = &spinner {
-            s.finish_and_clear();
-        }
-        e.exit()
-    });
-    if let Some(s) = &spinner {
-        s.finish_and_clear();
+    let resp = if format == "table" {
+        block_with_wakeup(
+            &api,
+            "Creating database...",
+            api.client().databases().create(request),
+        )
+    } else {
+        block(api.client().databases().create(request))
     }
+    .unwrap_or_else(|e| e.exit());
 
     let result = CreateDatabaseResponse {
         id: resp.id,
@@ -794,7 +798,12 @@ pub fn delete(workspace_id: &str, id_or_name: &str) {
 
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, id_or_name);
-    block(api.client().databases().delete(&db.id)).unwrap_or_else(|e| e.exit());
+    block_with_wakeup(
+        &api,
+        "Deleting database…",
+        api.client().databases().delete(&db.id),
+    )
+    .unwrap_or_else(|e| e.exit());
 
     // If the deleted database was the current one, clear it so subsequent
     // commands don't silently send a stale X-Database-Id header.

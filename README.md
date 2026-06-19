@@ -203,6 +203,8 @@ hotdata query status <query_run_id> [-o table|json|csv]
 - Long-running queries automatically fall back to async execution and return a `query_run_id`.
 - Use `hotdata query status <query_run_id>` to poll for results.
 - Exit codes for `query status`: `0` = succeeded, `1` = failed, `2` = still running (poll again).
+- `json` output carries `truncated`, `preview_row_count`, and `total_row_count` so a consumer can detect a partial result from the body alone.
+- If the server returns only a bounded preview that can't be completed (truncated and unfetchable), the CLI prints the preview, warns on stderr, and exits `3` — so pipelines break rather than silently ingest partial data.
 
 ## Query Run History
 

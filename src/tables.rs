@@ -42,14 +42,18 @@ pub fn list(
     // the old behavior (include_columns=true iff connection_id is set).
     let include_columns = connection_id.map(|_| true);
 
-    let body = crate::sdk::block(api.client().information_schema().get(
-        connection_id,
-        schema,
-        table_filter,
-        include_columns,
-        limit.map(|l| l as i32),
-        cursor,
-    ))
+    let body = crate::sdk::block_with_wakeup(
+        &api,
+        "Loading tables…",
+        api.client().information_schema().get(
+            connection_id,
+            schema,
+            table_filter,
+            include_columns,
+            limit.map(|l| l as i32),
+            cursor,
+        ),
+    )
     .unwrap_or_else(|e| e.exit());
 
     let has_more = body.has_more;

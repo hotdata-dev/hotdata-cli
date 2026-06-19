@@ -178,12 +178,13 @@ pub fn list(
 ) {
     let api = Api::new(Some(workspace_id));
 
-    let resp = crate::sdk::block(api.client().query_runs().list(
-        limit.map(|l| l as i32),
-        cursor,
-        status,
-        None,
-    ))
+    let resp = crate::sdk::block_with_wakeup(
+        &api,
+        "Loading query runs…",
+        api.client()
+            .query_runs()
+            .list(limit.map(|l| l as i32), cursor, status, None),
+    )
     .unwrap_or_else(|e| e.exit());
 
     let query_runs: Vec<QueryRun> = resp.query_runs.into_iter().map(QueryRun::from).collect();
@@ -235,9 +236,13 @@ pub fn list(
 
 pub fn get(query_run_id: &str, workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let run: QueryRun = crate::sdk::block(api.client().query_runs().get(query_run_id))
-        .unwrap_or_else(|e| e.exit())
-        .into();
+    let run: QueryRun = crate::sdk::block_with_wakeup(
+        &api,
+        "Loading query run…",
+        api.client().query_runs().get(query_run_id),
+    )
+    .unwrap_or_else(|e| e.exit())
+    .into();
     print_detail(&run, format);
 }
 
