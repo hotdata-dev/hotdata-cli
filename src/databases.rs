@@ -148,6 +148,18 @@ fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> 
         .map(|r| r.databases.into_iter().map(DatabaseSummary::from).collect())
 }
 
+/// List the ids of every managed database in the workspace.
+///
+/// Exposed for the whole-workspace `indexes list` scan (#168): a managed
+/// database's connection is hidden from `connections list` and its tables are
+/// absent from the unscoped `information_schema` enumeration, so that scan
+/// rediscovers managed databases here and resolves each one's
+/// `default_connection_id` via [`get_database`]. The list summary omits the
+/// connection id, hence ids only.
+pub(crate) fn list_database_ids(api: &Api) -> Result<Vec<String>, ApiError> {
+    list_database_summaries(api).map(|dbs| dbs.into_iter().map(|d| d.id).collect())
+}
+
 fn fetch_database(api: &Api, id: &str) -> Database {
     get_database(api, id).unwrap_or_else(|e| e.exit())
 }
