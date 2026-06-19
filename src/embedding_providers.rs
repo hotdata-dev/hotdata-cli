@@ -44,12 +44,16 @@ fn parse_config(raw: Option<&str>) -> Option<serde_json::Value> {
 
 pub fn list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let providers: Vec<Provider> = crate::sdk::block(api.client().embedding_providers().list())
-        .unwrap_or_else(|e| e.exit())
-        .embedding_providers
-        .into_iter()
-        .map(Provider::from)
-        .collect();
+    let providers: Vec<Provider> = crate::sdk::block_with_wakeup(
+        &api,
+        "Loading embedding providers…",
+        api.client().embedding_providers().list(),
+    )
+    .unwrap_or_else(|e| e.exit())
+    .embedding_providers
+    .into_iter()
+    .map(Provider::from)
+    .collect();
 
     use crossterm::style::Stylize;
     match format {
@@ -80,9 +84,13 @@ pub fn list(workspace_id: &str, format: &str) {
 
 pub fn get(workspace_id: &str, id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let p: Provider = crate::sdk::block(api.client().embedding_providers().get(id))
-        .unwrap_or_else(|e| e.exit())
-        .into();
+    let p: Provider = crate::sdk::block_with_wakeup(
+        &api,
+        "Loading embedding provider…",
+        api.client().embedding_providers().get(id),
+    )
+    .unwrap_or_else(|e| e.exit())
+    .into();
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&p).unwrap()),
@@ -128,8 +136,12 @@ pub fn create(
         req.secret_name = Some(Some(s.to_string()));
     }
 
-    let resp = crate::sdk::block(api.client().embedding_providers().create(req))
-        .unwrap_or_else(|e| e.exit());
+    let resp = crate::sdk::block_with_wakeup(
+        &api,
+        "Creating embedding provider…",
+        api.client().embedding_providers().create(req),
+    )
+    .unwrap_or_else(|e| e.exit());
     let parsed = serde_json::to_value(&resp).unwrap_or_default();
 
     eprintln!("{}", "Embedding provider created.".green());
@@ -180,8 +192,12 @@ pub fn update(
         req.secret_name = Some(Some(s.to_string()));
     }
 
-    let resp = crate::sdk::block(api.client().embedding_providers().update(id, req))
-        .unwrap_or_else(|e| e.exit());
+    let resp = crate::sdk::block_with_wakeup(
+        &api,
+        "Updating embedding provider…",
+        api.client().embedding_providers().update(id, req),
+    )
+    .unwrap_or_else(|e| e.exit());
     let resp = serde_json::to_value(&resp).unwrap_or_default();
 
     eprintln!("{}", "Embedding provider updated.".green());
@@ -202,7 +218,12 @@ pub fn update(
 pub fn delete(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     let api = Api::new(Some(workspace_id));
-    crate::sdk::block(api.client().embedding_providers().delete(id)).unwrap_or_else(|e| e.exit());
+    crate::sdk::block_with_wakeup(
+        &api,
+        "Deleting embedding provider…",
+        api.client().embedding_providers().delete(id),
+    )
+    .unwrap_or_else(|e| e.exit());
     println!("{}", format!("Embedding provider '{id}' deleted.").green());
 }
 

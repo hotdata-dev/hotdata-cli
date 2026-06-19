@@ -341,10 +341,12 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
     request.r#async = Some(true);
     request.async_after_ms = Some(Some(1000));
 
-    let spinner = crate::util::spinner("running query...");
-    let outcome = crate::sdk::block(api.client().submit_query(request, database))
-        .unwrap_or_else(|e| e.exit());
-    spinner.finish_and_clear();
+    let outcome = crate::sdk::block_with_wakeup(
+        &api,
+        "running query...",
+        api.client().submit_query(request, database),
+    )
+    .unwrap_or_else(|e| e.exit());
 
     let async_resp = match outcome {
         // Completed within async_after_ms — inline results. A large result can

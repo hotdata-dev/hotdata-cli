@@ -259,6 +259,91 @@ where
     rt().block_on(fut).map_err(ApiError::from_sdk)
 }
 
+/// KEDA scale state of a workspace's runtimedb worker, as reported by the
+/// always-warm control plane. Used only to upgrade a spinner message on a
+/// cold start — it never affects control flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeState {
+    /// At least one ready replica; the request is being served warm.
+    Ready,
+    /// Scaling up (desired >= 1) but no ready replica yet.
+    Waking,
+    /// Scaled to zero; the request triggered a cold start.
+    Asleep,
+    /// Couldn't determine (no control plane, error, non-2xx, unscoped).
+    Unknown,
+}
+
+impl RuntimeState {
+    fn from_state_str(s: &str) -> Self {
+        match s {
+            "ready" => Self::Ready,
+            "waking" => Self::Waking,
+            "asleep" => Self::Asleep,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// True when the worker is cold — i.e. the in-flight request is (or will be)
+    /// blocked waiting for KEDA to bring a replica up.
+    fn is_cold(self) -> bool {
+        matches!(self, Self::Waking | Self::Asleep)
+    }
+}
+
+/// How long a request may run before we suspect a cold start and probe the
+/// control plane. Short enough that a real wake-up is flagged promptly, long
+/// enough that a warm-but-slow request never triggers the probe.
+const WAKE_PROBE_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+/// Upper bound on the status probe itself, so a slow/stuck probe never delays
+/// the real response (the probe runs in a select arm that's dropped the moment
+/// the real request completes, but this caps its own footprint regardless).
+const WAKE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// Spinner message shown once a cold start is confirmed.
+const WAKE_MESSAGE: &str = "waking up worker after inactivity (this can take ~20s)…";
+
+/// Like [`block`], but shows a spinner with `msg` and, if the request hasn't
+/// returned within [`WAKE_PROBE_DELAY`], probes the control plane for the
+/// worker's scale state. On a confirmed cold start the spinner message is
+/// upgraded to explain the wait. Warm requests pay nothing: the probe only
+/// fires after the delay, and returns the real result the instant it lands.
+pub fn block_with_wakeup<F, T, E>(api: &Api, msg: &str, fut: F) -> Result<T, ApiError>
+where
+    F: std::future::Future<Output = Result<T, Error<E>>>,
+    E: std::fmt::Debug,
+{
+    let pb = util::spinner(msg);
+    let hint_pb = pb.clone();
+    let result = rt().block_on(async {
+        tokio::pin!(fut);
+        // After the delay, probe once and (if cold) upgrade the message, then
+        // idle forever so the select keeps driving the real request to
+        // completion. Dropped — cancelling any in-flight probe — as soon as
+        // `fut` wins.
+        let hint = async {
+            tokio::time::sleep(WAKE_PROBE_DELAY).await;
+            let state = tokio::time::timeout(WAKE_PROBE_TIMEOUT, api.probe_runtime_status())
+                .await
+                .unwrap_or(RuntimeState::Unknown);
+            if state.is_cold() {
+                hint_pb.set_message(WAKE_MESSAGE);
+            }
+            std::future::pending::<()>().await;
+        };
+        tokio::pin!(hint);
+        loop {
+            tokio::select! {
+                r = &mut fut => break r,
+                // `hint` ends in `pending()`, so this arm never completes; it
+                // exists only to drive the probe alongside the real request.
+                _ = &mut hint => {}
+            }
+        }
+    });
+    pb.finish_and_clear();
+    result.map_err(ApiError::from_sdk)
+}
+
 /// Map a result, returning `Ok(None)` on HTTP 404 instead of an error.
 ///
 /// Reproduces `ApiClient::get_none_if_not_found` / the context-404 / indexes-404
@@ -488,6 +573,53 @@ impl Api {
 
     pub fn database_id(&self) -> Option<&str> {
         self.database_id.as_deref()
+    }
+
+    /// Best-effort probe of the scoped workspace's runtimedb scale state, via
+    /// the control-plane `GET /v1/workspaces/{id}/runtime/status` endpoint.
+    ///
+    /// Returns [`RuntimeState::Unknown`] on any failure (no workspace scope,
+    /// transport error, non-2xx, or unparseable body) so callers degrade to
+    /// their latency heuristic rather than surfacing an error.
+    ///
+    /// Deliberately omits the `X-Workspace-Id` header: that header is what the
+    /// gateway matches to route `/v1` traffic to the KEDA interceptor, and
+    /// routing this probe there would wake the very worker we're asking about.
+    /// Without it the request lands on the always-warm control plane, which
+    /// answers from Kubernetes state.
+    async fn probe_runtime_status(&self) -> RuntimeState {
+        let Some(ws) = self.workspace_id.as_deref() else {
+            return RuntimeState::Unknown;
+        };
+        let cfg = self.client.configuration();
+        // `base_path` has no `/v1` suffix (see `sdk_base_path`); add the one
+        // the control-plane route expects.
+        let url = format!(
+            "{}/v1/workspaces/{}/runtime/status",
+            cfg.base_path.trim_end_matches('/'),
+            ws
+        );
+        let mut req = cfg.client.get(&url);
+        if let Some(ref user_agent) = cfg.user_agent {
+            req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
+        }
+        if let Some(token) = cfg.resolve_bearer_token().await {
+            req = req.bearer_auth(token);
+        }
+        let Ok(resp) = req.send().await else {
+            return RuntimeState::Unknown;
+        };
+        if !resp.status().is_success() {
+            return RuntimeState::Unknown;
+        }
+        match resp.json::<serde_json::Value>().await {
+            Ok(body) => body
+                .get("state")
+                .and_then(|s| s.as_str())
+                .map(RuntimeState::from_state_str)
+                .unwrap_or(RuntimeState::Unknown),
+            Err(_) => RuntimeState::Unknown,
+        }
     }
 
     /// Borrow the underlying SDK client (for command modules calling resource
@@ -1318,5 +1450,71 @@ mod tests {
             }
             other => panic!("expected Status error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn runtime_state_parsing_and_coldness() {
+        assert_eq!(RuntimeState::from_state_str("ready"), RuntimeState::Ready);
+        assert_eq!(RuntimeState::from_state_str("waking"), RuntimeState::Waking);
+        assert_eq!(RuntimeState::from_state_str("asleep"), RuntimeState::Asleep);
+        assert_eq!(
+            RuntimeState::from_state_str("garbage"),
+            RuntimeState::Unknown
+        );
+        // Only the not-yet-serving states count as cold.
+        assert!(RuntimeState::Asleep.is_cold());
+        assert!(RuntimeState::Waking.is_cold());
+        assert!(!RuntimeState::Ready.is_cold());
+        assert!(!RuntimeState::Unknown.is_cold());
+    }
+
+    #[test]
+    fn probe_runtime_status_reads_state_without_workspace_header() {
+        let mut server = mockito::Server::new();
+        // The probe must hit the control-plane route *without* X-Workspace-Id,
+        // or the gateway would send it to the KEDA interceptor and wake the
+        // worker we're only trying to inspect.
+        let m = server
+            .mock("GET", "/v1/workspaces/work-1/runtime/status")
+            .match_header("x-workspace-id", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ok":true,"state":"asleep","estimated_wake_seconds":20}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("work-1"));
+        let state = rt().block_on(api.probe_runtime_status());
+        assert_eq!(state, RuntimeState::Asleep);
+        m.assert();
+    }
+
+    #[test]
+    fn probe_runtime_status_non_2xx_is_unknown() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/workspaces/work-1/runtime/status")
+            .with_status(500)
+            .with_body("boom")
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("work-1"));
+        assert_eq!(
+            rt().block_on(api.probe_runtime_status()),
+            RuntimeState::Unknown
+        );
+    }
+
+    #[test]
+    fn probe_runtime_status_unscoped_is_unknown_without_request() {
+        // No workspace scope -> nothing to probe; must not make a request.
+        let mut server = mockito::Server::new();
+        let m = server.mock("GET", mockito::Matcher::Any).expect(0).create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", None);
+        assert_eq!(
+            rt().block_on(api.probe_runtime_status()),
+            RuntimeState::Unknown
+        );
+        m.assert();
     }
 }
