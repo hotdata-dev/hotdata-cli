@@ -2,7 +2,7 @@
 
 OLAP-style SQL, **History** (query runs and stored results), and **Chain** (materialized follow-ups). Requires **`hotdata`** for auth, workspaces, and catalog commands.
 
-**Related:** **`hotdata-search`** for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../hotdata/references/WORKFLOWS.md) for datasets vs managed databases.
+**Related:** **`hotdata-search`** for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../hotdata/references/WORKFLOWS.md) for managed databases.
 
 ---
 
@@ -64,43 +64,32 @@ hotdata query "SELECT ..."
 
 ### 2. Materialize
 
-Land a smaller table — pick one:
-
-**Datasets** (SQL query or saved query → `datasets.<schema>.<table>`):
-
-```bash
-hotdata datasets create --name chain_revenue_slice [--description "chain revenue slice"] --sql "SELECT ..."
-hotdata datasets create --name chain_from_saved [--description "from saved"] --query-id <query_id>
-```
-
-**Managed database** (parquet → `<database>.<schema>.<table>`):
+Land a smaller table in a **managed database** (parquet → `<database>.<schema>.<table>`):
 
 ```bash
 hotdata databases create --catalog chain_db
 hotdata databases load --catalog chain_db --table revenue_slice --file ./revenue_slice.parquet
 ```
 
-Note the printed **`full_name`** (e.g. `datasets.main.chain_revenue_slice` or `chain_db.public.revenue_slice`). For datasets, **`FULL NAME`** from `datasets list` is authoritative.
+The table is then addressable as `chain_db.public.revenue_slice`. Confirm with `hotdata databases tables list`.
 
 ### 3. Chain query
 
-Query using the actual `full_name` from create or list — do not hardcode `datasets.main`; use whatever qualified name was printed:
+Query using the catalog-qualified name `<catalog>.public.<table>`:
 
 ```bash
-hotdata datasets list
-hotdata query "SELECT * FROM datasets.main.chain_revenue_slice WHERE ..."
-# Managed database:
-# hotdata query "SELECT * FROM chain_db.public.revenue_slice WHERE ..."
+hotdata databases tables list
+hotdata query "SELECT * FROM chain_db.public.revenue_slice WHERE ..."
 ```
 
 ### Naming and documentation
 
 - Prefer predictable `--name` values: `chain_<topic>_<YYYYMMDD>`.
-- Record long-lived chains in **context:DATAMODEL → Derived tables (Chain)** with the **full** SQL name you use (`datasets.…` or `database.schema.table`).
+- Record long-lived chains in **context:DATAMODEL → Derived tables (Chain)** with the **full** SQL name you use (`database.schema.table`).
 - Promote join/grain findings to **context:DATAMODEL** when they should be shared or persisted (**`hotdata`** skill).
 
 ### Guardrails
 
 - Materialize when the base scan is large and the follow-up runs many times.
 - Keep Chain tables focused; avoid wide `SELECT *` materializations when a narrow projection suffices.
-- For upload format choice (datasets vs databases), see **`hotdata`** WORKFLOWS — [Datasets vs managed databases](../../hotdata/references/WORKFLOWS.md#datasets-vs-managed-databases).
+- For managed-database uploads, see **`hotdata`** WORKFLOWS — [Managed databases](../../hotdata/references/WORKFLOWS.md#managed-databases).

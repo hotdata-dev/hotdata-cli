@@ -8,23 +8,6 @@ pub enum Commands {
         command: Option<AuthCommands>,
     },
 
-    /// Derived views — virtual SQL tables built from queries over your data
-    Datasets {
-        /// Dataset ID to show details
-        id: Option<String>,
-
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, short = 'w', global = true)]
-        workspace_id: Option<String>,
-
-        /// Output format (used with dataset ID)
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-
-        #[command(subcommand)]
-        command: Option<DatasetsCommands>,
-    },
-
     /// Execute a SQL query, or check status of a running query
     Query {
         /// SQL query string (omit when using a subcommand)
@@ -284,33 +267,29 @@ pub enum AuthCommands {
 
 #[derive(Subcommand)]
 pub enum IndexesCommands {
-    /// List indexes (defaults to the whole workspace; narrow with filters or pass --dataset-id)
+    /// List indexes (defaults to the whole workspace; narrow with filters)
     List {
         /// Filter by connection ID
-        #[arg(long, short = 'c', conflicts_with = "dataset_id")]
+        #[arg(long, short = 'c')]
         connection_id: Option<String>,
 
         /// Filter by schema name
-        #[arg(long, conflicts_with = "dataset_id")]
+        #[arg(long)]
         schema: Option<String>,
 
         /// Filter by table name
-        #[arg(long, conflicts_with = "dataset_id")]
-        table: Option<String>,
-
-        /// List indexes for a specific dataset (alternative scope to --connection-id)
         #[arg(long)]
-        dataset_id: Option<String>,
+        table: Option<String>,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
     },
 
-    /// Create an index on a table or dataset.
+    /// Create an index on a table.
     Create {
         /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
-        #[arg(long, conflicts_with = "dataset_id")]
+        #[arg(long)]
         catalog: Option<String>,
 
         /// Schema name (default: public)
@@ -318,16 +297,12 @@ pub enum IndexesCommands {
         schema: String,
 
         /// Table name to index
-        #[arg(long, conflicts_with = "dataset_id")]
+        #[arg(long)]
         table: Option<String>,
 
         /// Column(s) to index (comma-separated)
         #[arg(long)]
         column: Option<String>,
-
-        /// Dataset ID (alternative scope to --catalog/--table)
-        #[arg(long, conflicts_with_all = ["catalog", "table"])]
-        dataset_id: Option<String>,
 
         /// Index name (derived from table, columns, and type if omitted)
         #[arg(long)]
@@ -363,13 +338,12 @@ pub enum IndexesCommands {
         description: Option<String>,
     },
 
-    /// Delete an index from a table or dataset
+    /// Delete an index from a table
     ///
-    /// Pass either connection scope (--connection-id + --schema + --table) OR
-    /// dataset scope (--dataset-id), not both.
+    /// Pass connection scope: --connection-id + --schema + --table.
     Delete {
         /// Connection ID (use with --schema and --table)
-        #[arg(long, short = 'c', conflicts_with = "dataset_id", requires_all = ["schema", "table"])]
+        #[arg(long, short = 'c', requires_all = ["schema", "table"])]
         connection_id: Option<String>,
 
         /// Schema name (requires --connection-id)
@@ -379,10 +353,6 @@ pub enum IndexesCommands {
         /// Table name (requires --connection-id)
         #[arg(long, requires = "connection_id")]
         table: Option<String>,
-
-        /// Dataset ID (alternative scope to --connection-id)
-        #[arg(long, conflicts_with_all = ["connection_id", "schema", "table"])]
-        dataset_id: Option<String>,
 
         /// Index name
         #[arg(long)]
@@ -395,7 +365,7 @@ pub enum JobsCommands {
     /// List background jobs (shows active jobs by default)
     List {
         /// Filter by job type
-        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "dataset_refresh", "create_index", "create_dataset_index"])]
+        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "create_index"])]
         job_type: Option<String>,
 
         /// Filter by status
@@ -417,79 +387,6 @@ pub enum JobsCommands {
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum DatasetsCommands {
-    /// List all datasets in a workspace
-    List {
-        /// Maximum number of results (default: 100, max: 1000)
-        #[arg(long)]
-        limit: Option<u32>,
-
-        /// Pagination offset
-        #[arg(long)]
-        offset: Option<u32>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Create a derived view from a SQL query or saved query
-    Create {
-        /// SQL table name the dataset is addressable as (e.g. my_view)
-        #[arg(long)]
-        name: String,
-
-        /// Human-readable display label
-        #[arg(long)]
-        description: Option<String>,
-
-        /// SQL query to create the dataset from
-        #[arg(
-            long,
-            conflicts_with = "query_id",
-            required_unless_present = "query_id"
-        )]
-        sql: Option<String>,
-
-        /// Saved query ID to create the dataset from
-        #[arg(long, conflicts_with = "sql", required_unless_present = "sql")]
-        query_id: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Update a dataset's description and/or name
-    Update {
-        /// Dataset ID
-        id: String,
-
-        /// New display label
-        #[arg(long)]
-        description: Option<String>,
-
-        /// New SQL table name (must be a valid identifier)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Refresh a dataset by re-running its source (URL fetch or saved query) and creating a new version
-    Refresh {
-        /// Dataset ID
-        id: String,
-
-        /// Submit as a background job
-        #[arg(long)]
-        r#async: bool,
     },
 }
 

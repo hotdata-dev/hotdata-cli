@@ -347,7 +347,7 @@ fn upload_parquet_file(api: &Api, path: &str) -> String {
     if !is_parquet_path(path) {
         eprintln!(
             "error: managed table loads require a parquet file (got '{}'). \
-             Convert your data to parquet or use `hotdata datasets create` for CSV/JSON.",
+             Convert your data to parquet first.",
             path
         );
         std::process::exit(1);

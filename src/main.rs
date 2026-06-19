@@ -6,7 +6,6 @@ mod connections_new;
 mod context;
 mod database_session;
 mod databases;
-mod datasets;
 mod embedding_providers;
 mod indexes;
 mod jobs;
@@ -27,7 +26,7 @@ use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
 use command::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
-    DatabaseTablesCommands, DatabasesCommands, DatasetsCommands, EmbeddingProvidersCommands,
+    DatabaseTablesCommands, DatabasesCommands, EmbeddingProvidersCommands,
     IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SkillCommands,
     TablesCommands, WorkspaceCommands,
 };
@@ -164,76 +163,6 @@ fn main() {
                 Some(AuthCommands::Status) => auth::status("default"),
                 Some(AuthCommands::Logout) => auth::logout("default"),
             },
-            Commands::Datasets {
-                id,
-                workspace_id,
-                output,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                if let Some(id) = id {
-                    datasets::get(&id, &workspace_id, &output)
-                } else {
-                    match command {
-                        Some(DatasetsCommands::List {
-                            limit,
-                            offset,
-                            output,
-                        }) => datasets::list(&workspace_id, limit, offset, &output),
-                        Some(DatasetsCommands::Create {
-                            name,
-                            description,
-                            sql,
-                            query_id,
-                            output,
-                        }) => {
-                            if let Some(sql) = sql {
-                                datasets::create_from_query(
-                                    &workspace_id,
-                                    &sql,
-                                    description.as_deref(),
-                                    &name,
-                                    &output,
-                                )
-                            } else {
-                                datasets::create_from_saved_query(
-                                    &workspace_id,
-                                    query_id.as_deref().unwrap_or_else(|| {
-                                        unreachable!("clap enforces --sql or --query-id")
-                                    }),
-                                    description.as_deref(),
-                                    &name,
-                                    &output,
-                                )
-                            }
-                        }
-                        Some(DatasetsCommands::Update {
-                            id,
-                            description,
-                            name,
-                            output,
-                        }) => datasets::update(
-                            &id,
-                            &workspace_id,
-                            description.as_deref(),
-                            name.as_deref(),
-                            &output,
-                        ),
-                        Some(DatasetsCommands::Refresh { id, r#async }) => {
-                            datasets::refresh(&workspace_id, &id, r#async)
-                        }
-                        None => {
-                            use clap::CommandFactory;
-                            let mut cmd = Cli::command();
-                            cmd.build();
-                            cmd.find_subcommand_mut("datasets")
-                                .unwrap()
-                                .print_help()
-                                .unwrap();
-                        }
-                    }
-                }
-            }
             Commands::Query {
                 sql,
                 workspace_id,
@@ -607,14 +536,12 @@ fn main() {
                         connection_id,
                         schema,
                         table,
-                        dataset_id,
                         output,
                     } => indexes::list(
                         &workspace_id,
                         connection_id.as_deref(),
                         schema.as_deref(),
                         table.as_deref(),
-                        dataset_id.as_deref(),
                         &output,
                     ),
                     IndexesCommands::Create {
@@ -622,7 +549,6 @@ fn main() {
                         schema,
                         table,
                         column,
-                        dataset_id,
                         name,
                         r#type,
                         metric,
@@ -633,74 +559,34 @@ fn main() {
                         description,
                     } => {
                         let api = sdk::Api::new(Some(&workspace_id));
-                        let (scope, resolved_columns, auto_name) = match (
-                            catalog.as_deref().or(table.as_deref()),
-                            dataset_id.as_deref(),
-                        ) {
-                            (Some(_), None) => {
-                                let catalog_or_conn = catalog.as_deref().unwrap_or_else(|| {
-                                    eprintln!("error: --catalog is required");
-                                    std::process::exit(1);
-                                });
-                                let tbl = table.as_deref().unwrap_or_else(|| {
-                                    eprintln!("error: --table is required");
-                                    std::process::exit(1);
-                                });
-                                let cols = column.as_deref().unwrap_or_else(|| {
-                                    eprintln!("error: --column is required");
-                                    std::process::exit(1);
-                                });
-                                let conn_id =
-                                    connections::resolve_connection_id(&api, catalog_or_conn);
-                                let auto = format!(
-                                    "{tbl}_{cols}_{type}",
-                                    cols = cols.replace(',', "_"),
-                                    type = r#type
-                                );
-                                ((conn_id, schema, tbl.to_string()), cols.to_string(), auto)
-                            }
-                            (None, Some(did)) => {
-                                let cols = column.as_deref().unwrap_or_else(|| {
-                                    eprintln!("error: --column is required with --dataset-id");
-                                    std::process::exit(1);
-                                });
-                                let auto = format!(
-                                    "dataset_{cols}_{type}",
-                                    cols = cols.replace(',', "_"),
-                                    type = r#type
-                                );
-                                (
-                                    (did.to_string(), String::new(), String::new()),
-                                    cols.to_string(),
-                                    auto,
-                                )
-                            }
-                            _ => {
-                                eprintln!(
-                                    "error: provide --catalog and --table, or --dataset-id with --column"
-                                );
-                                std::process::exit(1);
-                            }
-                        };
+                        let catalog_or_conn = catalog.as_deref().unwrap_or_else(|| {
+                            eprintln!("error: --catalog is required");
+                            std::process::exit(1);
+                        });
+                        let tbl = table.as_deref().unwrap_or_else(|| {
+                            eprintln!("error: --table is required");
+                            std::process::exit(1);
+                        });
+                        let cols = column.as_deref().unwrap_or_else(|| {
+                            eprintln!("error: --column is required");
+                            std::process::exit(1);
+                        });
+                        let conn_id = connections::resolve_connection_id(&api, catalog_or_conn);
+                        let auto_name = format!(
+                            "{tbl}_{cols}_{type}",
+                            cols = cols.replace(',', "_"),
+                            type = r#type
+                        );
                         let index_name = name.unwrap_or(auto_name);
-                        let is_dataset = dataset_id.is_some();
-                        let (conn_id, schema, table) = scope;
-                        let resolved_scope = if is_dataset {
-                            indexes::IndexScope::Dataset {
-                                dataset_id: &conn_id,
-                            }
-                        } else {
+                        indexes::create(
+                            &workspace_id,
                             indexes::IndexScope::Connection {
                                 connection_id: &conn_id,
                                 schema: &schema,
-                                table: &table,
-                            }
-                        };
-                        indexes::create(
-                            &workspace_id,
-                            resolved_scope,
+                                table: tbl,
+                            },
                             &index_name,
-                            &resolved_columns,
+                            cols,
                             &r#type,
                             metric.as_deref(),
                             r#async,
@@ -714,28 +600,21 @@ fn main() {
                         connection_id,
                         schema,
                         table,
-                        dataset_id,
                         name,
                     } => {
                         let scope = match (
-                            dataset_id.as_deref(),
                             connection_id.as_deref(),
                             schema.as_deref(),
                             table.as_deref(),
                         ) {
-                            (Some(did), _, _, _) => {
-                                indexes::IndexScope::Dataset { dataset_id: did }
-                            }
-                            (None, Some(cid), Some(sch), Some(tbl)) => {
-                                indexes::IndexScope::Connection {
-                                    connection_id: cid,
-                                    schema: sch,
-                                    table: tbl,
-                                }
-                            }
+                            (Some(cid), Some(sch), Some(tbl)) => indexes::IndexScope::Connection {
+                                connection_id: cid,
+                                schema: sch,
+                                table: tbl,
+                            },
                             _ => {
                                 eprintln!(
-                                    "error: provide either --dataset-id or all three of --connection-id, --schema, --table"
+                                    "error: provide all three of --connection-id, --schema, --table"
                                 );
                                 std::process::exit(1);
                             }
