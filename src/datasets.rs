@@ -158,7 +158,9 @@ pub fn create_from_saved_query(
 pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
     let api = Api::new(Some(workspace_id));
 
-    let body = crate::sdk::block(
+    let body = crate::sdk::block_with_wakeup(
+        &api,
+        "Loading datasets…",
         api.client()
             .datasets()
             .list(limit.map(|l| l as i32), offset.map(|o| o as i32)),
@@ -219,8 +221,12 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
 pub fn get(dataset_id: &str, workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
 
-    let resp: GetDatasetResponse =
-        crate::sdk::block(api.client().datasets().get(dataset_id)).unwrap_or_else(|e| e.exit());
+    let resp: GetDatasetResponse = crate::sdk::block_with_wakeup(
+        &api,
+        "Loading dataset…",
+        api.client().datasets().get(dataset_id),
+    )
+    .unwrap_or_else(|e| e.exit());
 
     let d = DatasetDetail {
         id: resp.id,
@@ -295,9 +301,12 @@ pub fn update(
         request.table_name = Some(Some(n.to_string()));
     }
 
-    let resp: UpdateDatasetResponse =
-        crate::sdk::block(api.client().datasets().update(dataset_id, request))
-            .unwrap_or_else(|e| e.exit());
+    let resp: UpdateDatasetResponse = crate::sdk::block_with_wakeup(
+        &api,
+        "Updating dataset…",
+        api.client().datasets().update(dataset_id, request),
+    )
+    .unwrap_or_else(|e| e.exit());
     let d = UpdateView::from(resp);
 
     use crossterm::style::Stylize;
@@ -341,8 +350,12 @@ pub fn refresh(workspace_id: &str, dataset_id: &str, async_mode: bool) {
         request.r#async = Some(true);
     }
 
-    let resp =
-        crate::sdk::block(api.client().refresh().refresh(request)).unwrap_or_else(|e| e.exit());
+    let resp = crate::sdk::block_with_wakeup(
+        &api,
+        "Refreshing dataset…",
+        api.client().refresh().refresh(request),
+    )
+    .unwrap_or_else(|e| e.exit());
 
     if async_mode {
         let job_id = match &resp {

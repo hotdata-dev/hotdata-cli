@@ -2,7 +2,7 @@ use inquire::validator::Validation;
 use inquire::{Confirm, Password, Select, Text};
 use serde_json::{Map, Number, Value};
 
-use crate::sdk::{Api, ApiError, block};
+use crate::sdk::{Api, ApiError, block, block_with_wakeup};
 
 // ── SDK helpers ─────────────────────────────────────────────────────────────
 
@@ -326,9 +326,11 @@ pub fn run(workspace_id: &str) {
         }
     }
 
-    let create_spinner = crate::util::spinner("Creating connection...");
-    let result = block(api.client().connections().create(request));
-    create_spinner.finish_and_clear();
+    let result = block_with_wakeup(
+        &api,
+        "Creating connection...",
+        api.client().connections().create(request),
+    );
 
     use crossterm::style::Stylize;
     let result = match result {

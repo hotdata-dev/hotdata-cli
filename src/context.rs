@@ -131,8 +131,12 @@ fn fetch_context(api: &Api, database_id: &str, name: &str) -> Option<DatabaseCon
 
 pub fn list(workspace_id: &str, database_id: &str, prefix: Option<&str>, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let body = crate::sdk::block(api.client().database_context().list(database_id))
-        .unwrap_or_else(|e| e.exit());
+    let body = crate::sdk::block_with_wakeup(
+        &api,
+        "Loading context…",
+        api.client().database_context().list(database_id),
+    )
+    .unwrap_or_else(|e| e.exit());
 
     let mut rows: Vec<ContextRow> = body.contexts.into_iter().map(ContextRow::from).collect();
     if let Some(p) = prefix {
@@ -295,8 +299,11 @@ pub fn push(workspace_id: &str, database_id: &str, name: &str, dry_run: bool) {
 
     let api = Api::new(Some(workspace_id));
     let request = UpsertDatabaseContextRequest::new(content, name.clone());
-    let resp = match crate::sdk::block(api.client().database_context().upsert(database_id, request))
-    {
+    let resp = match crate::sdk::block_with_wakeup(
+        &api,
+        "Pushing context…",
+        api.client().database_context().upsert(database_id, request),
+    ) {
         Ok(resp) => resp,
         Err(ApiError::Status { status: _, body }) => {
             let msg = crate::util::api_error(body);

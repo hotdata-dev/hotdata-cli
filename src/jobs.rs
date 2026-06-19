@@ -49,9 +49,10 @@ fn parse_job_type(s: &str) -> Option<JobType> {
 
 pub fn get(job_id: &str, workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let job: Job = crate::sdk::block(api.client().jobs().get(job_id))
-        .unwrap_or_else(|e| e.exit())
-        .into();
+    let job: Job =
+        crate::sdk::block_with_wakeup(&api, "Loading job…", api.client().jobs().get(job_id))
+            .unwrap_or_else(|e| e.exit())
+            .into();
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&job).unwrap()),
