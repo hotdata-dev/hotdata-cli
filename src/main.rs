@@ -26,9 +26,9 @@ use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
 use command::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
-    DatabaseTablesCommands, DatabasesCommands, EmbeddingProvidersCommands,
-    IndexesCommands, JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SkillCommands,
-    TablesCommands, WorkspaceCommands,
+    DatabaseTablesCommands, DatabasesCommands, EmbeddingProvidersCommands, IndexesCommands,
+    JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SkillCommands, TablesCommands,
+    WorkspaceCommands,
 };
 
 #[derive(Parser)]
