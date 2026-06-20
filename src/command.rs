@@ -208,6 +208,21 @@ pub enum Commands {
         command: ContextCommands,
     },
 
+    /// Show workspace usage: queries, bytes scanned, and stored bytes
+    Usage {
+        /// Only count usage since this RFC 3339 timestamp (e.g. 2026-06-01T00:00:00Z); defaults to the current billing window
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w', global = true)]
+        workspace_id: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for

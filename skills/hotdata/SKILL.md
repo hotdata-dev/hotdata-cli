@@ -72,7 +72,7 @@ Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and manage
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`completions`**, **`update`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`update`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -261,6 +261,15 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 - `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`.
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
+
+### Usage
+```
+hotdata usage [--since <rfc3339>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+```
+Workspace usage for the current billing window (or since `--since`): `query_count`, `bytes_scanned`, `storage_bytes`, and `storage_captured_at`.
+- `query_count` and `bytes_scanned` accrue **per query in real time** (data reads).
+- `storage_bytes` is a **periodic snapshot** taken at `storage_captured_at`, so it reflects uploads only after the next capture — not instantly.
+- Table output renders byte counts human-readably (raw integers in `-o json`/`yaml`).
 
 ### Agent skills (`skills`)
 
