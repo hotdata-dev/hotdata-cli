@@ -1,10 +1,10 @@
-# Building a workspace data model (advanced)
+# Building a database data model (advanced)
 
-Optional **deep pass** for a single authoritative markdown document stored as **`context:DATAMODEL`** (workspace **context API**). For a short checklist only, use the **Model** section in [WORKFLOWS.md](WORKFLOWS.md) and [DATA_MODEL.template.md](DATA_MODEL.template.md).
+Optional **deep pass** for a single authoritative markdown document stored as **`context:DATAMODEL`** (database-scoped **context API** — the active database). For a short checklist only, use the **Model** section in [WORKFLOWS.md](WORKFLOWS.md) and [DATA_MODEL.template.md](DATA_MODEL.template.md).
 
 **Notation:** **`context:DATAMODEL`** is the live server document; **not** the same phrase as “building a data model” for a one-off analysis. **CLI** uses the bare stem: `hotdata context show DATAMODEL`.
 
-**Output:** After **`hotdata context list`** confirms `DATAMODEL` exists, read **context:DATAMODEL** with `hotdata context show DATAMODEL`; edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store workspace-specific model text inside agent skill folders.
+**Output:** After **`hotdata context list`** confirms `DATAMODEL` exists, read **context:DATAMODEL** with `hotdata context show DATAMODEL`; edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store database-specific model text inside agent skill folders.
 
 ---
 
@@ -92,7 +92,7 @@ Per table when you only need one:
 hotdata indexes list -c <connection_id> --schema <schema> --table <table> [-w <workspace_id>]
 ```
 
-Managed-database tables (`--catalog`) are covered by the same `indexes list` scan; filter with `--connection-id` / `--schema` / `--table` as above.
+Managed-database indexes are included in the no-flag whole-workspace `indexes list` (shown under the internal `__db_<id>.<schema>.<table>` label); narrow to one with `--connection-id` (the database's `default_connection_id`) / `--schema` / `--table` as above.
 
 Note:
 

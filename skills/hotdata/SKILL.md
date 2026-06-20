@@ -48,41 +48,23 @@ If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked*
 
 **Omit `--workspace-id` unless you need to target a specific workspace** (and it is not locked by env or session).
 
+### Cold starts (worker wake-up)
+
+A workspace's query worker scales to zero after inactivity. The **first** command against an idle workspace (e.g. `databases list`, `query`, `search`) blocks while it wakes — typically ~10s, up to ~20s — and the spinner upgrades to `waking up worker after inactivity (this can take ~20s)…`. **This is normal, not a hang:** don't kill the command, retry, or treat the pause as an error. Subsequent commands return promptly; warm workspaces are unaffected.
+
 ## Database context (API)
 
-**Notation `context:<STEM>`:** In this skill, **`context:DATAMODEL`**, **`context:GLOSSARY`**, and **`context:<NAME>`** mean the **authoritative Markdown document** stored on the server under that **stem** via the Hotdata **context API** (`/v1/databases/{database_id}/context`, `hotdata context …`). That is **not** the same as generic English (“a data model”, “a glossary”), and **not** the same as local `./DATAMODEL.md` except as **pull/push transport**. **CLI commands use the bare stem** (no `context:` prefix): e.g. `hotdata context show DATAMODEL`, `hotdata context push GLOSSARY`.
+**`context:<STEM>`** (e.g. **context:DATAMODEL**, **context:GLOSSARY**) is an authoritative Markdown document stored server-side under that stem via the context API — *not* generic English ("a data model"), and *not* a local `./DATAMODEL.md` (local files are only `push`/`pull` transport). CLI commands take the bare stem: `hotdata context show DATAMODEL`. Context is scoped to the **active database** (`hotdata databases set <id>`); target another with `--database-id` / `-d`. Stems follow SQL identifier rules and accept a trailing `.md` (stored without it). Command reference: [Database context (named Markdown)](#database-context-named-markdown).
 
-Context is **scoped to the active database** (set via `hotdata databases set <id>`). All context commands operate against the database returned by the active-database config unless you pass **`--database-id <id>`** (short: **`-d`**) explicitly. The **authoritative** copy always lives on the server under the stem; common stems are **`context:DATAMODEL`** (semantic map) and **`context:GLOSSARY`** (glossary / runbooks).
+**Agents — list before show.** Run `hotdata context list` (optionally `--prefix DATAMODEL`) first; run `hotdata context show DATAMODEL` *only if* the stem is listed. A missing stem makes `show` exit 1 — normal for a fresh database, not a failure: don't retry in a loop or run speculative `show` in parallel with other tools. Proceed without context:DATAMODEL until one exists.
 
-The CLI command **`hotdata context push`** reads **`./<NAME>.md`** and **`pull`** writes that file in the **current working directory**—those files exist only as a **transport surface** for the API, not as a second source of truth. **`hotdata context show <name>`** prints Markdown to stdout so agents can read **`context:<NAME>`** without any local file. Stems follow SQL table–identifier rules (ASCII letters, digits, underscore; no dot in the API name; max 128 characters; SQL reserved words are not allowed). For **`show`**, **`pull`**, and **`push`**, the CLI accepts a trailing **`.md`** on the argument (e.g. **`USER.md`**) and treats it as stem **`USER`**—the database still stores **`USER`**, not `USER.md`.
-
-> **Agents: do not blindly run `hotdata context show DATAMODEL` on session start.** Run **`hotdata context list`** first (optional `--prefix DATAMODEL`). Call **`hotdata context show DATAMODEL` only if** the list includes the `DATAMODEL` stem. If **`show` exits 1** with *no context named …*, that is **normal** when nothing has been pushed yet—**not a hard failure**; do not retry in a loop, and **avoid speculative `show` in parallel** with other shell tools where one failure cancels sibling calls. Proceed without **context:DATAMODEL** until the user asks to create or load one.
-
-**Agents (Claude and similar):** use database context as the only durable store for **context:DATAMODEL**, **context:GLOSSARY**, and any other **`context:<STEM>`** documents you introduce. Keep transient analysis notes in the conversation or local scratch until you **promote** them into **context:DATAMODEL** when they should guide the whole database ([details below](#analysis-modeling-vs-contextdatamodel)).
-
-1. **Before** planning non-trivial queries, explaining schema to others, or editing **context:DATAMODEL**, **discover** stored names with `hotdata context list` (and other stems such as **context:GLOSSARY** as needed). **Only if** `DATAMODEL` appears in the list, load it: `hotdata context show DATAMODEL`. If it is **absent**, skip `show` and treat **context:DATAMODEL** as unset—use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) when the user wants to bootstrap, then `push` when ready.
-2. **After** you change **context:DATAMODEL**, persist with **`hotdata context push DATAMODEL`**. The CLI requires a local `./DATAMODEL.md` for that step: write the body there (from `context show`, the template, or your edits), then run `push` from the project directory.
-3. Use **`hotdata context pull DATAMODEL`** when you intentionally want a local `./DATAMODEL.md` copy (for example a human editor); it still reflects API state for **context:DATAMODEL**, not a parallel document.
-
-The standard stem for the database semantic map is **`DATAMODEL`** (skill notation **context:DATAMODEL**). Add other stems the same way (e.g. **`GLOSSARY`** → **context:GLOSSARY**) for glossary or runbooks.
-
-### Analysis modeling vs context:DATAMODEL
-
-Keep two layers separate:
-
-- **Analysis modeling (day to day)** — Understanding data *for the current task*: exploratory SQL, join checks, column semantics for one report, hypotheses, scratch notes. Often conversational or short-lived. **The conversation or local scratch notes** are the right home while you explore; keep them there until you decide they are worth promoting.
-
-- **context:DATAMODEL (Hotdata database data model)** — A **durable, database-scoped** map stored only via the **context API**: entities and tables across connections, PK/FK relationships, how derived tables tie back to sources, naming and query conventions the **whole team** should rely on. This is **higher-level shared structure**, not a transcript of one investigation.
-
-**Promotion:** When analysis findings should **outlive the current session** and **guide everyone**, merge them into **context:DATAMODEL** (`hotdata context list` → if `DATAMODEL` is listed, `hotdata context show DATAMODEL` → reconcile → `hotdata context push DATAMODEL`). You do **not** need to update **context:DATAMODEL** after every ad-hoc query—only when the database story or join graph meaningfully changes.
-
-Use [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [references/MODEL_BUILD.md](references/MODEL_BUILD.md) for **what to write inside** the Markdown you store under **context:** stems. Never put database-specific model text inside agent skill install paths—only in **database context** (and transient `./<NAME>.md` for push/pull when needed).
+**context:DATAMODEL is the durable, shared store** — entities, keys, cross-connection joins, and the naming/query conventions the whole team relies on. Keep task-scoped exploration (scratch SQL, hypotheses, one-off join checks) in the conversation or local notes; **promote** to context:DATAMODEL only when findings should outlive the session and guide everyone — reconcile against `context show DATAMODEL` (if listed), write `./DATAMODEL.md`, then `hotdata context push DATAMODEL`. No need to update it after every ad-hoc query. What to write inside the document: [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
 
 ## Multi-step workflows
 
 These are **patterns** built from the commands below—not separate CLI subcommands:
 
-- **Model (`context:DATAMODEL`)** — The **shared** Markdown semantic map of the active database (entities, keys, joins across connections). **Store and read it only via database context** (`hotdata context list`, then `hotdata context show DATAMODEL` **only when listed**, `context push DATAMODEL`); refresh using `connections`, `connections refresh`, and `tables list`. For a **deep** pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md). Contrast **analysis modeling** in the conversation or local scratch (see [Analysis modeling vs context:DATAMODEL](#analysis-modeling-vs-contextdatamodel)).
+- **Model (`context:DATAMODEL`)** — The shared semantic map of the active database (entities, keys, joins across connections). Store and read it only via database context (`hotdata context list`, then `show DATAMODEL` **only when listed**, `push DATAMODEL`); refresh using `connections`, `connections refresh`, and `tables list`. For a deep pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
 - **History / Chain / OLAP SQL** — See **`hotdata-analytics`** and [references/WORKFLOWS.md](references/WORKFLOWS.md).
 - **Search / retrieval indexes** — See **`hotdata-search`**.
 
@@ -90,7 +72,7 @@ Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and manage
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`completions`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`completions`**, **`update`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -258,7 +240,7 @@ hotdata context push <name> [--database-id <id>] [--dry-run]
 
 ```
 hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--output table|json|csv]
-hotdata query status <query_run_id> [--output table|json|csv]
+hotdata query status <query_run_id>
 ```
 
 - Default output is `table` (row count and execution time).
@@ -308,62 +290,10 @@ hotdata auth status         # Check current auth status
 hotdata auth logout         # Remove saved auth for the default profile
 ```
 
-### Analysis notes and promotion to context:DATAMODEL
+### Interactive connection wizard
 
-Exploratory analysis notes (keys, joins, open questions for the current task) belong in **the conversation or local scratch notes**. When those findings should guide the whole database and be shared with everyone, promote them to **context:DATAMODEL**: save consolidated Markdown as `./DATAMODEL.md` and run `hotdata context push DATAMODEL` (merge with `hotdata context show DATAMODEL` first if `DATAMODEL` is already listed in `hotdata context list`).
+`hotdata connections new` creates a connection interactively (human-friendly); agents should prefer the programmatic `connections create` flow above.
 
-**Also available:** `hotdata connections new` — interactive connection wizard (no substitute for the programmatic **`connections create`** flow above).
+## Workflows
 
-## Workflow: Running a Query
-
-0. (Recommended for agents) When the query depends on **workspace-wide** table relationships or naming conventions, run **`hotdata context list`** first; **only if** `DATAMODEL` is listed, run `hotdata context show DATAMODEL` to load **context:DATAMODEL**. If it is **not** listed, **do not** run `show`—ad-hoc analysis does not require populated **context:DATAMODEL**.
-1. List connections:
-   ```
-   hotdata connections list
-   ```
-2. Inspect available tables:
-   ```
-   hotdata tables list
-   ```
-3. Inspect columns for a specific connection:
-   ```
-   hotdata tables list --connection-id <connection_id>
-   ```
-4. Run SQL, quoting **mixed-case or upper-case** column names with **double quotes** (PostgreSQL treats unquoted identifiers as lowercased):
-   ```
-   hotdata query "SELECT 1"
-   hotdata query "SELECT \"CustomerName\" FROM mydb.public.customers LIMIT 10"
-   ```
-
-## Workflow: Creating a managed database (parquet)
-
-1. Create the database with a catalog alias:
-   ```
-   hotdata databases create --catalog mydb
-   ```
-2. Load parquet per table (tables are auto-declared if needed):
-   ```
-   hotdata databases load --catalog mydb --table events --file ./events.parquet
-   hotdata databases load --catalog mydb --table events --url https://example.com/events.parquet
-   ```
-3. Confirm tables and query:
-   ```
-   hotdata databases tables list
-   hotdata query "SELECT * FROM mydb.public.events LIMIT 10"
-   ```
-
-## Workflow: Creating a Connection
-
-1. List available connection types:
-   ```
-   hotdata connections create list
-   ```
-2. Inspect the schema for the desired type:
-   ```
-   hotdata connections create list <type_name> --output json
-   ```
-3. Collect required config and auth field values from the user or environment. **Never hardcode credentials — use env vars or files.**
-4. Create the connection:
-   ```
-   hotdata connections create --name "my-connection" --type <type_name> --config '<json>'
-   ```
+End-to-end recipes — onboard a workspace, run a query, build a managed database (parquet), chain/materialize, add retrieval indexes — live in [references/WORKFLOWS.md](references/WORKFLOWS.md). The command sections above are the per-command reference; the workflows stitch them into sequences.

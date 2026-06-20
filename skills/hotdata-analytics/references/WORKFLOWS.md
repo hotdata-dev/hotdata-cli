@@ -84,7 +84,7 @@ hotdata query "SELECT * FROM chain_db.public.revenue_slice WHERE ..."
 
 ### Naming and documentation
 
-- Prefer predictable `--name` values: `chain_<topic>_<YYYYMMDD>`.
+- Prefer predictable `--catalog` / `--table` values, e.g. catalog `chain_db` + table `chain_<topic>_<YYYYMMDD>` (the chain table is named by `databases load --table`, not a `--name` flag).
 - Record long-lived chains in **context:DATAMODEL → Derived tables (Chain)** with the **full** SQL name you use (`database.schema.table`).
 - Promote join/grain findings to **context:DATAMODEL** when they should be shared or persisted (**`hotdata`** skill).
 

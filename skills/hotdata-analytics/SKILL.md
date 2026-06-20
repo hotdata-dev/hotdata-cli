@@ -18,7 +18,7 @@ version: 0.5.0
 
 ```bash
 hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--output table|json|csv]
-hotdata query status <query_run_id> [--output table|json|csv]
+hotdata query status <query_run_id>
 ```
 
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
@@ -65,6 +65,7 @@ hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json
 
 - Prefer **`results <id>`** over re-running identical heavy queries.
 - Query footers may include `[result-id: rslt...]`; also available from `queries <query_run_id>`.
+- `results list --limit` defaults to **100** (max **1000**) — unlike `queries list`, which defaults to **20**.
 
 ---
 
@@ -103,9 +104,9 @@ Full procedure: [references/WORKFLOWS.md](references/WORKFLOWS.md).
 For equality, range, and sort-heavy OLAP — not full-text or vector (see **`hotdata-search`**):
 
 ```bash
-hotdata indexes create --catalog <connection-name-or-id> --schema <schema> --table <table> \
+hotdata indexes create --catalog <catalog-alias> --schema <schema> --table <table> \
   --name idx_orders_created --column created_at --type sorted [--async]
 ```
 
-List and delete use the same `hotdata indexes` commands as in the search skill; only **`--type sorted`** is the analytics focus here.
+List and delete use the same `hotdata indexes` commands as in the search skill; only **`--type sorted`** is the analytics focus here. With `--async`, track the build via **`hotdata jobs list`** (see **`hotdata`** skill → Jobs).
 

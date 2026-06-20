@@ -1,6 +1,6 @@
 # Hotdata CLI workflows
 
-**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the workspace document stored via the **context API**—CLI uses bare stems: `hotdata context show DATAMODEL`.
+**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the database-scoped document stored via the **context API** (active database; `-d`/`--database-id` to target another)—CLI uses bare stems: `hotdata context show DATAMODEL`.
 
 ---
 
