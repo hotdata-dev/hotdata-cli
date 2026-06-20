@@ -1,3 +1,30 @@
+## [0.6.0] - 2026-06-20
+
+### 🚀 Features
+
+- *(cli)* Show "waking up worker" hint on KEDA cold starts (#167)
+- *(datasets)* [**breaking**] Remove datasets commands and dataset feature surface (#166)
+- *(usage)* Add `hotdata usage` command (#174)
+
+### 🐛 Bug Fixes
+
+- *(search)* Infer embedding source column for vector indexes (#163)
+- *(indexes)* List indexes for a database-scoped connection (#164)
+- *(query)* Fail loud on incomplete result previews
+- *(indexes)* Show managed-database indexes in unscoped `indexes list` (#170)
+- *(databases)* Surface the id change when `load` recreates a managed database (#173)
+
+### 💼 Other
+
+- *(deps)* Upgrade hotdata SDK 0.3.1 -> 0.4.0 (#171)
+
+### 📚 Documentation
+
+- *(skills)* Improve accuracy, structure, and consistency across CLI skills (#172)
+
+### 🧪 Testing
+
+- *(query)* Cover table footer rendering and ApiError::message
 ## [0.5.0] - 2026-06-16
 
 ### 🚀 Features
