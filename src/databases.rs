@@ -1013,6 +1013,29 @@ pub fn tables_load(
             }
         };
         let _ = crate::config::save_current_database("default", workspace_id, &new_db.id);
+        // Managed databases have no add-table endpoint, so declaring a new table
+        // is a delete + recreate — which mints a NEW database id. Surface that
+        // explicitly: the id printed by `databases create` is now stale, and
+        // id-based automation (e.g. `databases delete <create-time-id>`) would
+        // otherwise fail with "no database with id". Reference by catalog instead.
+        {
+            use crossterm::style::Stylize;
+            let catalog = db
+                .default_catalog
+                .as_deref()
+                .or(db.name.as_deref())
+                .unwrap_or(&db.id);
+            eprintln!(
+                "{}",
+                format!(
+                    "note: table '{table}' was not declared — recreated database '{catalog}' to add it \
+                     (id {} → {}). Managed databases are recreated when a new table is loaded; \
+                     reference them by catalog ('{catalog}'), not the create-time id.",
+                    db.id, new_db.id
+                )
+                .yellow()
+            );
+        }
         let new_path = managed_table_load_path(&new_db.default_connection_id, schema, table);
         let spinner = crate::util::spinner("Loading table...");
         let result = api.post_raw(&new_path, &body).unwrap_or_else(|e| {
