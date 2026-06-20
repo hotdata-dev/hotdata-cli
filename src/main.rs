@@ -19,6 +19,7 @@ mod skill;
 mod table;
 mod tables;
 mod update;
+mod usage;
 mod util;
 mod workspace;
 
@@ -815,6 +816,14 @@ fn main() {
                         context::push(&workspace_id, &database_id, &name, dry_run)
                     }
                 }
+            }
+            Commands::Usage {
+                since,
+                workspace_id,
+                output,
+            } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                usage::usage(&workspace_id, since.as_deref(), &output);
             }
             Commands::Completions { shell } => {
                 use clap::CommandFactory;
