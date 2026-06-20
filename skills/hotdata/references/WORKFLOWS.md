@@ -106,6 +106,8 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
    hotdata databases load --catalog sales --table customers --url https://example.com/customers.parquet
    ```
 
+   > Auto-declaring a *new* table recreates the database (no add-table API), which **changes its `id`**. Always reference a managed database by its **catalog** (stable), not the `id` returned by `databases create` — that id goes stale after the next `load` of an undeclared table. Declare tables up front (`databases create --table orders --table customers`) to avoid the recreate.
+
 3. Confirm and query:
 
    ```bash
