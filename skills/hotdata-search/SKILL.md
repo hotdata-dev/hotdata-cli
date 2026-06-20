@@ -34,18 +34,21 @@ hotdata search "<query>" --table <connection.schema.table> [--type vector] [--co
 | **`vector`** | Pass plain-text query; name the **source text column** (e.g. `title`). Server embeds using the same provider/metric/dimensions as the index. SQL uses `vector_distance(col, 'text')`. Results sort by distance (ascending). |
 
 - **Inference:** when `--type` or `--column` are omitted, the CLI fetches the table's indexes and selects the only BM25/vector index. If multiple exist, you must specify both flags.
-- **No vector index, or custom embedding model?** Use raw SQL via `hotdata query` (e.g. `cosine_distance(col, [<vec>])`). The removed `--model` / stdin-vector paths hardcoded `l2_distance` and are not supported.
+- **Custom embedding model, raw query vector, or no vector index?** Use `hotdata query` directly (e.g. `cosine_distance(col, [<vec>])`) — `search` only auto-embeds the query text via the index's own provider.
 - **Before search:** create the right index (`indexes create --type bm25` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
 - Default `--limit` is 10.
+- **Managed databases:** set the database active (`hotdata databases set <db>`) and reference the table by its **SQL catalog** — `<default_catalog>.<schema>.<table>`, usually `default.public.<table>`. Do **not** use the internal `__db_<id>` label that `indexes list` displays, nor a connection id — `bm25_search`/`vector_distance` resolve a catalog attached to the active database, so a `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
 
 ---
 
 ## Indexes (BM25 and vector)
 
-Create attaches to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` and `delete` accept `--connection-id` (+ `--schema` + `--table`) for connection-scoped operations.
+Create attaches to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` filters by any of `--connection-id` / `--schema` / `--table` (all optional). `delete` **requires all of** `--connection-id` + `--schema` + `--table` + `--name`.
+
+**Unscoped `hotdata indexes list` (no `--connection-id`) scans the whole workspace — both regular connections *and* managed databases** — so managed-database indexes appear without any flags. In that whole-workspace view the `table` column shows a managed database under its internal `__db_<id>.<schema>.<table>` label (a connection-scoped `indexes list --connection-id <db-conn>` shows the same rows).
 
 ```bash
-# List — workspace scan (filter by connection, schema, or table)
+# List — whole-workspace scan, incl. managed databases (filter by connection, schema, or table)
 hotdata indexes list [--connection-id <id>] [--schema <schema>] [--table <table>] [--workspace-id <ws>] [--output table|json|yaml]
 
 # Create — by catalog alias (resolves a managed-database catalog or a connection name)
@@ -54,11 +57,11 @@ hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
   [--name <name>] [--metric l2|cosine|dot] [--async] \
   [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 
-# Delete — connection table (--connection-id + --schema + --table)
+# Delete — requires --connection-id + --schema + --table + --name
 hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
 ```
 
-- **`--type` is required** on create: `bm25` (one text column) or `vector` (exactly one column; often embeddings or auto-embedded text).
+- **`--type` is required** on create: `bm25` (one text column) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`**.)
 - **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** — this skill focuses on retrieval types.
 - **`--async`:** poll with `hotdata jobs <job_id>` (see **`hotdata`** skill **Jobs**).
 - **Auto-embedding:** `--type vector` on a **text** column generates embeddings server-side. Optional `--embedding-provider-id`; default output column `{column}_embedding` (override with `--output-column`).
@@ -73,7 +76,7 @@ Full workflow (gather workload → compare existing → create → verify): [ref
 hotdata embedding-providers list [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata embedding-providers get <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata embedding-providers create --name <name> --provider-type service|local \
-  [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>]
+  [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
 ```

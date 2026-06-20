@@ -1,6 +1,6 @@
 # Data model — `<project name>`
 
-> **Storage:** This Markdown structure is **context:DATAMODEL**—the document stored in the workspace **context API** under stem `DATAMODEL`. Use **`hotdata context list`** first; **only if** `DATAMODEL` appears, use `hotdata context show DATAMODEL` to read it (otherwise there is nothing to show yet). Maintain `./DATAMODEL.md` in your **project directory** (where you run `hotdata`) only when editing, then `hotdata context push DATAMODEL`. Do not use `docs/DATA_MODEL.md` or other repo paths as the source of truth. (**`context:DATAMODEL`** in skills means that API document, not generic “data model” prose.)  
+> **Storage:** This Markdown structure is **context:DATAMODEL**—the document stored in the database-scoped **context API** (the active database; `-d`/`--database-id` to target another) under stem `DATAMODEL`. Use **`hotdata context list`** first; **only if** `DATAMODEL` appears, use `hotdata context show DATAMODEL` to read it (otherwise there is nothing to show yet). Maintain `./DATAMODEL.md` in your **project directory** (where you run `hotdata`) only when editing, then `hotdata context push DATAMODEL`. Do not use `docs/DATA_MODEL.md` or other repo paths as the source of truth. (**`context:DATAMODEL`** in skills means that API document, not generic “data model” prose.)  
 > Do not commit workspace-specific content into agent skill folders.  
 > For a **full** build (per-table detail, connector enrichment, index summary), follow [MODEL_BUILD.md](MODEL_BUILD.md) from the installed skill’s `references/` (or this repo’s `skills/hotdata/references/`). Relative links to `MODEL_BUILD.md` below work only while this file lives next to those references; in your project, open that path separately if the link 404s.
 
@@ -58,7 +58,7 @@ Document safe join paths and caveats (fan-out, timing, different refresh cadence
 |-------|--------|--------------------------|--------------|-------|
 | | | | | |
 
-_Use `hotdata indexes list` for connection tables (see **hotdata-search** skill). Record bm25/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
+_Use `hotdata indexes list` (no flags — covers connection tables **and** managed databases; see **hotdata-search** skill). Record bm25/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
 
 ## Managed databases (uploaded)
 

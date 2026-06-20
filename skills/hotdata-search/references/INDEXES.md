@@ -25,7 +25,7 @@ High-cardinality **text** (`title`, `body`, …) → **bm25**. **Embedding** / f
 hotdata indexes list [--connection-id <id>] [--schema <schema>] [--table <table>]
 ```
 
-Skip duplicates (same table, column, and purpose).
+With no `--connection-id`, this is a whole-workspace scan that **includes managed-database indexes** (shown under the internal `__db_<id>.<schema>.<table>` label). Skip duplicates (same table, column, and purpose).
 
 ## 3. Create indexes
 
