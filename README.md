@@ -140,6 +140,10 @@ hotdata databases delete <name_or_id>
 hotdata databases run [--database <id>] [--name <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] <cmd> [args...]
 hotdata databases <id> run <cmd> [args...]
 
+# Attach a connection as a queryable catalog (enables cross-source queries)
+hotdata databases attach <connection_id|name> [--database <id>] [--alias <alias>]
+hotdata databases detach <connection_id|name|alias> [--database <id>]
+
 # Preferred: load by catalog alias (auto-declares table if needed)
 hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id>)
 
@@ -154,6 +158,7 @@ hotdata databases tables delete <table> [--database <id_or_name>] [--schema publ
 - `load` (top-level shorthand) — loads a parquet file into `--catalog.--schema.--table`. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
 - `tables load` uploads a **parquet** file (or uses a staged `upload_id` from `POST /v1/files`) and publishes it as the table generation (`replace` mode).
 - `run` mints a database-scoped JWT and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected into its environment.
+- `attach` / `detach` — a query runs inside one managed database, whose scope sees its own catalog plus **attached** connection catalogs only. Attach a connection to make its **live** tables queryable there and to join across sources in one query; `--alias` sets the SQL name (defaults to the connection's name). `create --attach <connection>[=<alias>]` attaches at creation. Don't export a connection to parquet just to query it — attach is the live, sync-preserving path.
 - Managed table loads accept **parquet** only — convert CSV/JSON to parquet first.
 
 Example:

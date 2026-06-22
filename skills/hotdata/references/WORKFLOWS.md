@@ -74,6 +74,21 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 **Detail:** [hotdata-search INDEXES.md](../../hotdata-search/references/INDEXES.md)
 
+### Cross-source query (attach a connection)
+
+**Skill:** **`hotdata`**
+
+A `hotdata query` runs inside **one** managed database; its scope sees that database's own catalog plus **attached** connection catalogs only. To query a connection's tables — or join a managed table against a live connection table in one query — attach the connection. (No managed database set → *"a database is required."*; an unattached catalog → *"table not found."*)
+
+1. [ ] Pick/create the managed database that will be the query context (`hotdata databases set <id>` or `databases create --catalog <alias>`)
+2. [ ] Attach the connection(s) you need (live, sync intact): `hotdata databases attach <connection> [--alias <a>]`
+   - Or attach at creation: `hotdata databases create --catalog <alias> --attach <connection>[=<alias>]`
+3. [ ] Confirm scope: `hotdata databases <id>` lists attached catalogs
+4. [ ] Query across sources: `hotdata query "SELECT … FROM <my_catalog>.public.<t> JOIN <connection_or_alias>.<schema>.<table> ON …"`
+5. [ ] (Optional) `hotdata databases detach <connection|alias>` when finished; record required attachments in **context:DATAMODEL → Cross-connection joins**
+
+**Do not** export a connection to parquet just to query it — attach is the live, sync-preserving path.
+
 ---
 
 ## Managed databases
