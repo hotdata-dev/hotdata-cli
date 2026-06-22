@@ -329,6 +329,67 @@ fn incomplete_preview(resp: hotdata::models::QueryResponse, note: &str) -> Query
     preview
 }
 
+/// When a query fails because it has no database context or references a
+/// catalog that isn't in scope, return a one-line hint pointing at
+/// `databases set` / `databases attach`. Pure string inspection of the server
+/// error so it's unit-testable and adds no network round-trip on success.
+///
+/// A `query` runs inside exactly one managed database; that context exposes the
+/// database's own catalog plus any *attached* connection catalogs. The two
+/// failure modes a user hits when they don't know this are "a database is
+/// required" (no context set) and "table '<catalog>.<schema>.<table>' not
+/// found" (the catalog isn't attached) — both resolved by attaching.
+fn cross_source_hint(error_msg: &str) -> Option<String> {
+    let lower = error_msg.to_lowercase();
+    if lower.contains("a database is required") {
+        return Some(
+            "Tip: a query runs inside one managed database. Set one with `hotdata databases \
+             set <id>`, then attach any connection whose tables you need: `hotdata databases \
+             attach <connection>`. List connections with `hotdata connections list`."
+                .to_string(),
+        );
+    }
+    // "table 'catalog.schema.table' not found" — surface the catalog so the user
+    // can attach it if it's a connection simply outside this database's scope.
+    if lower.contains("not found")
+        && let Some(quoted) = error_msg.split('\'').nth(1)
+        && quoted.contains('.')
+        && let Some(catalog) = quoted.split('.').next().filter(|c| !c.is_empty())
+    {
+        return Some(format!(
+            "Tip: '{catalog}' isn't in the current database's scope. If it's a connection, \
+             attach it to query across sources: `hotdata databases attach {catalog}`."
+        ));
+    }
+    None
+}
+
+/// Print the API error, append the cross-source hint when one applies, then
+/// exit non-zero. Used on both query failure paths (submit error and async
+/// `failed`) so the hint shows after the error regardless of which one fires.
+fn fail_query(err: &ApiError, error_msg: &str) -> ! {
+    err.print();
+    if let Some(tip) = cross_source_hint(error_msg) {
+        use crossterm::style::Stylize;
+        eprintln!("{}", tip.dark_grey());
+    }
+    std::process::exit(1);
+}
+
+/// Print a failed query run's `query failed: <err>` line, append the cross-source
+/// hint when applicable, then exit non-zero. Shared by both terminal-failure
+/// sites — `execute`'s poll loop and the `query status` (`poll`) command — so the
+/// hint surfaces identically whether the failure is seen inline or on a later
+/// poll.
+fn fail_run(error_msg: &str) -> ! {
+    use crossterm::style::Stylize;
+    eprintln!("{}", format!("query failed: {error_msg}").red());
+    if let Some(tip) = cross_source_hint(error_msg) {
+        eprintln!("{}", tip.dark_grey());
+    }
+    std::process::exit(1);
+}
+
 pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &str) {
     let api = Api::new(Some(workspace_id));
 
@@ -346,7 +407,10 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
         "running query...",
         api.client().submit_query(request, database),
     )
-    .unwrap_or_else(|e| e.exit());
+    .unwrap_or_else(|e| {
+        let msg = e.message();
+        fail_query(&e, &msg)
+    });
 
     let async_resp = match outcome {
         // Completed within async_after_ms — inline results. A large result can
@@ -391,13 +455,11 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
             }
             "failed" => {
                 spinner.finish_and_clear();
-                use crossterm::style::Stylize;
                 let err = run
                     .error_message
                     .flatten()
                     .unwrap_or_else(|| "unknown error".to_string());
-                eprintln!("{}", format!("query failed: {err}").red());
-                std::process::exit(1);
+                fail_run(&err);
             }
             "running" | "queued" | "pending" => {}
             status => {
@@ -444,13 +506,11 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
             }
         },
         "failed" => {
-            use crossterm::style::Stylize;
             let err = run
                 .error_message
                 .flatten()
                 .unwrap_or_else(|| "unknown error".to_string());
-            eprintln!("{}", format!("query failed: {err}").red());
-            std::process::exit(1);
+            fail_run(&err);
         }
         status => {
             use crossterm::style::Stylize;
@@ -605,6 +665,40 @@ mod tests {
         );
         resp.result_id = Some(result_id.map(|s| s.to_string()));
         resp
+    }
+
+    #[test]
+    fn hint_for_missing_database_context() {
+        let tip = cross_source_hint(
+            "a database is required: set the X-Database-Id header or the database_id body field",
+        )
+        .expect("missing-database error should produce a hint");
+        assert!(tip.contains("hotdata databases set"), "tip: {tip}");
+        assert!(tip.contains("hotdata databases attach"), "tip: {tip}");
+    }
+
+    #[test]
+    fn hint_for_unattached_catalog_names_the_catalog() {
+        let tip = cross_source_hint("table 'github.github.issues' not found")
+            .expect("qualified not-found should produce a hint");
+        // The catalog (first dotted segment), not the schema/table, drives the hint.
+        assert!(tip.contains("'github'"), "tip: {tip}");
+        assert!(
+            tip.contains("hotdata databases attach github"),
+            "tip: {tip}"
+        );
+    }
+
+    #[test]
+    fn no_hint_for_unqualified_not_found() {
+        // A bare name (no catalog prefix) isn't an attach problem — don't guess.
+        assert!(cross_source_hint("table 'orders' not found").is_none());
+    }
+
+    #[test]
+    fn no_hint_for_unrelated_error() {
+        assert!(cross_source_hint("syntax error at or near \"SELCT\"").is_none());
+        assert!(cross_source_hint("429: OVERLOADED").is_none());
     }
 
     #[test]

@@ -481,9 +481,45 @@ pub enum DatabasesCommands {
         #[arg(long)]
         expires_at: Option<String>,
 
+        /// Attach a connection as a queryable catalog on the new database (repeatable).
+        /// Accepts a connection name or id, optionally `connection=alias` to set the
+        /// SQL alias it answers to: `--attach github --attach salesdb=sales`.
+        #[arg(long = "attach")]
+        attach: Vec<String>,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
+    },
+
+    /// Attach a connection as a queryable catalog on a managed database.
+    ///
+    /// A `query` runs inside one managed database; attaching a connection makes
+    /// its live tables visible in that database's scope, so you can join across
+    /// sources in a single query without exporting data. Reachable in SQL as
+    /// `<alias>.<schema>.<table>`, or `<connection-name>.<schema>.<table>` when
+    /// `--alias` is omitted.
+    Attach {
+        /// Connection name or id to attach (e.g. `github`)
+        connection: String,
+
+        /// Database id, catalog, or name to attach into (defaults to the current database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
+        /// Alias the catalog answers to in SQL. Defaults to the connection's name.
+        #[arg(long)]
+        alias: Option<String>,
+    },
+
+    /// Detach a previously attached connection catalog from a managed database.
+    Detach {
+        /// Connection name or id to detach
+        connection: String,
+
+        /// Database id, catalog, or name to detach from (defaults to the current database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
     },
 
     /// Set the current database (used by default when no database is specified)

@@ -324,6 +324,7 @@ fn main() {
                             schema,
                             tables,
                             expires_at,
+                            attach,
                             output,
                         }) => databases::create(
                             &workspace_id,
@@ -332,8 +333,23 @@ fn main() {
                             &schema,
                             &tables,
                             expires_at.as_deref(),
+                            &attach,
                             &output,
                         ),
+                        Some(DatabasesCommands::Attach {
+                            connection,
+                            database,
+                            alias,
+                        }) => databases::attach(
+                            &workspace_id,
+                            &connection,
+                            database.as_deref(),
+                            alias.as_deref(),
+                        ),
+                        Some(DatabasesCommands::Detach {
+                            connection,
+                            database,
+                        }) => databases::detach(&workspace_id, &connection, database.as_deref()),
                         Some(DatabasesCommands::Set { id }) => databases::set(&workspace_id, &id),
                         Some(DatabasesCommands::Unset) => databases::unset(&workspace_id),
                         Some(DatabasesCommands::Delete { name_or_id }) => {

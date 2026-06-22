@@ -197,14 +197,20 @@ struct ListResponse {
     connections: Vec<Connection>,
 }
 
-/// Resolve a connection name or ID to a connection ID, exiting on failure.
+/// Resolve a connection name or ID to a connection ID, returning `Err(message)`
+/// when nothing matches.
 ///
 /// If `name_or_id` looks like a raw connection ID (starts with "conn"), tries
 /// `GET /connections/{id}` directly first to avoid listing the full workspace.
-/// Falls back to listing and matching by name on a 404 or when given a plain name.
-pub fn resolve_connection_id(api: &Api, name_or_id: &str) -> String {
-    use crossterm::style::Stylize;
-
+/// Falls back to listing and matching by name, then to managed-database catalog
+/// aliases. Only the "no match" outcome is an `Err`; a transport/API failure
+/// during resolution still exits (the API is unreachable — not "this name is
+/// wrong"), preserving the auth-aware error from [`ApiError::exit`].
+///
+/// [`resolve_connection_id`] is the exiting wrapper for callers with no recovery
+/// path; the `Result` form lets `databases create --attach` warn on a bad name
+/// and continue to the next attachment instead of aborting mid-loop.
+pub fn try_resolve_connection_id(api: &Api, name_or_id: &str) -> Result<String, String> {
     if name_or_id.starts_with("conn") {
         // Existence probe: a 404 just means "not a raw id", fall through to the
         // name/catalog lookup; any other error is fatal.
@@ -212,7 +218,7 @@ pub fn resolve_connection_id(api: &Api, name_or_id: &str) -> String {
             .unwrap_or_else(|e| e.exit())
             .is_some()
         {
-            return name_or_id.to_string();
+            return Ok(name_or_id.to_string());
         }
     }
 
@@ -225,7 +231,7 @@ pub fn resolve_connection_id(api: &Api, name_or_id: &str) -> String {
         && (active_db.default_catalog.as_deref() == Some(name_or_id)
             || active_db.name.as_deref() == Some(name_or_id))
     {
-        return active_db.default_connection_id;
+        return Ok(active_db.default_connection_id);
     }
 
     let resp = block(api.client().connections().list()).unwrap_or_else(|e| e.exit());
@@ -234,19 +240,28 @@ pub fn resolve_connection_id(api: &Api, name_or_id: &str) -> String {
         .iter()
         .find(|c| c.id == name_or_id || c.name == name_or_id)
     {
-        return conn.id.clone();
+        return Ok(conn.id.clone());
     }
 
     // Fall back to managed databases: treat name_or_id as a catalog alias.
     if let Ok(db) = crate::databases::try_resolve_database(api, name_or_id) {
-        return db.default_connection_id;
+        return Ok(db.default_connection_id);
     }
 
-    eprintln!(
-        "{}",
-        format!("error: no connection named or with id '{name_or_id}'").red()
-    );
-    std::process::exit(1);
+    Err(format!("no connection named or with id '{name_or_id}'"))
+}
+
+/// Resolve a connection name or ID to a connection ID, exiting on failure.
+/// Exiting wrapper around [`try_resolve_connection_id`].
+pub fn resolve_connection_id(api: &Api, name_or_id: &str) -> String {
+    use crossterm::style::Stylize;
+    match try_resolve_connection_id(api, name_or_id) {
+        Ok(id) => id,
+        Err(msg) => {
+            eprintln!("{}", format!("error: {msg}").red());
+            std::process::exit(1);
+        }
+    }
 }
 
 pub fn get(workspace_id: &str, connection_id: &str, format: &str) {
@@ -586,5 +601,65 @@ pub fn refresh(
                 eprintln!("    {}", err);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sdk::Api;
+
+    /// A bare connection list with one entry named `good`.
+    fn one_connection_body() -> &'static str {
+        r#"{"connections":[{"id":"conn_good","name":"good","source_type":"postgres"}]}"#
+    }
+
+    #[test]
+    fn try_resolve_connection_id_resolves_by_name() {
+        let mut server = mockito::Server::new();
+        let list = server
+            .mock("GET", "/v1/connections")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(one_connection_body())
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", None);
+        let id = try_resolve_connection_id(&api, "good").unwrap();
+        assert_eq!(id, "conn_good");
+        list.assert();
+    }
+
+    #[test]
+    fn try_resolve_connection_id_returns_err_for_unknown_name() {
+        // The fix: an unknown connection name yields Err instead of exiting the
+        // process, so `databases create --attach` can warn and continue rather
+        // than aborting mid-loop on a typo.
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/v1/connections")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(one_connection_body())
+            .create();
+        // Fallback: the name isn't a managed-database id/catalog/name either.
+        server
+            .mock("GET", "/v1/databases/ghost")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"databases":[]}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", None);
+        let err = try_resolve_connection_id(&api, "ghost").unwrap_err();
+        assert!(
+            err.contains("no connection named or with id 'ghost'"),
+            "err: {err}"
+        );
     }
 }

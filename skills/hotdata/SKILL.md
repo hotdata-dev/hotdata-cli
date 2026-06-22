@@ -177,6 +177,10 @@ hotdata databases delete <id_or_name> [--workspace-id <workspace_id>]
 hotdata databases run [--database <id>] [--name <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] <cmd> [args...]
 hotdata databases <id> run <cmd> [args...]
 
+# Attach a connection as a queryable catalog (enables cross-source queries — see below)
+hotdata databases attach <connection_id|name> [--database <id>] [--alias <alias>]
+hotdata databases detach <connection_id|name|alias> [--database <id>]
+
 # Preferred: load by catalog alias (auto-declares table if needed)
 hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
 
@@ -197,6 +201,9 @@ hotdata databases tables delete <table> [--database <id_or_name>] [--schema publ
 - `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
 - `tables delete` — drops a table from the managed database.
 - `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`) or via `--database <id>`; omit both to auto-create a scratch database using `--name` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, `source:"database_token"`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
+- `attach` — attaches a **connection** as a queryable catalog on a managed database, so the connection's **live** tables become visible inside that database's query scope. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name the catalog answers to (defaults to the connection's name). This is how you query connection tables and **join across sources** — see [Querying across connections](#querying-across-connections-attach).
+- `detach` — removes an attached connection catalog. Accepts the connection name/id **or** the alias you attached it under. Defaults to the active database.
+- `create --attach <connection>[=<alias>]` — attach one or more connections at creation time (repeatable), e.g. `--attach github --attach salesdb=sales`.
 
 Example:
 
@@ -206,6 +213,31 @@ hotdata databases load --catalog airbnb --table listings --url https://example.c
 hotdata query "SELECT count(*) FROM airbnb.public.listings"
 ```
 
+#### Querying across connections (attach)
+
+**A `hotdata query` runs inside exactly one managed database** — the active database (`hotdata databases set <id>`) or the one named by `--database`. With none set, the query fails with *"a database is required."* That database's query scope sees **only its own catalog plus any connection catalogs explicitly attached to it** — a workspace connection is **not** visible just because it exists. Referencing an unattached connection fails with *"table '\<catalog\>.\<schema\>.\<table\>' not found."*
+
+To query a connection's tables, or **join a managed table against a connection table in one query**, attach the connection to the database first. The connection's data stays **live** (synced) — this is not a copy:
+
+```
+# Attach the 'github' connection (live) to the active database under alias 'gh'
+hotdata databases attach github --alias gh
+
+# Now both the database's own tables and the attached connection are in scope:
+hotdata query "SELECT * FROM gh.github.issues WHERE state = 'OPEN' LIMIT 10"
+
+# Cross-source join: a managed table JOINed against the live connection table
+hotdata query "
+  SELECT t.id, i.title
+  FROM mycatalog.public.tickets t
+  JOIN gh.github.issues i ON i.number = t.gh_issue
+"
+
+hotdata databases detach gh   # when finished (optional)
+```
+
+Without `--alias`, the catalog answers to the connection's own name (`github.github.issues`). Do **not** export a connection to parquet just to query it — attach is the live, sync-preserving path.
+
 ### List Tables and Columns
 ```
 hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection_id>] [--schema <pattern>] [--table <pattern>] [--limit <int>] [--cursor <cursor>] [--output table|json|yaml]
@@ -214,7 +246,7 @@ hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection
 - **Always use this command to inspect available tables and columns.** Do NOT use the `query` command to query `information_schema` for this purpose.
 - Without `--connection-id`: lists all tables with `table`, `synced`, `last_sync`. The `table` column is formatted as `<connection>.<schema>.<table>`.
 - With `--connection-id`: includes column definitions. Lists each column as its own row with `table`, `column`, `data_type`, `nullable`. Use this to inspect the schema before writing queries.
-- **Always use the full `<connection>.<schema>.<table>` name when referencing tables in SQL queries.**
+- **Always use the full `<connection>.<schema>.<table>` name when referencing tables in SQL queries.** A connection table is only queryable once its connection is attached to the active database (`hotdata databases attach <connection>`); see [Querying across connections (attach)](#querying-across-connections-attach).
 - `--schema` and `--table` support SQL `%` wildcard patterns (e.g. `--table order%` matches `orders`, `order_items`, etc.).
 - Results are paginated (default 100 per page). If more results are available, a `--cursor` token is printed — pass it to fetch the next page.
 
@@ -244,7 +276,8 @@ hotdata query status <query_run_id>
 ```
 
 - Default output is `table` (row count and execution time).
-- Use `hotdata tables list` for discovery — not `information_schema` via `query`.
+- **A query runs inside one managed database** (active database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus any attached connection catalogs only**. To query a connection's tables or join across sources, attach the connection first — see [Querying across connections (attach)](#querying-across-connections-attach).
+- Use `hotdata tables list` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes.
 - Async runs return `query_run_id` → poll with `query status` (do not re-run the same heavy SQL).
 - **Large results are complete, not a preview.** The server returns inline rows only up to a bounded cap and persists the full set out-of-band; `hotdata query` transparently fetches the full result, so the printed rows and row count are the complete set. (If the full result can't be retrieved, the CLI prints the preview and a `warning:` to stderr.)

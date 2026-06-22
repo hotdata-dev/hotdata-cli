@@ -52,6 +52,8 @@ For each business entity:
 
 Document safe join paths and caveats (fan-out, timing, different refresh cadence, type mismatches).
 
+> A cross-connection join runs inside one managed database; each connection it touches must be **attached** to that database (`hotdata databases attach <connection>`) so its live tables are in query scope. Note here which connections a join requires attached, and the alias each is attached under. See **`hotdata`** skill → Querying across connections.
+
 ## Search & index summary (optional)
 
 | Table | Column | Kind (vector / text / …) | Index status | Notes |
