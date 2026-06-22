@@ -600,7 +600,10 @@ pub fn attach(workspace_id: &str, connection: &str, database: Option<&str>, alia
                 .green()
             ),
         },
-        Err(e) => e.exit(),
+        Err(e) => {
+            eprintln!("{}", format!("error: {e}").red());
+            std::process::exit(1);
+        }
     }
 }
 
@@ -768,21 +771,28 @@ fn parse_attach_spec(spec: &str) -> (&str, Option<&str>) {
 
 /// Attach a connection (by name or id) as a catalog on `database_id`. Resolves
 /// the connection then calls the SDK's `attach_catalog`. Returns the resolved
-/// connection id so callers can report it.
+/// connection id so callers can report it, or `Err(message)` on a bad
+/// connection name/id or a failed attach.
+///
+/// Returns the error (rather than exiting) so `create --attach` can warn on one
+/// bad spec and still process the rest. Uses [`try_resolve_connection_id`] for
+/// the same reason — `resolve_connection_id` would `process::exit` on an unknown
+/// name and abort the whole `create` mid-loop.
 fn attach_connection(
     api: &Api,
     database_id: &str,
     connection: &str,
     alias: Option<&str>,
-) -> Result<String, ApiError> {
-    let connection_id = crate::connections::resolve_connection_id(api, connection);
+) -> Result<String, String> {
+    let connection_id = crate::connections::try_resolve_connection_id(api, connection)?;
     let mut request = hotdata::models::AttachDatabaseCatalogRequest::new(connection_id.clone());
     request.alias = alias.map(|a| Some(a.to_string()));
     block(
         api.client()
             .databases()
             .attach_catalog(database_id, request),
-    )?;
+    )
+    .map_err(|e| e.message())?;
     Ok(connection_id)
 }
 
@@ -828,8 +838,7 @@ pub fn create(
                 Err(e) => {
                     eprintln!(
                         "{}",
-                        format!("warning: could not attach '{connection}': {}", e.message())
-                            .yellow()
+                        format!("warning: could not attach '{connection}': {e}").yellow()
                     );
                     None
                 }
