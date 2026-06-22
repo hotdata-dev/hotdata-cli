@@ -581,29 +581,30 @@ pub fn attach(workspace_id: &str, connection: &str, database: Option<&str>, alia
         .or(db.name.as_deref())
         .unwrap_or(&db.id);
 
-    match attach_connection(&api, &db.id, connection, alias) {
-        Ok(_) => match alias {
-            Some(a) => println!(
-                "{}",
-                format!(
-                    "Attached '{connection}' to database '{where_}' as catalog '{a}'.\n\
-                     Query: hotdata query \"SELECT * FROM {a}.<schema>.<table> LIMIT 10\" -d {where_}"
-                )
-                .green()
-            ),
-            None => println!(
-                "{}",
-                format!(
-                    "Attached '{connection}' to database '{where_}'. It is reachable by the \
-                     connection's name; run `hotdata databases {where_}` to see attached catalogs."
-                )
-                .green()
-            ),
-        },
-        Err(e) => {
-            eprintln!("{}", format!("error: {e}").red());
-            std::process::exit(1);
-        }
+    // Resolve + attach via the exiting paths (mirroring `detach`): a bad name
+    // exits with the resolver's message, and an API failure goes through
+    // `ApiError::exit`, which upgrades a masked 401/403 into the re-auth hint.
+    // (The non-fatal `create --attach` loop uses `attach_connection` instead.)
+    let connection_id = crate::connections::resolve_connection_id(&api, connection);
+    send_attach(&api, &db.id, connection_id, alias).unwrap_or_else(|e| e.exit());
+
+    match alias {
+        Some(a) => println!(
+            "{}",
+            format!(
+                "Attached '{connection}' to database '{where_}' as catalog '{a}'.\n\
+                 Query: hotdata query \"SELECT * FROM {a}.<schema>.<table> LIMIT 10\" -d {where_}"
+            )
+            .green()
+        ),
+        None => println!(
+            "{}",
+            format!(
+                "Attached '{connection}' to database '{where_}'. It is reachable by the \
+                 connection's name; run `hotdata databases {where_}` to see attached catalogs."
+            )
+            .green()
+        ),
     }
 }
 
@@ -769,15 +770,36 @@ fn parse_attach_spec(spec: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Attach a connection (by name or id) as a catalog on `database_id`. Resolves
-/// the connection then calls the SDK's `attach_catalog`. Returns the resolved
-/// connection id so callers can report it, or `Err(message)` on a bad
-/// connection name/id or a failed attach.
+/// POST the attach request for an already-resolved `connection_id`. The single
+/// place the `AttachDatabaseCatalogRequest` (incl. the double-Option alias) is
+/// built, so the standalone `attach` command and the `create --attach` loop
+/// share one request shape while handling the error differently (exit vs warn).
+fn send_attach(
+    api: &Api,
+    database_id: &str,
+    connection_id: String,
+    alias: Option<&str>,
+) -> Result<(), ApiError> {
+    let mut request = hotdata::models::AttachDatabaseCatalogRequest::new(connection_id);
+    request.alias = alias.map(|a| Some(a.to_string()));
+    block(
+        api.client()
+            .databases()
+            .attach_catalog(database_id, request),
+    )
+    .map(|_| ())
+}
+
+/// Attach a connection (by name or id) as a catalog on `database_id`, returning
+/// the resolved connection id or `Err(message)` on a bad connection name/id or a
+/// failed attach.
 ///
 /// Returns the error (rather than exiting) so `create --attach` can warn on one
 /// bad spec and still process the rest. Uses [`try_resolve_connection_id`] for
 /// the same reason — `resolve_connection_id` would `process::exit` on an unknown
-/// name and abort the whole `create` mid-loop.
+/// name and abort the whole `create` mid-loop. The standalone `attach` command
+/// does NOT use this — it wants the auth-aware [`ApiError::exit`], so it calls
+/// `resolve_connection_id` + [`send_attach`] directly.
 fn attach_connection(
     api: &Api,
     database_id: &str,
@@ -785,14 +807,7 @@ fn attach_connection(
     alias: Option<&str>,
 ) -> Result<String, String> {
     let connection_id = crate::connections::try_resolve_connection_id(api, connection)?;
-    let mut request = hotdata::models::AttachDatabaseCatalogRequest::new(connection_id.clone());
-    request.alias = alias.map(|a| Some(a.to_string()));
-    block(
-        api.client()
-            .databases()
-            .attach_catalog(database_id, request),
-    )
-    .map_err(|e| e.message())?;
+    send_attach(api, database_id, connection_id.clone(), alias).map_err(|e| e.message())?;
     Ok(connection_id)
 }
 
