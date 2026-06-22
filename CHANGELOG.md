@@ -1,3 +1,18 @@
+## [0.7.0] - 2026-06-22
+
+### 🚀 Features
+
+- *(databases)* Attach/detach connection catalogs
+
+### 🐛 Bug Fixes
+
+- *(databases)* Tolerate a bad --attach spec in create
+- *(query)* Show cross-source hint on poll failure
+- *(databases)* Keep attach failures auth-aware like detach
+
+### 📚 Documentation
+
+- Document cross-source query via catalog attach
 ## [0.6.0] - 2026-06-20
 
 ### 🚀 Features
