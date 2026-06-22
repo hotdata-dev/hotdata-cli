@@ -17,6 +17,49 @@ fn databases_help_lists_subcommands() {
     assert!(help.contains("create"));
     assert!(help.contains("delete"));
     assert!(help.contains("tables"));
+    assert!(help.contains("attach"));
+    assert!(help.contains("detach"));
+}
+
+#[test]
+fn databases_create_help_documents_attach_flag() {
+    let output = hotdata()
+        .args(["databases", "create", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--attach"), "help: {help}");
+    // The `connection=alias` form is the documented way to set the SQL alias.
+    assert!(help.contains("connection=alias"), "help: {help}");
+}
+
+#[test]
+fn databases_attach_help_documents_connection_and_alias() {
+    let output = hotdata()
+        .args(["databases", "attach", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--alias"), "help: {help}");
+    assert!(help.contains("--database"), "help: {help}");
+}
+
+#[test]
+fn databases_attach_requires_a_connection_argument() {
+    // `connection` is a required positional — parsing must fail without it.
+    let output = hotdata().args(["databases", "attach"]).output().unwrap();
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("required") || combined.contains("CONNECTION"),
+        "output: {combined}"
+    );
 }
 
 #[test]

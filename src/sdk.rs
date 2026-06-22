@@ -221,11 +221,15 @@ impl ApiError {
         }
     }
 
-    /// Print the standard error and exit, reproducing `ApiClient::fail_response`.
+    /// Print the standard error (without exiting), reproducing
+    /// `ApiClient::fail_response`'s formatting.
     ///
     /// On a 4xx, re-probe the auth status so a masked 404/403 is upgraded into
-    /// the "run hotdata auth" hint; otherwise surface the server body.
-    pub fn exit(&self) -> ! {
+    /// the "run hotdata auth" hint; otherwise surface the server body. Split out
+    /// from [`exit`](Self::exit) so callers that want to append their own hint
+    /// after the error (e.g. the query cross-source hint) can print, add the
+    /// hint, then exit.
+    pub fn print(&self) {
         match self {
             ApiError::Status { status, body } => {
                 let auth_status = if status.is_client_error() {
@@ -246,6 +250,11 @@ impl ApiError {
                 eprintln!("{msg}");
             }
         }
+    }
+
+    /// Print the standard error and exit, reproducing `ApiClient::fail_response`.
+    pub fn exit(&self) -> ! {
+        self.print();
         std::process::exit(1);
     }
 }

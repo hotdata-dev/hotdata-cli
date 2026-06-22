@@ -566,6 +566,82 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
     }
 }
 
+/// Attach a connection as a queryable catalog on a managed database, so its
+/// live tables are visible inside that database's query scope (cross-source
+/// joins without exporting data). Defaults to the current database.
+pub fn attach(workspace_id: &str, connection: &str, database: Option<&str>, alias: Option<&str>) {
+    use crossterm::style::Stylize;
+
+    let database = resolve_current_database(database, workspace_id);
+    let api = Api::new(Some(workspace_id));
+    let db = resolve_database(&api, &database);
+    let where_ = db
+        .default_catalog
+        .as_deref()
+        .or(db.name.as_deref())
+        .unwrap_or(&db.id);
+
+    match attach_connection(&api, &db.id, connection, alias) {
+        Ok(_) => match alias {
+            Some(a) => println!(
+                "{}",
+                format!(
+                    "Attached '{connection}' to database '{where_}' as catalog '{a}'.\n\
+                     Query: hotdata query \"SELECT * FROM {a}.<schema>.<table> LIMIT 10\" -d {where_}"
+                )
+                .green()
+            ),
+            None => println!(
+                "{}",
+                format!(
+                    "Attached '{connection}' to database '{where_}'. It is reachable by the \
+                     connection's name; run `hotdata databases {where_}` to see attached catalogs."
+                )
+                .green()
+            ),
+        },
+        Err(e) => e.exit(),
+    }
+}
+
+/// Detach a previously attached connection catalog from a managed database.
+/// Defaults to the current database.
+pub fn detach(workspace_id: &str, connection: &str, database: Option<&str>) {
+    use crossterm::style::Stylize;
+
+    let database = resolve_current_database(database, workspace_id);
+    let api = Api::new(Some(workspace_id));
+    let db = resolve_database(&api, &database);
+    let where_ = db
+        .default_catalog
+        .as_deref()
+        .or(db.name.as_deref())
+        .unwrap_or(&db.id)
+        .to_string();
+    // Detach is keyed by the underlying connection id, but a user who attached
+    // `github=gh` will naturally type `detach gh`. Resolve an attachment alias to
+    // its connection id first; otherwise treat the argument as a connection
+    // name/id like everywhere else.
+    let connection_id = db
+        .attachments
+        .iter()
+        .find(|a| a.alias.as_deref() == Some(connection))
+        .map(|a| a.connection_id.clone())
+        .unwrap_or_else(|| crate::connections::resolve_connection_id(&api, connection));
+
+    block(
+        api.client()
+            .databases()
+            .detach_catalog(&db.id, &connection_id),
+    )
+    .unwrap_or_else(|e| e.exit());
+
+    println!(
+        "{}",
+        format!("Detached '{connection}' from database '{where_}'.").green()
+    );
+}
+
 /// Create a database and return its id. Used by `run` when no
 /// `--database` is given. Mirrors `create`'s request path but returns
 /// the id instead of printing.
@@ -680,6 +756,37 @@ pub fn run(
     }
 }
 
+/// Parse one `--attach` entry into `(connection, alias)`. `conn=alias` sets an
+/// explicit SQL alias; a bare `conn` leaves the alias to default to the
+/// connection's name. The connection part is a name or id resolved later.
+fn parse_attach_spec(spec: &str) -> (&str, Option<&str>) {
+    match spec.split_once('=') {
+        Some((conn, alias)) => (conn.trim(), Some(alias.trim())),
+        None => (spec.trim(), None),
+    }
+}
+
+/// Attach a connection (by name or id) as a catalog on `database_id`. Resolves
+/// the connection then calls the SDK's `attach_catalog`. Returns the resolved
+/// connection id so callers can report it.
+fn attach_connection(
+    api: &Api,
+    database_id: &str,
+    connection: &str,
+    alias: Option<&str>,
+) -> Result<String, ApiError> {
+    let connection_id = crate::connections::resolve_connection_id(api, connection);
+    let mut request = hotdata::models::AttachDatabaseCatalogRequest::new(connection_id.clone());
+    request.alias = alias.map(|a| Some(a.to_string()));
+    block(
+        api.client()
+            .databases()
+            .attach_catalog(database_id, request),
+    )?;
+    Ok(connection_id)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     workspace_id: &str,
     name: Option<&str>,
@@ -687,6 +794,7 @@ pub fn create(
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
+    attach: &[String],
     format: &str,
 ) {
     use crossterm::style::Stylize;
@@ -704,6 +812,30 @@ pub fn create(
         block(api.client().databases().create(request))
     }
     .unwrap_or_else(|e| e.exit());
+
+    // Attach requested connection catalogs onto the fresh database so a single
+    // `databases create --attach …` lands a cross-source-ready context. A failed
+    // attach is surfaced but non-fatal: the database exists and is usable.
+    let attached: Vec<String> = attach
+        .iter()
+        .filter_map(|spec| {
+            let (connection, alias) = parse_attach_spec(spec);
+            match attach_connection(&api, &resp.id, connection, alias) {
+                Ok(_) => Some(match alias {
+                    Some(a) => format!("{connection} (as {a})"),
+                    None => connection.to_string(),
+                }),
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        format!("warning: could not attach '{connection}': {}", e.message())
+                            .yellow()
+                    );
+                    None
+                }
+            }
+        })
+        .collect();
 
     let result = CreateDatabaseResponse {
         id: resp.id,
@@ -735,6 +867,9 @@ pub fn create(
             println!("id:          {}", result.id);
             if let Some(exp) = &result.expires_at {
                 println!("expires_at:  {exp}");
+            }
+            if !attached.is_empty() {
+                println!("attached:    {}", attached.join(", ").cyan());
             }
             println!();
             let catalog = result
@@ -1126,6 +1261,24 @@ mod tests {
     fn schema_name_defaults_to_public() {
         assert_eq!(schema_name(None), "public");
         assert_eq!(schema_name(Some("custom")), "custom");
+    }
+
+    #[test]
+    fn parse_attach_spec_bare_connection_has_no_alias() {
+        assert_eq!(parse_attach_spec("github"), ("github", None));
+    }
+
+    #[test]
+    fn parse_attach_spec_splits_alias() {
+        assert_eq!(parse_attach_spec("github=gh"), ("github", Some("gh")));
+    }
+
+    #[test]
+    fn parse_attach_spec_trims_whitespace() {
+        assert_eq!(
+            parse_attach_spec("  salesdb = sales "),
+            ("salesdb", Some("sales"))
+        );
     }
 
     #[test]
