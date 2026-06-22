@@ -376,6 +376,20 @@ fn fail_query(err: &ApiError, error_msg: &str) -> ! {
     std::process::exit(1);
 }
 
+/// Print a failed query run's `query failed: <err>` line, append the cross-source
+/// hint when applicable, then exit non-zero. Shared by both terminal-failure
+/// sites — `execute`'s poll loop and the `query status` (`poll`) command — so the
+/// hint surfaces identically whether the failure is seen inline or on a later
+/// poll.
+fn fail_run(error_msg: &str) -> ! {
+    use crossterm::style::Stylize;
+    eprintln!("{}", format!("query failed: {error_msg}").red());
+    if let Some(tip) = cross_source_hint(error_msg) {
+        eprintln!("{}", tip.dark_grey());
+    }
+    std::process::exit(1);
+}
+
 pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &str) {
     let api = Api::new(Some(workspace_id));
 
@@ -441,16 +455,11 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
             }
             "failed" => {
                 spinner.finish_and_clear();
-                use crossterm::style::Stylize;
                 let err = run
                     .error_message
                     .flatten()
                     .unwrap_or_else(|| "unknown error".to_string());
-                eprintln!("{}", format!("query failed: {err}").red());
-                if let Some(tip) = cross_source_hint(&err) {
-                    eprintln!("{}", tip.dark_grey());
-                }
-                std::process::exit(1);
+                fail_run(&err);
             }
             "running" | "queued" | "pending" => {}
             status => {
@@ -497,13 +506,11 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
             }
         },
         "failed" => {
-            use crossterm::style::Stylize;
             let err = run
                 .error_message
                 .flatten()
                 .unwrap_or_else(|| "unknown error".to_string());
-            eprintln!("{}", format!("query failed: {err}").red());
-            std::process::exit(1);
+            fail_run(&err);
         }
         status => {
             use crossterm::style::Stylize;
