@@ -131,48 +131,69 @@ fn should_check() -> bool {
         && std::env::var_os("HOTDATA_NO_UPDATE_CHECK").is_none()
 }
 
-/// How long `maybe_print_update_notice` will wait for the background thread
-/// before giving up.  In practice the thread finishes well within this window
-/// because `fetch_latest_version` has its own 5-second HTTP timeout and cache
-/// hits resolve in microseconds.
-const NOTICE_WAIT_MS: u64 = 6_000;
-
-/// Spawn a background thread that checks for a newer release.  Returns a
-/// channel receiver that `maybe_print_update_notice` can poll after the
-/// command runs.  No-op (returns None) when stderr isn't a TTY, `--no-input`
-/// is set, or `HOTDATA_NO_UPDATE_CHECK` is set.
-pub fn spawn_update_check() -> Option<std::sync::mpsc::Receiver<Option<Version>>> {
+/// Called before dispatching an API-touching command. A newer release may be
+/// incompatible with the API, so when one is available we require the user to
+/// upgrade before continuing: prompt, and on decline — or a failed upgrade —
+/// exit *without* running the command. A successful upgrade also exits, because
+/// the still-running process is the old binary; the user re-runs to pick up the
+/// new one.
+///
+/// No-op when the update check is disabled or the session isn't an interactive
+/// terminal (see `should_check`), so scripts and CI are never blocked. The
+/// check is synchronous because its result gates the command, but it resolves
+/// in microseconds on a cache hit and only hits the network once per ~24h.
+pub fn enforce_latest_or_exit() {
     if !should_check() {
-        return None;
+        return;
     }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(cached_latest_if_newer());
-    });
-    Some(rx)
-}
-
-/// Poll the receiver returned by `spawn_update_check` and print a one-line
-/// notice if a newer release was found.  Call this *after* the command has
-/// produced its own output so the notice appears at the bottom.
-pub fn maybe_print_update_notice(rx: Option<std::sync::mpsc::Receiver<Option<Version>>>) {
-    let Some(rx) = rx else { return };
-    let Ok(Some(latest)) = rx.recv_timeout(Duration::from_millis(NOTICE_WAIT_MS)) else {
+    let Some(latest) = cached_latest_if_newer() else {
         return;
     };
-    eprintln!(
+
+    use std::io::Write;
+    eprint!(
         "{}",
         format!(
-            "\nA new version of hotdata is available (v{CURRENT_VERSION} → v{latest}). Run: hotdata update"
+            "\nA new version of hotdata is available (v{CURRENT_VERSION} → v{latest}).\nThis version may be incompatible with the API. Upgrade now? [Y/n] "
         )
         .yellow()
     );
+    let _ = std::io::stderr().flush();
+
+    // `read_line` returns `Ok(0)` on EOF (e.g. Ctrl-D). Treat EOF and read
+    // errors as "no" so an accidental Ctrl-D doesn't trigger an upgrade.
+    let mut input = String::new();
+    let confirmed = match std::io::stdin().read_line(&mut input) {
+        Ok(0) | Err(_) => false,
+        Ok(_) => {
+            let answer = input.trim();
+            answer.is_empty() || answer.eq_ignore_ascii_case("y")
+        }
+    };
+
+    if !confirmed {
+        eprintln!(
+            "{}",
+            "Upgrade required to continue. Run 'hotdata upgrade' when ready.".red()
+        );
+        std::process::exit(1);
+    }
+
+    if let Err(e) = update_to(&latest) {
+        eprintln!("{}", format!("error: upgrade failed: {e}").red());
+        std::process::exit(1);
+    }
+
+    eprintln!("{}", "Re-run your command to continue.".green());
+    std::process::exit(0);
 }
 
-/// Try to run `brew upgrade <formula>` directly.  Falls back to printing the
-/// manual instruction if `brew` is not on PATH or the command fails.
-fn run_homebrew_upgrade() {
-    println!("Updating via Homebrew...");
+/// Try to run `brew upgrade <formula>` directly.  Status goes to stderr so it
+/// never lands in a caller's redirected stdout.  Returns an error (including
+/// the manual fallback command) instead of exiting, so the caller decides
+/// whether a failure is fatal.
+fn run_homebrew_upgrade() -> Result<(), String> {
+    eprintln!("Updating via Homebrew...");
 
     // Locate `brew` — prefer the common install paths so the upgrade works
     // even if the user's shell profile hasn't been sourced in this context.
@@ -188,9 +209,9 @@ fn run_homebrew_upgrade() {
         .copied();
 
     let Some(brew_bin) = brew else {
-        eprintln!("{}", "brew not found — run manually:".yellow());
-        println!("  {}", format!("brew upgrade {HOMEBREW_FORMULA}").cyan());
-        return;
+        return Err(format!(
+            "brew not found — run manually: brew upgrade {HOMEBREW_FORMULA}"
+        ));
     };
 
     let status = std::process::Command::new(brew_bin)
@@ -206,17 +227,12 @@ fn run_homebrew_upgrade() {
                     latest_version: v.to_string(),
                 });
             }
+            Ok(())
         }
-        Ok(s) => {
-            eprintln!("{}", format!("brew upgrade exited with status {s}").red());
-            std::process::exit(s.code().unwrap_or(1));
-        }
-        Err(e) => {
-            eprintln!("{}", format!("error running brew: {e}").red());
-            eprintln!("Run manually:");
-            println!("  {}", format!("brew upgrade {HOMEBREW_FORMULA}").cyan());
-            std::process::exit(1);
-        }
+        Ok(s) => Err(format!("brew upgrade exited with status {s}")),
+        Err(e) => Err(format!(
+            "error running brew: {e} — run manually: brew upgrade {HOMEBREW_FORMULA}"
+        )),
     }
 }
 
@@ -228,15 +244,18 @@ fn which_brew() -> bool {
         .unwrap_or(false)
 }
 
-pub fn run_update() {
+pub fn run_upgrade() {
     let current = Version::parse(CURRENT_VERSION).expect("invalid package version");
 
     if detect_install_method() == InstallMethod::Homebrew {
-        run_homebrew_upgrade();
+        if let Err(e) = run_homebrew_upgrade() {
+            eprintln!("{}", format!("error: {e}").red());
+            std::process::exit(1);
+        }
         return;
     }
 
-    println!("Checking for updates...");
+    eprintln!("Checking for updates...");
     let latest = match fetch_latest_version() {
         Ok(v) => v,
         Err(e) => {
@@ -249,7 +268,7 @@ pub fn run_update() {
     };
 
     if latest <= current {
-        println!("Already up to date (v{current}).");
+        eprintln!("Already up to date (v{current}).");
         // Refresh cache so the notice goes away.
         write_cache(&UpdateCheckCache {
             checked_at: now_secs(),
@@ -258,24 +277,39 @@ pub fn run_update() {
         return;
     }
 
-    println!("Updating from v{current} to v{latest}...");
-    if let Err(e) = perform_update(&latest) {
+    if let Err(e) = update_to(&latest) {
         eprintln!("{}", format!("error: update failed: {e}").red());
         std::process::exit(1);
     }
-    println!("{}", format!("Updated to v{latest}.").green());
+}
+
+/// Upgrade the running binary to a known-newer `latest`, dispatching on the
+/// install method. Shared by the explicit `hotdata upgrade` command and the
+/// pre-command upgrade gate. Returns an error instead of exiting so each
+/// caller decides whether a failure is fatal; status goes to stderr so it
+/// never pollutes a caller's redirected stdout. On success the new version
+/// takes effect on the next invocation.
+fn update_to(latest: &Version) -> Result<(), String> {
+    if detect_install_method() == InstallMethod::Homebrew {
+        return run_homebrew_upgrade();
+    }
+
+    eprintln!("Updating from v{CURRENT_VERSION} to v{latest}...");
+    perform_update(latest)?;
+    eprintln!("{}", format!("Updated to v{latest}.").green());
 
     // Install/update skills to match the new binary.  The tarball URL is built
     // from `latest` (not CURRENT_VERSION) because the old binary is still
     // running at this point — we want the skills for the version we just
     // downloaded, not the one we replaced.
-    crate::skill::install_for_version(&latest);
+    crate::skill::install_for_version(latest);
 
     // Bust the cache so the notice clears on the next run.
     write_cache(&UpdateCheckCache {
         checked_at: now_secs(),
         latest_version: latest.to_string(),
     });
+    Ok(())
 }
 
 /// Download the cargo-dist tar.xz asset for the running target, unpack it,
@@ -355,5 +389,16 @@ mod tests {
     fn detect_install_method_returns_one_of_the_variants() {
         let m = detect_install_method();
         assert!(matches!(m, InstallMethod::Homebrew | InstallMethod::Other));
+    }
+
+    #[test]
+    fn cache_deserializes_ignoring_unknown_fields() {
+        // A cache file written by an interim build (which carried an extra
+        // `declined_version` field) must still load after that field was
+        // removed — serde ignores unknown keys by default.
+        let json = r#"{"checked_at":123,"latest_version":"0.6.0","declined_version":"0.7.0"}"#;
+        let cache: UpdateCheckCache = serde_json::from_str(json).unwrap();
+        assert_eq!(cache.checked_at, 123);
+        assert_eq!(cache.latest_version, "0.6.0");
     }
 }
