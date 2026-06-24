@@ -101,6 +101,13 @@ unsafe extern "C" {
 
 extern "C" fn print_database_footer() {
     use crossterm::style::Stylize;
+    use std::io::IsTerminal;
+    // Human convenience only — stay quiet for piped/redirected/scripted
+    // callers (who may capture stderr alongside machine output) so the footer
+    // never mixes into their stream.
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
     // Inside a `databases run` child the parent already announced the
     // database at spawn, so stay silent here.
     if database_session::database_token_in_use().is_some() {
