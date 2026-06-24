@@ -176,13 +176,18 @@ pub fn enforce_latest_or_exit() {
     if !confirmed {
         eprintln!(
             "{}",
-            "Upgrade required to continue. Run 'hotdata upgrade' when ready.".red()
+            "Upgrade required to continue. Run 'hotdata upgrade' when ready, or set HOTDATA_NO_UPDATE_CHECK=1 to bypass this check (e.g. when offline).".red()
         );
         std::process::exit(1);
     }
 
     if let Err(e) = update_to(&latest) {
         eprintln!("{}", format!("error: upgrade failed: {e}").red());
+        eprintln!(
+            "{}",
+            "If you can't upgrade right now, set HOTDATA_NO_UPDATE_CHECK=1 to bypass this check."
+                .dark_grey()
+        );
         std::process::exit(1);
     }
 
