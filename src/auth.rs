@@ -8,18 +8,6 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::stdout;
 
-pub fn create_profiles() {
-    match config::create_profiles_file() {
-        Ok(path) => {
-            println!("{} {}", "Created".green(), path.display());
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
 pub fn logout(profile: &str) {
     crate::jwt::clear_session();
     if let Err(e) = config::clear_workspaces(profile) {

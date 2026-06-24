@@ -278,9 +278,6 @@ pub enum AuthCommands {
 
     /// Show authentication status
     Status,
-
-    /// Create a profiles.yml seeded with a `default` profile
-    Profiles,
 }
 
 #[derive(Subcommand)]

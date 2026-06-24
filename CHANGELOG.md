@@ -3,7 +3,6 @@
 ### 🚀 Features
 
 - *(auth)* [**breaking**] Require explicit `login` subcommand; bare `hotdata auth` now prints help (#182)
-- *(auth)* Add `auth profiles` to scaffold a `profiles.yml` with a `default` profile (#182)
 ## [0.8.0] - 2026-06-24
 
 ### 🚀 Features
