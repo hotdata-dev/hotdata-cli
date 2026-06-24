@@ -167,7 +167,9 @@ pub fn enforce_latest_or_exit() {
         Ok(0) | Err(_) => false,
         Ok(_) => {
             let answer = input.trim();
-            answer.is_empty() || answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
+            answer.is_empty()
+                || answer.eq_ignore_ascii_case("y")
+                || answer.eq_ignore_ascii_case("yes")
         }
     };
 
