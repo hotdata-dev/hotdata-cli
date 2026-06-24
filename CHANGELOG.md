@@ -1,3 +1,8 @@
+## [Unreleased]
+
+### 🚀 Features
+
+- *(auth)* [**breaking**] Require explicit `login` subcommand; bare `hotdata auth` now prints help (#182)
 ## [0.8.0] - 2026-06-24
 
 ### 🚀 Features
