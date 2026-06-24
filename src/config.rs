@@ -21,6 +21,27 @@ fn config_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("config.yml"))
 }
 
+fn profiles_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join("profiles.yml"))
+}
+
+/// Create a `profiles.yml` in the config dir seeded with a `default`
+/// profile pointing at the production API and app URLs. Returns the path
+/// it wrote to. Refuses to overwrite an existing file so a user's
+/// customizations are never clobbered.
+pub fn create_profiles_file() -> Result<PathBuf, String> {
+    let path = profiles_path()?;
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+
+    let content = format!(
+        "profiles:\n  default:\n    HOTDATA_API_URL: {DEFAULT_API_URL}\n    HOTDATA_APP_URL: {DEFAULT_APP_URL}\n"
+    );
+    write_config(&path, &content)?;
+    Ok(path)
+}
+
 pub const DEFAULT_API_URL: &str = "https://api.hotdata.dev/v1";
 pub const DEFAULT_APP_URL: &str = "https://app.hotdata.dev";
 
@@ -493,6 +514,28 @@ mod tests {
         };
         let result = resolve_workspace_id(None, &profile).unwrap();
         assert_eq!(result, "ws-1");
+    }
+
+    #[test]
+    fn create_profiles_file_writes_default_profile() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        let path = create_profiles_file().unwrap();
+        assert!(path.exists());
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("default:"));
+        assert!(content.contains(&format!("HOTDATA_API_URL: {DEFAULT_API_URL}")));
+        assert!(content.contains(&format!("HOTDATA_APP_URL: {DEFAULT_APP_URL}")));
+    }
+
+    #[test]
+    fn create_profiles_file_refuses_to_overwrite() {
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        create_profiles_file().unwrap();
+        let err = create_profiles_file().unwrap_err();
+        assert!(err.contains("already exists"), "got: {err}");
     }
 
     #[test]

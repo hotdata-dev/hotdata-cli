@@ -159,6 +159,9 @@ fn main() {
         None | Some(Commands::Upgrade)
             | Some(Commands::Completions { .. })
             | Some(Commands::Auth { command: None })
+            | Some(Commands::Auth {
+                command: Some(AuthCommands::Profiles)
+            })
     );
     if gate_update {
         update::enforce_latest_or_exit();
@@ -176,6 +179,7 @@ fn main() {
                 Some(AuthCommands::Register { email }) => auth::register(email),
                 Some(AuthCommands::Status) => auth::status("default"),
                 Some(AuthCommands::Logout) => auth::logout("default"),
+                Some(AuthCommands::Profiles) => auth::create_profiles(),
                 None => {
                     use clap::CommandFactory;
                     let mut cmd = Cli::command();
