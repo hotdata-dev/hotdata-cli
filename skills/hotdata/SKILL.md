@@ -291,6 +291,16 @@ hotdata completions <bash|zsh|fish>
 
 Writes completion script for the chosen shell to stdout (redirect into your shell’s completion path as usual).
 
+### Upgrade (`upgrade`)
+
+```
+hotdata upgrade
+```
+
+Upgrades the CLI in place to the latest release (`brew upgrade` for Homebrew installs, otherwise a direct binary download), refreshing bundled skills to match. After a successful upgrade, re-run your command.
+
+A newer release can be incompatible with the API, so in an **interactive terminal** the CLI checks for a new release before running any API-touching command and prompts to upgrade. Declining (or `Ctrl-D`) exits without running the command — `hotdata upgrade` is then required to continue. The check is a **no-op in non-interactive sessions** (no TTY, `--no-input`, or `HOTDATA_NO_UPDATE_CHECK` set), so typical agent and CI usage is never blocked; set `HOTDATA_NO_UPDATE_CHECK=1` to disable it entirely.
+
 ### Auth
 ```
 hotdata auth login          # Browser-based login (same as: hotdata auth)
