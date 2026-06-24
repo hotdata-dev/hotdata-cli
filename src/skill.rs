@@ -247,7 +247,7 @@ fn download_and_extract_from_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Download and install skills for `version`.  Called from `run_update()` after
+/// Download and install skills for `version`.  Called from `update_to()` after
 /// the binary has been atomically swapped so that skills match the new CLI on
 /// first use.  Uses the release tarball URL for `version` (not `CURRENT_VERSION`,
 /// which is still the old binary at call time).  Skips silently when managed by
