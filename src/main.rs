@@ -156,7 +156,9 @@ fn main() {
     // never blocked (see `update::should_check`).
     let gate_update = !matches!(
         &cli.command,
-        None | Some(Commands::Upgrade) | Some(Commands::Completions { .. })
+        None | Some(Commands::Upgrade)
+            | Some(Commands::Completions { .. })
+            | Some(Commands::Auth { command: None })
     );
     if gate_update {
         update::enforce_latest_or_exit();
@@ -170,10 +172,19 @@ fn main() {
         }
         Some(cmd) => match cmd {
             Commands::Auth { command } => match command {
-                None | Some(AuthCommands::Login) => auth::login(),
+                Some(AuthCommands::Login) => auth::login(),
                 Some(AuthCommands::Register { email }) => auth::register(email),
                 Some(AuthCommands::Status) => auth::status("default"),
                 Some(AuthCommands::Logout) => auth::logout("default"),
+                None => {
+                    use clap::CommandFactory;
+                    let mut cmd = Cli::command();
+                    cmd.build();
+                    cmd.find_subcommand_mut("auth")
+                        .unwrap()
+                        .print_help()
+                        .unwrap();
+                }
             },
             Commands::Query {
                 sql,
