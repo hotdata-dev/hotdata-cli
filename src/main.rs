@@ -141,15 +141,19 @@ fn main() {
         skill::maybe_auto_update_after_cli_upgrade();
     }
 
-    // Kick off the update check in the background so it runs concurrently
-    // with the command.  We join and print after the command finishes so the
-    // notice always appears at the bottom of the output.  Skipped during
-    // `hotdata update` itself so it doesn't talk over the updater's output.
-    let update_handle = if !matches!(&cli.command, Some(Commands::Update)) {
-        update::spawn_update_check()
-    } else {
-        None
-    };
+    // A newer release may be incompatible with the API, so gate API-touching
+    // commands behind an up-to-date check: prompt to upgrade and, on decline
+    // or a failed upgrade, exit *without* running the command. Exempt the
+    // commands that don't hit the API (bare help, completions) and the
+    // upgrader itself. No-op for non-interactive/CI sessions, so automation is
+    // never blocked (see `update::should_check`).
+    let gate_update = !matches!(
+        &cli.command,
+        None | Some(Commands::Upgrade) | Some(Commands::Completions { .. })
+    );
+    if gate_update {
+        update::enforce_latest_or_exit();
+    }
 
     match cli.command {
         None => {
@@ -848,12 +852,9 @@ fn main() {
                 let mut cmd = Cli::command();
                 generate(shell, &mut cmd, "hotdata", &mut std::io::stdout());
             }
-            Commands::Update => update::run_update(),
+            Commands::Upgrade => update::run_upgrade(),
         },
     }
-
-    // Print update notice after command output (joined from background thread).
-    update::maybe_print_update_notice(update_handle);
 }
 
 pub fn get_styles() -> clap::builder::Styles {

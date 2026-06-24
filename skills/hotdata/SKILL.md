@@ -72,7 +72,7 @@ Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and manage
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`update`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -323,6 +323,16 @@ hotdata completions <bash|zsh|fish>
 ```
 
 Writes completion script for the chosen shell to stdout (redirect into your shell’s completion path as usual).
+
+### Upgrade (`upgrade`)
+
+```
+hotdata upgrade
+```
+
+Upgrades the CLI in place to the latest release (`brew upgrade` for Homebrew installs, otherwise a direct binary download), refreshing bundled skills to match. After a successful upgrade, re-run your command.
+
+A newer release can be incompatible with the API, so in an **interactive terminal** the CLI checks for a new release before running any API-touching command and prompts to upgrade. Declining (or `Ctrl-D`) exits without running the command — `hotdata upgrade` is then required to continue. The check is a **no-op in non-interactive sessions** (no TTY, `--no-input`, or `HOTDATA_NO_UPDATE_CHECK` set), so typical agent and CI usage is never blocked; set `HOTDATA_NO_UPDATE_CHECK=1` to disable it entirely.
 
 ### Auth
 ```
