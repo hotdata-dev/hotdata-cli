@@ -1,3 +1,12 @@
+## [0.8.0] - 2026-06-24
+
+### 🚀 Features
+
+- *(upgrade)* Gate commands on a new release; rename update→upgrade (#178)
+
+### 🐛 Bug Fixes
+
+- *(databases)* Suppress current-database footer for non-TTY stdout (#180)
 ## [0.7.0] - 2026-06-22
 
 ### 🚀 Features
