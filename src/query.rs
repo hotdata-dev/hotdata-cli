@@ -274,6 +274,29 @@ pub(crate) fn fetch_arrow_result(api: &Api, result_id: &str) -> QueryResponse {
     try_fetch_arrow_result(api, result_id).unwrap_or_else(|e| e.exit())
 }
 
+/// Convert a query run's wire `execution_time_ms` (a double-option: outer = field
+/// presence, inner = JSON null) into the display value. A reported time clamps
+/// negatives to 0 (mirroring the inline path); an absent/null time stays `None`
+/// so the display shows an em dash rather than a fabricated 0.
+fn run_execution_time_ms(raw: Option<Option<i64>>) -> Option<u64> {
+    raw.flatten().map(|ms| ms.max(0) as u64)
+}
+
+/// Fetch a succeeded run's persisted Arrow result and stamp it with the run's own
+/// `execution_time_ms`. The Arrow result body carries no timing
+/// (`arrow_result_to_query_response` hardcodes `None`), so the async/poll display
+/// paths would otherwise report `execution_time_ms: null` for every query slow
+/// enough to fall back to async — exactly the queries you most want timed (#183).
+fn fetch_arrow_result_with_timing(
+    api: &Api,
+    result_id: &str,
+    execution_time_ms: Option<Option<i64>>,
+) -> QueryResponse {
+    let mut result = fetch_arrow_result(api, result_id);
+    result.execution_time_ms = run_execution_time_ms(execution_time_ms);
+    result
+}
+
 /// Resolve an inline (HTTP 200) query response for display.
 ///
 /// A non-truncated response carries the whole result in `rows`, so it's shown
@@ -441,9 +464,11 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
         match run.status.as_str() {
             "succeeded" => {
                 spinner.finish_and_clear();
+                let execution_time_ms = run.execution_time_ms;
                 match run.result_id.flatten() {
                     Some(ref result_id) => {
-                        let result = fetch_arrow_result(&api, result_id);
+                        let result =
+                            fetch_arrow_result_with_timing(&api, result_id, execution_time_ms);
                         print_result(&result, format);
                     }
                     None => {
@@ -495,16 +520,19 @@ pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
         crate::sdk::block(api.client().query_runs().get(query_run_id)).unwrap_or_else(|e| e.exit());
 
     match run.status.as_str() {
-        "succeeded" => match run.result_id.flatten() {
-            Some(ref result_id) => {
-                let result = fetch_arrow_result(&api, result_id);
-                print_result(&result, format);
+        "succeeded" => {
+            let execution_time_ms = run.execution_time_ms;
+            match run.result_id.flatten() {
+                Some(ref result_id) => {
+                    let result = fetch_arrow_result_with_timing(&api, result_id, execution_time_ms);
+                    print_result(&result, format);
+                }
+                None => {
+                    use crossterm::style::Stylize;
+                    println!("{}", "Query succeeded but no result available.".yellow());
+                }
             }
-            None => {
-                use crossterm::style::Stylize;
-                println!("{}", "Query succeeded but no result available.".yellow());
-            }
-        },
+        }
         "failed" => {
             let err = run
                 .error_message
@@ -975,5 +1003,59 @@ mod tests {
             warning.contains("truncated"),
             "truncation note missing: {warning:?}"
         );
+    }
+
+    #[test]
+    fn run_execution_time_ms_maps_wire_double_option() {
+        // A reported time survives; a null (`Some(None)`/`None`) becomes None so
+        // the display shows an em dash rather than a bogus 0; a negative clamps to 0.
+        assert_eq!(run_execution_time_ms(Some(Some(4200))), Some(4200));
+        assert_eq!(run_execution_time_ms(Some(None)), None);
+        assert_eq!(run_execution_time_ms(None), None);
+        assert_eq!(run_execution_time_ms(Some(Some(-1))), Some(0));
+    }
+
+    #[test]
+    fn fetch_arrow_result_with_timing_carries_run_execution_time() {
+        // Regression for #183: a query that falls back to async fetches its result
+        // via Arrow (which carries no timing) and must be stamped with the run's
+        // own `execution_time_ms`, not the hardcoded None.
+        use arrow::array::{Int64Array, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let mut ipc: Vec<u8> = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut ipc, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/v1/results/res_1")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "format".into(),
+                "arrow".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/vnd.apache.arrow.stream")
+            .with_body(ipc)
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        // The async poll response reported the run took 4200ms.
+        let result = fetch_arrow_result_with_timing(&api, "res_1", Some(Some(4200)));
+
+        assert_eq!(result.row_count, 3);
+        // The slow query's timing is preserved, not dropped to null (#183).
+        assert_eq!(result.execution_time_ms, Some(4200));
+        m.assert();
     }
 }
