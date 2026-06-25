@@ -311,10 +311,12 @@ Bundled Markdown skills (**`hotdata`**, **`hotdata-search`**, **`hotdata-analyti
 ```
 hotdata skills install [--project]
 hotdata skills status
+hotdata skills list
 ```
 
 - **`install`** — Downloads and installs skills to **`~/.hotdata/skills/<skill>`**, then symlinks into **`~/.agents/skills`** and into **`~/.claude/skills`** / **`~/.pi/skills`** when those directories exist. **`--project`** instead copies into **`./.agents/skills/<skill>`** in the current directory (and links `./.claude` / `./.pi` when present). The CLI may auto-refresh skills after an upgrade when appropriate.
 - **`status`** — Reports installed vs current CLI version and where skills are linked.
+- **`list`** — Alias for `status`: lists installed skills, their versions, and where they are linked.
 
 ### Shell completions
 
@@ -338,9 +340,13 @@ A newer release can be incompatible with the API, so in an **interactive termina
 ```
 hotdata auth login          # Browser-based login (same as: hotdata auth)
 hotdata auth                # Browser-based login (same as: hotdata auth login)
+hotdata auth register         # Create a new account via browser (GitHub OAuth by default)
+hotdata auth register --email # Create a new account via browser, using email + password instead of GitHub
 hotdata auth status         # Check current auth status
 hotdata auth logout         # Remove saved auth for the default profile
 ```
+
+`login` and `register` (both GitHub and `--email`) are **browser-based** PKCE flows: the CLI opens a browser and waits on a local callback to complete sign-in/sign-up — account details (email/password) are entered in the browser, not via CLI flags. They require a browser and an interactive terminal, so they do **not** work under `--no-input` or in headless/CI. For automation, authenticate once interactively, then use the saved session or `HOTDATA_API_KEY`.
 
 ### Interactive connection wizard
 
