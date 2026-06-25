@@ -1,3 +1,8 @@
+## [0.8.1] - 2026-06-25
+
+### 🐛 Bug Fixes
+
+- *(query)* Carry execution_time_ms through async poll path
 ## [0.8.0] - 2026-06-24
 
 ### 🚀 Features
