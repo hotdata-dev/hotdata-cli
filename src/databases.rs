@@ -349,10 +349,11 @@ fn upload_progress_style() -> ProgressStyle {
 
 /// Upload an already-on-disk parquet file via the SDK's presigned direct-to-
 /// storage flow, driving a single aggregate progress bar from the SDK's
-/// byte-granular progress callback. Exits with the seam's error display on
-/// failure (a `501 PRESIGN_UNSUPPORTED` surfaces an actionable message, not a
-/// fallback). Returns the finalized upload id.
-fn upload_parquet_path(api: &Api, path: &Path, size: u64) -> String {
+/// byte-granular progress callback. Returns the finalized upload id, or the
+/// seam's error (a `501 PRESIGN_UNSUPPORTED` surfaces an actionable message,
+/// not a fallback). The caller decides how to surface failure — `--url` must
+/// clean up its temp file before exiting, so this returns rather than exits.
+fn upload_parquet_path(api: &Api, path: &Path, size: u64) -> Result<String, ApiError> {
     let pb = ProgressBar::new(size);
     pb.set_style(upload_progress_style());
 
@@ -367,11 +368,7 @@ fn upload_parquet_path(api: &Api, path: &Path, size: u64) -> String {
 
     let result = api.upload(path, progress);
     pb.finish_and_clear();
-
-    match result {
-        Ok(id) => id,
-        Err(e) => e.exit(),
-    }
+    result
 }
 
 fn upload_parquet_file(api: &Api, path: &str) -> String {
@@ -392,7 +389,7 @@ fn upload_parquet_file(api: &Api, path: &str) -> String {
         }
     };
 
-    upload_parquet_path(api, Path::new(path), file_size)
+    upload_parquet_path(api, Path::new(path), file_size).unwrap_or_else(|e| e.exit())
 }
 
 fn upload_parquet_url(api: &Api, url: &str) -> String {
@@ -406,8 +403,8 @@ fn upload_parquet_url(api: &Api, url: &str) -> String {
     // The presigned upload needs a seekable, size-known source (the SDK opens
     // the path, declares its byte count, and PUTs it directly to storage), so
     // download the URL to a temp file first, then upload that file on the same
-    // path as `--file`. The temp file is removed on every exit (success or
-    // failure) by the `TempGuard` drop.
+    // path as `--file`. The temp file is removed before this returns on both
+    // success and failure (see `upload_temp_file`).
     let resp = match reqwest::blocking::get(url) {
         Ok(r) => r,
         Err(e) => {
@@ -453,53 +450,47 @@ fn upload_parquet_url(api: &Api, url: &str) -> String {
     dl_pb.finish_and_clear();
 
     let size = std::fs::metadata(temp.path()).map(|m| m.len()).unwrap_or(0);
-    // The guard's drop removes the temp file once this returns (or unwinds).
-    upload_parquet_path(api, temp.path(), size)
+    upload_temp_file(temp, |path| upload_parquet_path(api, path, size)).unwrap_or_else(|e| e.exit())
 }
 
-/// A temp-file path that is removed on drop, so the `--url` download is cleaned
-/// up whether the subsequent upload succeeds, fails, or exits.
-struct TempGuard {
-    path: std::path::PathBuf,
+/// Upload an already-downloaded temp file, guaranteeing the file is deleted
+/// before returning — on both success and failure.
+///
+/// The temp file MUST be cleaned up here, on return, rather than left to a
+/// guard in the caller's scope: the caller exits the process via
+/// [`ApiError::exit`] (`std::process::exit`) on the `Err` arm, and
+/// `process::exit` runs no destructors. Owning `temp` in this function means it
+/// drops (deleting a potentially multi-GB download) before the caller can exit.
+fn upload_temp_file<F>(temp: tempfile::NamedTempFile, upload: F) -> Result<String, ApiError>
+where
+    F: FnOnce(&Path) -> Result<String, ApiError>,
+{
+    let result = upload(temp.path());
+    // Delete now, while still inside this function, so cleanup precedes any
+    // `process::exit` the caller performs on `Err`.
+    drop(temp);
+    result
 }
 
-impl TempGuard {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-/// Stream a blocking HTTP response body to a uniquely-named temp file in the
-/// system temp dir, advancing `pb` as bytes land. Returns a [`TempGuard`] that
-/// deletes the file on drop.
+/// Stream a blocking HTTP response body to a freshly created temp file,
+/// advancing `pb` as bytes land. Returns the open [`NamedTempFile`], which
+/// deletes the file on drop. Created atomically with `O_EXCL` + 0600 perms via
+/// `tempfile`, so it can't be redirected by a pre-planted symlink.
 fn download_to_temp(
     resp: reqwest::blocking::Response,
     pb: &ProgressBar,
-) -> std::io::Result<TempGuard> {
+) -> std::io::Result<tempfile::NamedTempFile> {
     use std::io::Write;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!(
-        "hotdata-upload-{}-{nanos}.parquet",
-        std::process::id()
-    ));
-    let guard = TempGuard { path };
+    let mut temp = tempfile::Builder::new()
+        .prefix("hotdata-upload-")
+        .suffix(".parquet")
+        .tempfile()?;
 
     let mut reader = pb.wrap_read(resp);
-    let mut file = std::fs::File::create(guard.path())?;
-    std::io::copy(&mut reader, &mut file)?;
-    file.flush()?;
-    Ok(guard)
+    std::io::copy(&mut reader, temp.as_file_mut())?;
+    temp.as_file_mut().flush()?;
+    Ok(temp)
 }
 
 fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<InfoTable> {
@@ -1778,5 +1769,45 @@ mod tests {
         m.assert();
         assert_eq!(resp.token, "jwt-x");
         assert_eq!(resp.database_id, "dbid_abc");
+    }
+
+    // The `--url` path downloads to a temp file and then exits via
+    // `process::exit` if the upload fails. Because `process::exit` runs no
+    // destructors, the temp file must be deleted by `upload_temp_file` before
+    // it returns the `Err` the caller exits on — not by a guard in the caller's
+    // scope. These tests pin that contract for both arms.
+    #[test]
+    fn upload_temp_file_removes_temp_on_upload_failure() {
+        let temp = tempfile::Builder::new()
+            .suffix(".parquet")
+            .tempfile()
+            .unwrap();
+        let path = temp.path().to_path_buf();
+        assert!(path.exists());
+
+        let result = upload_temp_file(temp, |p| {
+            assert!(p.exists(), "file present while the upload runs");
+            Err(ApiError::Transport("upload boom".into()))
+        });
+
+        assert!(result.is_err());
+        assert!(
+            !path.exists(),
+            "temp file must be removed before the failure is returned (caller exits without unwinding)"
+        );
+    }
+
+    #[test]
+    fn upload_temp_file_removes_temp_on_success() {
+        let temp = tempfile::Builder::new()
+            .suffix(".parquet")
+            .tempfile()
+            .unwrap();
+        let path = temp.path().to_path_buf();
+
+        let result = upload_temp_file(temp, |_p| Ok("upid_123".to_string()));
+
+        assert_eq!(result.unwrap(), "upid_123");
+        assert!(!path.exists(), "temp file must be removed on success");
     }
 }
