@@ -29,7 +29,8 @@ clap = { version = "4", features = ["derive"] }
 directories = "6"
 # Matches the SDK's reqwest 0.13 so the sdk seam can name the `reqwest::Client`
 # type backing `Configuration.client`; `blocking` serves the CLI's own
-# synchronous paths (PKCE/token mints in jwt.rs + the streaming /files upload).
+# synchronous paths (PKCE/token mints in jwt.rs + the `--url` source download
+# in databases.rs that feeds the presigned upload).
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
