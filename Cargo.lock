@@ -1166,8 +1166,6 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 [[package]]
 name = "hotdata"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a79ce05333e09411029842117c625b5350d939697a450b7b6e4cc7251b87c28b"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -1194,14 +1192,12 @@ dependencies = [
  "arrow",
  "async-trait",
  "base64",
- "bytes",
  "clap",
  "clap_complete",
  "crossterm 0.28.1",
  "directories",
  "dotenvy",
  "flate2",
- "futures-core",
  "hotdata",
  "indicatif",
  "inquire",
@@ -1224,7 +1220,6 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "tokio",
- "tokio-stream",
  "toml",
 ]
 
@@ -3273,17 +3268,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
- "tokio",
-]
-
-[[package]]
-name = "tokio-stream"
-version = "0.1.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
-dependencies = [
- "futures-core",
- "pin-project-lite",
  "tokio",
 ]
 

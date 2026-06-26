@@ -14,23 +14,20 @@ path = "src/main.rs"
 [dependencies]
 # Hotdata Rust SDK. The CLI's sync wrapper (src/sdk.rs) drives this async SDK
 # behind a shared multi-thread tokio runtime. The `arrow` feature backs result
-# decode; `upload_stream` carries `content_length` (sized body, not chunked, so
-# the server can fast-fail an oversized upload — see src/sdk.rs::Api::upload_stream).
-hotdata = { version = "0.4.0", features = ["arrow"] }
+# decode; `upload_file` runs the presigned direct-to-storage upload flow
+# (see src/sdk.rs::Api::upload).
+#
+# TEMPORARY local-test override: point at the local presigned-upload SDK
+# worktree until that work is published as a crate version. REVERT to the
+# published `version = "0.4.0"` (or newer) dependency before release.
+hotdata = { path = "/Users/zacfarrell/Projects/hotdata/sdk-rust-worktrees/presigned-upload", features = ["arrow"] }
 # Shared multi-thread runtime for the sync wrapper; block_on is called
-# concurrently from rayon worker threads (see src/indexes.rs). `sync` backs the
-# mpsc channel that bridges the blocking upload reader into an async byte stream.
-tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+# concurrently from rayon worker threads (see src/indexes.rs). The presigned
+# upload (src/sdk.rs::Api::upload) drives the SDK's async `upload_file` on this
+# same runtime.
+tokio = { version = "1", features = ["rt-multi-thread"] }
 # CliTokenProvider implements the SDK's #[async_trait] BearerTokenProvider.
 async-trait = "0.1"
-# Bridge the progress-wrapped blocking upload reader into the async
-# `Stream<Item = Result<Bytes, _>>` the SDK's `upload_stream` consumes: a
-# spawn_blocking task feeds chunks through a tokio mpsc channel, wrapped as a
-# Stream by tokio-stream's ReceiverStream. `futures-core` names the Stream
-# bound; `bytes` matches the SDK's chunk type.
-bytes = "1"
-futures-core = "0.3"
-tokio-stream = "0.1"
 anstyle = "1.0.13"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
