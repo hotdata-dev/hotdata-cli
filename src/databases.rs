@@ -311,6 +311,21 @@ pub fn managed_table_delete_path(connection_id: &str, schema: &str, table: &str)
     format!("/connections/{connection_id}/schemas/{schema}/tables/{table}")
 }
 
+/// Database-scoped managed-table endpoints (addressed by database id, not
+/// connection id). These are the paths a database API token is allowed to use —
+/// the connection-scoped variants above are denied for it.
+pub fn database_table_load_path(database_id: &str, schema: &str, table: &str) -> String {
+    format!("/databases/{database_id}/schemas/{schema}/tables/{table}/loads")
+}
+
+pub fn database_schemas_path(database_id: &str) -> String {
+    format!("/databases/{database_id}/schemas")
+}
+
+pub fn database_schema_tables_path(database_id: &str, schema: &str) -> String {
+    format!("/databases/{database_id}/schemas/{schema}/tables")
+}
+
 pub fn load_table_request(upload_id: &str) -> serde_json::Value {
     serde_json::json!({
         "mode": "replace",
@@ -932,13 +947,23 @@ pub fn unset(workspace_id: &str) {
 
 pub fn set(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
-    let api = Api::new(Some(workspace_id));
-    if none_if_404(get_database(&api, id))
-        .unwrap_or_else(|e| e.exit())
-        .is_none()
-    {
-        eprintln!("{}", format!("error: no database with id '{id}'").red());
-        std::process::exit(1);
+    // `set` only writes local config; the GET is just a friendly existence-check.
+    // A database API token can't call GET /v1/databases/{id} (denied by its
+    // allow-list), so skip the check for it and save the id directly.
+    let is_database_api_token = crate::config::load("default")
+        .ok()
+        .and_then(|profile| crate::auth::api_key_jwt_source(&profile))
+        .as_deref()
+        == Some("database_api_token");
+    if !is_database_api_token {
+        let api = Api::new(Some(workspace_id));
+        if none_if_404(get_database(&api, id))
+            .unwrap_or_else(|e| e.exit())
+            .is_none()
+        {
+            eprintln!("{}", format!("error: no database with id '{id}'").red());
+            std::process::exit(1);
+        }
     }
     if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
@@ -1036,6 +1061,16 @@ pub fn tables_load(
     upload_id: Option<&str>,
 ) {
     use crossterm::style::Stylize;
+
+    // A database API token can't resolve names/catalogs or use the
+    // connection-scoped managed endpoints (all outside its allow-list). Route it
+    // through the database-scoped endpoints, addressed by database id.
+    if let Ok(profile) = crate::config::load("default")
+        && crate::auth::api_key_jwt_source(&profile).as_deref() == Some("database_api_token")
+    {
+        tables_load_database_scoped(workspace_id, database, table, schema, file, url, upload_id);
+        return;
+    }
 
     let database = resolve_current_database(database, workspace_id);
     let api = Api::new(Some(workspace_id));
@@ -1245,6 +1280,148 @@ pub fn tables_load(
     );
 }
 
+/// Load path for a database API token: addresses the database by id and uses
+/// the database-scoped endpoints (the connection-scoped managed paths and the
+/// name/catalog resolve used by the standard flow are denied for this token).
+fn tables_load_database_scoped(
+    workspace_id: &str,
+    database: Option<&str>,
+    table: &str,
+    schema: Option<&str>,
+    file: Option<&str>,
+    url: Option<&str>,
+    upload_id: Option<&str>,
+) {
+    use crossterm::style::Stylize;
+
+    let api = Api::new(Some(workspace_id));
+    let schema = schema_name(schema);
+
+    // A database API token can't resolve names/catalog aliases (list/get are
+    // denied), so address by id: an explicitly-supplied database id, else the
+    // current-database context.
+    let db_id = database
+        .filter(|d| d.starts_with("dbid"))
+        .map(str::to_string)
+        .or_else(|| crate::config::load_current_database("default", workspace_id))
+        .unwrap_or_else(|| {
+            eprintln!(
+                "{}",
+                "error: a database id is required for a database API token. Pass the database \
+                 id, or set one with 'hotdata databases set <dbid…>'."
+                    .red()
+            );
+            std::process::exit(1);
+        });
+
+    // clap enforces mutual exclusion; only one of these is ever Some.
+    let upload_id = match (upload_id, file, url) {
+        (Some(id), None, None) => id.to_string(),
+        (None, Some(path), None) => upload_parquet_file(&api, path),
+        (None, None, Some(u)) => upload_parquet_url(&api, u),
+        (None, None, None) => {
+            eprintln!("error: --file <path>, --url <url>, or --upload-id <id> is required");
+            std::process::exit(1);
+        }
+        _ => unreachable!(),
+    };
+
+    let load_path = database_table_load_path(&db_id, schema, table);
+    let body = load_table_request(&upload_id);
+
+    let load = || {
+        let spinner = crate::util::spinner("Loading table...");
+        let r = api.post_raw(&load_path, &body).unwrap_or_else(|e| {
+            spinner.finish_and_clear();
+            e.exit()
+        });
+        spinner.finish_and_clear();
+        r
+    };
+
+    let (mut status, mut resp_body) = load();
+
+    // Auto-declare the table (database-scoped) when it wasn't declared at create
+    // time, then retry — the db-scoped equivalent of the standard flow's declare
+    // step, with no delete/recreate (that endpoint is denied for this token).
+    if !status.is_success() && crate::util::api_error(resp_body.clone()).contains("not declared") {
+        declare_database_table(&api, &db_id, schema, table);
+        let (s, b) = load();
+        status = s;
+        resp_body = b;
+    }
+
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp_body).red());
+        std::process::exit(1);
+    }
+
+    let result: LoadManagedTableResponse = match serde_json::from_str(&resp_body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error parsing response: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Display catalog: the supplied alias when it wasn't an id, else the default.
+    let catalog = database
+        .filter(|d| !d.starts_with("dbid"))
+        .unwrap_or("default");
+    let full_name = format!("{catalog}.{}.{}", result.schema_name, result.table_name);
+    println!("{}", "Table loaded".green());
+    println!("full_name: {}", full_name.clone().green());
+    println!("rows:      {}", result.row_count);
+    println!();
+    println!(
+        "{}",
+        format!(
+            concat!(
+                "Query it now:\n",
+                "  hotdata query \"SELECT * FROM {} LIMIT 10\"\n",
+                "\n  Tip: column names are case-sensitive.\n",
+                "  Wrap uppercase names in double quotes: SELECT \"MyColumn\" FROM {} LIMIT 10",
+            ),
+            full_name, full_name
+        )
+        .dark_grey()
+    );
+}
+
+/// Declare a table on a database's default catalog via the database-scoped
+/// endpoints (what a database API token may call). Creates the schema with the
+/// table when the schema doesn't exist; if it already exists (409), declares
+/// just the table. Treats "already exists" as success.
+fn declare_database_table(api: &Api, db_id: &str, schema: &str, table: &str) {
+    use crossterm::style::Stylize;
+
+    let (status, body) = api
+        .post_raw(
+            &database_schemas_path(db_id),
+            &serde_json::json!({"name": schema, "tables": [{"name": table}]}),
+        )
+        .unwrap_or_else(|e| e.exit());
+    if status.is_success() {
+        return;
+    }
+    if status == reqwest::StatusCode::CONFLICT {
+        // Schema already exists — declare just the table on it.
+        let (table_status, table_body) = api
+            .post_raw(
+                &database_schema_tables_path(db_id, schema),
+                &serde_json::json!({"name": table}),
+            )
+            .unwrap_or_else(|e| e.exit());
+        if table_status.is_success() || table_status == reqwest::StatusCode::CONFLICT {
+            return;
+        }
+        eprintln!("{}", crate::util::api_error(table_body).red());
+        std::process::exit(1);
+    }
+    eprintln!("{}", crate::util::api_error(body).red());
+    std::process::exit(1);
+}
+
 pub fn tables_delete(
     workspace_id: &str,
     database: Option<&str>,
@@ -1302,6 +1479,21 @@ mod tests {
         assert_eq!(
             parse_attach_spec("  salesdb = sales "),
             ("salesdb", Some("sales"))
+        );
+    }
+
+    #[test]
+    fn database_scoped_table_paths_address_by_database_id() {
+        // The database-scoped endpoints a database API token uses — addressed by
+        // database id, not connection id.
+        assert_eq!(
+            database_table_load_path("dbid_1", "public", "t"),
+            "/databases/dbid_1/schemas/public/tables/t/loads"
+        );
+        assert_eq!(database_schemas_path("dbid_1"), "/databases/dbid_1/schemas");
+        assert_eq!(
+            database_schema_tables_path("dbid_1", "public"),
+            "/databases/dbid_1/schemas/public/tables"
         );
     }
 
