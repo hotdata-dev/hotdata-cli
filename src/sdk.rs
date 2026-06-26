@@ -106,6 +106,26 @@ fn upload_reqwest_client() -> reqwest::Client {
 /// persist alongside the file.
 const PARQUET_CONTENT_TYPE: &str = "application/vnd.apache.parquet";
 
+/// Default number of multipart part `PUT`s the SDK keeps in flight for an
+/// upload. 12 saturates a typical uplink without overwhelming the socket pool
+/// or buffering too many parts (the SDK still caps effective in-flight by its
+/// own memory budget — at the 8 MiB default part size, 256 MiB / 8 MiB = 32 ≥
+/// 12, so 12 is the binding limit). Overridable via
+/// [`HOTDATA_UPLOAD_CONCURRENCY`](upload_concurrency).
+const UPLOAD_CONCURRENCY: usize = 12;
+
+/// Resolve the multipart upload concurrency. Honors `HOTDATA_UPLOAD_CONCURRENCY`
+/// when set to a parseable, non-zero value (a power-user knob); otherwise
+/// [`UPLOAD_CONCURRENCY`]. A present-but-garbage or zero value falls back to the
+/// default rather than erroring — this is a tuning hint, not a hard input.
+fn upload_concurrency() -> usize {
+    std::env::var("HOTDATA_UPLOAD_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(UPLOAD_CONCURRENCY)
+}
+
 // Compile-time guarantee that the rayon bound can never silently regress.
 const _: fn() = || {
     fn assert_send_sync_clone<T: Send + Sync + Clone>() {}
@@ -669,6 +689,7 @@ impl Api {
         let opts = UploadOptions {
             content_type: Some(PARQUET_CONTENT_TYPE.to_string()),
             progress: Some(progress),
+            max_concurrency: Some(upload_concurrency()),
             ..UploadOptions::default()
         };
         let resp = rt()
@@ -1494,6 +1515,35 @@ mod tests {
                 assert!(body.contains("SignatureDoesNotMatch"), "{body}");
             }
             other => panic!("expected Status error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upload_concurrency_honors_env_else_defaults() {
+        // Default when unset.
+        unsafe {
+            std::env::remove_var("HOTDATA_UPLOAD_CONCURRENCY");
+        }
+        assert_eq!(upload_concurrency(), UPLOAD_CONCURRENCY);
+
+        // A valid non-zero override wins.
+        unsafe {
+            std::env::set_var("HOTDATA_UPLOAD_CONCURRENCY", "20");
+        }
+        assert_eq!(upload_concurrency(), 20);
+
+        // Garbage and zero fall back to the default (tuning hint, not hard input).
+        unsafe {
+            std::env::set_var("HOTDATA_UPLOAD_CONCURRENCY", "nope");
+        }
+        assert_eq!(upload_concurrency(), UPLOAD_CONCURRENCY);
+        unsafe {
+            std::env::set_var("HOTDATA_UPLOAD_CONCURRENCY", "0");
+        }
+        assert_eq!(upload_concurrency(), UPLOAD_CONCURRENCY);
+
+        unsafe {
+            std::env::remove_var("HOTDATA_UPLOAD_CONCURRENCY");
         }
     }
 
