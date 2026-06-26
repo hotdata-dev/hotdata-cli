@@ -16,11 +16,7 @@ path = "src/main.rs"
 # behind a shared multi-thread tokio runtime. The `arrow` feature backs result
 # decode; `upload_file` runs the presigned direct-to-storage upload flow
 # (see src/sdk.rs::Api::upload).
-#
-# TEMPORARY local-test override: point at the local presigned-upload SDK
-# worktree until that work is published as a crate version. REVERT to the
-# published `version = "0.4.0"` (or newer) dependency before release.
-hotdata = { path = "/Users/zacfarrell/Projects/hotdata/sdk-rust-worktrees/presigned-upload", features = ["arrow"] }
+hotdata = { version = "0.5.0", features = ["arrow"] }
 # Shared multi-thread runtime for the sync wrapper; block_on is called
 # concurrently from rayon worker threads (see src/indexes.rs). The presigned
 # upload (src/sdk.rs::Api::upload) drives the SDK's async `upload_file` on this
