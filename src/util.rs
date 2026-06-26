@@ -359,6 +359,20 @@ pub fn api_error(body: String) -> String {
 /// ``workspace_not_found`` → ``Workspace not found``. Cheap heuristic — if
 /// a code reads badly after this, the server should be the one to fix
 /// it by returning a real message.
+/// True when an error response body carries `error.code == "ACCESS_DENIED"` —
+/// the gateway/runtimedb signal that the credential's allow-list forbids the
+/// operation (e.g. a database API token calling a non-allowed endpoint).
+pub fn is_access_denied(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v["error"]["code"]
+                .as_str()
+                .map(|code| code == "ACCESS_DENIED")
+        })
+        .unwrap_or(false)
+}
+
 fn humanize_error_code(code: &str) -> String {
     let spaced = code.replace('_', " ");
     let mut chars = spaced.chars();
@@ -418,6 +432,19 @@ mod tests {
     fn api_error_handles_html_body() {
         let body = "<html>500</html>".to_string();
         assert_eq!(api_error(body), "unexpected server error");
+    }
+
+    #[test]
+    fn is_access_denied_detects_code() {
+        assert!(is_access_denied(
+            r#"{"error":{"code":"ACCESS_DENIED","message":"nope"}}"#
+        ));
+        // Other error codes / shapes are not access-denied.
+        assert!(!is_access_denied(
+            r#"{"error":{"code":"NOT_FOUND","message":"x"}}"#
+        ));
+        assert!(!is_access_denied(r#"{"error":{"message":"no code"}}"#));
+        assert!(!is_access_denied("not json"));
     }
 
     #[test]

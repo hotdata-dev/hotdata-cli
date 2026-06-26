@@ -817,6 +817,18 @@ pub fn format_fail_message(
     {
         return "error: API key is invalid. Run 'hotdata auth login' (or 'hotdata auth') to re-authenticate.".to_string();
     }
+    // A 403 ACCESS_DENIED is the allow-list guard rejecting an operation the
+    // credential can't perform — typically a database API token (which is
+    // limited to create/query/upload) hitting a workspace-level endpoint. Keep
+    // the server's explanation and add an actionable hint about token scope.
+    if status == reqwest::StatusCode::FORBIDDEN && util::is_access_denied(body) {
+        return format!(
+            "{}\nIf you're using a database API token, it can only create databases, run \
+             queries, and upload data — other operations need a standard API key (run \
+             'hotdata auth login').",
+            util::api_error(body.to_string())
+        );
+    }
     util::api_error(body.to_string())
 }
 
@@ -906,6 +918,53 @@ mod tests {
         );
         assert!(!msg.contains("API key is invalid"));
         assert_eq!(msg, "forbidden");
+    }
+
+    #[test]
+    fn format_fail_message_403_access_denied_adds_database_token_hint() {
+        // The runtimedb allow-list guard returns this for a database API token
+        // calling a non-allowed endpoint.
+        let body = r#"{"error":{"code":"ACCESS_DENIED","message":"This credential is limited to creating databases, querying, uploading data, and creating schemas/tables"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            Some(&AuthStatus::Authenticated),
+        );
+        // Keeps the server's explanation...
+        assert!(msg.contains("This credential is limited"), "got: {msg}");
+        // ...and adds an actionable CLI hint.
+        assert!(
+            msg.to_lowercase().contains("database api token"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("hotdata auth"), "got: {msg}");
+    }
+
+    #[test]
+    fn format_fail_message_403_non_access_denied_has_no_db_token_hint() {
+        let body = r#"{"error":{"message":"forbidden for another reason"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            Some(&AuthStatus::Authenticated),
+        );
+        assert!(
+            !msg.to_lowercase().contains("database api token"),
+            "got: {msg}"
+        );
+        assert_eq!(msg, "forbidden for another reason");
+    }
+
+    #[test]
+    fn format_fail_message_403_access_denied_invalid_key_prefers_reauth() {
+        // A genuinely broken credential still gets the re-auth hint first.
+        let body = r#"{"error":{"code":"ACCESS_DENIED","message":"x"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            Some(&AuthStatus::Invalid(403)),
+        );
+        assert!(msg.contains("API key is invalid"), "got: {msg}");
     }
 
     #[test]
