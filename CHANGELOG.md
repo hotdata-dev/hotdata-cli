@@ -1,3 +1,22 @@
+## [0.9.0] - 2026-06-27
+
+### 🚀 Features
+
+- *(databases)* Add auth and command limitations for database api token flag
+- *(upload)* Use presigned direct-to-storage upload path
+- *(upload)* Set multipart concurrency to 12 parts in flight
+
+### 🐛 Bug Fixes
+
+- *(upload)* Clean up --url temp file before exit on failure
+
+### 💼 Other
+
+- *(deps)* Depend on published hotdata 0.5.0 for presigned upload
+
+### 📚 Documentation
+
+- *(deps)* Update reqwest blocking comment for presigned --url path
 ## [0.8.1] - 2026-06-25
 
 ### 🐛 Bug Fixes
