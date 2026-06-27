@@ -3,8 +3,7 @@
 ### 🚀 Features
 
 - *(databases)* Add auth and command limitations for database api token flag
-- *(upload)* Use presigned direct-to-storage upload path
-- *(upload)* Set multipart concurrency to 12 parts in flight
+- *(upload)* Speed up large-file uploads with concurrent, direct-to-storage transfer
 
 ### 🐛 Bug Fixes
 
@@ -12,7 +11,7 @@
 
 ### 💼 Other
 
-- *(deps)* Depend on published hotdata 0.5.0 for presigned upload
+- *(deps)* Update hotdata SDK to 0.5.0
 
 ### 📚 Documentation
 
