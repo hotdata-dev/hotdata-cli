@@ -840,7 +840,8 @@ pub fn format_fail_message(
     if status.is_client_error()
         && let Some(auth::AuthStatus::Invalid(_)) = auth_status
     {
-        return "error: API key is invalid. Run 'hotdata auth login' to re-authenticate.".to_string();
+        return "error: API key is invalid. Run 'hotdata auth login' to re-authenticate."
+            .to_string();
     }
     // A 403 ACCESS_DENIED is the allow-list guard rejecting an operation the
     // credential can't perform — typically a database API token (which is

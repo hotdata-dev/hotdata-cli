@@ -283,9 +283,7 @@ pub fn load(profile: &str) -> Result<ProfileConfig, String> {
             .map_err(|e| format!("error reading config file: {e}"))?;
         let config_file: ConfigFile = serde_yaml::from_str(&content).unwrap_or_else(|_| {
             eprintln!("{}", "error parsing config file.".red());
-            eprintln!(
-                "Run 'hotdata auth login' to generate a new config file."
-            );
+            eprintln!("Run 'hotdata auth login' to generate a new config file.");
             std::process::exit(1);
         });
         config_file

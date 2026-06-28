@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{unauthenticated_output, DEFAULT_API_URL};
+use common::{DEFAULT_API_URL, unauthenticated_output};
 
 #[test]
 fn bare_auth_prints_subcommand_help() {
@@ -37,10 +37,7 @@ fn bare_auth_prints_subcommand_help() {
 
     // The login flow must NOT have started. `auth::login()` prints this banner
     // before opening a browser / spinning up the callback server.
-    let combined = format!(
-        "{stdout}{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let combined = format!("{stdout}{}", String::from_utf8_lossy(&output.stderr));
     assert!(
         !combined.contains("Opening browser to log in"),
         "bare `auth` should print help, not start a login flow; got:\n{combined}"
