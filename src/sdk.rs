@@ -24,12 +24,14 @@
 //! the SDK passes through unchanged; the CLI keeps full ownership of
 //! session.json and the refresh table.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
 use hotdata::Client;
 use hotdata::apis::configuration::{ApiKey, Configuration};
 use hotdata::apis::{Error, ResponseContent};
+use hotdata::{UploadError, UploadOptions, UploadProgress};
 
 use crate::auth;
 use crate::config;
@@ -67,8 +69,8 @@ pub struct Api {
 }
 
 /// Request timeout for SDK-routed calls. Mirrors the old `ApiClient` so a hung
-/// server cannot stall the CLI indefinitely. The streaming `/files` upload
-/// keeps its own no-timeout client on the raw-HTTP path.
+/// server cannot stall the CLI indefinitely. The presigned upload keeps its own
+/// no-timeout client (the storage `PUT`s can run for minutes).
 const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 /// TCP keepalive probe interval, matching the old client.
 const TCP_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
@@ -84,12 +86,13 @@ fn sdk_http_client() -> reqwest::Client {
         .expect("reqwest client with timeout should build")
 }
 
-/// The `reqwest::Client` backing the streaming `/files` upload. Deliberately has
-/// **no** request timeout: an upload's duration scales with file size and uplink
-/// (a 10 GB parquet far outlives [`HTTP_REQUEST_TIMEOUT`], which is sized for
-/// slow server-side work), so a wall-clock cap would abort a healthy-but-slow
-/// transfer. TCP keepalive is kept so a genuinely dead peer is still reaped by
-/// the OS; a live-but-slow upload runs to completion and the user can Ctrl-C.
+/// The `reqwest::Client` backing the presigned upload's storage `PUT`s.
+/// Deliberately has **no** request timeout: an upload's duration scales with
+/// file size and uplink (a 10 GB parquet far outlives [`HTTP_REQUEST_TIMEOUT`],
+/// which is sized for slow server-side work), so a wall-clock cap would abort a
+/// healthy-but-slow transfer. TCP keepalive is kept so a genuinely dead peer is
+/// still reaped by the OS; a live-but-slow upload runs to completion and the
+/// user can Ctrl-C.
 fn upload_reqwest_client() -> reqwest::Client {
     reqwest::Client::builder()
         .tcp_keepalive(TCP_KEEPALIVE_INTERVAL)
@@ -97,48 +100,30 @@ fn upload_reqwest_client() -> reqwest::Client {
         .expect("reqwest client should build without a timeout")
 }
 
-/// Size of each chunk pulled from the blocking reader (1 MiB). Large enough to
-/// keep per-chunk overhead negligible on a multi-GB upload, small enough that an
-/// in-flight chunk is a trivial allocation.
-const UPLOAD_CHUNK_SIZE: usize = 1 << 20;
-/// Bound on chunks buffered between the blocking reader and the async sender.
-/// Caps in-flight memory so a fast local disk can't outrun a slow uplink; the
-/// read task blocks on a full channel (back-pressure).
-const UPLOAD_CHANNEL_DEPTH: usize = 4;
+/// Content type recorded for a managed-table parquet upload. Advisory only —
+/// the managed-table load keys off the parquet file extension, not the upload's
+/// recorded content type — but a correct MIME type is the right metadata to
+/// persist alongside the file.
+const PARQUET_CONTENT_TYPE: &str = "application/vnd.apache.parquet";
 
-/// Bridge a blocking [`Read`](std::io::Read) source into the async
-/// `Stream<Item = Result<Bytes, _>>` the SDK's `upload_stream` consumes.
-///
-/// A `spawn_blocking` task reads fixed-size chunks and forwards them through a
-/// bounded tokio mpsc channel; the returned [`ReceiverStream`] yields them to
-/// the request body. The blocking task lives on the runtime's blocking pool, so
-/// it does not stall an async worker, and a full channel back-pressures the
-/// reader (which keeps the caller's progress bar — wrapped around `reader` —
-/// honest). If the receiver is dropped (request aborted/failed) the send errors
-/// and the task exits; a read error is forwarded as the stream's terminal item.
-fn reader_into_stream(
-    mut reader: impl std::io::Read + Send + 'static,
-) -> impl futures_core::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send + 'static {
-    let (tx, rx) = tokio::sync::mpsc::channel(UPLOAD_CHANNEL_DEPTH);
-    rt().spawn_blocking(move || {
-        let mut buf = vec![0u8; UPLOAD_CHUNK_SIZE];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let chunk = bytes::Bytes::copy_from_slice(&buf[..n]);
-                    if tx.blocking_send(Ok(chunk)).is_err() {
-                        break; // receiver gone — request aborted
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(e));
-                    break;
-                }
-            }
-        }
-    });
-    tokio_stream::wrappers::ReceiverStream::new(rx)
+/// Default number of multipart part `PUT`s the SDK keeps in flight for an
+/// upload. 12 saturates a typical uplink without overwhelming the socket pool
+/// or buffering too many parts (the SDK still caps effective in-flight by its
+/// own memory budget — at the 8 MiB default part size, 256 MiB / 8 MiB = 32 ≥
+/// 12, so 12 is the binding limit). Overridable via
+/// [`HOTDATA_UPLOAD_CONCURRENCY`](upload_concurrency).
+const UPLOAD_CONCURRENCY: usize = 12;
+
+/// Resolve the multipart upload concurrency. Honors `HOTDATA_UPLOAD_CONCURRENCY`
+/// when set to a parseable, non-zero value (a power-user knob); otherwise
+/// [`UPLOAD_CONCURRENCY`]. A present-but-garbage or zero value falls back to the
+/// default rather than erroring — this is a tuning hint, not a hard input.
+fn upload_concurrency() -> usize {
+    std::env::var("HOTDATA_UPLOAD_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(UPLOAD_CONCURRENCY)
 }
 
 // Compile-time guarantee that the rayon bound can never silently regress.
@@ -207,6 +192,45 @@ impl ApiError {
                 body: body.clone(),
             },
             other => ApiError::Transport(other.to_string()),
+        }
+    }
+
+    /// Map the SDK's [`UploadError`] (the presigned-upload error type, which is
+    /// neither an `Error<T>` nor an `ArrowError`) into an [`ApiError`].
+    ///
+    /// The status-bearing variants are preserved as [`ApiError::Status`] so the
+    /// 4xx re-auth hint in [`print`](Self::print) still fires and the server
+    /// body is shown verbatim. A `501 PRESIGN_UNSUPPORTED` arrives as a
+    /// `CreateSession` `ResponseError(501, ...)`, so it surfaces as a status
+    /// error with the server's actionable message — never a silent fallback.
+    /// The statusless variants (IO, transport, malformed/missing-ETag) collapse
+    /// to [`ApiError::Transport`] carrying the SDK's own descriptive message.
+    /// `UploadError` is `#[non_exhaustive]`, hence the wildcard arm.
+    pub fn from_upload_error(err: UploadError) -> Self {
+        // Lift an `Error<T>` (create-session / finalize) into the same Status /
+        // Transport mapping every other SDK call uses, so a 4xx/5xx from those
+        // ops keeps its status + body.
+        fn from_inner<T: std::fmt::Debug>(err: Error<T>) -> ApiError {
+            ApiError::from_sdk(err)
+        }
+        match err {
+            UploadError::CreateSession(e) => from_inner(e),
+            UploadError::Finalize(e) => from_inner(e),
+            UploadError::StorageStatus {
+                status,
+                part_number,
+                body,
+            } => {
+                let where_ = match part_number {
+                    Some(n) => format!("storage rejected part {n}"),
+                    None => "storage rejected the upload".to_string(),
+                };
+                ApiError::Status {
+                    status,
+                    body: format!("{where_}: {body}"),
+                }
+            }
+            other => ApiError::Transport(format!("upload failed: {other}")),
         }
     }
 
@@ -637,40 +661,41 @@ impl Api {
         &self.client
     }
 
-    /// Stream a file/URL body to `POST /v1/files` through the SDK's
-    /// [`Client::upload_stream`], returning the upload id.
+    /// Upload a local parquet file directly to object storage via the SDK's
+    /// presigned-upload flow ([`Client::upload_file`]), returning the upload id.
     ///
-    /// Drives the async SDK from the CLI's synchronous call site, like every
-    /// other seam method, but on a **dedicated no-timeout client**: a 10 GB+
-    /// parquet far outlives the shared client's 300s request timeout, so a
+    /// The flow is `POST /v1/uploads` (open a session) → direct `PUT`(s) to
+    /// object storage → `POST /v1/uploads/{id}/finalize`; the bytes never proxy
+    /// back through the API. There is **no** legacy `/v1/files` fallback — a
+    /// `501 PRESIGN_UNSUPPORTED` surfaces as an [`ApiError::Status`] with the
+    /// server's message (see [`from_upload_error`](ApiError::from_upload_error)).
+    ///
+    /// Driven from the CLI's synchronous call site on a **dedicated no-timeout
+    /// client**: a 10 GB+ parquet far outlives the shared client's 300s request
+    /// timeout, and the storage `PUT`s reuse `configuration.client`, so a
     /// wall-clock cap would abort a healthy-but-slow transfer. We clone the
     /// configured `Configuration` (same base_path, token_provider, scope
-    /// api_keys, user-agent) and swap only the reqwest client, so the upload
-    /// carries the identical auth + headers.
+    /// api_keys, user-agent) and swap only the reqwest client, so the
+    /// session/finalize calls carry the identical auth + headers.
     ///
-    /// `reader` is the progress-wrapped blocking source (file or URL response);
-    /// it is bridged into the async byte stream the SDK consumes by
-    /// [`reader_into_stream`]. `content_length`, when known, is sent as
-    /// `Content-Length` so the server can reject an oversized upload up front
-    /// (the `--url` path may not know the length, hence `Option`).
-    ///
-    /// The `Content-Type` is left to the SDK default (`application/octet-stream`):
-    /// the managed-table load keys off the parquet file extension, not the
-    /// upload's recorded content type.
-    pub fn upload_stream(
-        &self,
-        reader: impl std::io::Read + Send + 'static,
-        content_length: Option<u64>,
-    ) -> Result<String, ApiError> {
+    /// `progress` is the SDK [`UploadProgress`] callback, invoked with
+    /// cumulative `(bytes_done, total)` as bytes flow; the caller drives a
+    /// progress bar from it. The recorded content type is parquet (advisory).
+    pub fn upload(&self, path: &Path, progress: UploadProgress) -> Result<String, ApiError> {
         let mut cfg = self.client.configuration().clone();
         cfg.client = upload_reqwest_client();
         let upload_client = Client::from_configuration(cfg);
 
-        let stream = reader_into_stream(reader);
+        let opts = UploadOptions {
+            content_type: Some(PARQUET_CONTENT_TYPE.to_string()),
+            progress: Some(progress),
+            max_concurrency: Some(upload_concurrency()),
+            ..UploadOptions::default()
+        };
         let resp = rt()
-            .block_on(upload_client.upload_stream(stream, None, content_length))
-            .map_err(ApiError::from_sdk)?;
-        Ok(resp.id)
+            .block_on(upload_client.upload_file(path, opts))
+            .map_err(ApiError::from_upload_error)?;
+        Ok(resp.upload_id)
     }
 
     /// Issue an authenticated `GET {base}/v1{path}` through the SDK
@@ -817,6 +842,18 @@ pub fn format_fail_message(
     {
         return "error: API key is invalid. Run 'hotdata auth login' (or 'hotdata auth') to re-authenticate.".to_string();
     }
+    // A 403 ACCESS_DENIED is the allow-list guard rejecting an operation the
+    // credential can't perform — typically a database API token (which is
+    // limited to create/query/upload) hitting a workspace-level endpoint. Keep
+    // the server's explanation and add an actionable hint about token scope.
+    if status == reqwest::StatusCode::FORBIDDEN && util::is_access_denied(body) {
+        return format!(
+            "{}\nIf you're using a database API token, it can only create databases, run \
+             queries, and upload data — other operations need a standard API key (run \
+             'hotdata auth login').",
+            util::api_error(body.to_string())
+        );
+    }
     util::api_error(body.to_string())
 }
 
@@ -906,6 +943,53 @@ mod tests {
         );
         assert!(!msg.contains("API key is invalid"));
         assert_eq!(msg, "forbidden");
+    }
+
+    #[test]
+    fn format_fail_message_403_access_denied_adds_database_token_hint() {
+        // The runtimedb allow-list guard returns this for a database API token
+        // calling a non-allowed endpoint.
+        let body = r#"{"error":{"code":"ACCESS_DENIED","message":"This credential is limited to creating databases, querying, uploading data, and creating schemas/tables"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            Some(&AuthStatus::Authenticated),
+        );
+        // Keeps the server's explanation...
+        assert!(msg.contains("This credential is limited"), "got: {msg}");
+        // ...and adds an actionable CLI hint.
+        assert!(
+            msg.to_lowercase().contains("database api token"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("hotdata auth"), "got: {msg}");
+    }
+
+    #[test]
+    fn format_fail_message_403_non_access_denied_has_no_db_token_hint() {
+        let body = r#"{"error":{"message":"forbidden for another reason"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            Some(&AuthStatus::Authenticated),
+        );
+        assert!(
+            !msg.to_lowercase().contains("database api token"),
+            "got: {msg}"
+        );
+        assert_eq!(msg, "forbidden for another reason");
+    }
+
+    #[test]
+    fn format_fail_message_403_access_denied_invalid_key_prefers_reauth() {
+        // A genuinely broken credential still gets the re-auth hint first.
+        let body = r#"{"error":{"code":"ACCESS_DENIED","message":"x"}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            Some(&AuthStatus::Invalid(403)),
+        );
+        assert!(msg.contains("API key is invalid"), "got: {msg}");
     }
 
     #[test]
@@ -1356,109 +1440,169 @@ mod tests {
         m.assert();
     }
 
-    // --- streaming /files upload --------------------------------------------
+    // --- presigned direct-to-storage upload ---------------------------------
 
-    /// A deterministic ASCII payload of `len` bytes, so a body can be matched
-    /// exactly to prove the bridged stream delivered every byte in order.
-    fn upload_payload(len: usize) -> Vec<u8> {
-        (0..len).map(|i| b'a' + (i % 26) as u8).collect()
+    /// A deterministic ASCII payload of `len` bytes written to a temp parquet
+    /// file, returned alongside its `tempfile::NamedTempFile` guard (kept alive
+    /// for the duration of the test so the path stays valid).
+    fn upload_temp_file(len: usize) -> (tempfile::NamedTempFile, usize) {
+        use std::io::Write;
+        let bytes: Vec<u8> = (0..len).map(|i| b'a' + (i % 26) as u8).collect();
+        let mut tf = tempfile::Builder::new()
+            .suffix(".parquet")
+            .tempfile()
+            .expect("temp file should create");
+        tf.write_all(&bytes).expect("temp write should succeed");
+        tf.flush().expect("temp flush should succeed");
+        (tf, len)
     }
 
-    fn upload_response_body(id: &str, size: usize) -> String {
-        format!(
-            r#"{{"id":"{id}","status":"ready","size_bytes":{size},"content_type":"application/octet-stream","created_at":"2026-06-05T00:00:00Z"}}"#
-        )
+    fn noop_progress() -> UploadProgress {
+        Arc::new(|_done, _total| {})
     }
 
-    /// A sized upload (`content_length = Some`) streams the blocking reader
-    /// through the bridge to `POST /v1/files`, sends a matching `Content-Length`
-    /// (so the server can fast-fail oversize before reading), and delivers every
-    /// byte intact. The 5 MiB payload spans several `UPLOAD_CHUNK_SIZE` chunks
-    /// and overruns `UPLOAD_CHANNEL_DEPTH`, exercising the channel back-pressure.
+    /// The full presigned flow against a single mock server: the seam opens a
+    /// session (`POST /v1/uploads`, single mode) whose `url` points back at the
+    /// same server's storage path, `PUT`s the bytes there, then finalizes
+    /// (`POST /v1/uploads/{id}/finalize`). The returned id is the finalize
+    /// response's `upload_id` — proving the seam went through the direct path,
+    /// never `POST /v1/files`.
     #[test]
-    fn upload_stream_sends_sized_body_with_content_length() {
-        let payload = upload_payload(5 * 1024 * 1024);
-        let len = payload.len();
+    fn upload_runs_presigned_single_put_flow() {
+        let (tf, len) = upload_temp_file(4096);
 
         let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/v1/files")
+        let put_url = format!("{}/storage/upload_test", server.url());
+
+        let create = server
+            .mock("POST", "/v1/uploads")
             .match_header("Authorization", "Bearer test-jwt")
             .match_header("X-Workspace-Id", "ws-1")
-            .match_header("Content-Type", "application/octet-stream")
-            .match_header("Content-Length", len.to_string().as_str())
-            .match_body(mockito::Matcher::Exact(
-                String::from_utf8(payload.clone()).unwrap(),
-            ))
-            .with_status(201)
+            .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(upload_response_body("upload_sized", len))
+            .with_body(format!(
+                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_test","url":"{put_url}"}}"#
+            ))
+            .create();
+        let put = server
+            .mock("PUT", "/storage/upload_test")
+            .with_status(200)
+            .with_header("ETag", "\"etag-1\"")
+            .create();
+        let finalize = server
+            .mock("POST", "/v1/uploads/upload_test/finalize")
+            .match_header("X-Upload-Finalize-Token", "ft_1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"upload_id":"upload_test","status":"ready","size_bytes":{len},"created_at":"2026-06-05T00:00:00Z"}}"#
+            ))
             .create();
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let id = api
-            .upload_stream(std::io::Cursor::new(payload), Some(len as u64))
-            .expect("sized upload should succeed");
+            .upload(tf.path(), noop_progress())
+            .expect("presigned upload should succeed");
 
-        assert_eq!(id, "upload_sized");
-        m.assert();
+        assert_eq!(id, "upload_test");
+        create.assert();
+        put.assert();
+        finalize.assert();
     }
 
-    /// With an unknown length (`content_length = None`, the `--url` source) the
-    /// body streams chunked and still arrives intact. Multiple chunks, so the
-    /// bridge is genuinely streaming rather than buffering a single read.
+    /// A `501 PRESIGN_UNSUPPORTED` on create-session surfaces as an
+    /// `ApiError::Status` carrying the server's message — never a silent
+    /// fallback to a legacy path — so the CLI prints an actionable error.
     #[test]
-    fn upload_stream_streams_chunked_when_length_unknown() {
-        let payload = upload_payload(3 * 1024 * 1024);
-        let len = payload.len();
+    fn upload_maps_501_presign_unsupported_to_status() {
+        let (tf, _len) = upload_temp_file(64);
 
         let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/v1/files")
-            .match_body(mockito::Matcher::Exact(
-                String::from_utf8(payload.clone()).unwrap(),
-            ))
-            .with_status(201)
+        let create = server
+            .mock("POST", "/v1/uploads")
+            .with_status(501)
             .with_header("content-type", "application/json")
-            .with_body(upload_response_body("upload_chunked", len))
-            .create();
-
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
-        let id = api
-            .upload_stream(std::io::Cursor::new(payload), None)
-            .expect("chunked upload should succeed");
-
-        assert_eq!(id, "upload_chunked");
-        m.assert();
-    }
-
-    /// A non-success status surfaces as an `ApiError::Status` carrying the body,
-    /// the same mapping every other seam call uses (so the CLI prints the server
-    /// message and the 4xx re-auth hint still fires).
-    #[test]
-    fn upload_stream_maps_error_status() {
-        let payload = upload_payload(64);
-        let len = payload.len();
-
-        let mut server = mockito::Server::new();
-        let _m = server
-            .mock("POST", "/v1/files")
-            .with_status(400)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"error":"Upload exceeds maximum size"}"#)
+            .with_body(r#"{"error":{"code":"PRESIGN_UNSUPPORTED","message":"presigned uploads are not enabled"}}"#)
             .create();
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let err = api
-            .upload_stream(std::io::Cursor::new(payload), Some(len as u64))
-            .expect_err("a 400 should map to an error");
+            .upload(tf.path(), noop_progress())
+            .expect_err("a 501 must map to an error, not a fallback");
 
         match err {
             ApiError::Status { status, body } => {
-                assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
-                assert!(body.contains("Upload exceeds maximum size"));
+                assert_eq!(status, reqwest::StatusCode::NOT_IMPLEMENTED);
+                assert!(body.contains("PRESIGN_UNSUPPORTED"), "{body}");
             }
             other => panic!("expected Status error, got {other:?}"),
+        }
+        create.assert();
+    }
+
+    /// A non-2xx from the storage `PUT` surfaces as an `ApiError::Status`
+    /// carrying the storage status + body, so the user sees why the transfer
+    /// was rejected.
+    #[test]
+    fn upload_maps_storage_put_failure_to_status() {
+        let (tf, _len) = upload_temp_file(64);
+
+        let mut server = mockito::Server::new();
+        let put_url = format!("{}/storage/upload_fail", server.url());
+        let _create = server
+            .mock("POST", "/v1/uploads")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_fail","url":"{put_url}"}}"#
+            ))
+            .create();
+        let _put = server
+            .mock("PUT", "/storage/upload_fail")
+            .with_status(403)
+            .with_body("SignatureDoesNotMatch")
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let err = api
+            .upload(tf.path(), noop_progress())
+            .expect_err("a storage 403 must map to an error");
+
+        match err {
+            ApiError::Status { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
+                assert!(body.contains("SignatureDoesNotMatch"), "{body}");
+            }
+            other => panic!("expected Status error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upload_concurrency_honors_env_else_defaults() {
+        // Default when unset.
+        unsafe {
+            std::env::remove_var("HOTDATA_UPLOAD_CONCURRENCY");
+        }
+        assert_eq!(upload_concurrency(), UPLOAD_CONCURRENCY);
+
+        // A valid non-zero override wins.
+        unsafe {
+            std::env::set_var("HOTDATA_UPLOAD_CONCURRENCY", "20");
+        }
+        assert_eq!(upload_concurrency(), 20);
+
+        // Garbage and zero fall back to the default (tuning hint, not hard input).
+        unsafe {
+            std::env::set_var("HOTDATA_UPLOAD_CONCURRENCY", "nope");
+        }
+        assert_eq!(upload_concurrency(), UPLOAD_CONCURRENCY);
+        unsafe {
+            std::env::set_var("HOTDATA_UPLOAD_CONCURRENCY", "0");
+        }
+        assert_eq!(upload_concurrency(), UPLOAD_CONCURRENCY);
+
+        unsafe {
+            std::env::remove_var("HOTDATA_UPLOAD_CONCURRENCY");
         }
     }
 

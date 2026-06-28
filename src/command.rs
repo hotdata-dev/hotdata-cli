@@ -559,7 +559,7 @@ pub enum DatabasesCommands {
         #[arg(long, conflicts_with_all = ["file", "upload_id"])]
         url: Option<String>,
 
-        /// Use a previously staged upload ID from `POST /v1/files` instead of uploading
+        /// Use a previously staged upload ID from `POST /v1/uploads` instead of uploading
         #[arg(long, conflicts_with_all = ["file", "url"])]
         upload_id: Option<String>,
     },
@@ -640,7 +640,7 @@ pub enum DatabaseTablesCommands {
         #[arg(long, conflicts_with_all = ["file", "upload_id"])]
         url: Option<String>,
 
-        /// Use a previously staged upload ID from `POST /v1/files` instead of uploading
+        /// Use a previously staged upload ID from `POST /v1/uploads` instead of uploading
         #[arg(long, conflicts_with_all = ["file", "url"])]
         upload_id: Option<String>,
     },

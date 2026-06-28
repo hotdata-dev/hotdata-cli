@@ -1,8 +1,26 @@
-## [Unreleased]
+## [0.9.0] - 2026-06-27
 
 ### 🚀 Features
 
-- *(auth)* [**breaking**] Require explicit `login` subcommand; bare `hotdata auth` now prints help (#182)
+- *(databases)* Add auth and command limitations for database api token flag
+- *(upload)* Speed up large-file uploads with concurrent, direct-to-storage transfer
+
+### 🐛 Bug Fixes
+
+- *(upload)* Clean up --url temp file before exit on failure
+
+### 💼 Other
+
+- *(deps)* Update hotdata SDK to 0.5.0
+
+### 📚 Documentation
+
+- *(deps)* Update reqwest blocking comment for presigned --url path
+## [0.8.1] - 2026-06-25
+
+### 🐛 Bug Fixes
+
+- *(query)* Carry execution_time_ms through async poll path
 ## [0.8.0] - 2026-06-24
 
 ### 🚀 Features
