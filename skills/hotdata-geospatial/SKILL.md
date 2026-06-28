@@ -20,7 +20,7 @@ hotdata query "<sql>" [--workspace-id <id>] [--database <db>] [--output table|js
 
 - **Fully qualify tables** as `<connection>.<schema>.<table>` (or `<catalog>.<schema>.<table>` for a managed database) — every `<table>` placeholder below means a qualified name.
 - **PostgreSQL dialect:** double-quote any non-lowercase identifier (e.g. `"GeoID"`).
-- Discover candidate tables/columns with **`hotdata tables list --connection-id <id>`** (see core skill).
+- Discover candidate tables/columns with **`hotdata tables list --connection-id <id>`** (connection tables) or **`hotdata databases tables`** (tables inside a managed database) — see core skill.
 
 ---
 
