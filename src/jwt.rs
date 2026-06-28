@@ -12,7 +12,7 @@
 //! | Access token valid for > 30 s | return it directly |
 //! | Access expiring or expired, refresh token valid | call `/o/token/` with `grant_type=refresh_token` |
 //! | Refresh token dead, `api_key` present | re-mint via `grant_type=api_token` |
-//! | Refresh token dead, no `api_key` | return an error — user must `hotdata auth` again |
+//! | Refresh token dead, no `api_key` | return an error — user must `hotdata auth login` again |
 //!
 //! The raw `hd_...` API token (flow 3 in the design doc) is *never*
 //! persisted to the session file — it stays in the main config or the
@@ -302,7 +302,7 @@ pub fn ensure_access_token(
     // 0) An explicit identity override (`--api-key`, `HOTDATA_API_KEY`,
     // or `.env`) is asserting a specific identity for *this invocation*.
     // The on-disk session may belong to a completely different user
-    // from a prior `hotdata auth` and must not be reused. Mint fresh
+    // from a prior `hotdata auth login` and must not be reused. Mint fresh
     // and deliberately skip persisting so we don't clobber the
     // interactive session. Surface the real mint error here too — if
     // the override key is bad, "HTTP 401" is more useful than the
@@ -358,7 +358,7 @@ pub fn ensure_access_token(
                 // API token rejected (revoked, expired, or invalid).
                 // Fall through to the re-auth hint — hide the raw HTTP
                 // error from the user; the api.rs caller appends a
-                // `hotdata auth` hint.
+                // `hotdata auth login` hint.
             }
         }
     }
@@ -435,7 +435,7 @@ impl hotdata::auth::BearerTokenProvider for CliTokenProvider {
         resolved.map_err(|body| {
             // Surface as a 401 so `Configuration::resolve_bearer_token` logs the
             // cause and the request proceeds to a 401 the wrapper shapes into
-            // the "run hotdata auth" hint (the same end-state as the old
+            // the "run hotdata auth login" hint (the same end-state as the old
             // ApiClient refresher returning None).
             hotdata::auth::TokenExchangeError::Status { status: 401, body }
         })
@@ -1235,7 +1235,7 @@ mod tests {
         let (_tmp, _guard) = with_temp_config_dir();
         // No session, no api_key fallback -> ensure_access_token errors, the
         // provider maps it to a 401 so the request proceeds to the wrapper's
-        // "run hotdata auth" hint.
+        // "run hotdata auth login" hint.
         let profile = mock_profile("http://127.0.0.1:1");
         let provider = session_provider(&profile, None);
         match bearer(&provider).unwrap_err() {

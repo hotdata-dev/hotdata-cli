@@ -263,7 +263,7 @@ pub enum QueryCommands {
 
 #[derive(Subcommand)]
 pub enum AuthCommands {
-    /// Log in via browser (same as `hotdata auth` with no subcommand)
+    /// Log in via browser
     Login,
 
     /// Create a new account via browser (defaults to GitHub OAuth)

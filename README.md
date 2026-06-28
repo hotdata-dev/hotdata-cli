@@ -33,15 +33,13 @@ cp target/release/hotdata /usr/local/bin/hotdata
 
 ## Connect
 
-Run either of the following (they are equivalent):
+Run:
 
 ```sh
 hotdata auth login
-# or
-hotdata auth
 ```
 
-This launches a browser window where you can authorize the CLI to access your Hotdata account.
+This launches a browser window where you can authorize the CLI to access your Hotdata account. (Bare `hotdata auth` prints the `auth` subcommand help.)
 
 Alternatively, authenticate with an API key using the `--api-key` flag:
 
@@ -62,7 +60,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 
 | Command | Subcommands | Description |
 | :-- | :-- | :-- |
-| `auth` | `login`, `status`, `logout` | `login` or bare `auth` opens browser login; `status` / `logout` manage the saved profile |
+| `auth` | `login`, `status`, `logout` | `login` opens browser login; `status` / `logout` manage the saved profile |
 | `workspaces` | `list`, `set` | Manage workspaces |
 | `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
 | `databases` | `list`, `create`, `delete`, `tables` | Managed databases (create and load tables via parquet) |

@@ -27,10 +27,10 @@ Install all skills with **`hotdata skills install`**. Load specialized skills on
 
 ## Authentication
 
-Run **`hotdata auth login`** (or **`hotdata auth`** with no subcommand—same behavior) to authenticate via browser login. Config is stored in `~/.hotdata/config.yml`.
+Run **`hotdata auth login`** to authenticate via browser login. Config is stored in `~/.hotdata/config.yml`.
 
 API key resolution (lowest to highest priority):
-1. Config file (saved by `hotdata auth login` / `hotdata auth`)
+1. Config file (saved by `hotdata auth login`)
 2. `HOTDATA_API_KEY` environment variable (or `.env` file)
 3. `--api-key <key>` flag (works on any command)
 
@@ -336,8 +336,7 @@ A newer release can be incompatible with the API, so in an **interactive termina
 
 ### Auth
 ```
-hotdata auth login          # Browser-based login (same as: hotdata auth)
-hotdata auth                # Browser-based login (same as: hotdata auth login)
+hotdata auth login          # Browser-based login
 hotdata auth status         # Check current auth status
 hotdata auth logout         # Remove saved auth for the default profile
 ```
