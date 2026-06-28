@@ -254,7 +254,8 @@ impl From<ShellChoice> for clap_complete::Shell {
 #[derive(Subcommand)]
 pub enum QueryCommands {
     /// Check the status of a running query and retrieve results.
-    /// Exit codes: 0 = succeeded, 1 = failed, 2 = still running (poll again)
+    /// Exit codes: 0 = succeeded, 1 = failed, 2 = still running (poll again),
+    /// 3 = succeeded but the result is an incomplete/truncated preview
     Status {
         /// Query run ID
         id: String,
