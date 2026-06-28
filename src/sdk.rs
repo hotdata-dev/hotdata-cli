@@ -249,7 +249,7 @@ impl ApiError {
     /// `ApiClient::fail_response`'s formatting.
     ///
     /// On a 4xx, re-probe the auth status so a masked 404/403 is upgraded into
-    /// the "run hotdata auth" hint; otherwise surface the server body. Split out
+    /// the "run hotdata auth login" hint; otherwise surface the server body. Split out
     /// from [`exit`](Self::exit) so callers that want to append their own hint
     /// after the error (e.g. the query cross-source hint) can print, add the
     /// hint, then exit.
@@ -483,7 +483,7 @@ impl Api {
                 eprintln!("{}", format!("error: {e}").red());
                 eprintln!(
                     "Run {} to log in, or pass --api-key.",
-                    "hotdata auth".cyan()
+                    "hotdata auth login".cyan()
                 );
                 std::process::exit(1);
             }
@@ -840,7 +840,7 @@ pub fn format_fail_message(
     if status.is_client_error()
         && let Some(auth::AuthStatus::Invalid(_)) = auth_status
     {
-        return "error: API key is invalid. Run 'hotdata auth login' (or 'hotdata auth') to re-authenticate.".to_string();
+        return "error: API key is invalid. Run 'hotdata auth login' to re-authenticate.".to_string();
     }
     // A 403 ACCESS_DENIED is the allow-list guard rejecting an operation the
     // credential can't perform — typically a database API token (which is
@@ -886,7 +886,7 @@ mod tests {
             Some(&AuthStatus::Invalid(401)),
         );
         assert!(msg.contains("API key is invalid"));
-        assert!(msg.contains("hotdata auth login") || msg.contains("hotdata auth"));
+        assert!(msg.contains("hotdata auth login"));
     }
 
     #[test]
@@ -962,7 +962,7 @@ mod tests {
             msg.to_lowercase().contains("database api token"),
             "got: {msg}"
         );
-        assert!(msg.contains("hotdata auth"), "got: {msg}");
+        assert!(msg.contains("hotdata auth login"), "got: {msg}");
     }
 
     #[test]

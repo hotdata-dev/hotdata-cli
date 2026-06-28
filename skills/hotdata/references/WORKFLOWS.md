@@ -34,7 +34,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 **Skill:** **`hotdata`** (optional **`hotdata-analytics`** for first queries)
 
-1. [ ] `hotdata auth login` (or `hotdata auth`)
+1. [ ] `hotdata auth login`
 2. [ ] `hotdata workspaces list` → `hotdata workspaces set` if not on the right workspace
 3. [ ] `hotdata connections list` — note connection ids and names
 4. [ ] (Optional) `hotdata connections create …` — see **`hotdata`** skill **Create a Connection**
