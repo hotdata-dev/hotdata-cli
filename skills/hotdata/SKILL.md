@@ -1,7 +1,7 @@
 ---
 name: hotdata
 description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "execute a query", "database context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
-version: 0.8.1
+version: 0.9.0
 ---
 
 # Hotdata CLI Skill
@@ -27,10 +27,10 @@ Install all skills with **`hotdata skills install`**. Load specialized skills on
 
 ## Authentication
 
-Run **`hotdata auth login`** (or **`hotdata auth`** with no subcommand—same behavior) to authenticate via browser login. Config is stored in `~/.hotdata/config.yml`.
+Run **`hotdata auth login`** to authenticate via browser login. Config is stored in `~/.hotdata/config.yml`.
 
 API key resolution (lowest to highest priority):
-1. Config file (saved by `hotdata auth login` / `hotdata auth`)
+1. Config file (saved by `hotdata auth login`)
 2. `HOTDATA_API_KEY` environment variable (or `.env` file)
 3. `--api-key <key>` flag (works on any command)
 
@@ -338,8 +338,7 @@ A newer release can be incompatible with the API, so in an **interactive termina
 
 ### Auth
 ```
-hotdata auth login          # Browser-based login (same as: hotdata auth)
-hotdata auth                # Browser-based login (same as: hotdata auth login)
+hotdata auth login            # Browser-based login
 hotdata auth register         # Create a new account via browser (GitHub OAuth by default)
 hotdata auth register --email # Create a new account via browser, using email + password instead of GitHub
 hotdata auth status         # Check current auth status

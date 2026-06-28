@@ -5,7 +5,7 @@
   <br>
   Command line interface for <a href="https://www.hotdata.dev">Hotdata</a>.
   <br><br>
-  <img src="https://img.shields.io/badge/version-0.8.1-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-0.9.0-blue" alt="version">
   <a href="https://github.com/hotdata-dev/hotdata-cli/actions/workflows/ci.yml"><img src="https://github.com/hotdata-dev/hotdata-cli/actions/workflows/ci.yml/badge.svg" alt="build"></a>
   <a href="https://codecov.io/gh/hotdata-dev/hotdata-cli"><img src="https://codecov.io/gh/hotdata-dev/hotdata-cli/branch/main/graph/badge.svg" alt="coverage"></a>
 </p>
@@ -33,15 +33,13 @@ cp target/release/hotdata /usr/local/bin/hotdata
 
 ## Connect
 
-Run either of the following (they are equivalent):
+Run:
 
 ```sh
 hotdata auth login
-# or
-hotdata auth
 ```
 
-This launches a browser window where you can authorize the CLI to access your Hotdata account.
+This launches a browser window where you can authorize the CLI to access your Hotdata account. (Bare `hotdata auth` prints the `auth` subcommand help.)
 
 Alternatively, authenticate with an API key using the `--api-key` flag:
 
@@ -62,7 +60,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 
 | Command | Subcommands | Description |
 | :-- | :-- | :-- |
-| `auth` | `login`, `status`, `logout` | `login` or bare `auth` opens browser login; `status` / `logout` manage the saved profile |
+| `auth` | `login`, `status`, `logout` | `login` opens browser login; `status` / `logout` manage the saved profile |
 | `workspaces` | `list`, `set` | Manage workspaces |
 | `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
 | `databases` | `list`, `create`, `delete`, `tables` | Managed databases (create and load tables via parquet) |

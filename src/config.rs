@@ -264,7 +264,7 @@ pub fn resolve_workspace_id(
         .workspaces
         .first()
         .map(|w| w.public_id.clone())
-        .ok_or_else(|| "no workspace-id provided and no default workspace found. Run 'hotdata auth login' (or 'hotdata auth') or specify --workspace-id.".to_string())
+        .ok_or_else(|| "no workspace-id provided and no default workspace found. Run 'hotdata auth login' or specify --workspace-id.".to_string())
 }
 
 /// Global API key override set via --api-key flag.
@@ -283,9 +283,7 @@ pub fn load(profile: &str) -> Result<ProfileConfig, String> {
             .map_err(|e| format!("error reading config file: {e}"))?;
         let config_file: ConfigFile = serde_yaml::from_str(&content).unwrap_or_else(|_| {
             eprintln!("{}", "error parsing config file.".red());
-            eprintln!(
-                "Run 'hotdata auth login' (or 'hotdata auth') to generate a new config file."
-            );
+            eprintln!("Run 'hotdata auth login' to generate a new config file.");
             std::process::exit(1);
         });
         config_file

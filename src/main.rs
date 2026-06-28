@@ -75,16 +75,37 @@ fn resolve_workspace(provided: Option<String>) -> String {
         return ws;
     }
     match config::load("default") {
-        Ok(profile) => match config::resolve_workspace_id(provided, &profile) {
-            Ok(id) => {
-                let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
-                id
+        Ok(profile) => {
+            // An api-key credential (e.g. a database API token, passed via
+            // --api-key / HOTDATA_API_KEY) is authorized for its own
+            // workspace(s), independent of the CLI session's saved default.
+            // When the caller didn't pin one and the token is scoped to exactly
+            // one workspace, target it — otherwise the gateway rejects the
+            // mismatched X-Workspace-Id with "workspace not allowed" before the
+            // request ever reaches the resource.
+            if provided.is_none()
+                && matches!(
+                    profile.api_key_source,
+                    config::ApiKeySource::Flag | config::ApiKeySource::Env
+                )
+            {
+                let ids = auth::api_key_workspace_ids(&profile);
+                if let [only] = ids.as_slice() {
+                    let _ = ACTIVE_WORKSPACE_ID.set(only.clone());
+                    return only.clone();
+                }
             }
-            Err(e) => {
-                eprintln!("error: {e}");
-                std::process::exit(1);
+            match config::resolve_workspace_id(provided, &profile) {
+                Ok(id) => {
+                    let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
+                    id
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
@@ -156,7 +177,9 @@ fn main() {
     // never blocked (see `update::should_check`).
     let gate_update = !matches!(
         &cli.command,
-        None | Some(Commands::Upgrade) | Some(Commands::Completions { .. })
+        None | Some(Commands::Upgrade)
+            | Some(Commands::Completions { .. })
+            | Some(Commands::Auth { command: None })
     );
     if gate_update {
         update::enforce_latest_or_exit();
@@ -170,10 +193,19 @@ fn main() {
         }
         Some(cmd) => match cmd {
             Commands::Auth { command } => match command {
-                None | Some(AuthCommands::Login) => auth::login(),
+                Some(AuthCommands::Login) => auth::login(),
                 Some(AuthCommands::Register { email }) => auth::register(email),
                 Some(AuthCommands::Status) => auth::status("default"),
                 Some(AuthCommands::Logout) => auth::logout("default"),
+                None => {
+                    use clap::CommandFactory;
+                    let mut cmd = Cli::command();
+                    cmd.build();
+                    cmd.find_subcommand_mut("auth")
+                        .unwrap()
+                        .print_help()
+                        .unwrap();
+                }
             },
             Commands::Query {
                 sql,
