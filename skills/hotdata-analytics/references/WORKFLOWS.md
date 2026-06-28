@@ -60,7 +60,7 @@ hotdata query "SELECT ..."
   hotdata query status <query_run_id>
   ```
 
-  Exit codes: `0` succeeded, `1` failed, `2` still running.
+  Exit codes: `0` succeeded, `1` failed, `2` still running, `3` succeeded but the result is an incomplete/truncated preview (the CLI fails closed so pipelines don't silently process partial data).
 
 ### 2. Materialize
 

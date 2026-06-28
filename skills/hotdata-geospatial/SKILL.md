@@ -6,7 +6,7 @@ version: 0.9.0
 
 # Hotdata Geospatial Skill
 
-Hotdata supports a subset of PostGIS-style functions in **PostgreSQL-dialect SQL**. This skill is dataset-agnostic — apply it to any table with geometry columns.
+Hotdata supports a subset of PostGIS-style functions in **PostgreSQL-dialect SQL**. This skill is data-agnostic — apply it to any table with geometry columns.
 
 **Requires the core `hotdata` skill** for auth, workspace, and table discovery. **Related:** **`hotdata-analytics`** (OLAP SQL), **`hotdata-search`** (BM25/vector).
 
@@ -20,7 +20,7 @@ hotdata query "<sql>" [--workspace-id <id>] [--database <db>] [--output table|js
 
 - **Fully qualify tables** as `<connection>.<schema>.<table>` (or `<catalog>.<schema>.<table>` for a managed database) — every `<table>` placeholder below means a qualified name.
 - **PostgreSQL dialect:** double-quote any non-lowercase identifier (e.g. `"GeoID"`).
-- Discover candidate tables/columns with **`hotdata tables list --connection-id <id>`** (see core skill).
+- Discover candidate tables/columns with **`hotdata tables list --connection-id <id>`** (connection tables) or **`hotdata databases tables`** (tables inside a managed database) — see core skill.
 
 ---
 

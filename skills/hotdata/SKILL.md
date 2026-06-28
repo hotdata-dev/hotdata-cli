@@ -200,7 +200,7 @@ hotdata databases tables delete <table> [--database <id_or_name>] [--schema publ
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
 - `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
 - `tables delete` — drops a table from the managed database.
-- `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`) or via `--database <id>`; omit both to auto-create a scratch database using `--name` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, `source:"database_token"`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
+- `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`) or via `--database <id>`; omit both to auto-create a scratch database using `--name` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted credential is a **database API token** (`source: database_api_token`, verifiable via `auth status`): it can only **create databases, run queries, and upload data**. Workspace-level operations — e.g. `databases list`/`show`, `connections`, `attach`/`detach`, listing other workspaces — return `403` and require a standard API key. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
 - `attach` — attaches a **connection** as a queryable catalog on a managed database, so the connection's **live** tables become visible inside that database's query scope. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name the catalog answers to (defaults to the connection's name). This is how you query connection tables and **join across sources** — see [Querying across connections](#querying-across-connections-attach).
 - `detach` — removes an attached connection catalog. Accepts the connection name/id **or** the alias you attached it under. Defaults to the active database.
 - `create --attach <connection>[=<alias>]` — attach one or more connections at creation time (repeatable), e.g. `--attach github --attach salesdb=sales`.
@@ -311,10 +311,12 @@ Bundled Markdown skills (**`hotdata`**, **`hotdata-search`**, **`hotdata-analyti
 ```
 hotdata skills install [--project]
 hotdata skills status
+hotdata skills list
 ```
 
 - **`install`** — Downloads and installs skills to **`~/.hotdata/skills/<skill>`**, then symlinks into **`~/.agents/skills`** and into **`~/.claude/skills`** / **`~/.pi/skills`** when those directories exist. **`--project`** instead copies into **`./.agents/skills/<skill>`** in the current directory (and links `./.claude` / `./.pi` when present). The CLI may auto-refresh skills after an upgrade when appropriate.
 - **`status`** — Reports installed vs current CLI version and where skills are linked.
+- **`list`** — Alias for `status`: lists installed skills, their versions, and where they are linked.
 
 ### Shell completions
 
@@ -336,10 +338,14 @@ A newer release can be incompatible with the API, so in an **interactive termina
 
 ### Auth
 ```
-hotdata auth login          # Browser-based login
-hotdata auth status         # Check current auth status
-hotdata auth logout         # Remove saved auth for the default profile
+hotdata auth login            # Browser-based login
+hotdata auth register         # Create a new account via browser (GitHub OAuth by default)
+hotdata auth register --email # Create a new account via browser, using email + password instead of GitHub
+hotdata auth status           # Check current auth status
+hotdata auth logout           # Remove saved auth for the default profile
 ```
+
+`login` and `register` (both GitHub and `--email`) are **browser-based** PKCE flows: the CLI opens a browser and waits on a local callback to complete sign-in/sign-up — account details (email/password) are entered in the browser, not via CLI flags. They require a browser and an interactive terminal, so they do **not** work under `--no-input` or in headless/CI. For automation, authenticate once interactively, then use the saved session or `HOTDATA_API_KEY`.
 
 ### Interactive connection wizard
 

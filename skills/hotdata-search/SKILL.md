@@ -43,7 +43,7 @@ hotdata search "<query>" --table <connection.schema.table> [--type vector] [--co
 
 ## Indexes (BM25 and vector)
 
-Create attaches to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` filters by any of `--connection-id` / `--schema` / `--table` (all optional). `delete` **requires all of** `--connection-id` + `--schema` + `--table` + `--name`.
+Create attaches to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` filters by any of `--connection-id` (short `-c`) / `--schema` / `--table` (all optional). `delete` **requires all of** `--connection-id` (short `-c`) + `--schema` + `--table` + `--name`.
 
 **Unscoped `hotdata indexes list` (no `--connection-id`) scans the whole workspace — both regular connections *and* managed databases** — so managed-database indexes appear without any flags. In that whole-workspace view the `table` column shows a managed database under its internal `__db_<id>.<schema>.<table>` label (a connection-scoped `indexes list --connection-id <db-conn>` shows the same rows).
 
@@ -61,7 +61,7 @@ hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
 hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
 ```
 
-- **`--type` is required** on create: `bm25` (one text column) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`**.)
+- **`--type` is required** on create: `bm25` (one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`**.)
 - **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** — this skill focuses on retrieval types.
 - **`--async`:** poll with `hotdata jobs <job_id>` (see **`hotdata`** skill **Jobs**).
 - **Auto-embedding:** `--type vector` on a **text** column generates embeddings server-side. Optional `--embedding-provider-id`; default output column `{column}_embedding` (override with `--output-column`).
