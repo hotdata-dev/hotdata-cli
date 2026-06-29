@@ -316,3 +316,32 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      # Announce the release in #deploy. Runs only when host + publish jobs
+      # succeeded. Posts via the shared Hotdata CI Slack app (bot token), so the
+      # same SLACK_CI_BOT_TOKEN org secret drives notifications across repos.
+      - name: "Notify #deploy on Slack"
+        # The release above is published, so a Slack/token hiccup must not mark
+        # a successful release as failed and trigger false-alarm retries.
+        continue-on-error: true
+        env:
+          SLACK_CI_BOT_TOKEN: ${{ secrets.SLACK_CI_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_CI_BOT_TOKEN:-}" ]; then
+            echo "SLACK_CI_BOT_TOKEN not set; skipping Slack notification" >&2
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          text=":package: *hotdata-cli* \`v${version}\` released — <https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}|release notes>"
+          # #deploy channel ID (rename-proof). chat.postMessage returns HTTP 200
+          # even on logical errors, so capture the body and assert on .ok —
+          # echoing Slack's error makes a swallowed (continue-on-error) miss
+          # debuggable in the job log instead of disappearing silently.
+          response="$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_CI_BOT_TOKEN}" \
+            -H 'Content-Type: application/json; charset=utf-8' \
+            --data "$(jq -n --arg ch 'C0ARK84E1D4' --arg text "$text" '{channel:$ch, text:$text}')")"
+          if ! jq -e '.ok' >/dev/null <<<"$response"; then
+            echo "Slack notification failed: $(jq -r '.error // "unknown"' <<<"$response")" >&2
+            exit 1
+          fi
