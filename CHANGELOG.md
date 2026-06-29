@@ -1,3 +1,17 @@
+## [0.10.0] - 2026-06-29
+
+### 🚀 Features
+
+- *(upload)* Very large or slow `databases load` uploads no longer fail partway through — each part's upload link is now fetched just in time and renewed automatically if it expires
+
+### 💼 Other
+
+- *(auth)* `hotdata auth` now shows help instead of auto-launching a browser login — run `hotdata auth login` to sign in; adds `auth profiles` to scaffold profiles.yml (#182)
+
+### 📚 Documentation
+
+- *(skills)* Update bundled skill docs to match current commands and auth
+
 ## [0.9.0] - 2026-06-27
 
 ### 🚀 Features
