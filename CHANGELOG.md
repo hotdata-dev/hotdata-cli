@@ -1,3 +1,16 @@
+## [0.11.0] - 2026-06-30
+
+### 🚀 Features
+
+- *(upload)* Large or slow `databases load` uploads now ride out a flaky connection instead of failing partway through: a single dropped or stalled part is retried on its own — with a fresh upload link and a timeout so it can't hang indefinitely — while parts that already finished are kept, so one part's bad moment no longer aborts the whole transfer
+
+### 🐛 Bug Fixes
+
+- *(jobs)* Accept managed_load as --job-type filter (#160) (#195)
+
+### 💼 Other
+
+- *(deps)* Bump hotdata SDK to 0.7.0
 ## [0.10.0] - 2026-06-29
 
 ### 🚀 Features
