@@ -1,4 +1,4 @@
-use crate::auth::AuthCommands;
+use crate::commands::auth::AuthCommands;
 use crate::commands::connections::ConnectionsCommands;
 use crate::commands::context::ContextCommands;
 use crate::commands::databases::DatabasesCommands;

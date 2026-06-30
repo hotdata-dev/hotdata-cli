@@ -1,4 +1,3 @@
-mod auth;
 mod cli;
 mod client;
 mod commands;
@@ -7,10 +6,10 @@ mod output;
 mod util;
 
 use anstyle::AnsiColor;
-use auth::AuthCommands;
 use clap::{Parser, builder::Styles};
 use cli::Commands;
-use client::{database_session, sdk};
+use client::{credentials, database_session, sdk};
+use commands::auth::{self, AuthCommands};
 use commands::connections::{self, ConnectionsCommands, ConnectionsCreateCommands};
 use commands::context::{self, ContextCommands};
 use commands::databases::{self, DatabaseTablesCommands, DatabasesCommands};
@@ -82,7 +81,7 @@ fn resolve_workspace(provided: Option<String>) -> String {
                     config::ApiKeySource::Flag | config::ApiKeySource::Env
                 )
             {
-                let ids = auth::api_key_workspace_ids(&profile);
+                let ids = credentials::api_key_workspace_ids(&profile);
                 if let [only] = ids.as_slice() {
                     let _ = ACTIVE_WORKSPACE_ID.set(only.clone());
                     return only.clone();

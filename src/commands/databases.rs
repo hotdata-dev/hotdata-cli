@@ -1233,7 +1233,7 @@ pub fn set(workspace_id: &str, id: &str) {
     // allow-list), so skip the check for it and save the id directly.
     let is_database_api_token = crate::config::load("default")
         .ok()
-        .and_then(|profile| crate::auth::api_key_jwt_source(&profile))
+        .and_then(|profile| crate::client::credentials::api_key_jwt_source(&profile))
         .as_deref()
         == Some("database_api_token");
     if !is_database_api_token {
@@ -1347,7 +1347,8 @@ pub fn tables_load(
     // connection-scoped managed endpoints (all outside its allow-list). Route it
     // through the database-scoped endpoints, addressed by database id.
     if let Ok(profile) = crate::config::load("default")
-        && crate::auth::api_key_jwt_source(&profile).as_deref() == Some("database_api_token")
+        && crate::client::credentials::api_key_jwt_source(&profile).as_deref()
+            == Some("database_api_token")
     {
         tables_load_database_scoped(workspace_id, database, table, schema, file, url, upload_id);
         return;

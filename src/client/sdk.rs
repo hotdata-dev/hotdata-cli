@@ -33,7 +33,7 @@ use hotdata::apis::configuration::{ApiKey, Configuration};
 use hotdata::apis::{Error, ResponseContent};
 use hotdata::{UploadError, UploadOptions, UploadProgress};
 
-use crate::auth;
+use crate::client::credentials;
 use crate::client::jwt::{AuthMode, CliTokenProvider};
 use crate::config;
 use crate::util;
@@ -259,7 +259,7 @@ impl ApiError {
                 let auth_status = if status.is_client_error() {
                     config::load("default")
                         .ok()
-                        .map(|pc| auth::check_status(&pc))
+                        .map(|pc| credentials::check_status(&pc))
                 } else {
                     None
                 };
@@ -836,10 +836,10 @@ impl Api {
 pub fn format_fail_message(
     status: reqwest::StatusCode,
     body: &str,
-    auth_status: Option<&auth::AuthStatus>,
+    auth_status: Option<&credentials::AuthStatus>,
 ) -> String {
     if status.is_client_error()
-        && let Some(auth::AuthStatus::Invalid(_)) = auth_status
+        && let Some(credentials::AuthStatus::Invalid(_)) = auth_status
     {
         return "error: API key is invalid. Run 'hotdata auth login' to re-authenticate."
             .to_string();
@@ -862,7 +862,7 @@ pub fn format_fail_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use auth::AuthStatus;
+    use credentials::AuthStatus;
 
     #[test]
     fn api_error_message_formats_status_and_transport() {
