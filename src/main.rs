@@ -657,25 +657,35 @@ fn main() {
                         )
                     }
                     IndexesCommands::Delete {
+                        catalog,
                         connection_id,
                         schema,
                         table,
                         name,
                     } => {
-                        let scope = match (
-                            connection_id.as_deref(),
-                            schema.as_deref(),
-                            table.as_deref(),
-                        ) {
-                            (Some(cid), Some(sch), Some(tbl)) => indexes::IndexScope::Connection {
-                                connection_id: cid,
+                        let api = sdk::Api::new(Some(&workspace_id));
+                        // Resolve the connection the same way `indexes create`
+                        // does: a `--catalog` alias maps to the backing
+                        // connection (incl. a managed database's default
+                        // connection); `--connection-id` is used as-is.
+                        let conn_id = match (catalog.as_deref(), connection_id.as_deref()) {
+                            (Some(cat), _) => connections::resolve_connection_id(&api, cat),
+                            (None, Some(cid)) => cid.to_string(),
+                            (None, None) => {
+                                eprintln!(
+                                    "error: provide --catalog <alias> (or --connection-id <id>) with --schema and --table"
+                                );
+                                std::process::exit(1);
+                            }
+                        };
+                        let scope = match (schema.as_deref(), table.as_deref()) {
+                            (Some(sch), Some(tbl)) => indexes::IndexScope::Connection {
+                                connection_id: &conn_id,
                                 schema: sch,
                                 table: tbl,
                             },
                             _ => {
-                                eprintln!(
-                                    "error: provide all three of --connection-id, --schema, --table"
-                                );
+                                eprintln!("error: --schema and --table are required");
                                 std::process::exit(1);
                             }
                         };

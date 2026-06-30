@@ -356,18 +356,24 @@ pub enum IndexesCommands {
 
     /// Delete an index from a table
     ///
-    /// Pass connection scope: --connection-id + --schema + --table.
+    /// Scope the table with `--catalog <alias> --schema --table` (the same flag
+    /// as `indexes create`), or with `--connection-id <id> --schema --table`.
     Delete {
-        /// Connection ID (use with --schema and --table)
-        #[arg(long, short = 'c', requires_all = ["schema", "table"])]
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`) —
+        /// resolved to the backing connection, the same flag `indexes create` uses
+        #[arg(long, conflicts_with = "connection_id")]
+        catalog: Option<String>,
+
+        /// Connection ID (advanced; prefer --catalog)
+        #[arg(long, short = 'c')]
         connection_id: Option<String>,
 
-        /// Schema name (requires --connection-id)
-        #[arg(long, requires = "connection_id")]
+        /// Schema name
+        #[arg(long)]
         schema: Option<String>,
 
-        /// Table name (requires --connection-id)
-        #[arg(long, requires = "connection_id")]
+        /// Table name
+        #[arg(long)]
         table: Option<String>,
 
         /// Index name
