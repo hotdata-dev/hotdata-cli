@@ -41,6 +41,7 @@ fn parse_job_type(s: &str) -> Option<JobType> {
         "data_refresh_table" => Some(JobType::DataRefreshTable),
         "data_refresh_connection" => Some(JobType::DataRefreshConnection),
         "create_index" => Some(JobType::CreateIndex),
+        "managed_load" => Some(JobType::ManagedLoad),
         _ => None,
     }
 }
@@ -100,6 +101,37 @@ pub fn get(job_id: &str, workspace_id: &str, format: &str) {
             }
         }
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hotdata::models::ListJobsResponse;
+
+    // Regression for #160: a `managed_load` row must deserialize, not blow up
+    // the whole `jobs list` response. Proves SDK 0.6.0's JobType carries the
+    // variant the server emits for `databases load`.
+    #[test]
+    fn list_response_with_managed_load_deserializes() {
+        let body = r#"{
+            "jobs": [
+                {
+                    "id": "job_1",
+                    "job_type": "managed_load",
+                    "status": "succeeded",
+                    "attempts": 1,
+                    "created_at": "2026-06-18T06:00:00Z"
+                }
+            ]
+        }"#;
+        let resp: ListJobsResponse = serde_json::from_str(body).expect("managed_load must parse");
+        assert_eq!(resp.jobs[0].job_type, JobType::ManagedLoad);
+    }
+
+    #[test]
+    fn parse_job_type_accepts_managed_load() {
+        assert_eq!(parse_job_type("managed_load"), Some(JobType::ManagedLoad));
     }
 }
 

@@ -381,7 +381,7 @@ pub enum JobsCommands {
     /// List background jobs (shows active jobs by default)
     List {
         /// Filter by job type
-        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "create_index"])]
+        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "create_index", "managed_load"])]
         job_type: Option<String>,
 
         /// Filter by status
