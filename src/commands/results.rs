@@ -1,4 +1,4 @@
-use crate::sdk::Api;
+use crate::client::sdk::Api;
 use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 
@@ -93,7 +93,7 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
                     headers.push("EXPIRES");
                 }
 
-                crate::table::print(&headers, &rows);
+                crate::output::table::print(&headers, &rows);
             }
             if body.has_more {
                 let next = offset.unwrap_or(0) + body.count as u32;
@@ -113,6 +113,6 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
 
 pub fn get(result_id: &str, workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let result = crate::query::fetch_arrow_result(&api, result_id);
-    crate::query::print_result(&result, format);
+    let result = crate::commands::query::fetch_arrow_result(&api, result_id);
+    crate::commands::query::print_result(&result, format);
 }

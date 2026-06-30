@@ -1,35 +1,23 @@
 mod auth;
-mod command;
+mod cli;
+mod client;
+mod commands;
 mod config;
-mod connections;
-mod connections_new;
-mod context;
-mod database_session;
-mod databases;
-mod embedding_providers;
-mod indexes;
-mod jobs;
-mod jwt;
-mod queries;
-mod query;
-mod raw_http;
-mod results;
-mod sdk;
-mod skill;
-mod table;
-mod tables;
-mod update;
-mod usage;
+mod output;
 mod util;
-mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{
+use cli::{
     AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
     DatabaseTablesCommands, DatabasesCommands, EmbeddingProvidersCommands, IndexesCommands,
     JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SkillCommands, TablesCommands,
     WorkspaceCommands,
+};
+use client::{database_session, sdk};
+use commands::{
+    connections, context, databases, embedding_providers, indexes, jobs, queries, query, results,
+    skill, tables, update, usage, workspace,
 };
 
 #[derive(Parser)]
@@ -248,7 +236,9 @@ fn main() {
                     connections::get(&workspace_id, &id, &output)
                 } else {
                     match command {
-                        Some(ConnectionsCommands::New) => connections_new::run(&workspace_id),
+                        Some(ConnectionsCommands::New) => {
+                            connections::interactive::run(&workspace_id)
+                        }
                         Some(ConnectionsCommands::List { output }) => {
                             connections::list(&workspace_id, &output)
                         }

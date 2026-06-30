@@ -1,4 +1,4 @@
-use crate::sdk::{Api, ApiError};
+use crate::client::sdk::{Api, ApiError};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -79,7 +79,7 @@ fn value_to_string(v: &Value) -> String {
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
         Value::Array(arr) => {
-            let (formatted, count) = crate::table::truncate_array(arr);
+            let (formatted, count) = crate::output::table::truncate_array(arr);
             match count {
                 Some(n) => format!("{formatted} ({n} items)"),
                 None => formatted,
@@ -425,7 +425,7 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
     request.r#async = Some(true);
     request.async_after_ms = Some(Some(1000));
 
-    let outcome = crate::sdk::block_with_wakeup(
+    let outcome = crate::client::sdk::block_with_wakeup(
         &api,
         "running query...",
         api.client().submit_query(request, database),
@@ -459,8 +459,8 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
     loop {
         // Drive the poll loop ourselves to preserve the 5-minute deadline and
         // 500ms cadence (NOT the SDK's PollConfig defaults).
-        let run =
-            crate::sdk::block(api.client().query_runs().get(run_id)).unwrap_or_else(|e| e.exit());
+        let run = crate::client::sdk::block(api.client().query_runs().get(run_id))
+            .unwrap_or_else(|e| e.exit());
         match run.status.as_str() {
             "succeeded" => {
                 spinner.finish_and_clear();
@@ -516,8 +516,8 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
 pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
 
-    let run =
-        crate::sdk::block(api.client().query_runs().get(query_run_id)).unwrap_or_else(|e| e.exit());
+    let run = crate::client::sdk::block(api.client().query_runs().get(query_run_id))
+        .unwrap_or_else(|e| e.exit());
 
     match run.status.as_str() {
         "succeeded" => {
@@ -648,7 +648,7 @@ pub fn print_result(result: &QueryResponse, format: &str) {
             }
         }
         "table" => {
-            crate::table::print_json(&result.columns, &result.rows);
+            crate::output::table::print_json(&result.columns, &result.rows);
             use crossterm::style::Stylize;
             let footer = table_footer(result);
             // Loud (red) when the preview is incomplete so it can't be mistaken
@@ -674,7 +674,7 @@ pub fn print_result(result: &QueryResponse, format: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdk::Api;
+    use crate::client::sdk::Api;
     use std::sync::Arc;
 
     /// A truncated inline 200: one preview row standing in for a larger result.

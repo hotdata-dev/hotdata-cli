@@ -1,4 +1,4 @@
-use crate::sdk::Api;
+use crate::client::sdk::Api;
 use hotdata::models::{JobStatusResponse, JobType};
 use serde::{Deserialize, Serialize};
 
@@ -48,10 +48,13 @@ fn parse_job_type(s: &str) -> Option<JobType> {
 
 pub fn get(job_id: &str, workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let job: Job =
-        crate::sdk::block_with_wakeup(&api, "Loading job…", api.client().jobs().get(job_id))
-            .unwrap_or_else(|e| e.exit())
-            .into();
+    let job: Job = crate::client::sdk::block_with_wakeup(
+        &api,
+        "Loading job…",
+        api.client().jobs().get(job_id),
+    )
+    .unwrap_or_else(|e| e.exit())
+    .into();
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&job).unwrap()),
@@ -142,7 +145,7 @@ fn fetch_jobs(
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Vec<Job> {
-    let resp = crate::sdk::block(api.client().jobs().list(
+    let resp = crate::client::sdk::block(api.client().jobs().list(
         job_type.and_then(parse_job_type),
         status,
         limit.map(|l| l as i32),
@@ -199,7 +202,7 @@ pub fn list(
                         ]
                     })
                     .collect();
-                crate::table::print(
+                crate::output::table::print(
                     &["ID", "TYPE", "STATUS", "ATTEMPTS", "CREATED", "COMPLETED"],
                     &rows,
                 );

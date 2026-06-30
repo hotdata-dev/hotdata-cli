@@ -1,4 +1,4 @@
-use crate::sdk::{Api, ApiError, block, block_with_wakeup, none_if_404};
+use crate::client::sdk::{Api, ApiError, block, block_with_wakeup, none_if_404};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -512,7 +512,7 @@ fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<I
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let resp = crate::sdk::block(api.client().information_schema().get(
+        let resp = crate::client::sdk::block(api.client().information_schema().get(
             Some(connection_id),
             schema,
             None,
@@ -572,7 +572,7 @@ pub fn list(workspace_id: &str, format: &str) {
                         ]
                     })
                     .collect();
-                crate::table::print(&["", "ID", "NAME"], &rows);
+                crate::output::table::print(&["", "ID", "NAME"], &rows);
             }
         }
         _ => unreachable!(),
@@ -653,7 +653,7 @@ pub fn attach(workspace_id: &str, connection: &str, database: Option<&str>, alia
     // exits with the resolver's message, and an API failure goes through
     // `ApiError::exit`, which upgrades a masked 401/403 into the re-auth hint.
     // (The non-fatal `create --attach` loop uses `attach_connection` instead.)
-    let connection_id = crate::connections::resolve_connection_id(&api, connection);
+    let connection_id = crate::commands::connections::resolve_connection_id(&api, connection);
     send_attach(&api, &db.id, connection_id, alias).unwrap_or_else(|e| e.exit());
 
     match alias {
@@ -699,7 +699,7 @@ pub fn detach(workspace_id: &str, connection: &str, database: Option<&str>) {
         .iter()
         .find(|a| a.alias.as_deref() == Some(connection))
         .map(|a| a.connection_id.clone())
-        .unwrap_or_else(|| crate::connections::resolve_connection_id(&api, connection));
+        .unwrap_or_else(|| crate::commands::connections::resolve_connection_id(&api, connection));
 
     block(
         api.client()
@@ -746,7 +746,7 @@ fn mint_database_token(api: &Api, database_id: &str) -> DatabaseTokenResponse {
         // The old typed `api.post` routed non-success through `fail_response`,
         // which upgrades a masked 401/403/404 into the re-auth hint. Reproduce
         // that via the seam's auth-aware exit.
-        crate::sdk::ApiError::Status {
+        crate::client::sdk::ApiError::Status {
             status,
             body: resp_body,
         }
@@ -795,7 +795,7 @@ pub fn run(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let session = crate::database_session::DatabaseSession {
+    let session = crate::client::database_session::DatabaseSession {
         access_token: db_jwt.clone(),
         refresh_token: db_refresh.clone(),
         database_id: db_id.clone(),
@@ -803,7 +803,7 @@ pub fn run(
         access_expires_at: now + resp.expires_in,
         refresh_expires_at: now + resp.refresh_expires_in,
     };
-    if let Err(e) = crate::database_session::save(&session) {
+    if let Err(e) = crate::client::database_session::save(&session) {
         eprintln!("warning: could not persist database session: {e}");
     }
 
@@ -874,7 +874,7 @@ fn attach_connection(
     connection: &str,
     alias: Option<&str>,
 ) -> Result<String, String> {
-    let connection_id = crate::connections::try_resolve_connection_id(api, connection)?;
+    let connection_id = crate::commands::connections::try_resolve_connection_id(api, connection)?;
     send_attach(api, database_id, connection_id.clone(), alias).map_err(|e| e.message())?;
     Ok(connection_id)
 }
@@ -1097,7 +1097,7 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
                         ]
                     })
                     .collect();
-                crate::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &table_rows);
+                crate::output::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &table_rows);
             }
         }
         _ => unreachable!(),

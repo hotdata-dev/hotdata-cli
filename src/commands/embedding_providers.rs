@@ -1,4 +1,4 @@
-use crate::sdk::Api;
+use crate::client::sdk::Api;
 use hotdata::models::{
     CreateEmbeddingProviderRequest, EmbeddingProviderResponse, UpdateEmbeddingProviderRequest,
 };
@@ -44,7 +44,7 @@ fn parse_config(raw: Option<&str>) -> Option<serde_json::Value> {
 
 pub fn list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let providers: Vec<Provider> = crate::sdk::block_with_wakeup(
+    let providers: Vec<Provider> = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading embedding providers…",
         api.client().embedding_providers().list(),
@@ -76,7 +76,7 @@ pub fn list(workspace_id: &str, format: &str) {
                     ]
                 })
                 .collect();
-            crate::table::print(&["ID", "NAME", "TYPE", "SOURCE", "SECRET"], &rows);
+            crate::output::table::print(&["ID", "NAME", "TYPE", "SOURCE", "SECRET"], &rows);
         }
         _ => unreachable!(),
     }
@@ -84,7 +84,7 @@ pub fn list(workspace_id: &str, format: &str) {
 
 pub fn get(workspace_id: &str, id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let p: Provider = crate::sdk::block_with_wakeup(
+    let p: Provider = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading embedding provider…",
         api.client().embedding_providers().get(id),
@@ -136,7 +136,7 @@ pub fn create(
         req.secret_name = Some(Some(s.to_string()));
     }
 
-    let resp = crate::sdk::block_with_wakeup(
+    let resp = crate::client::sdk::block_with_wakeup(
         &api,
         "Creating embedding provider…",
         api.client().embedding_providers().create(req),
@@ -192,7 +192,7 @@ pub fn update(
         req.secret_name = Some(Some(s.to_string()));
     }
 
-    let resp = crate::sdk::block_with_wakeup(
+    let resp = crate::client::sdk::block_with_wakeup(
         &api,
         "Updating embedding provider…",
         api.client().embedding_providers().update(id, req),
@@ -218,7 +218,7 @@ pub fn update(
 pub fn delete(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     let api = Api::new(Some(workspace_id));
-    crate::sdk::block_with_wakeup(
+    crate::client::sdk::block_with_wakeup(
         &api,
         "Deleting embedding provider…",
         api.client().embedding_providers().delete(id),

@@ -1,4 +1,4 @@
-use crate::sdk::Api;
+use crate::client::sdk::Api;
 use hotdata::models::TableInfo;
 use serde::Serialize;
 
@@ -42,7 +42,7 @@ pub fn list(
     // the old behavior (include_columns=true iff connection_id is set).
     let include_columns = connection_id.map(|_| true);
 
-    let body = crate::sdk::block_with_wakeup(
+    let body = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading tables…",
         api.client().information_schema().get(
@@ -99,7 +99,10 @@ pub fn list(
                             })
                         })
                         .collect();
-                    crate::table::print(&["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"], &rows);
+                    crate::output::table::print(
+                        &["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"],
+                        &rows,
+                    );
                 }
             }
             _ => unreachable!(),
@@ -136,7 +139,7 @@ pub fn list(
                             ]
                         })
                         .collect();
-                    crate::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &rows);
+                    crate::output::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &rows);
                 }
             }
             _ => unreachable!(),

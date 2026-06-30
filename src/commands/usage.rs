@@ -1,4 +1,4 @@
-use crate::sdk::Api;
+use crate::client::sdk::Api;
 use serde::{Deserialize, Serialize};
 
 /// CLI output shape for `usage`, mapped from the `/v1/usage`
@@ -59,7 +59,7 @@ pub fn usage(workspace_id: &str, since: Option<&str>, format: &str) {
                         .unwrap_or_else(|| "-".to_string()),
                 ],
             ];
-            crate::table::print(&["METRIC", "VALUE"], &rows);
+            crate::output::table::print(&["METRIC", "VALUE"], &rows);
         }
     }
 }

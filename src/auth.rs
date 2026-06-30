@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::stdout;
 
 pub fn logout(profile: &str) {
-    crate::jwt::clear_session();
+    crate::client::jwt::clear_session();
     if let Err(e) = config::clear_workspaces(profile) {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -36,14 +36,15 @@ pub fn check_status(profile_config: &config::ProfileConfig) -> AuthStatus {
     // PKCE-origin sessions don't write an api_key, so absence of a key
     // alone isn't "not configured" — only true if there's also no
     // cached JWT session to validate.
-    if api_key_fallback.is_none() && crate::jwt::load_session().is_none() {
+    if api_key_fallback.is_none() && crate::client::jwt::load_session().is_none() {
         return AuthStatus::NotConfigured;
     }
 
-    let access_token = match crate::jwt::ensure_access_token(profile_config, api_key_fallback) {
-        Ok(t) => t,
-        Err(_) => return AuthStatus::Invalid(401),
-    };
+    let access_token =
+        match crate::client::jwt::ensure_access_token(profile_config, api_key_fallback) {
+            Ok(t) => t,
+            Err(_) => return AuthStatus::Invalid(401),
+        };
 
     let url = format!("{}/workspaces", profile_config.api_url);
     let client = reqwest::blocking::Client::new();
@@ -81,9 +82,8 @@ pub fn status(profile: &str) {
             .api_key
             .as_deref()
             .map(crate::util::mask_credential),
-        ApiKeySource::Config => {
-            crate::jwt::load_session().map(|s| crate::util::mask_credential(&s.refresh_token))
-        }
+        ApiKeySource::Config => crate::client::jwt::load_session()
+            .map(|s| crate::util::mask_credential(&s.refresh_token)),
     };
     let method_label = method_label.to_string();
     let method_suffix = match credential_tail {
@@ -279,7 +279,7 @@ fn run_browser_auth(
     success_title: &str,
     success_body: &str,
     build_url: impl Fn(&str, &str, &str, u16) -> String,
-    exchange: impl Fn(&str, &str, u16) -> Result<crate::jwt::Session, String>,
+    exchange: impl Fn(&str, &str, u16) -> Result<crate::client::jwt::Session, String>,
 ) {
     let app_url = profile_config.app_url.to_string();
     let code_verifier = generate_code_verifier();
@@ -319,7 +319,7 @@ fn run_browser_auth(
 
     match exchange(&code, &code_verifier, port) {
         Ok(session) => {
-            if let Err(e) = crate::jwt::save_session(&session) {
+            if let Err(e) = crate::client::jwt::save_session(&session) {
                 eprintln!("warning: could not save session: {e}");
             }
             stdout()
@@ -403,7 +403,12 @@ pub fn login() {
         },
         |code, code_verifier, port| {
             let redirect_uri = format!("http://127.0.0.1:{port}/");
-            crate::jwt::mint_from_pkce_code(&profile_config, code, code_verifier, &redirect_uri)
+            crate::client::jwt::mint_from_pkce_code(
+                &profile_config,
+                code,
+                code_verifier,
+                &redirect_uri,
+            )
         },
     );
 }
@@ -438,7 +443,7 @@ pub fn register(use_email: bool) {
             )
         },
         |code, code_verifier, _port| {
-            crate::jwt::exchange_cli_register_code(&profile_config, code, code_verifier)
+            crate::client::jwt::exchange_cli_register_code(&profile_config, code, code_verifier)
         },
     );
 }
@@ -491,7 +496,8 @@ fn api_key_authorized_workspaces(
     else {
         return Vec::new();
     };
-    let Ok(access_token) = crate::jwt::ensure_access_token(profile_config, Some(key)) else {
+    let Ok(access_token) = crate::client::jwt::ensure_access_token(profile_config, Some(key))
+    else {
         return Vec::new();
     };
     let url = format!("{}/workspaces", profile_config.api_url);
@@ -585,7 +591,7 @@ pub(crate) fn api_key_workspace_ids(profile_config: &config::ProfileConfig) -> V
     else {
         return Vec::new();
     };
-    let Ok(token) = crate::jwt::ensure_access_token(profile_config, Some(key)) else {
+    let Ok(token) = crate::client::jwt::ensure_access_token(profile_config, Some(key)) else {
         return Vec::new();
     };
     jwt_array_claim(&token, "workspaces")
@@ -608,7 +614,7 @@ pub(crate) fn api_key_jwt_source(profile_config: &config::ProfileConfig) -> Opti
         .api_key
         .as_deref()
         .filter(|k| !k.is_empty() && *k != "PLACEHOLDER")?;
-    let token = crate::jwt::ensure_access_token(profile_config, Some(key)).ok()?;
+    let token = crate::client::jwt::ensure_access_token(profile_config, Some(key)).ok()?;
     jwt_string_claim(&token, "source")
 }
 
@@ -657,7 +663,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        crate::jwt::save_session(&crate::jwt::Session {
+        crate::client::jwt::save_session(&crate::client::jwt::Session {
             access_token: token.to_string(),
             access_expires_at: now + 3600,
             refresh_token: "r".into(),

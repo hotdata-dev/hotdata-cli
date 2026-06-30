@@ -1,5 +1,8 @@
-use crate::sdk::{Api, ApiError, block, block_with_wakeup, none_if_404};
+use crate::client::sdk::{Api, ApiError, block, block_with_wakeup, none_if_404};
 use serde::{Deserialize, Serialize};
+
+/// Interactive `connections new` wizard.
+pub mod interactive;
 
 #[derive(Deserialize, Serialize)]
 struct HealthResponse {
@@ -132,7 +135,7 @@ pub fn types_list(workspace_id: &str, format: &str) {
                     .iter()
                     .map(|ct| vec![ct.name.clone(), ct.label.clone()])
                     .collect();
-                crate::table::print(&["NAME", "LABEL"], &rows);
+                crate::output::table::print(&["NAME", "LABEL"], &rows);
             }
         }
         _ => unreachable!(),
@@ -226,8 +229,9 @@ pub fn try_resolve_connection_id(api: &Api, name_or_id: &str) -> Result<String, 
     // matches — prefer it over any stale connection entry with the same name.
     if let Some(ws) = api.workspace_id()
         && let Some(active_id) = crate::config::load_current_database("default", ws)
-        && let Some(active_db) = none_if_404(crate::databases::get_database(api, &active_id))
-            .unwrap_or_else(|e| e.exit())
+        && let Some(active_db) =
+            none_if_404(crate::commands::databases::get_database(api, &active_id))
+                .unwrap_or_else(|e| e.exit())
         && (active_db.default_catalog.as_deref() == Some(name_or_id)
             || active_db.name.as_deref() == Some(name_or_id))
     {
@@ -244,7 +248,7 @@ pub fn try_resolve_connection_id(api: &Api, name_or_id: &str) -> Result<String, 
     }
 
     // Fall back to managed databases: treat name_or_id as a catalog alias.
-    if let Ok(db) = crate::databases::try_resolve_database(api, name_or_id) {
+    if let Ok(db) = crate::commands::databases::try_resolve_database(api, name_or_id) {
         return Ok(db.default_connection_id);
     }
 
@@ -474,7 +478,7 @@ pub fn list(workspace_id: &str, format: &str) {
                     .iter()
                     .map(|c| vec![c.id.clone(), c.name.clone(), c.source_type.clone()])
                     .collect();
-                crate::table::print(&["ID", "NAME", "SOURCE TYPE"], &rows);
+                crate::output::table::print(&["ID", "NAME", "SOURCE TYPE"], &rows);
             }
         }
         _ => unreachable!(),
@@ -607,7 +611,7 @@ pub fn refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdk::Api;
+    use crate::client::sdk::Api;
 
     /// A bare connection list with one entry named `good`.
     fn one_connection_body() -> &'static str {

@@ -1,5 +1,5 @@
-use crate::databases;
-use crate::sdk::{Api, block, block_with_wakeup, none_if_404};
+use crate::client::sdk::{Api, block, block_with_wakeup, none_if_404};
+use crate::commands::databases;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -370,7 +370,7 @@ pub fn infer_for_search(
     let api = Api::new(Some(workspace_id));
 
     // Resolve connection name → ID (falls back to managed database catalog lookup)
-    let connection_id = crate::connections::resolve_connection_id(&api, connection_name);
+    let connection_id = crate::commands::connections::resolve_connection_id(&api, connection_name);
 
     // Fetch indexes for this table
     let indexes = list_one_table(&api, &connection_id, schema, table);
@@ -434,7 +434,7 @@ pub fn list(
                         ]
                     })
                     .collect();
-                crate::table::print(
+                crate::output::table::print(
                     &[
                         "TABLE", "NAME", "TYPE", "COLUMNS", "METRIC", "STATUS", "CREATED",
                     ],
@@ -454,7 +454,7 @@ pub fn list(
                         ]
                     })
                     .collect();
-                crate::table::print(
+                crate::output::table::print(
                     &["NAME", "TYPE", "COLUMNS", "METRIC", "STATUS", "CREATED"],
                     &table_rows,
                 );
@@ -607,8 +607,8 @@ pub fn delete(workspace_id: &str, scope: IndexScope<'_>, index_name: &str) {
 
     if let Err(e) = result {
         let body = match e {
-            crate::sdk::ApiError::Status { body, .. } => body,
-            crate::sdk::ApiError::Transport(msg) => msg,
+            crate::client::sdk::ApiError::Status { body, .. } => body,
+            crate::client::sdk::ApiError::Transport(msg) => msg,
         };
         eprintln!("{}", crate::util::api_error(body).red());
         std::process::exit(1);

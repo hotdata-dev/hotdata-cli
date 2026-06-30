@@ -1,5 +1,5 @@
+use crate::client::sdk::Api;
 use crate::config;
-use crate::sdk::Api;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -127,7 +127,10 @@ pub fn list(format: &str) {
                         ]
                     })
                     .collect();
-                crate::table::print(&["DEFAULT", "PUBLIC_ID", "NAME", "PROVISION_STATUS"], &rows);
+                crate::output::table::print(
+                    &["DEFAULT", "PUBLIC_ID", "NAME", "PROVISION_STATUS"],
+                    &rows,
+                );
             }
         }
         _ => unreachable!(),

@@ -2,7 +2,7 @@ use inquire::validator::Validation;
 use inquire::{Confirm, Password, Select, Text};
 use serde_json::{Map, Number, Value};
 
-use crate::sdk::{Api, ApiError, block, block_with_wakeup};
+use crate::client::sdk::{Api, ApiError, block, block_with_wakeup};
 
 // ── SDK helpers ─────────────────────────────────────────────────────────────
 
