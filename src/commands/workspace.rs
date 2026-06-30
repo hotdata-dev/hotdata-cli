@@ -2,6 +2,23 @@ use crate::client::sdk::Api;
 use crate::config;
 use serde::Serialize;
 
+/// Subcommands for `hotdata workspaces`.
+#[derive(clap::Subcommand)]
+pub enum WorkspaceCommands {
+    /// List all workspaces
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Set the default workspace
+    Set {
+        /// Workspace ID to set as default (omit for interactive selection)
+        workspace_id: Option<String>,
+    },
+}
+
 #[derive(Serialize)]
 struct Workspace {
     public_id: String,

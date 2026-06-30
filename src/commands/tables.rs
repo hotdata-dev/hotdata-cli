@@ -2,6 +2,41 @@ use crate::client::sdk::Api;
 use hotdata::models::TableInfo;
 use serde::Serialize;
 
+/// Subcommands for `hotdata tables`.
+#[derive(clap::Subcommand)]
+pub enum TablesCommands {
+    /// List all tables in a workspace
+    List {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w')]
+        workspace_id: Option<String>,
+
+        /// Filter by connection ID (also enables column output)
+        #[arg(long, short = 'c')]
+        connection_id: Option<String>,
+
+        /// Filter by schema name (supports % wildcards)
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Filter by table name (supports % wildcards)
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Maximum number of results to return
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination cursor from a previous response
+        #[arg(long)]
+        cursor: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+}
+
 #[derive(Serialize)]
 struct Column {
     name: String,

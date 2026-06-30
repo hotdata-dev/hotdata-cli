@@ -4,6 +4,90 @@ use hotdata::models::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Subcommands for `hotdata embedding-providers`.
+#[derive(clap::Subcommand)]
+pub enum EmbeddingProvidersCommands {
+    /// List embedding providers
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Show details for a specific embedding provider
+    Get {
+        /// Provider ID
+        id: String,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Create a new embedding provider
+    Create {
+        /// Provider name (must be unique within the workspace)
+        #[arg(long)]
+        name: String,
+
+        /// Provider type ("local" or "service")
+        #[arg(long, value_parser = ["local", "service"])]
+        provider_type: String,
+
+        /// Provider-specific config as a JSON string (model, base_url, dimensions, etc.)
+        #[arg(long)]
+        config: Option<String>,
+
+        /// The provider's own API key (e.g. an OpenAI sk-... key). Auto-creates a
+        /// managed secret. Mutually exclusive with --secret-name. Named
+        /// `--provider-api-key` to pair with `--provider-type` and to avoid colliding
+        /// with the global `--api-key` (Hotdata auth) flag.
+        #[arg(long = "provider-api-key", conflicts_with = "secret_name")]
+        provider_api_key: Option<String>,
+
+        /// Reference an existing secret by name (for service providers)
+        #[arg(long)]
+        secret_name: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Update an embedding provider's name, config, or secret
+    Update {
+        /// Provider ID
+        id: String,
+
+        /// New name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// New config as a JSON string
+        #[arg(long)]
+        config: Option<String>,
+
+        /// New provider API key (replaces or creates the managed secret).
+        /// See `embedding-providers create --provider-api-key` for naming rationale.
+        #[arg(long = "provider-api-key", conflicts_with = "secret_name")]
+        provider_api_key: Option<String>,
+
+        /// New secret name to reference
+        #[arg(long)]
+        secret_name: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Delete an embedding provider
+    Delete {
+        /// Provider ID
+        id: String,
+    },
+}
+
 #[derive(Deserialize, Serialize)]
 struct Provider {
     id: String,

@@ -2,6 +2,25 @@ use crate::client::sdk::Api;
 use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 
+/// Subcommands for `hotdata results`.
+#[derive(clap::Subcommand)]
+pub enum ResultsCommands {
+    /// List stored query results
+    List {
+        /// Maximum number of results (default: 100, max: 1000)
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination offset
+        #[arg(long)]
+        offset: Option<u32>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+}
+
 #[derive(Deserialize, Serialize)]
 struct ResultEntry {
     id: String,

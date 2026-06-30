@@ -7,18 +7,23 @@ mod output;
 mod util;
 
 use anstyle::AnsiColor;
+use auth::AuthCommands;
 use clap::{Parser, builder::Styles};
-use cli::{
-    AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
-    DatabaseTablesCommands, DatabasesCommands, EmbeddingProvidersCommands, IndexesCommands,
-    JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SkillCommands, TablesCommands,
-    WorkspaceCommands,
-};
+use cli::Commands;
 use client::{database_session, sdk};
-use commands::{
-    connections, context, databases, embedding_providers, indexes, jobs, queries, query, results,
-    skill, tables, update, usage, workspace,
-};
+use commands::connections::{self, ConnectionsCommands, ConnectionsCreateCommands};
+use commands::context::{self, ContextCommands};
+use commands::databases::{self, DatabaseTablesCommands, DatabasesCommands};
+use commands::embedding_providers::{self, EmbeddingProvidersCommands};
+use commands::indexes::{self, IndexesCommands};
+use commands::jobs::{self, JobsCommands};
+use commands::queries::{self, QueriesCommands};
+use commands::query::{self, QueryCommands};
+use commands::results::{self, ResultsCommands};
+use commands::skill::{self, SkillCommands};
+use commands::tables::{self, TablesCommands};
+use commands::workspace::{self, WorkspaceCommands};
+use commands::{update, usage};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]

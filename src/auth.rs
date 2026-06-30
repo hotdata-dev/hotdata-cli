@@ -8,6 +8,26 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::stdout;
 
+/// Subcommands for `hotdata auth`.
+#[derive(clap::Subcommand)]
+pub enum AuthCommands {
+    /// Log in via browser
+    Login,
+
+    /// Create a new account via browser (defaults to GitHub OAuth)
+    Register {
+        /// Sign up with email and password instead of GitHub
+        #[arg(long)]
+        email: bool,
+    },
+
+    /// Remove authentication for a profile
+    Logout,
+
+    /// Show authentication status
+    Status,
+}
+
 pub fn logout(profile: &str) {
     crate::client::jwt::clear_session();
     if let Err(e) = config::clear_workspaces(profile) {

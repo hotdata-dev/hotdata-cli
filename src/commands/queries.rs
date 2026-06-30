@@ -3,6 +3,29 @@ use crossterm::style::Stylize;
 use hotdata::models::QueryRunInfo;
 use serde::Serialize;
 
+/// Subcommands for `hotdata queries`.
+#[derive(clap::Subcommand)]
+pub enum QueriesCommands {
+    /// List query runs
+    List {
+        /// Maximum number of results
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+
+        /// Pagination cursor from a previous response
+        #[arg(long)]
+        cursor: Option<String>,
+
+        /// Filter by status (comma-separated, e.g. running,failed)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+}
+
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON", "JOIN", "LEFT",
     "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "ORDER", "BY", "GROUP", "HAVING", "LIMIT",

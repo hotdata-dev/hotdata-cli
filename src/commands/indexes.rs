@@ -5,6 +5,102 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
+/// Subcommands for `hotdata indexes`.
+#[derive(clap::Subcommand)]
+pub enum IndexesCommands {
+    /// List indexes (defaults to the whole workspace; narrow with filters)
+    List {
+        /// Filter by connection ID
+        #[arg(long, short = 'c')]
+        connection_id: Option<String>,
+
+        /// Filter by schema name
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Filter by table name
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Create an index on a table.
+    Create {
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
+        #[arg(long)]
+        catalog: Option<String>,
+
+        /// Schema name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Table name to index
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Column(s) to index (comma-separated)
+        #[arg(long)]
+        column: Option<String>,
+
+        /// Index name (derived from table, columns, and type if omitted)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Index type — required (no default; choose deliberately)
+        #[arg(long, value_parser = ["sorted", "bm25", "vector"])]
+        r#type: String,
+
+        /// Distance metric for vector indexes
+        #[arg(long, value_parser = ["l2", "cosine", "dot"])]
+        metric: Option<String>,
+
+        /// Create as a background job
+        #[arg(long)]
+        r#async: bool,
+
+        /// Embedding provider ID — when set on a vector index over a text column,
+        /// embeddings are generated automatically. Defaults to first system provider if omitted.
+        #[arg(long = "embedding-provider-id")]
+        embedding_provider_id: Option<String>,
+
+        /// Override embedding output dimensions (vector indexes with auto-embedding only)
+        #[arg(long)]
+        dimensions: Option<u32>,
+
+        /// Custom name for the generated embedding column (defaults to `{column}_embedding`)
+        #[arg(long = "output-column")]
+        output_column: Option<String>,
+
+        /// Human-readable description of the embedding (e.g. "product titles")
+        #[arg(long)]
+        description: Option<String>,
+    },
+
+    /// Delete an index from a table
+    ///
+    /// Pass connection scope: --connection-id + --schema + --table.
+    Delete {
+        /// Connection ID (use with --schema and --table)
+        #[arg(long, short = 'c', requires_all = ["schema", "table"])]
+        connection_id: Option<String>,
+
+        /// Schema name (requires --connection-id)
+        #[arg(long, requires = "connection_id")]
+        schema: Option<String>,
+
+        /// Table name (requires --connection-id)
+        #[arg(long, requires = "connection_id")]
+        table: Option<String>,
+
+        /// Index name
+        #[arg(long)]
+        name: String,
+    },
+}
+
 #[derive(Deserialize, Serialize)]
 struct Index {
     index_name: String,

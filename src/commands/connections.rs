@@ -4,6 +4,82 @@ use serde::{Deserialize, Serialize};
 /// Interactive `connections new` wizard.
 pub mod interactive;
 
+/// Subcommands for `hotdata connections`.
+#[derive(clap::Subcommand)]
+pub enum ConnectionsCommands {
+    /// Interactively create a new connection
+    New,
+
+    /// List all connections for a workspace
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Create a new connection, or list/inspect available connection types
+    Create {
+        #[command(subcommand)]
+        command: Option<ConnectionsCreateCommands>,
+
+        /// Connection name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Connection source type (e.g. postgres, mysql, snowflake)
+        #[arg(long = "type")]
+        source_type: Option<String>,
+
+        /// Connection config as a JSON object
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Refresh a connection's schema or data
+    Refresh {
+        /// Connection ID
+        connection_id: String,
+
+        /// Refresh data instead of schema metadata
+        #[arg(long)]
+        data: bool,
+
+        /// Narrow refresh to a specific schema (requires --table for data refresh)
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Narrow refresh to a specific table (requires --schema)
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Submit as a background job (only valid with --data)
+        #[arg(long)]
+        r#async: bool,
+
+        /// Include uncached tables in connection-wide data refresh (only with --data, no --table)
+        #[arg(long = "include-uncached")]
+        include_uncached: bool,
+    },
+}
+
+/// Subcommands for `hotdata connections create`.
+#[derive(clap::Subcommand)]
+pub enum ConnectionsCreateCommands {
+    /// List available connection types, or get details for a specific type
+    List {
+        /// Connection type name (e.g. postgres, mysql); omit to list all
+        name: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+}
+
 #[derive(Deserialize, Serialize)]
 struct HealthResponse {
     #[allow(dead_code)]

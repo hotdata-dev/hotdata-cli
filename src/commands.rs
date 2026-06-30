@@ -1,7 +1,3 @@
-//! Per-command handlers. Each submodule owns the implementation for one
-//! top-level CLI command; the clap argument definitions currently live in
-//! `crate::cli` (distributing them here is a later step).
-
 pub mod connections;
 pub mod context;
 pub mod databases;

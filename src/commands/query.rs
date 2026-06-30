@@ -2,6 +2,18 @@ use crate::client::sdk::{Api, ApiError};
 use serde::Deserialize;
 use serde_json::Value;
 
+/// Subcommands for `hotdata query`.
+#[derive(clap::Subcommand)]
+pub enum QueryCommands {
+    /// Check the status of a running query and retrieve results.
+    /// Exit codes: 0 = succeeded, 1 = failed, 2 = still running (poll again),
+    /// 3 = succeeded but the result is an incomplete/truncated preview
+    Status {
+        /// Query run ID
+        id: String,
+    },
+}
+
 #[derive(Deserialize)]
 pub struct QueryResponse {
     pub result_id: Option<String>,

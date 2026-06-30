@@ -9,6 +9,51 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+/// Subcommands for `hotdata context`.
+#[derive(clap::Subcommand)]
+pub enum ContextCommands {
+    /// List named contexts in the workspace
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+
+        /// Only include names starting with this prefix (case-sensitive)
+        #[arg(long)]
+        prefix: Option<String>,
+    },
+
+    /// Print context content to stdout
+    Show {
+        /// Context name (same rules as a SQL table identifier; local file is <NAME>.md). A trailing `.md` is ignored (e.g. `USER.md` → `USER`).
+        name: String,
+    },
+
+    /// Download context from the database to ./<NAME>.md
+    Pull {
+        /// Context name (trailing `.md` ignored, e.g. `USER.md` → `USER`)
+        name: String,
+
+        /// Overwrite ./<NAME>.md if it already exists
+        #[arg(long)]
+        force: bool,
+
+        /// Print the target path and size only; do not write a file
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Upload ./<NAME>.md to the database as named context
+    Push {
+        /// Context name (trailing `.md` ignored, e.g. `USER.md` → `USER`; reads `./USER.md`)
+        name: String,
+
+        /// Print what would be sent; do not POST
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 /// Matches runtimedb `MAX_TABLE_NAME_LENGTH` / `validate_table_name` rules for context keys.
 pub const MAX_CONTEXT_NAME_LEN: usize = 128;
 
