@@ -18,8 +18,8 @@
 //! # Auth
 //!
 //! Construction reproduces the old `ApiClient::new` 4-level auth-source
-//! precedence by choosing the [`AuthMode`](crate::jwt::AuthMode) the installed
-//! [`CliTokenProvider`](crate::jwt::CliTokenProvider) will serve. The provider
+//! precedence by choosing the [`AuthMode`](crate::client::jwt::AuthMode) the installed
+//! [`CliTokenProvider`](crate::client::jwt::CliTokenProvider) will serve. The provider
 //! returns a ready CLI-minted JWT (`client_id=hotdata-cli`, `/o/token/`), which
 //! the SDK passes through unchanged; the CLI keeps full ownership of
 //! session.json and the refresh table.
@@ -33,9 +33,9 @@ use hotdata::apis::configuration::{ApiKey, Configuration};
 use hotdata::apis::{Error, ResponseContent};
 use hotdata::{UploadError, UploadOptions, UploadProgress};
 
-use crate::auth;
+use crate::client::credentials;
+use crate::client::jwt::{AuthMode, CliTokenProvider};
 use crate::config;
-use crate::jwt::{AuthMode, CliTokenProvider};
 use crate::util;
 
 /// Process-global multi-thread runtime shared by all [`Api`] clones.
@@ -259,7 +259,7 @@ impl ApiError {
                 let auth_status = if status.is_client_error() {
                     config::load("default")
                         .ok()
-                        .map(|pc| auth::check_status(&pc))
+                        .map(|pc| credentials::check_status(&pc))
                 } else {
                     None
                 };
@@ -459,7 +459,7 @@ impl Api {
         // the right hint), then hand the CliTokenProvider the matching mode to
         // re-resolve on every request.
         let mode = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
-            if crate::database_session::refresh_from_env(&api_url).is_none() {
+            if crate::client::database_session::refresh_from_env(&api_url).is_none() {
                 eprintln!(
                     "{}",
                     crossterm::style::Stylize::red("error: HOTDATA_DATABASE_TOKEN is empty")
@@ -476,9 +476,10 @@ impl Api {
                 .filter(|k| !k.is_empty() && *k != "PLACEHOLDER")
                 .map(String::from);
 
-            if let Err(e) =
-                crate::jwt::ensure_access_token(&profile_config, api_key_fallback.as_deref())
-            {
+            if let Err(e) = crate::client::jwt::ensure_access_token(
+                &profile_config,
+                api_key_fallback.as_deref(),
+            ) {
                 use crossterm::style::Stylize;
                 eprintln!("{}", format!("error: {e}").red());
                 eprintln!(
@@ -835,10 +836,10 @@ impl Api {
 pub fn format_fail_message(
     status: reqwest::StatusCode,
     body: &str,
-    auth_status: Option<&auth::AuthStatus>,
+    auth_status: Option<&credentials::AuthStatus>,
 ) -> String {
     if status.is_client_error()
-        && let Some(auth::AuthStatus::Invalid(_)) = auth_status
+        && let Some(credentials::AuthStatus::Invalid(_)) = auth_status
     {
         return "error: API key is invalid. Run 'hotdata auth login' to re-authenticate."
             .to_string();
@@ -861,7 +862,7 @@ pub fn format_fail_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use auth::AuthStatus;
+    use credentials::AuthStatus;
 
     #[test]
     fn api_error_message_formats_status_and_transport() {

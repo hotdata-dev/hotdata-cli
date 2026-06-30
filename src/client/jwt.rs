@@ -411,8 +411,10 @@ impl CliTokenProvider {
     /// string describing why no token could be obtained.
     fn resolve_blocking(mode: &AuthMode) -> Result<String, String> {
         match mode {
-            AuthMode::DatabaseEnv { api_url } => crate::database_session::refresh_from_env(api_url)
-                .ok_or_else(|| "HOTDATA_DATABASE_TOKEN is empty".to_string()),
+            AuthMode::DatabaseEnv { api_url } => {
+                crate::client::database_session::refresh_from_env(api_url)
+                    .ok_or_else(|| "HOTDATA_DATABASE_TOKEN is empty".to_string())
+            }
             AuthMode::Session {
                 profile,
                 api_key_fallback,
@@ -1137,7 +1139,7 @@ mod tests {
 
     /// Resolve a provider's bearer on the shared wrapper runtime.
     fn bearer(provider: &CliTokenProvider) -> Result<String, hotdata::auth::TokenExchangeError> {
-        crate::sdk::rt().block_on(provider.bearer_value())
+        crate::client::sdk::rt().block_on(provider.bearer_value())
     }
 
     fn session_provider(profile: &ProfileConfig, api_key: Option<&str>) -> CliTokenProvider {

@@ -1,8 +1,92 @@
-use crate::sdk::Api;
+use crate::client::sdk::Api;
 use hotdata::models::{
     CreateEmbeddingProviderRequest, EmbeddingProviderResponse, UpdateEmbeddingProviderRequest,
 };
 use serde::{Deserialize, Serialize};
+
+/// Subcommands for `hotdata embedding-providers`.
+#[derive(clap::Subcommand)]
+pub enum EmbeddingProvidersCommands {
+    /// List embedding providers
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Show details for a specific embedding provider
+    Get {
+        /// Provider ID
+        id: String,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Create a new embedding provider
+    Create {
+        /// Provider name (must be unique within the workspace)
+        #[arg(long)]
+        name: String,
+
+        /// Provider type ("local" or "service")
+        #[arg(long, value_parser = ["local", "service"])]
+        provider_type: String,
+
+        /// Provider-specific config as a JSON string (model, base_url, dimensions, etc.)
+        #[arg(long)]
+        config: Option<String>,
+
+        /// The provider's own API key (e.g. an OpenAI sk-... key). Auto-creates a
+        /// managed secret. Mutually exclusive with --secret-name. Named
+        /// `--provider-api-key` to pair with `--provider-type` and to avoid colliding
+        /// with the global `--api-key` (Hotdata auth) flag.
+        #[arg(long = "provider-api-key", conflicts_with = "secret_name")]
+        provider_api_key: Option<String>,
+
+        /// Reference an existing secret by name (for service providers)
+        #[arg(long)]
+        secret_name: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Update an embedding provider's name, config, or secret
+    Update {
+        /// Provider ID
+        id: String,
+
+        /// New name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// New config as a JSON string
+        #[arg(long)]
+        config: Option<String>,
+
+        /// New provider API key (replaces or creates the managed secret).
+        /// See `embedding-providers create --provider-api-key` for naming rationale.
+        #[arg(long = "provider-api-key", conflicts_with = "secret_name")]
+        provider_api_key: Option<String>,
+
+        /// New secret name to reference
+        #[arg(long)]
+        secret_name: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Delete an embedding provider
+    Delete {
+        /// Provider ID
+        id: String,
+    },
+}
 
 #[derive(Deserialize, Serialize)]
 struct Provider {
@@ -44,7 +128,7 @@ fn parse_config(raw: Option<&str>) -> Option<serde_json::Value> {
 
 pub fn list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let providers: Vec<Provider> = crate::sdk::block_with_wakeup(
+    let providers: Vec<Provider> = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading embedding providers…",
         api.client().embedding_providers().list(),
@@ -76,7 +160,7 @@ pub fn list(workspace_id: &str, format: &str) {
                     ]
                 })
                 .collect();
-            crate::table::print(&["ID", "NAME", "TYPE", "SOURCE", "SECRET"], &rows);
+            crate::output::table::print(&["ID", "NAME", "TYPE", "SOURCE", "SECRET"], &rows);
         }
         _ => unreachable!(),
     }
@@ -84,7 +168,7 @@ pub fn list(workspace_id: &str, format: &str) {
 
 pub fn get(workspace_id: &str, id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let p: Provider = crate::sdk::block_with_wakeup(
+    let p: Provider = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading embedding provider…",
         api.client().embedding_providers().get(id),
@@ -136,7 +220,7 @@ pub fn create(
         req.secret_name = Some(Some(s.to_string()));
     }
 
-    let resp = crate::sdk::block_with_wakeup(
+    let resp = crate::client::sdk::block_with_wakeup(
         &api,
         "Creating embedding provider…",
         api.client().embedding_providers().create(req),
@@ -192,7 +276,7 @@ pub fn update(
         req.secret_name = Some(Some(s.to_string()));
     }
 
-    let resp = crate::sdk::block_with_wakeup(
+    let resp = crate::client::sdk::block_with_wakeup(
         &api,
         "Updating embedding provider…",
         api.client().embedding_providers().update(id, req),
@@ -218,7 +302,7 @@ pub fn update(
 pub fn delete(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     let api = Api::new(Some(workspace_id));
-    crate::sdk::block_with_wakeup(
+    crate::client::sdk::block_with_wakeup(
         &api,
         "Deleting embedding provider…",
         api.client().embedding_providers().delete(id),

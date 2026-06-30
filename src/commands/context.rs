@@ -1,6 +1,6 @@
 //! Database context: `/v1/databases/{id}/context` sync with `./{NAME}.md` in the current directory.
 
-use crate::sdk::{Api, ApiError};
+use crate::client::sdk::{Api, ApiError};
 use crossterm::style::Stylize;
 use hotdata::models::{DatabaseContextEntry, UpsertDatabaseContextRequest};
 use std::collections::HashSet;
@@ -8,6 +8,51 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::LazyLock;
+
+/// Subcommands for `hotdata context`.
+#[derive(clap::Subcommand)]
+pub enum ContextCommands {
+    /// List named contexts in the workspace
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+
+        /// Only include names starting with this prefix (case-sensitive)
+        #[arg(long)]
+        prefix: Option<String>,
+    },
+
+    /// Print context content to stdout
+    Show {
+        /// Context name (same rules as a SQL table identifier; local file is <NAME>.md). A trailing `.md` is ignored (e.g. `USER.md` → `USER`).
+        name: String,
+    },
+
+    /// Download context from the database to ./<NAME>.md
+    Pull {
+        /// Context name (trailing `.md` ignored, e.g. `USER.md` → `USER`)
+        name: String,
+
+        /// Overwrite ./<NAME>.md if it already exists
+        #[arg(long)]
+        force: bool,
+
+        /// Print the target path and size only; do not write a file
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Upload ./<NAME>.md to the database as named context
+    Push {
+        /// Context name (trailing `.md` ignored, e.g. `USER.md` → `USER`; reads `./USER.md`)
+        name: String,
+
+        /// Print what would be sent; do not POST
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
 
 /// Matches runtimedb `MAX_TABLE_NAME_LENGTH` / `validate_table_name` rules for context keys.
 pub const MAX_CONTEXT_NAME_LEN: usize = 128;
@@ -121,8 +166,8 @@ fn local_md_path(name: &str) -> PathBuf {
 /// Fetch a named context document. Returns `Ok(None)` on 404 (not found);
 /// exits the process on any other error, matching the old behavior.
 fn fetch_context(api: &Api, database_id: &str, name: &str) -> Option<DatabaseContextEntry> {
-    let result = crate::sdk::block(api.client().database_context().get(database_id, name));
-    match crate::sdk::none_if_404(result) {
+    let result = crate::client::sdk::block(api.client().database_context().get(database_id, name));
+    match crate::client::sdk::none_if_404(result) {
         Ok(Some(resp)) => Some(*resp.context),
         Ok(None) => None,
         Err(e) => e.exit(),
@@ -131,7 +176,7 @@ fn fetch_context(api: &Api, database_id: &str, name: &str) -> Option<DatabaseCon
 
 pub fn list(workspace_id: &str, database_id: &str, prefix: Option<&str>, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let body = crate::sdk::block_with_wakeup(
+    let body = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading context…",
         api.client().database_context().list(database_id),
@@ -160,7 +205,7 @@ pub fn list(workspace_id: &str, database_id: &str, prefix: Option<&str>, format:
                         ]
                     })
                     .collect();
-                crate::table::print(&["NAME", "UPDATED", "CHARS"], &table_rows);
+                crate::output::table::print(&["NAME", "UPDATED", "CHARS"], &table_rows);
             }
         }
         _ => unreachable!(),
@@ -299,7 +344,7 @@ pub fn push(workspace_id: &str, database_id: &str, name: &str, dry_run: bool) {
 
     let api = Api::new(Some(workspace_id));
     let request = UpsertDatabaseContextRequest::new(content, name.clone());
-    let resp = match crate::sdk::block_with_wakeup(
+    let resp = match crate::client::sdk::block_with_wakeup(
         &api,
         "Pushing context…",
         api.client().database_context().upsert(database_id, request),

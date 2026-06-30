@@ -1,6 +1,41 @@
-use crate::sdk::Api;
+use crate::client::sdk::Api;
 use hotdata::models::TableInfo;
 use serde::Serialize;
+
+/// Subcommands for `hotdata tables`.
+#[derive(clap::Subcommand)]
+pub enum TablesCommands {
+    /// List all tables in a workspace
+    List {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w')]
+        workspace_id: Option<String>,
+
+        /// Filter by connection ID (also enables column output)
+        #[arg(long, short = 'c')]
+        connection_id: Option<String>,
+
+        /// Filter by schema name (supports % wildcards)
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Filter by table name (supports % wildcards)
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Maximum number of results to return
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination cursor from a previous response
+        #[arg(long)]
+        cursor: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+}
 
 #[derive(Serialize)]
 struct Column {
@@ -42,7 +77,7 @@ pub fn list(
     // the old behavior (include_columns=true iff connection_id is set).
     let include_columns = connection_id.map(|_| true);
 
-    let body = crate::sdk::block_with_wakeup(
+    let body = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading tables…",
         api.client().information_schema().get(
@@ -99,7 +134,10 @@ pub fn list(
                             })
                         })
                         .collect();
-                    crate::table::print(&["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"], &rows);
+                    crate::output::table::print(
+                        &["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"],
+                        &rows,
+                    );
                 }
             }
             _ => unreachable!(),
@@ -136,7 +174,7 @@ pub fn list(
                             ]
                         })
                         .collect();
-                    crate::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &rows);
+                    crate::output::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &rows);
                 }
             }
             _ => unreachable!(),

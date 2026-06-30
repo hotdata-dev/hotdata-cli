@@ -184,7 +184,7 @@ pub fn database_token_in_use() -> Option<(String, Option<String>)> {
 }
 
 /// In-child equivalent of a parent-side `ensure_access_token`: operates
-/// on env vars only. Used by [`crate::sdk::Api`] when the parent
+/// on env vars only. Used by [`crate::client::sdk::Api`] when the parent
 /// `databases run` already passed in `HOTDATA_DATABASE_TOKEN` and
 /// `HOTDATA_DATABASE_REFRESH_TOKEN`. The new tokens are *not* persisted
 /// to disk — the child may not have write access to the parent's

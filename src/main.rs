@@ -1,36 +1,28 @@
-mod auth;
-mod command;
+mod cli;
+mod client;
+mod commands;
 mod config;
-mod connections;
-mod connections_new;
-mod context;
-mod database_session;
-mod databases;
-mod embedding_providers;
-mod indexes;
-mod jobs;
-mod jwt;
-mod queries;
-mod query;
-mod raw_http;
-mod results;
-mod sdk;
-mod skill;
-mod table;
-mod tables;
-mod update;
-mod usage;
+mod output;
 mod util;
-mod workspace;
 
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
-use command::{
-    AuthCommands, Commands, ConnectionsCommands, ConnectionsCreateCommands, ContextCommands,
-    DatabaseTablesCommands, DatabasesCommands, EmbeddingProvidersCommands, IndexesCommands,
-    JobsCommands, QueriesCommands, QueryCommands, ResultsCommands, SkillCommands, TablesCommands,
-    WorkspaceCommands,
-};
+use cli::Commands;
+use client::{credentials, database_session, sdk};
+use commands::auth::{self, AuthCommands};
+use commands::connections::{self, ConnectionsCommands, ConnectionsCreateCommands};
+use commands::context::{self, ContextCommands};
+use commands::databases::{self, DatabaseTablesCommands, DatabasesCommands};
+use commands::embedding_providers::{self, EmbeddingProvidersCommands};
+use commands::indexes::{self, IndexesCommands};
+use commands::jobs::{self, JobsCommands};
+use commands::queries::{self, QueriesCommands};
+use commands::query::{self, QueryCommands};
+use commands::results::{self, ResultsCommands};
+use commands::skill::{self, SkillCommands};
+use commands::tables::{self, TablesCommands};
+use commands::workspace::{self, WorkspaceCommands};
+use commands::{update, usage};
 
 #[derive(Parser)]
 #[command(name = "hotdata", version, about = concat!("Hotdata CLI - Command line interface for Hotdata (v", env!("CARGO_PKG_VERSION"), ")"), long_about = None, disable_version_flag = true)]
@@ -89,7 +81,7 @@ fn resolve_workspace(provided: Option<String>) -> String {
                     config::ApiKeySource::Flag | config::ApiKeySource::Env
                 )
             {
-                let ids = auth::api_key_workspace_ids(&profile);
+                let ids = credentials::api_key_workspace_ids(&profile);
                 if let [only] = ids.as_slice() {
                     let _ = ACTIVE_WORKSPACE_ID.set(only.clone());
                     return only.clone();
@@ -248,7 +240,9 @@ fn main() {
                     connections::get(&workspace_id, &id, &output)
                 } else {
                     match command {
-                        Some(ConnectionsCommands::New) => connections_new::run(&workspace_id),
+                        Some(ConnectionsCommands::New) => {
+                            connections::interactive::run(&workspace_id)
+                        }
                         Some(ConnectionsCommands::List { output }) => {
                             connections::list(&workspace_id, &output)
                         }
