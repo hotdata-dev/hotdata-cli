@@ -1,3 +1,13 @@
+## [0.11.0] - 2026-06-30
+
+### 🐛 Bug Fixes
+
+- *(jobs)* Accept managed_load as --job-type filter (#160) (#195)
+
+### 💼 Other
+
+- Post #deploy Slack message on CLI release
+- *(deps)* Bump hotdata SDK to 0.7.0
 ## [0.10.0] - 2026-06-29
 
 ### 🚀 Features
