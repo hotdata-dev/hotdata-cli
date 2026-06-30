@@ -663,33 +663,30 @@ fn main() {
                         table,
                         name,
                     } => {
-                        let api = sdk::Api::new(Some(&workspace_id));
-                        // Resolve the connection the same way `indexes create`
-                        // does: a `--catalog` alias maps to the backing
-                        // connection (incl. a managed database's default
-                        // connection); `--connection-id` is used as-is.
-                        let conn_id = match (catalog.as_deref(), connection_id.as_deref()) {
-                            (Some(cat), _) => connections::resolve_connection_id(&api, cat),
-                            (None, Some(cid)) => cid.to_string(),
+                        // clap guarantees exactly one of --catalog / --connection-id
+                        // plus --table and --name; --schema defaults to "public".
+                        // A `--catalog` alias resolves to the backing connection
+                        // (incl. a managed database's default connection), the same
+                        // way `indexes create` does; `--connection-id` is used as-is.
+                        let conn_id = match (catalog, connection_id) {
+                            (Some(cat), _) => {
+                                let api = sdk::Api::new(Some(&workspace_id));
+                                connections::resolve_connection_id(&api, &cat)
+                            }
+                            (None, Some(cid)) => cid,
                             (None, None) => {
-                                eprintln!(
-                                    "error: provide --catalog <alias> (or --connection-id <id>) with --schema and --table"
-                                );
-                                std::process::exit(1);
+                                unreachable!("clap requires --catalog or --connection-id")
                             }
                         };
-                        let scope = match (schema.as_deref(), table.as_deref()) {
-                            (Some(sch), Some(tbl)) => indexes::IndexScope::Connection {
+                        indexes::delete(
+                            &workspace_id,
+                            indexes::IndexScope::Connection {
                                 connection_id: &conn_id,
-                                schema: sch,
-                                table: tbl,
+                                schema: &schema,
+                                table: &table,
                             },
-                            _ => {
-                                eprintln!("error: --schema and --table are required");
-                                std::process::exit(1);
-                            }
-                        };
-                        indexes::delete(&workspace_id, scope, &name);
+                            &name,
+                        );
                     }
                 }
             }
