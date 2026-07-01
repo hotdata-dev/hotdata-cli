@@ -1,7 +1,30 @@
-use crate::sdk::Api;
+use crate::client::sdk::Api;
 use crossterm::style::Stylize;
 use hotdata::models::QueryRunInfo;
 use serde::Serialize;
+
+/// Subcommands for `hotdata queries`.
+#[derive(clap::Subcommand)]
+pub enum QueriesCommands {
+    /// List query runs
+    List {
+        /// Maximum number of results
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+
+        /// Pagination cursor from a previous response
+        #[arg(long)]
+        cursor: Option<String>,
+
+        /// Filter by status (comma-separated, e.g. running,failed)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+}
 
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "ON", "JOIN", "LEFT",
@@ -178,7 +201,7 @@ pub fn list(
 ) {
     let api = Api::new(Some(workspace_id));
 
-    let resp = crate::sdk::block_with_wakeup(
+    let resp = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading query runs…",
         api.client()
@@ -217,7 +240,7 @@ pub fn list(
                         ]
                     })
                     .collect();
-                crate::table::print(
+                crate::output::table::print(
                     &["ID", "STATUS", "CREATED", "MS", "ROWS", "RESULT_ID", "SQL"],
                     &rows,
                 );
@@ -236,7 +259,7 @@ pub fn list(
 
 pub fn get(query_run_id: &str, workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let run: QueryRun = crate::sdk::block_with_wakeup(
+    let run: QueryRun = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading query run…",
         api.client().query_runs().get(query_run_id),

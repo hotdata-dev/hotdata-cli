@@ -1,7 +1,235 @@
-use crate::sdk::{Api, ApiError, block, block_with_wakeup, none_if_404};
+use crate::client::sdk::{Api, ApiError, block, block_with_wakeup, none_if_404};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Subcommands for `hotdata databases`.
+#[derive(clap::Subcommand)]
+pub enum DatabasesCommands {
+    /// List managed databases in the workspace
+    List {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Show details for a specific managed database
+    Show {
+        /// Database name or ID
+        name_or_id: String,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Create a new managed database
+    Create {
+        /// Human-readable display name for the database (e.g. "Sales reporting").
+        #[arg(long)]
+        name: Option<String>,
+
+        /// SQL catalog alias used in queries: SELECT … FROM <catalog>.schema.table.
+        /// Must be [a-z_][a-z0-9_]*, globally unique.
+        #[arg(long)]
+        catalog: Option<String>,
+
+        /// Default schema for bare `--table` entries (default: public).
+        /// Use dot notation in `--table` to target a different schema directly,
+        /// e.g. `--table raw.raw_orders` always goes into the "raw" schema.
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Table to declare up front (repeatable). Accepts bare names or
+        /// `schema.table` dot notation to span multiple schemas in one command:
+        ///   --table orders --table raw.raw_orders --table raw.raw_customers
+        #[arg(long = "table")]
+        tables: Vec<String>,
+
+        /// When the database expires. Accepts a relative duration (e.g. 24h, 7d, 90m)
+        /// or an RFC 3339 timestamp. Omitting means no expiry.
+        #[arg(long)]
+        expires_at: Option<String>,
+
+        /// Attach a connection as a queryable catalog on the new database (repeatable).
+        /// Accepts a connection name or id, optionally `connection=alias` to set the
+        /// SQL alias it answers to: `--attach github --attach salesdb=sales`.
+        #[arg(long = "attach")]
+        attach: Vec<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Attach a connection as a queryable catalog on a managed database.
+    ///
+    /// A `query` runs inside one managed database; attaching a connection makes
+    /// its live tables visible in that database's scope, so you can join across
+    /// sources in a single query without exporting data. Reachable in SQL as
+    /// `<alias>.<schema>.<table>`, or `<connection-name>.<schema>.<table>` when
+    /// `--alias` is omitted.
+    Attach {
+        /// Connection name or id to attach (e.g. `github`)
+        connection: String,
+
+        /// Database id, catalog, or name to attach into (defaults to the current database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
+        /// Alias the catalog answers to in SQL. Defaults to the connection's name.
+        #[arg(long)]
+        alias: Option<String>,
+    },
+
+    /// Detach a previously attached connection catalog from a managed database.
+    Detach {
+        /// Connection name or id to detach
+        connection: String,
+
+        /// Database id, catalog, or name to detach from (defaults to the current database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+    },
+
+    /// Set the current database (used by default when no database is specified)
+    Set {
+        /// Database id
+        id: String,
+    },
+
+    /// Clear the current database
+    Unset,
+
+    /// Delete a managed database and its tables
+    Delete {
+        /// Database name or connection ID
+        name_or_id: String,
+    },
+
+    /// Load a parquet file into a managed database table
+    Load {
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
+        #[arg(long)]
+        catalog: String,
+
+        /// Schema to load into (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Table name to load into
+        #[arg(long)]
+        table: String,
+
+        /// Path to a local parquet file to upload and load
+        #[arg(long, conflicts_with_all = ["upload_id", "url"])]
+        file: Option<String>,
+
+        /// URL of a remote parquet file to download and load
+        #[arg(long, conflicts_with_all = ["file", "upload_id"])]
+        url: Option<String>,
+
+        /// Use a previously staged upload ID from `POST /v1/uploads` instead of uploading
+        #[arg(long, conflicts_with_all = ["file", "url"])]
+        upload_id: Option<String>,
+    },
+
+    /// Manage tables inside a managed database
+    Tables {
+        /// Database id or name — shorthand for `tables list` when no subcommand is given
+        database: Option<String>,
+
+        #[command(subcommand)]
+        command: Option<DatabaseTablesCommands>,
+    },
+
+    /// Run a command with a database-scoped token. Creates a new database unless --database is given.
+    Run {
+        /// Existing database id to scope the token to (omit to auto-create a database)
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Name for the auto-created database (only used when --database is omitted)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Schema for tables declared in the auto-created database (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Table to declare in the auto-created database (repeatable)
+        #[arg(long = "table")]
+        tables: Vec<String>,
+
+        /// When the auto-created database expires. Accepts a relative duration
+        /// (e.g. 24h, 7d, 90m) or an RFC 3339 timestamp. Defaults to 24h when omitted.
+        #[arg(long)]
+        expires_at: Option<String>,
+
+        /// Command to execute (everything after `--`)
+        #[arg(trailing_var_arg = true, required = true)]
+        cmd: Vec<String>,
+    },
+}
+
+/// Subcommands for `hotdata databases tables`.
+#[derive(clap::Subcommand)]
+pub enum DatabaseTablesCommands {
+    /// List tables in a managed database
+    List {
+        /// Database id or name (defaults to current database)
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Filter by schema name
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Load a parquet file into a table (creates or replaces the table)
+    Load {
+        /// Database id or name (defaults to current database)
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Table name
+        table: String,
+
+        /// Schema name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Path to a local parquet file to upload and load
+        #[arg(long, conflicts_with_all = ["upload_id", "url"])]
+        file: Option<String>,
+
+        /// URL of a remote parquet file to download and load
+        #[arg(long, conflicts_with_all = ["file", "upload_id"])]
+        url: Option<String>,
+
+        /// Use a previously staged upload ID from `POST /v1/uploads` instead of uploading
+        #[arg(long, conflicts_with_all = ["file", "url"])]
+        upload_id: Option<String>,
+    },
+
+    /// Delete a table from a managed database
+    Delete {
+        /// Database id or name (defaults to current database)
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Table name
+        table: String,
+
+        /// Schema name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+    },
+}
 
 const DEFAULT_SCHEMA: &str = "public";
 
@@ -512,7 +740,7 @@ fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<I
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let resp = crate::sdk::block(api.client().information_schema().get(
+        let resp = crate::client::sdk::block(api.client().information_schema().get(
             Some(connection_id),
             schema,
             None,
@@ -572,7 +800,7 @@ pub fn list(workspace_id: &str, format: &str) {
                         ]
                     })
                     .collect();
-                crate::table::print(&["", "ID", "NAME"], &rows);
+                crate::output::table::print(&["", "ID", "NAME"], &rows);
             }
         }
         _ => unreachable!(),
@@ -653,7 +881,7 @@ pub fn attach(workspace_id: &str, connection: &str, database: Option<&str>, alia
     // exits with the resolver's message, and an API failure goes through
     // `ApiError::exit`, which upgrades a masked 401/403 into the re-auth hint.
     // (The non-fatal `create --attach` loop uses `attach_connection` instead.)
-    let connection_id = crate::connections::resolve_connection_id(&api, connection);
+    let connection_id = crate::commands::connections::resolve_connection_id(&api, connection);
     send_attach(&api, &db.id, connection_id, alias).unwrap_or_else(|e| e.exit());
 
     match alias {
@@ -699,7 +927,7 @@ pub fn detach(workspace_id: &str, connection: &str, database: Option<&str>) {
         .iter()
         .find(|a| a.alias.as_deref() == Some(connection))
         .map(|a| a.connection_id.clone())
-        .unwrap_or_else(|| crate::connections::resolve_connection_id(&api, connection));
+        .unwrap_or_else(|| crate::commands::connections::resolve_connection_id(&api, connection));
 
     block(
         api.client()
@@ -746,7 +974,7 @@ fn mint_database_token(api: &Api, database_id: &str) -> DatabaseTokenResponse {
         // The old typed `api.post` routed non-success through `fail_response`,
         // which upgrades a masked 401/403/404 into the re-auth hint. Reproduce
         // that via the seam's auth-aware exit.
-        crate::sdk::ApiError::Status {
+        crate::client::sdk::ApiError::Status {
             status,
             body: resp_body,
         }
@@ -795,7 +1023,7 @@ pub fn run(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let session = crate::database_session::DatabaseSession {
+    let session = crate::client::database_session::DatabaseSession {
         access_token: db_jwt.clone(),
         refresh_token: db_refresh.clone(),
         database_id: db_id.clone(),
@@ -803,7 +1031,7 @@ pub fn run(
         access_expires_at: now + resp.expires_in,
         refresh_expires_at: now + resp.refresh_expires_in,
     };
-    if let Err(e) = crate::database_session::save(&session) {
+    if let Err(e) = crate::client::database_session::save(&session) {
         eprintln!("warning: could not persist database session: {e}");
     }
 
@@ -874,7 +1102,7 @@ fn attach_connection(
     connection: &str,
     alias: Option<&str>,
 ) -> Result<String, String> {
-    let connection_id = crate::connections::try_resolve_connection_id(api, connection)?;
+    let connection_id = crate::commands::connections::try_resolve_connection_id(api, connection)?;
     send_attach(api, database_id, connection_id.clone(), alias).map_err(|e| e.message())?;
     Ok(connection_id)
 }
@@ -1005,7 +1233,7 @@ pub fn set(workspace_id: &str, id: &str) {
     // allow-list), so skip the check for it and save the id directly.
     let is_database_api_token = crate::config::load("default")
         .ok()
-        .and_then(|profile| crate::auth::api_key_jwt_source(&profile))
+        .and_then(|profile| crate::client::credentials::api_key_jwt_source(&profile))
         .as_deref()
         == Some("database_api_token");
     if !is_database_api_token {
@@ -1097,7 +1325,7 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
                         ]
                     })
                     .collect();
-                crate::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &table_rows);
+                crate::output::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &table_rows);
             }
         }
         _ => unreachable!(),
@@ -1119,7 +1347,8 @@ pub fn tables_load(
     // connection-scoped managed endpoints (all outside its allow-list). Route it
     // through the database-scoped endpoints, addressed by database id.
     if let Ok(profile) = crate::config::load("default")
-        && crate::auth::api_key_jwt_source(&profile).as_deref() == Some("database_api_token")
+        && crate::client::credentials::api_key_jwt_source(&profile).as_deref()
+            == Some("database_api_token")
     {
         tables_load_database_scoped(workspace_id, database, table, schema, file, url, upload_id);
         return;

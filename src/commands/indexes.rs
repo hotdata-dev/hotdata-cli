@@ -1,9 +1,115 @@
-use crate::databases;
-use crate::sdk::{Api, block, block_with_wakeup, none_if_404};
+use crate::client::sdk::{Api, block, block_with_wakeup, none_if_404};
+use crate::commands::databases;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::ControlFlow;
+
+/// Subcommands for `hotdata indexes`.
+#[derive(clap::Subcommand)]
+pub enum IndexesCommands {
+    /// List indexes (defaults to the whole workspace; narrow with filters)
+    List {
+        /// Filter by connection ID
+        #[arg(long, short = 'c')]
+        connection_id: Option<String>,
+
+        /// Filter by schema name
+        #[arg(long)]
+        schema: Option<String>,
+
+        /// Filter by table name
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Create an index on a table.
+    Create {
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
+        #[arg(long)]
+        catalog: Option<String>,
+
+        /// Schema name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Table name to index
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Column(s) to index (comma-separated)
+        #[arg(long)]
+        column: Option<String>,
+
+        /// Index name (derived from table, columns, and type if omitted)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Index type — required (no default; choose deliberately)
+        #[arg(long, value_parser = ["sorted", "bm25", "vector"])]
+        r#type: String,
+
+        /// Distance metric for vector indexes
+        #[arg(long, value_parser = ["l2", "cosine", "dot"])]
+        metric: Option<String>,
+
+        /// Create as a background job
+        #[arg(long)]
+        r#async: bool,
+
+        /// Embedding provider ID — when set on a vector index over a text column,
+        /// embeddings are generated automatically. Defaults to first system provider if omitted.
+        #[arg(long = "embedding-provider-id")]
+        embedding_provider_id: Option<String>,
+
+        /// Override embedding output dimensions (vector indexes with auto-embedding only)
+        #[arg(long)]
+        dimensions: Option<u32>,
+
+        /// Custom name for the generated embedding column (defaults to `{column}_embedding`)
+        #[arg(long = "output-column")]
+        output_column: Option<String>,
+
+        /// Human-readable description of the embedding (e.g. "product titles")
+        #[arg(long)]
+        description: Option<String>,
+    },
+
+    /// Delete an index from a table
+    ///
+    /// Scope with `--catalog <alias>` (the same flag as `indexes create`) or
+    /// `--connection-id <id>`, plus `--table` (and `--schema`, default `public`).
+    Delete {
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`) —
+        /// resolved to the backing connection, the same flag `indexes create` uses
+        #[arg(
+            long,
+            conflicts_with = "connection_id",
+            required_unless_present = "connection_id"
+        )]
+        catalog: Option<String>,
+
+        /// Connection ID (advanced; prefer --catalog)
+        #[arg(long, short = 'c', required_unless_present = "catalog")]
+        connection_id: Option<String>,
+
+        /// Schema name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Table name
+        #[arg(long)]
+        table: String,
+
+        /// Index name
+        #[arg(long)]
+        name: String,
+    },
+}
 
 #[derive(Deserialize, Serialize)]
 struct Index {
@@ -370,7 +476,7 @@ pub fn infer_for_search(
     let api = Api::new(Some(workspace_id));
 
     // Resolve connection name → ID (falls back to managed database catalog lookup)
-    let connection_id = crate::connections::resolve_connection_id(&api, connection_name);
+    let connection_id = crate::commands::connections::resolve_connection_id(&api, connection_name);
 
     // Fetch indexes for this table
     let indexes = list_one_table(&api, &connection_id, schema, table);
@@ -434,7 +540,7 @@ pub fn list(
                         ]
                     })
                     .collect();
-                crate::table::print(
+                crate::output::table::print(
                     &[
                         "TABLE", "NAME", "TYPE", "COLUMNS", "METRIC", "STATUS", "CREATED",
                     ],
@@ -454,7 +560,7 @@ pub fn list(
                         ]
                     })
                     .collect();
-                crate::table::print(
+                crate::output::table::print(
                     &["NAME", "TYPE", "COLUMNS", "METRIC", "STATUS", "CREATED"],
                     &table_rows,
                 );
@@ -607,8 +713,8 @@ pub fn delete(workspace_id: &str, scope: IndexScope<'_>, index_name: &str) {
 
     if let Err(e) = result {
         let body = match e {
-            crate::sdk::ApiError::Status { body, .. } => body,
-            crate::sdk::ApiError::Transport(msg) => msg,
+            crate::client::sdk::ApiError::Status { body, .. } => body,
+            crate::client::sdk::ApiError::Transport(msg) => msg,
         };
         eprintln!("{}", crate::util::api_error(body).red());
         std::process::exit(1);
@@ -1228,5 +1334,97 @@ mod tests {
         let result = resolve_search_params(&indexes, None, None, "db.public.t");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("has no columns"));
+    }
+
+    mod delete_args {
+        use crate::commands::indexes::IndexesCommands;
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(subcommand)]
+            cmd: IndexesCommands,
+        }
+
+        fn parse(args: &[&str]) -> Result<IndexesCommands, clap::Error> {
+            Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).map(|w| w.cmd)
+        }
+
+        #[test]
+        fn delete_catalog_defaults_schema_to_public() {
+            let cmd = parse(&[
+                "delete",
+                "--catalog",
+                "vtest",
+                "--table",
+                "hits",
+                "--name",
+                "idx",
+            ])
+            .unwrap();
+            match cmd {
+                IndexesCommands::Delete {
+                    catalog,
+                    connection_id,
+                    schema,
+                    table,
+                    name,
+                } => {
+                    assert_eq!(catalog.as_deref(), Some("vtest"));
+                    assert_eq!(connection_id, None);
+                    assert_eq!(schema, "public"); // defaulted, parity with `create`
+                    assert_eq!(table, "hits");
+                    assert_eq!(name, "idx");
+                }
+                _ => panic!("expected Delete"),
+            }
+        }
+
+        #[test]
+        fn delete_accepts_raw_connection_id() {
+            let cmd = parse(&[
+                "delete",
+                "--connection-id",
+                "conn_x",
+                "--table",
+                "hits",
+                "--name",
+                "idx",
+            ])
+            .unwrap();
+            assert!(matches!(
+                cmd,
+                IndexesCommands::Delete { connection_id, catalog: None, .. } if connection_id.as_deref() == Some("conn_x")
+            ));
+        }
+
+        #[test]
+        fn delete_requires_a_scope_flag() {
+            // neither --catalog nor --connection-id
+            assert!(parse(&["delete", "--table", "hits", "--name", "idx"]).is_err());
+        }
+
+        #[test]
+        fn delete_rejects_catalog_and_connection_id_together() {
+            assert!(
+                parse(&[
+                    "delete",
+                    "--catalog",
+                    "x",
+                    "--connection-id",
+                    "c",
+                    "--table",
+                    "t",
+                    "--name",
+                    "n"
+                ])
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn delete_requires_table() {
+            assert!(parse(&["delete", "--catalog", "x", "--name", "idx"]).is_err());
+        }
     }
 }

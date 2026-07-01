@@ -4,6 +4,21 @@ use semver::Version;
 use std::fs;
 use std::path::PathBuf;
 
+/// Subcommands for `hotdata skills`.
+#[derive(clap::Subcommand)]
+pub enum SkillCommands {
+    /// Install or update the hotdata skill into agent directories
+    Install {
+        /// Install into the current project directory instead of globally
+        #[arg(long)]
+        project: bool,
+    },
+    /// Show the installation status of the hotdata skill
+    Status,
+    /// List installed skills and their versions (alias for status)
+    List,
+}
+
 const REPO: &str = "hotdata-dev/hotdata-cli";
 const PRIMARY_SKILL_NAME: &str = "hotdata";
 const SKILL_NAMES: &[&str] = &[

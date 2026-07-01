@@ -309,7 +309,7 @@ fn update_to(latest: &Version) -> Result<(), String> {
     // from `latest` (not CURRENT_VERSION) because the old binary is still
     // running at this point — we want the skills for the version we just
     // downloaded, not the one we replaced.
-    crate::skill::install_for_version(latest);
+    crate::commands::skill::install_for_version(latest);
 
     // Bust the cache so the notice clears on the next run.
     write_cache(&UpdateCheckCache {

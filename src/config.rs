@@ -116,7 +116,7 @@ fn write_config(config_path: &std::path::Path, content: &str) -> Result<(), Stri
 }
 
 /// Wipe the workspace cache for a profile. Paired with
-/// `jwt::clear_session()` in `auth::logout` — together they reset the
+/// `jwt::clear_session()` in `commands::auth::logout` — together they reset the
 /// on-disk state that login populates.
 pub fn clear_workspaces(profile: &str) -> Result<(), String> {
     let config_path = config_path()?;

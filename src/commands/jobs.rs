@@ -1,6 +1,37 @@
-use crate::sdk::Api;
+use crate::client::sdk::Api;
 use hotdata::models::{JobStatusResponse, JobType};
 use serde::{Deserialize, Serialize};
+
+/// Subcommands for `hotdata jobs`.
+#[derive(clap::Subcommand)]
+pub enum JobsCommands {
+    /// List background jobs (shows active jobs by default)
+    List {
+        /// Filter by job type
+        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "create_index", "managed_load"])]
+        job_type: Option<String>,
+
+        /// Filter by status
+        #[arg(long, value_parser = ["pending", "running", "succeeded", "partially_succeeded", "failed"])]
+        status: Option<String>,
+
+        /// Show all jobs, not just active ones
+        #[arg(long)]
+        all: bool,
+
+        /// Maximum number of results (default: 50)
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination offset
+        #[arg(long)]
+        offset: Option<u32>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+}
 
 #[derive(Deserialize, Serialize)]
 struct Job {
@@ -48,10 +79,13 @@ fn parse_job_type(s: &str) -> Option<JobType> {
 
 pub fn get(job_id: &str, workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let job: Job =
-        crate::sdk::block_with_wakeup(&api, "Loading job…", api.client().jobs().get(job_id))
-            .unwrap_or_else(|e| e.exit())
-            .into();
+    let job: Job = crate::client::sdk::block_with_wakeup(
+        &api,
+        "Loading job…",
+        api.client().jobs().get(job_id),
+    )
+    .unwrap_or_else(|e| e.exit())
+    .into();
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&job).unwrap()),
@@ -142,7 +176,7 @@ fn fetch_jobs(
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Vec<Job> {
-    let resp = crate::sdk::block(api.client().jobs().list(
+    let resp = crate::client::sdk::block(api.client().jobs().list(
         job_type.and_then(parse_job_type),
         status,
         limit.map(|l| l as i32),
@@ -199,7 +233,7 @@ pub fn list(
                         ]
                     })
                     .collect();
-                crate::table::print(
+                crate::output::table::print(
                     &["ID", "TYPE", "STATUS", "ATTEMPTS", "CREATED", "COMPLETED"],
                     &rows,
                 );
