@@ -81,19 +81,29 @@ pub enum IndexesCommands {
 
     /// Delete an index from a table
     ///
-    /// Pass connection scope: --connection-id + --schema + --table.
+    /// Scope with `--catalog <alias>` (the same flag as `indexes create`) or
+    /// `--connection-id <id>`, plus `--table` (and `--schema`, default `public`).
     Delete {
-        /// Connection ID (use with --schema and --table)
-        #[arg(long, short = 'c', requires_all = ["schema", "table"])]
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`) —
+        /// resolved to the backing connection, the same flag `indexes create` uses
+        #[arg(
+            long,
+            conflicts_with = "connection_id",
+            required_unless_present = "connection_id"
+        )]
+        catalog: Option<String>,
+
+        /// Connection ID (advanced; prefer --catalog)
+        #[arg(long, short = 'c', required_unless_present = "catalog")]
         connection_id: Option<String>,
 
-        /// Schema name (requires --connection-id)
-        #[arg(long, requires = "connection_id")]
-        schema: Option<String>,
+        /// Schema name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
 
-        /// Table name (requires --connection-id)
-        #[arg(long, requires = "connection_id")]
-        table: Option<String>,
+        /// Table name
+        #[arg(long)]
+        table: String,
 
         /// Index name
         #[arg(long)]
@@ -1324,5 +1334,97 @@ mod tests {
         let result = resolve_search_params(&indexes, None, None, "db.public.t");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("has no columns"));
+    }
+
+    mod delete_args {
+        use crate::commands::indexes::IndexesCommands;
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(subcommand)]
+            cmd: IndexesCommands,
+        }
+
+        fn parse(args: &[&str]) -> Result<IndexesCommands, clap::Error> {
+            Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).map(|w| w.cmd)
+        }
+
+        #[test]
+        fn delete_catalog_defaults_schema_to_public() {
+            let cmd = parse(&[
+                "delete",
+                "--catalog",
+                "vtest",
+                "--table",
+                "hits",
+                "--name",
+                "idx",
+            ])
+            .unwrap();
+            match cmd {
+                IndexesCommands::Delete {
+                    catalog,
+                    connection_id,
+                    schema,
+                    table,
+                    name,
+                } => {
+                    assert_eq!(catalog.as_deref(), Some("vtest"));
+                    assert_eq!(connection_id, None);
+                    assert_eq!(schema, "public"); // defaulted, parity with `create`
+                    assert_eq!(table, "hits");
+                    assert_eq!(name, "idx");
+                }
+                _ => panic!("expected Delete"),
+            }
+        }
+
+        #[test]
+        fn delete_accepts_raw_connection_id() {
+            let cmd = parse(&[
+                "delete",
+                "--connection-id",
+                "conn_x",
+                "--table",
+                "hits",
+                "--name",
+                "idx",
+            ])
+            .unwrap();
+            assert!(matches!(
+                cmd,
+                IndexesCommands::Delete { connection_id, catalog: None, .. } if connection_id.as_deref() == Some("conn_x")
+            ));
+        }
+
+        #[test]
+        fn delete_requires_a_scope_flag() {
+            // neither --catalog nor --connection-id
+            assert!(parse(&["delete", "--table", "hits", "--name", "idx"]).is_err());
+        }
+
+        #[test]
+        fn delete_rejects_catalog_and_connection_id_together() {
+            assert!(
+                parse(&[
+                    "delete",
+                    "--catalog",
+                    "x",
+                    "--connection-id",
+                    "c",
+                    "--table",
+                    "t",
+                    "--name",
+                    "n"
+                ])
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn delete_requires_table() {
+            assert!(parse(&["delete", "--catalog", "x", "--name", "idx"]).is_err());
+        }
     }
 }

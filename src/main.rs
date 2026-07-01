@@ -651,29 +651,36 @@ fn main() {
                         )
                     }
                     IndexesCommands::Delete {
+                        catalog,
                         connection_id,
                         schema,
                         table,
                         name,
                     } => {
-                        let scope = match (
-                            connection_id.as_deref(),
-                            schema.as_deref(),
-                            table.as_deref(),
-                        ) {
-                            (Some(cid), Some(sch), Some(tbl)) => indexes::IndexScope::Connection {
-                                connection_id: cid,
-                                schema: sch,
-                                table: tbl,
-                            },
-                            _ => {
-                                eprintln!(
-                                    "error: provide all three of --connection-id, --schema, --table"
-                                );
-                                std::process::exit(1);
+                        // clap guarantees exactly one of --catalog / --connection-id
+                        // plus --table and --name; --schema defaults to "public".
+                        // A `--catalog` alias resolves to the backing connection
+                        // (incl. a managed database's default connection), the same
+                        // way `indexes create` does; `--connection-id` is used as-is.
+                        let conn_id = match (catalog, connection_id) {
+                            (Some(cat), _) => {
+                                let api = sdk::Api::new(Some(&workspace_id));
+                                connections::resolve_connection_id(&api, &cat)
+                            }
+                            (None, Some(cid)) => cid,
+                            (None, None) => {
+                                unreachable!("clap requires --catalog or --connection-id")
                             }
                         };
-                        indexes::delete(&workspace_id, scope, &name);
+                        indexes::delete(
+                            &workspace_id,
+                            indexes::IndexScope::Connection {
+                                connection_id: &conn_id,
+                                schema: &schema,
+                                table: &table,
+                            },
+                            &name,
+                        );
                     }
                 }
             }
