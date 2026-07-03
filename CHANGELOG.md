@@ -1,3 +1,13 @@
+## [0.11.1] - 2026-07-03
+
+### 🐛 Bug Fixes
+
+- *(indexes)* Accept --catalog on 'indexes delete'
+- *(indexes)* Validate delete scope via clap; default schema to public
+
+### 🚜 Refactor
+
+- *(modules)* Move to module layout for sub-command structure
 ## [0.11.0] - 2026-06-30
 
 ### 🚀 Features
