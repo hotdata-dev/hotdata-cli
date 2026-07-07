@@ -609,15 +609,16 @@ impl Api {
         self.database_id.as_deref()
     }
 
-    /// Return a clone of this `Api` scoped to `database_id`, overriding any
-    /// database resolved at construction (`HOTDATA_DATABASE` / current
-    /// database). Used by commands whose `--database` flag scopes a single
-    /// invocation without switching the persisted active database.
-    pub fn scoped_to_database(&self, database_id: String) -> Self {
-        Self {
-            database_id: Some(database_id),
-            ..self.clone()
+    /// Scope this `Api` to `database` when `Some`, overriding any database
+    /// resolved at construction (`HOTDATA_DATABASE` / current database); a
+    /// `None` leaves the resolved scope untouched. Used by commands whose
+    /// `--database` flag scopes a single invocation without switching the
+    /// persisted active database — `Api::new(..).scoped_to_database_opt(flag)`.
+    pub fn scoped_to_database_opt(mut self, database: Option<&str>) -> Self {
+        if let Some(db) = database {
+            self.database_id = Some(db.to_string());
         }
+        self
     }
 
     /// The active database scope, or exit with actionable guidance when none is

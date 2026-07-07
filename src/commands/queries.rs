@@ -200,7 +200,7 @@ pub fn list(
     status: Option<&str>,
     format: &str,
 ) {
-    let api = scoped_api(workspace_id, database);
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
     let database_id = api.require_database();
 
     let resp = crate::client::sdk::block_with_wakeup(
@@ -260,7 +260,7 @@ pub fn list(
 }
 
 pub fn get(query_run_id: &str, workspace_id: &str, database: Option<&str>, format: &str) {
-    let api = scoped_api(workspace_id, database);
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
     let database_id = api.require_database();
     let run: QueryRun = crate::client::sdk::block_with_wakeup(
         &api,
@@ -270,17 +270,6 @@ pub fn get(query_run_id: &str, workspace_id: &str, database: Option<&str>, forma
     .unwrap_or_else(|e| e.exit())
     .into();
     print_detail(&run, format);
-}
-
-/// Build an [`Api`] scoped to `database` when the caller passed `--database`,
-/// otherwise the database resolved at construction (`HOTDATA_DATABASE` /
-/// current database).
-fn scoped_api(workspace_id: &str, database: Option<&str>) -> Api {
-    let api = Api::new(Some(workspace_id));
-    match database {
-        Some(db) => api.scoped_to_database(db.to_string()),
-        None => api,
-    }
 }
 
 fn print_detail(r: &QueryRun, format: &str) {

@@ -430,11 +430,7 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
     // at construction (HOTDATA_DATABASE / current database). The scoped `Api`
     // carries the database into submit_query's `X-Database-Id` header and into
     // the database-scoped follow-up fetches (query-run poll, Arrow result).
-    let api = Api::new(Some(workspace_id));
-    let api = match database {
-        Some(db) => api.scoped_to_database(db.to_string()),
-        None => api,
-    };
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
     let database = api.database_id();
 
     let mut request = hotdata::models::QueryRequest::new(sql.to_string());
@@ -534,11 +530,7 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
 
 /// Poll a query run by ID. If succeeded and has a result_id, fetch and display the result.
 pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, format: &str) {
-    let api = Api::new(Some(workspace_id));
-    let api = match database {
-        Some(db) => api.scoped_to_database(db.to_string()),
-        None => api,
-    };
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
 
     let run = crate::client::sdk::block(
         api.client()
