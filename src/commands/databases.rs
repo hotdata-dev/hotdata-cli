@@ -107,7 +107,7 @@ pub enum DatabasesCommands {
         name_or_id: String,
     },
 
-    /// Load a parquet file into a managed database table
+    /// Load a parquet file or a saved query result into a managed database table
     Load {
         /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
         #[arg(long)]
@@ -122,16 +122,23 @@ pub enum DatabasesCommands {
         table: String,
 
         /// Path to a local parquet file to upload and load
-        #[arg(long, conflicts_with_all = ["upload_id", "url"])]
+        #[arg(long, conflicts_with_all = ["upload_id", "url", "result_id"])]
         file: Option<String>,
 
         /// URL of a remote parquet file to download and load
-        #[arg(long, conflicts_with_all = ["file", "upload_id"])]
+        #[arg(long, conflicts_with_all = ["file", "upload_id", "result_id"])]
         url: Option<String>,
 
         /// Use a previously staged upload ID from `POST /v1/uploads` instead of uploading
-        #[arg(long, conflicts_with_all = ["file", "url"])]
+        #[arg(long, conflicts_with_all = ["file", "url", "result_id"])]
         upload_id: Option<String>,
+
+        /// Load a saved query result by id (e.g. `--result-id rslt…`, from
+        /// `hotdata results` or a query's `[result-id: …]` footer) instead of a
+        /// file. The result must belong to the target database — the one it was
+        /// queried in.
+        #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
+        result_id: Option<String>,
     },
 
     /// Manage tables inside a managed database
@@ -190,7 +197,7 @@ pub enum DatabaseTablesCommands {
         output: String,
     },
 
-    /// Load a parquet file into a table (creates or replaces the table)
+    /// Load a parquet file or a saved query result into a table (creates or replaces the table)
     Load {
         /// Database id or name (defaults to current database)
         #[arg(long)]
@@ -204,16 +211,23 @@ pub enum DatabaseTablesCommands {
         schema: String,
 
         /// Path to a local parquet file to upload and load
-        #[arg(long, conflicts_with_all = ["upload_id", "url"])]
+        #[arg(long, conflicts_with_all = ["upload_id", "url", "result_id"])]
         file: Option<String>,
 
         /// URL of a remote parquet file to download and load
-        #[arg(long, conflicts_with_all = ["file", "upload_id"])]
+        #[arg(long, conflicts_with_all = ["file", "upload_id", "result_id"])]
         url: Option<String>,
 
         /// Use a previously staged upload ID from `POST /v1/uploads` instead of uploading
-        #[arg(long, conflicts_with_all = ["file", "url"])]
+        #[arg(long, conflicts_with_all = ["file", "url", "result_id"])]
         upload_id: Option<String>,
+
+        /// Load a saved query result by id (e.g. `--result-id rslt…`, from
+        /// `hotdata results` or a query's `[result-id: …]` footer) instead of a
+        /// file. The result must belong to the target database — the one it was
+        /// queried in.
+        #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
+        result_id: Option<String>,
     },
 
     /// Delete a table from a managed database
@@ -558,6 +572,13 @@ pub fn load_table_request(upload_id: &str) -> serde_json::Value {
     serde_json::json!({
         "mode": "replace",
         "upload_id": upload_id,
+    })
+}
+
+pub fn load_table_request_from_result(result_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "mode": "replace",
+        "result_id": result_id,
     })
 }
 
@@ -1332,6 +1353,7 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn tables_load(
     workspace_id: &str,
     database: Option<&str>,
@@ -1340,6 +1362,7 @@ pub fn tables_load(
     file: Option<&str>,
     url: Option<&str>,
     upload_id: Option<&str>,
+    result_id: Option<&str>,
 ) {
     use crossterm::style::Stylize;
 
@@ -1350,7 +1373,16 @@ pub fn tables_load(
         && crate::client::credentials::api_key_jwt_source(&profile).as_deref()
             == Some("database_api_token")
     {
-        tables_load_database_scoped(workspace_id, database, table, schema, file, url, upload_id);
+        tables_load_database_scoped(
+            workspace_id,
+            database,
+            table,
+            schema,
+            file,
+            url,
+            upload_id,
+            result_id,
+        );
         return;
     }
 
@@ -1376,22 +1408,31 @@ pub fn tables_load(
         None => database.clone(),
     };
     let db = resolve_database(&api, &lookup_key);
+    // A result load hits the connection-scoped endpoint, where the server scopes
+    // the result by the X-Database-Id header; that must name the resolved target
+    // database, not the ambient active one (which may be unset or different). An
+    // upload isn't result-scoped, so it keeps the ambient scope.
+    let api = api.scoped_to_database_opt(result_id.map(|_| db.id.as_str()));
     let schema = schema_name(schema);
 
-    // clap enforces mutual exclusion; only one of these is ever Some.
-    let upload_id = match (upload_id, file, url) {
-        (Some(id), None, None) => id.to_string(),
-        (None, Some(path), None) => upload_parquet_file(&api, path),
-        (None, None, Some(u)) => upload_parquet_url(&api, u),
-        (None, None, None) => {
-            eprintln!("error: --file <path>, --url <url>, or --upload-id <id> is required");
+    // clap enforces mutual exclusion; only one source is ever Some. A file/URL is
+    // uploaded first and loaded by upload id; a result is loaded by reference with
+    // no upload step.
+    let body = match (result_id, upload_id, file, url) {
+        (Some(rid), None, None, None) => load_table_request_from_result(rid),
+        (None, Some(id), None, None) => load_table_request(id),
+        (None, None, Some(path), None) => load_table_request(&upload_parquet_file(&api, path)),
+        (None, None, None, Some(u)) => load_table_request(&upload_parquet_url(&api, u)),
+        (None, None, None, None) => {
+            eprintln!(
+                "error: one of --file <path>, --url <url>, --upload-id <id>, or --result-id <id> is required"
+            );
             std::process::exit(1);
         }
         _ => unreachable!(),
     };
 
     let path = managed_table_load_path(&db.default_connection_id, schema, table);
-    let body = load_table_request(&upload_id);
 
     let spinner = crate::util::spinner("Loading table...");
     let (status, resp_body) = api.post_raw(&path, &body).unwrap_or_else(|e| {
@@ -1401,6 +1442,11 @@ pub fn tables_load(
     spinner.finish_and_clear();
 
     let (status, resp_body) = if !status.is_success()
+        // Upload-only recovery: the delete + recreate below mints a new database
+        // id, which would orphan a result (the server scopes it to the original
+        // database). A result load into an undeclared table is auto-declared
+        // server-side, so this path isn't needed for it — surface the error.
+        && result_id.is_none()
         && crate::util::api_error(resp_body.clone()).contains("not declared")
     {
         // The table wasn't declared at create time. Collect existing tables so
@@ -1565,6 +1611,7 @@ pub fn tables_load(
 /// Load path for a database API token: addresses the database by id and uses
 /// the database-scoped endpoints (the connection-scoped managed paths and the
 /// name/catalog resolve used by the standard flow are denied for this token).
+#[allow(clippy::too_many_arguments)]
 fn tables_load_database_scoped(
     workspace_id: &str,
     database: Option<&str>,
@@ -1573,6 +1620,7 @@ fn tables_load_database_scoped(
     file: Option<&str>,
     url: Option<&str>,
     upload_id: Option<&str>,
+    result_id: Option<&str>,
 ) {
     use crossterm::style::Stylize;
 
@@ -1596,20 +1644,25 @@ fn tables_load_database_scoped(
             std::process::exit(1);
         });
 
-    // clap enforces mutual exclusion; only one of these is ever Some.
-    let upload_id = match (upload_id, file, url) {
-        (Some(id), None, None) => id.to_string(),
-        (None, Some(path), None) => upload_parquet_file(&api, path),
-        (None, None, Some(u)) => upload_parquet_url(&api, u),
-        (None, None, None) => {
-            eprintln!("error: --file <path>, --url <url>, or --upload-id <id> is required");
+    // clap enforces mutual exclusion; only one source is ever Some. A file/URL is
+    // uploaded first and loaded by upload id; a result is loaded by reference. The
+    // database-scoped endpoint scopes the result by the path database id, so no
+    // X-Database-Id header is needed here.
+    let body = match (result_id, upload_id, file, url) {
+        (Some(rid), None, None, None) => load_table_request_from_result(rid),
+        (None, Some(id), None, None) => load_table_request(id),
+        (None, None, Some(path), None) => load_table_request(&upload_parquet_file(&api, path)),
+        (None, None, None, Some(u)) => load_table_request(&upload_parquet_url(&api, u)),
+        (None, None, None, None) => {
+            eprintln!(
+                "error: one of --file <path>, --url <url>, --upload-id <id>, or --result-id <id> is required"
+            );
             std::process::exit(1);
         }
         _ => unreachable!(),
     };
 
     let load_path = database_table_load_path(&db_id, schema, table);
-    let body = load_table_request(&upload_id);
 
     let load = || {
         let spinner = crate::util::spinner("Loading table...");
@@ -1961,6 +2014,15 @@ mod tests {
     }
 
     #[test]
+    fn load_table_request_from_result_is_replace_mode() {
+        let body = load_table_request_from_result("rslt_abc");
+        assert_eq!(body["mode"], "replace");
+        assert_eq!(body["result_id"], "rslt_abc");
+        // A result load must not send an upload_id (the server rejects both).
+        assert!(body.get("upload_id").is_none());
+    }
+
+    #[test]
     fn is_parquet_path_by_extension() {
         assert!(is_parquet_path("/data/orders.parquet"));
         assert!(is_parquet_path("/data/ORDERS.PARQUET"));
@@ -2088,6 +2150,56 @@ mod tests {
         let db = resolve_database(&api, "db_1");
         let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
         let body = load_table_request("upl_123");
+        let (status, resp_body) = api.post_raw(&path, &body).unwrap();
+        assert!(status.is_success());
+        let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();
+        assert_eq!(parsed.row_count, 42);
+        assert_eq!(parsed.table_name, "orders");
+        resolve.assert();
+        load.assert();
+    }
+
+    #[test]
+    fn tables_load_from_result_posts_result_id_scoped_to_target() {
+        let mut server = mockito::Server::new();
+        let resolve = server
+            .mock("GET", "/v1/databases/db_1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(full_detail("db_1", "sales", "conn_default"))
+            .create();
+        // A result load hits the same loads endpoint with a result_id body and no
+        // upload step (no POST /v1/uploads mock is registered). The server scopes
+        // a result-sourced load by X-Database-Id, so the request must carry the
+        // resolved target database id.
+        let load = server
+            .mock(
+                "POST",
+                "/v1/connections/conn_default/schemas/public/tables/orders/loads",
+            )
+            .match_header("X-Database-Id", "db_1")
+            .match_body(mockito::Matcher::JsonString(
+                serde_json::to_string(&load_table_request_from_result("rslt_123")).unwrap(),
+            ))
+            .with_status(200)
+            .with_body(
+                r#"{
+                "connection_id":"conn_default",
+                "schema_name":"public",
+                "table_name":"orders",
+                "row_count":42,
+                "arrow_schema_json":"{}"
+            }"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws1"));
+        let db = resolve_database(&api, "db_1");
+        // Mirror tables_load: scope to the resolved target database so the load
+        // carries X-Database-Id.
+        let api = api.scoped_to_database_opt(Some(db.id.as_str()));
+        let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
+        let body = load_table_request_from_result("rslt_123");
         let (status, resp_body) = api.post_raw(&path, &body).unwrap();
         assert!(status.is_success());
         let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();
