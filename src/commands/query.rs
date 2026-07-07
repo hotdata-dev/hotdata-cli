@@ -426,12 +426,12 @@ fn fail_run(error_msg: &str) -> ! {
 }
 
 pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &str) {
-    let api = Api::new(Some(workspace_id));
-
     // Scope to the explicit --database flag, else the active database resolved
-    // at construction (HOTDATA_DATABASE / current database). submit_query sends
-    // it as the X-Database-Id header.
-    let database = database.or(api.database_id());
+    // at construction (HOTDATA_DATABASE / current database). The scoped `Api`
+    // carries the database into submit_query's `X-Database-Id` header and into
+    // the database-scoped follow-up fetches (query-run poll, Arrow result).
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
+    let database = api.database_id();
 
     let mut request = hotdata::models::QueryRequest::new(sql.to_string());
     request.r#async = Some(true);
@@ -471,8 +471,12 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
     loop {
         // Drive the poll loop ourselves to preserve the 5-minute deadline and
         // 500ms cadence (NOT the SDK's PollConfig defaults).
-        let run = crate::client::sdk::block(api.client().query_runs().get(run_id))
-            .unwrap_or_else(|e| e.exit());
+        let run = crate::client::sdk::block(
+            api.client()
+                .query_runs()
+                .get(run_id, api.require_database()),
+        )
+        .unwrap_or_else(|e| e.exit());
         match run.status.as_str() {
             "succeeded" => {
                 spinner.finish_and_clear();
@@ -525,11 +529,15 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
 }
 
 /// Poll a query run by ID. If succeeded and has a result_id, fetch and display the result.
-pub fn poll(query_run_id: &str, workspace_id: &str, format: &str) {
-    let api = Api::new(Some(workspace_id));
+pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, format: &str) {
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
 
-    let run = crate::client::sdk::block(api.client().query_runs().get(query_run_id))
-        .unwrap_or_else(|e| e.exit());
+    let run = crate::client::sdk::block(
+        api.client()
+            .query_runs()
+            .get(query_run_id, api.require_database()),
+    )
+    .unwrap_or_else(|e| e.exit());
 
     match run.status.as_str() {
         "succeeded" => {
@@ -779,7 +787,7 @@ mod tests {
         let mut resp = truncated_preview(Some("res_1"));
         resp.warning = Some(Some("approximate aggregate".to_string()));
 
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
         let resolved = resolve_inline(&api, resp);
 
         // Followed the truncated preview to the full 3-row result.
@@ -813,7 +821,7 @@ mod tests {
             .with_body("boom")
             .create();
 
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
         let resolved = resolve_inline(&api, truncated_preview(Some("res_1")));
 
         // Preview kept, flagged incomplete so print_result fails closed.
@@ -836,7 +844,7 @@ mod tests {
         // truncated=false short-circuits before any network call; point the Api
         // at a server with no mocks so an erroneous fetch would fail loudly.
         let server = mockito::Server::new();
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
 
         let mut resp = hotdata::models::QueryResponse::new(
             vec!["x".to_string()],
@@ -867,7 +875,7 @@ mod tests {
         // Truncated but persistence never started (result_id is null): the full
         // result is unfetchable, so keep the preview and surface a warning.
         let server = mockito::Server::new();
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
 
         // The server reports the grand total even though it couldn't persist;
         // it must survive onto the preview so structured output exposes it.
@@ -998,7 +1006,7 @@ mod tests {
         // warning explaining why persistence didn't start. The truncation note
         // is appended to it, not allowed to clobber it.
         let server = mockito::Server::new();
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
 
         let mut resp = truncated_preview(None);
         resp.warning = Some(Some(
@@ -1061,7 +1069,7 @@ mod tests {
             .with_body(ipc)
             .create();
 
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
         // The async poll response reported the run took 4200ms.
         let result = fetch_arrow_result_with_timing(&api, "res_1", Some(Some(4200)));
 

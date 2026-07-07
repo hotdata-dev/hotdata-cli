@@ -194,19 +194,21 @@ fn truncate_sql(sql: &str, max: usize) -> String {
 
 pub fn list(
     workspace_id: &str,
+    database: Option<&str>,
     limit: Option<u32>,
     cursor: Option<&str>,
     status: Option<&str>,
     format: &str,
 ) {
-    let api = Api::new(Some(workspace_id));
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
+    let database_id = api.require_database();
 
     let resp = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading query runs…",
         api.client()
             .query_runs()
-            .list(limit.map(|l| l as i32), cursor, status, None),
+            .list(database_id, limit.map(|l| l as i32), cursor, status, None),
     )
     .unwrap_or_else(|e| e.exit());
 
@@ -257,12 +259,13 @@ pub fn list(
     }
 }
 
-pub fn get(query_run_id: &str, workspace_id: &str, format: &str) {
-    let api = Api::new(Some(workspace_id));
+pub fn get(query_run_id: &str, workspace_id: &str, database: Option<&str>, format: &str) {
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
+    let database_id = api.require_database();
     let run: QueryRun = crate::client::sdk::block_with_wakeup(
         &api,
         "Loading query run…",
-        api.client().query_runs().get(query_run_id),
+        api.client().query_runs().get(query_run_id, database_id),
     )
     .unwrap_or_else(|e| e.exit())
     .into();

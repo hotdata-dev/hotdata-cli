@@ -609,6 +609,40 @@ impl Api {
         self.database_id.as_deref()
     }
 
+    /// Scope this `Api` to `database` when `Some`, overriding any database
+    /// resolved at construction (`HOTDATA_DATABASE` / current database); a
+    /// `None` leaves the resolved scope untouched. Used by commands whose
+    /// `--database` flag scopes a single invocation without switching the
+    /// persisted active database — `Api::new(..).scoped_to_database_opt(flag)`.
+    pub fn scoped_to_database_opt(mut self, database: Option<&str>) -> Self {
+        if let Some(db) = database {
+            self.database_id = Some(db.to_string());
+        }
+        self
+    }
+
+    /// The active database scope, or exit with actionable guidance when none is
+    /// set.
+    ///
+    /// Results and query runs are scoped to a managed database (the required
+    /// `X-Database-Id` header). Commands that hit those endpoints call this to
+    /// resolve the scope — set via `--database`, `HOTDATA_DATABASE`, or
+    /// `databases set` — and to fail with a hint rather than surfacing the raw
+    /// server "X-Database-Id header is required" error.
+    pub fn require_database(&self) -> &str {
+        self.database_id.as_deref().unwrap_or_else(|| {
+            use crossterm::style::Stylize;
+            eprintln!("{}", "error: no active database.".red());
+            eprintln!(
+                "{}",
+                "Results and query runs are scoped to a managed database. Set one with \
+                 `hotdata databases set <id>`, or pass `--database <id>`."
+                    .dark_grey()
+            );
+            std::process::exit(1);
+        })
+    }
+
     /// Best-effort probe of the scoped workspace's runtimedb scale state, via
     /// the control-plane `GET /v1/workspaces/{id}/runtime/status` endpoint.
     ///
@@ -809,12 +843,16 @@ impl Api {
     /// `get_result_arrow`, returning the fully-buffered [`hotdata::ArrowResult`].
     ///
     /// The SDK owns transport (same reqwest client, bearer via the
-    /// `token_provider`, `X-Workspace-Id`) and decode. Its
-    /// `ArrowError` (the Arrow-path error type, which is not an `Error<T>`) is
-    /// mapped to [`ApiError`] via [`from_arrow`](ApiError::from_arrow) so callers
-    /// keep the same `.exit()` handling.
+    /// `token_provider`, `X-Workspace-Id`) and decode. Results are
+    /// database-scoped, so the active database is forwarded as the required
+    /// `X-Database-Id`; [`require_database`](Self::require_database) exits with a
+    /// hint when none is set. Its `ArrowError` (the Arrow-path error type, which
+    /// is not an `Error<T>`) is mapped to [`ApiError`] via
+    /// [`from_arrow`](ApiError::from_arrow) so callers keep the same `.exit()`
+    /// handling.
     pub fn get_result_arrow(&self, id: &str) -> Result<hotdata::ArrowResult, ApiError> {
-        rt().block_on(self.client.get_result_arrow(id, None, None))
+        let database_id = self.require_database();
+        rt().block_on(self.client.get_result_arrow(id, database_id, None, None))
             .map_err(ApiError::from_arrow)
     }
 
@@ -1303,13 +1341,14 @@ mod tests {
             ))
             .match_header("Authorization", "Bearer test-jwt")
             .match_header("X-Workspace-Id", "ws-1")
+            .match_header("X-Database-Id", "db-1")
             .match_header("Accept", "application/vnd.apache.arrow.stream")
             .with_status(200)
             .with_header("content-type", "application/vnd.apache.arrow.stream")
             .with_body(ipc)
             .create();
 
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
         let result = api
             .get_result_arrow("res_1")
             .expect("get_result_arrow should succeed");
@@ -1332,7 +1371,7 @@ mod tests {
             .with_body("not found")
             .create();
 
-        let api = Api::test_new(&server.url(), "test-jwt", None);
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
         match api.get_result_arrow("missing").unwrap_err() {
             ApiError::Status { status, .. } => {
                 assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
@@ -1355,7 +1394,7 @@ mod tests {
             .with_body("forbidden")
             .create();
 
-        let api = Api::test_new(&server.url(), "test-jwt", None);
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
         match api.get_result_arrow("forbidden").unwrap_err() {
             ApiError::Status { status, body } => {
                 assert_eq!(status, reqwest::StatusCode::FORBIDDEN);

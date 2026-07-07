@@ -208,7 +208,9 @@ fn main() {
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
-                    Some(QueryCommands::Status { id }) => query::poll(&id, &workspace_id, &output),
+                    Some(QueryCommands::Status { id }) => {
+                        query::poll(&id, &workspace_id, database.as_deref(), &output)
+                    }
                     None => match sql {
                         Some(sql) => {
                             query::execute(&sql, &workspace_id, database.as_deref(), &output)
@@ -517,6 +519,7 @@ fn main() {
             Commands::Results {
                 result_id,
                 workspace_id,
+                database,
                 output,
                 command,
             } => {
@@ -526,9 +529,9 @@ fn main() {
                         limit,
                         offset,
                         output,
-                    }) => results::list(&workspace_id, limit, offset, &output),
+                    }) => results::list(&workspace_id, database.as_deref(), limit, offset, &output),
                     None => match result_id {
-                        Some(id) => results::get(&id, &workspace_id, &output),
+                        Some(id) => results::get(&id, &workspace_id, database.as_deref(), &output),
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
@@ -814,12 +817,13 @@ fn main() {
             }
             Commands::Queries {
                 id,
+                database,
                 output,
                 command,
             } => {
                 let workspace_id = resolve_workspace(None);
                 if let Some(id) = id {
-                    queries::get(&id, &workspace_id, &output)
+                    queries::get(&id, &workspace_id, database.as_deref(), &output)
                 } else {
                     match command {
                         Some(QueriesCommands::List {
@@ -829,6 +833,7 @@ fn main() {
                             output,
                         }) => queries::list(
                             &workspace_id,
+                            database.as_deref(),
                             Some(limit),
                             cursor.as_deref(),
                             status.as_deref(),
