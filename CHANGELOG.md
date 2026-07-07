@@ -1,3 +1,12 @@
+## [0.12.0] - 2026-07-07
+
+### 🚀 Features
+
+- *(queries,results)* Scope to database for SDK 0.8.0
+
+### 🚜 Refactor
+
+- *(seam)* Consolidate database scoping into scoped_to_database_opt
 ## [0.11.1] - 2026-07-03
 
 ### 🐛 Bug Fixes
