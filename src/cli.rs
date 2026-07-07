@@ -103,6 +103,10 @@ pub enum Commands {
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
+        /// Managed database to scope to (defaults to the current database set via `databases set`)
+        #[arg(long, short = 'd', global = true)]
+        database: Option<String>,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
         output: String,
@@ -198,6 +202,10 @@ pub enum Commands {
     Queries {
         /// Query run ID to show details
         id: Option<String>,
+
+        /// Managed database to scope to (defaults to the current database set via `databases set`)
+        #[arg(long, short = 'd', global = true)]
+        database: Option<String>,
 
         /// Output format (used with query run ID)
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]

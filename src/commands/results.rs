@@ -41,8 +41,18 @@ struct ListResponse {
     has_more: bool,
 }
 
-pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format: &str) {
-    let api = Api::new(Some(workspace_id));
+pub fn list(
+    workspace_id: &str,
+    database: Option<&str>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    format: &str,
+) {
+    let api = scoped_api(workspace_id, database);
+    // Results are database-scoped (the required `X-Database-Id` header the seam
+    // sends from the active database). Fail early with a hint when none is set,
+    // rather than surfacing the raw server error.
+    api.require_database();
 
     let mut params: Vec<(&str, String)> = Vec::new();
     if let Some(l) = limit {
@@ -130,8 +140,19 @@ pub fn list(workspace_id: &str, limit: Option<u32>, offset: Option<u32>, format:
     }
 }
 
-pub fn get(result_id: &str, workspace_id: &str, format: &str) {
-    let api = Api::new(Some(workspace_id));
+pub fn get(result_id: &str, workspace_id: &str, database: Option<&str>, format: &str) {
+    let api = scoped_api(workspace_id, database);
     let result = crate::commands::query::fetch_arrow_result(&api, result_id);
     crate::commands::query::print_result(&result, format);
+}
+
+/// Build an [`Api`] scoped to `database` when the caller passed `--database`,
+/// otherwise the database resolved at construction (`HOTDATA_DATABASE` /
+/// current database).
+fn scoped_api(workspace_id: &str, database: Option<&str>) -> Api {
+    let api = Api::new(Some(workspace_id));
+    match database {
+        Some(db) => api.scoped_to_database(db.to_string()),
+        None => api,
+    }
 }
