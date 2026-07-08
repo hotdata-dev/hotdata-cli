@@ -5,8 +5,15 @@
 //! (managed DBs materialized from a connection). Commands: `new-connection`,
 //! `list-connections`, `connectors` (the catalog), `new-import` (--all or
 //! SQL), `list-imports`, `trigger-import` (re-run: refresh an ingest's DB
-//! from source). The pre-rename verbs (`new`/`list`/`import`/`update`) remain
-//! as hidden aliases for one release.
+//! from source), `status` (one-shot or `--wait` attach). The pre-rename verbs
+//! (`new`/`list`/`import`/`update`) remain as hidden aliases for one release.
+//!
+//! **Imports don't block.** `new-import` and `trigger-import` enqueue, fire
+//! the drain, print the ingest id, and return; progress is tracked with
+//! `status <id> [--wait]` or `list-imports`. `--wait` opts into the old
+//! blocking poll. `new-connection` is the deliberate exception — it blocks
+//! by default because its output IS the feedback (credentials validated,
+//! schema discovered); `--no-wait` opts out.
 //!
 //! `new-connection` **adds a connection and discovers its schema — it loads no
 //! data** (the server's `validate_only` mode: check credentials, reflect the
@@ -127,8 +134,14 @@ pub enum IngestCommands {
         #[arg(long = "database-id")]
         database_id: Option<String>,
 
-        #[command(flatten)]
-        wait: WaitArgs,
+        /// Block until the import completes (default: return immediately;
+        /// track with `hotdata ingest status <id> --wait`)
+        #[arg(long)]
+        wait: bool,
+
+        /// Seconds to wait for completion with --wait (default 300)
+        #[arg(long = "wait-timeout", default_value = "300")]
+        wait_timeout: u64,
     },
 
     /// List your imports: the SQL behind each and the database it landed in
@@ -145,13 +158,40 @@ pub enum IngestCommands {
         /// `list-connections` (re-validates and refreshes its schema)
         id: String,
 
-        /// Seconds to wait for completion (default 300)
+        /// Block until the re-run completes (default: return immediately;
+        /// track with `hotdata ingest status <id> --wait`)
+        #[arg(long)]
+        wait: bool,
+
+        /// Seconds to wait for completion with --wait (default 300)
+        #[arg(long = "wait-timeout", default_value = "300")]
+        wait_timeout: u64,
+    },
+
+    /// Show an ingest's status (an import or a connection onboard)
+    ///
+    /// One-shot by default with script-friendly exit codes: 0 done,
+    /// 1 failed, 2 still in flight. `--wait` attaches and polls to a
+    /// terminal state instead.
+    Status {
+        /// Ingest id (from `new-import`, `list-imports`, or `list-connections`)
+        id: String,
+
+        /// Poll until the ingest reaches done/failed instead of returning
+        /// the current status
+        #[arg(long)]
+        wait: bool,
+
+        /// Seconds to wait for completion with --wait (default 300)
         #[arg(long = "wait-timeout", default_value = "300")]
         wait_timeout: u64,
     },
 }
 
-/// Shared wait/no-wait flags for the enqueue commands.
+/// Wait flags for `new-connection` — the one enqueue command that still
+/// blocks by default, because its output IS the feedback: did the
+/// credentials work, and what schema was discovered. The import commands
+/// return immediately and are tracked with `ingest status`.
 #[derive(clap::Args)]
 pub struct WaitArgs {
     /// Enqueue only; print the ingest id and return without waiting
@@ -203,11 +243,28 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             source,
             database_id,
             wait,
-        } => new_import(workspace_id, output, sql, all, source, database_id, &wait),
+            wait_timeout,
+        } => new_import(
+            workspace_id,
+            output,
+            sql,
+            all,
+            source,
+            database_id,
+            wait,
+            wait_timeout,
+        ),
         IngestCommands::ListImports => list_imports(workspace_id, output),
-        IngestCommands::TriggerImport { id, wait_timeout } => {
-            trigger_import(workspace_id, output, &id, wait_timeout)
-        }
+        IngestCommands::TriggerImport {
+            id,
+            wait,
+            wait_timeout,
+        } => trigger_import(workspace_id, output, &id, wait, wait_timeout),
+        IngestCommands::Status {
+            id,
+            wait,
+            wait_timeout,
+        } => status(workspace_id, output, &id, wait, wait_timeout),
     }
 }
 
@@ -607,6 +664,7 @@ fn active_source_names(client: &IngestClient) -> std::collections::HashSet<Strin
 
 // --- new-import: SQL front-door -------------------------------------------
 
+#[allow(clippy::too_many_arguments)] // mirrors the clap surface one-to-one
 fn new_import(
     workspace_id: &str,
     output: &str,
@@ -614,7 +672,8 @@ fn new_import(
     all: bool,
     source: Option<String>,
     database_id: Option<String>,
-    wait: &WaitArgs,
+    wait: bool,
+    wait_timeout: u64,
 ) {
     // A 32-char hex --source is a connection id (pins resolution); anything
     // else is a connector name (the FROM target).
@@ -659,18 +718,16 @@ fn new_import(
         e.exit()
     });
     spinner.finish_and_clear();
-    if wait.no_wait {
-        render_ack(&ack, output);
+    if wait {
+        let st = poll_ingest(&client, &ack.ingest_id, wait_timeout, "importing", true);
+        render_done(&st, output);
         return;
     }
-    let st = poll_ingest(
-        &client,
-        &ack.ingest_id,
-        wait.wait_timeout,
-        "importing",
-        true,
-    );
-    render_done(&st, output);
+    // Non-blocking default: the worker is on-demand, so fire the drain that
+    // actually processes the job — without it the import would sit pending —
+    // then hand the terminal back.
+    let _ = client.drain();
+    render_ack(&ack, output);
 }
 
 fn looks_like_ingest_id(s: &str) -> bool {
@@ -713,7 +770,7 @@ fn pinned_connector_name(client: &IngestClient, ingest_id: &str) -> Option<Strin
 
 // --- trigger-import --------------------------------------------------------
 
-fn trigger_import(workspace_id: &str, output: &str, id: &str, wait_timeout: u64) {
+fn trigger_import(workspace_id: &str, output: &str, id: &str, wait: bool, wait_timeout: u64) {
     let client = IngestClient::new(workspace_id);
     let spinner = util::spinner("requesting re-run…");
     // The worker resets the ingest to pending and fires the drain (409 if one
@@ -723,9 +780,69 @@ fn trigger_import(workspace_id: &str, output: &str, id: &str, wait_timeout: u64)
         e.exit()
     });
     spinner.finish_and_clear();
-    // The rerun already drained; poll only.
-    let st = poll_ingest(&client, &ack.ingest_id, wait_timeout, "re-running", false);
-    render_done(&st, output);
+    if wait {
+        // The rerun already drained; poll only.
+        let st = poll_ingest(&client, &ack.ingest_id, wait_timeout, "re-running", false);
+        render_done(&st, output);
+        return;
+    }
+    render_ack(&ack, output);
+}
+
+// --- status ------------------------------------------------------------------
+
+/// Exit code for a one-shot status check, mirroring `query status`:
+/// 0 done, 1 failed, 2 still in flight (pending/running/stage states).
+fn status_exit_code(status: &str) -> i32 {
+    match status {
+        "done" => 0,
+        "failed" => 1,
+        _ => 2,
+    }
+}
+
+fn status(workspace_id: &str, output: &str, id: &str, wait: bool, wait_timeout: u64) {
+    let client = IngestClient::new(workspace_id);
+    if wait {
+        // Attach and poll to a terminal state. No initial drain kick — the
+        // enqueue already fired one — but the poll loop still re-kicks a job
+        // stuck in `pending` (control-store read lag), so attaching also
+        // rescues an import whose first drain missed the row.
+        let st = poll_ingest(&client, id, wait_timeout, "waiting", false);
+        render_done(&st, output);
+        return;
+    }
+    let st = client.job_status(id).unwrap_or_else(|e| e.exit());
+    match output {
+        "json" => println!("{}", serde_json::to_string_pretty(&st).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&st).unwrap()),
+        _ => {
+            use crossterm::style::Stylize;
+            let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
+            let colored = match st.status.as_str() {
+                "done" => st.status.as_str().green(),
+                "failed" => st.status.as_str().red(),
+                other => other.yellow(),
+            };
+            println!("{}{}", label("status:"), colored);
+            if let Some(d) = st.detail.as_deref().filter(|d| !d.trim().is_empty()) {
+                println!("{}{}", label("detail:"), d);
+            }
+            if let Some(db) = st.database_id.as_deref() {
+                println!("{}{}", label("database:"), db);
+            }
+            if let Some(t) = st.updated_at.as_deref() {
+                println!("{}{}", label("updated:"), t);
+            }
+            if status_exit_code(&st.status) == 2 {
+                println!(
+                    "{}",
+                    format!("Attach with: hotdata ingest status {id} --wait").dark_grey()
+                );
+            }
+        }
+    }
+    std::process::exit(status_exit_code(&st.status));
 }
 
 // --- list-connections ------------------------------------------------------
@@ -890,14 +1007,29 @@ fn poll_ingest(
         let _ = client.drain();
     }
     let mut last_drain = Instant::now();
+    let mut consecutive_errors: u32 = 0;
 
     let spinner = util::spinner(&format!("{verb}…"));
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        let st = client.job_status(ingest_id).unwrap_or_else(|e| {
-            spinner.finish_and_clear();
-            e.exit()
-        });
+        // A status poll is read-only and cheap to retry — one transient
+        // gateway error (a 403/5xx blip, a dropped connection) must not kill
+        // a wait that is otherwise progressing. Only persistent failure exits.
+        let st = match client.job_status(ingest_id) {
+            Ok(st) => {
+                consecutive_errors = 0;
+                st
+            }
+            Err(e) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= 3 || Instant::now() > deadline {
+                    spinner.finish_and_clear();
+                    e.exit();
+                }
+                std::thread::sleep(POLL_INTERVAL);
+                continue;
+            }
+        };
         match st.status.as_str() {
             "done" => {
                 spinner.finish_and_clear();
@@ -943,11 +1075,8 @@ fn poll_ingest(
             eprintln!("{}", "ingest timed out".red());
             eprintln!(
                 "{}",
-                format!(
-                    "Check progress with: hotdata ingest list-imports (or list-connections) — \
-                     or re-kick it: hotdata ingest trigger-import {ingest_id}"
-                )
-                .dark_grey()
+                format!("Keep tracking it with: hotdata ingest status {ingest_id} --wait")
+                    .dark_grey()
             );
             std::process::exit(2);
         }
@@ -979,7 +1108,7 @@ fn render_ack(ack: &IngestAck, output: &str) {
             println!(
                 "{}",
                 format!(
-                    "Track it with: hotdata ingest trigger-import {}",
+                    "Track it with: hotdata ingest status {} --wait  (or: hotdata ingest list-imports)",
                     ack.ingest_id
                 )
                 .dark_grey()
@@ -1352,6 +1481,17 @@ mod tests {
         // --all with no resolvable source name.
         let err = build_import_query(None, true, None, None).unwrap_err();
         assert!(err.contains("--source"), "got: {err}");
+    }
+
+    #[test]
+    fn status_exit_codes_mirror_query_status() {
+        assert_eq!(status_exit_code("done"), 0);
+        assert_eq!(status_exit_code("failed"), 1);
+        // Everything else is in flight — including worker stage states the
+        // CLI doesn't enumerate (extracting/normalizing/loading).
+        assert_eq!(status_exit_code("pending"), 2);
+        assert_eq!(status_exit_code("running"), 2);
+        assert_eq!(status_exit_code("loading"), 2);
     }
 
     #[test]
