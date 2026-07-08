@@ -21,6 +21,12 @@
 //!
 //! When the ingest routes land in the public OpenAPI and the SDK regenerates,
 //! delete this module and move the commands onto `sdk::Api`.
+//!
+//! Surface: `create_source` (onboard, backs `new`/`create`/`refresh`),
+//! `create_query` (SQL front-door, backs `import`), `connectors` (the catalog),
+//! `drain` + `job_status` (the async run loop). The result-reading endpoints
+//! are intentionally absent — that path is the core `query`/`databases`/
+//! `results` commands.
 #![allow(dead_code)] // Response structs are read only through serde/printing.
 
 use crate::client::jwt;
@@ -219,24 +225,16 @@ impl IngestClient {
         )
     }
 
-    pub fn translate(
-        &self,
-        text: &str,
-        connections: serde_json::Value,
-    ) -> Result<serde_json::Value, IngestError> {
-        let body = serde_json::json!({ "text": text, "connections": connections });
-        self.send(
-            self.authed(reqwest::Method::POST, "/translate").json(&body),
-            Some(&body),
-        )
-    }
-
     pub fn drain(&self) -> Result<serde_json::Value, IngestError> {
         self.send(self.authed(reqwest::Method::POST, "/jobs/drain"), None)
     }
 
     // --- read endpoints --------------------------------------------------
 
+    /// The connector catalog. REST entries carry a ready-to-edit `template`
+    /// (a dlt `rest_api` config with the service's `base_url`, auth shape, and
+    /// resources pre-filled and `<PLACEHOLDER>` secrets) — this is what lets
+    /// the `new` wizard fill in everything but the caller's secrets.
     pub fn connectors(&self) -> Result<ConnectorsResponse, IngestError> {
         self.send(self.authed(reqwest::Method::GET, "/connectors"), None)
     }
@@ -246,63 +244,6 @@ impl IngestClient {
             self.authed(reqwest::Method::GET, &format!("/jobs/{ingest_id}")),
             None,
         )
-    }
-
-    pub fn schema(&self, database_id: &str) -> Result<serde_json::Value, IngestError> {
-        self.send(
-            self.authed(
-                reqwest::Method::GET,
-                &format!("/databases/{database_id}/schema"),
-            ),
-            None,
-        )
-    }
-
-    pub fn preview(&self, database_id: &str, limit: u32) -> Result<serde_json::Value, IngestError> {
-        self.send(
-            self.authed(
-                reqwest::Method::GET,
-                &format!("/databases/{database_id}/preview"),
-            )
-            .query(&[("limit", limit)]),
-            None,
-        )
-    }
-
-    /// Download a loaded table as parquet, returning the raw bytes and whether
-    /// the server truncated the result (`X-Truncated: true`).
-    pub fn download(
-        &self,
-        database_id: &str,
-        table: &str,
-        limit: u32,
-    ) -> Result<(Vec<u8>, bool), IngestError> {
-        let req = self
-            .authed(
-                reqwest::Method::GET,
-                &format!("/databases/{database_id}/tables/{table}/parquet"),
-            )
-            .query(&[("limit", limit)]);
-        let resp = req
-            .send()
-            .map_err(|e| IngestError::Connection(e.to_string()))?;
-        let status = resp.status();
-        let truncated = resp
-            .headers()
-            .get("X-Truncated")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let bytes = resp
-            .bytes()
-            .map_err(|e| IngestError::Connection(e.to_string()))?;
-        if !status.is_success() {
-            return Err(IngestError::Http {
-                status: status.as_u16(),
-                body: String::from_utf8_lossy(&bytes).into_owned(),
-            });
-        }
-        Ok((bytes.to_vec(), truncated))
     }
 }
 
@@ -415,13 +356,21 @@ pub struct ConnectorsResponse {
     pub connectors: Vec<ConnectorEntry>,
 }
 
-#[derive(Deserialize)]
+/// One catalog entry. `sql` names are dialects, `filesystem`/`iceberg`/`rest`
+/// are family templates. REST entries additionally carry `auth` (the method
+/// name, e.g. `bearer`, `oauth_client_credentials`, `none`) and a `template`
+/// dlt config with `<PLACEHOLDER>` secrets the wizard prompts for.
+#[derive(Clone, Deserialize)]
 pub struct ConnectorEntry {
     pub name: String,
     #[serde(default)]
     pub family: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub auth: Option<String>,
+    #[serde(default)]
+    pub template: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -546,22 +495,35 @@ mod tests {
     }
 
     #[test]
-    fn download_returns_bytes_and_truncated_flag() {
+    fn connectors_decodes_rest_template_and_auth() {
         let mut server = mockito::Server::new();
         let m = server
-            .mock("GET", "/ingest/databases/db-1/tables/users/parquet")
-            .match_query(mockito::Matcher::UrlEncoded("limit".into(), "100".into()))
+            .mock("GET", "/ingest/connectors")
             .with_status(200)
-            .with_header("X-Truncated", "true")
-            .with_body(b"PAR1fake".as_slice())
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"connectors":[
+                    {"name":"postgres","family":"sql","description":"PostgreSQL"},
+                    {"name":"aikido","family":"rest","auth":"oauth_client_credentials",
+                     "description":"Security posture",
+                     "template":{"client":{"base_url":"https://app.aikido.dev/api/public/v1/",
+                                 "auth":{"type":"oauth2_client_credentials","client_id":"<CLIENT_ID>"}}}}
+                ]}"#,
+            )
             .create();
 
-        let (bytes, truncated) = api_key_client(&server)
-            .download("db-1", "users", 100)
-            .unwrap();
+        let resp = api_key_client(&server).connectors().unwrap();
         m.assert();
-        assert_eq!(bytes, b"PAR1fake");
-        assert!(truncated);
+        assert_eq!(resp.connectors.len(), 2);
+        let pg = &resp.connectors[0];
+        assert_eq!(pg.family, "sql");
+        assert!(pg.template.is_none() && pg.auth.is_none());
+        let aikido = &resp.connectors[1];
+        assert_eq!(aikido.auth.as_deref(), Some("oauth_client_credentials"));
+        assert_eq!(
+            aikido.template.as_ref().unwrap()["client"]["base_url"],
+            "https://app.aikido.dev/api/public/v1/"
+        );
     }
 
     // --- debug-log redaction -------------------------------------------------

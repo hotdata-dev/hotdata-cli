@@ -402,6 +402,13 @@ pub(crate) fn list_database_ids(api: &Api) -> Result<Vec<String>, ApiError> {
     list_database_summaries(api).map(|dbs| dbs.into_iter().map(|d| d.id).collect())
 }
 
+/// `(id, name)` for every managed database. Used by `ingest list` to surface
+/// the result databases ingest mints (named `ingest-*` / `query-*`), reusing
+/// the same SDK list call `databases list` uses.
+pub(crate) fn list_id_name_pairs(api: &Api) -> Result<Vec<(String, Option<String>)>, ApiError> {
+    list_database_summaries(api).map(|dbs| dbs.into_iter().map(|d| (d.id, d.name)).collect())
+}
+
 fn fetch_database(api: &Api, id: &str) -> Database {
     get_database(api, id).unwrap_or_else(|e| e.exit())
 }
