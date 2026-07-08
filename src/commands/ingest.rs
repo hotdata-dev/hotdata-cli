@@ -1,7 +1,7 @@
 //! `hotdata ingest` — pull data from external sources into a managed database.
 //!
 //! Commands: `new` (add a connection), `connectors` (browse the catalog),
-//! `list` (your added sources), `import` (SQL front-door), `refresh`.
+//! `list` (your added sources), `import` (SQL front-door), `update`.
 //!
 //! `new` **adds a connection and discovers its schema — it loads no data** (the
 //! server's `validate_only` mode: check credentials, reflect the schema, cap
@@ -120,8 +120,8 @@ pub enum IngestCommands {
     },
 
     /// Re-run an ingest by id (re-drains and polls it to completion)
-    Refresh {
-        /// Ingest id (from `new`/`create`/`import`, or `ingest list`)
+    Update {
+        /// Ingest id (from `new`/`import`, or `ingest list`)
         id: String,
 
         /// Seconds to wait for completion (default 300)
@@ -182,8 +182,8 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             database_id,
             wait,
         } => import(workspace_id, output, sql, source, database_id, &wait),
-        IngestCommands::Refresh { id, wait_timeout } => {
-            refresh(workspace_id, output, &id, wait_timeout)
+        IngestCommands::Update { id, wait_timeout } => {
+            update(workspace_id, output, &id, wait_timeout)
         }
     }
 }
@@ -614,11 +614,11 @@ fn looks_like_ingest_id(s: &str) -> bool {
     s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-// --- refresh -------------------------------------------------------------
+// --- update --------------------------------------------------------------
 
-fn refresh(workspace_id: &str, output: &str, id: &str, wait_timeout: u64) {
+fn update(workspace_id: &str, output: &str, id: &str, wait_timeout: u64) {
     // No stored source config to re-onboard from (the worker holds it encrypted),
-    // so refresh means "re-process": re-drain and poll the ingest to a terminal
+    // so update means "re-process": re-drain and poll the ingest to a terminal
     // state. Useful for a job stuck pending, and a no-op reload for a done one.
     let client = IngestClient::new(workspace_id);
     let st = poll_ingest(&client, id, wait_timeout, "processing");
@@ -781,7 +781,7 @@ fn poll_ingest(
             eprintln!("{}", "ingest timed out".red());
             eprintln!(
                 "{}",
-                format!("Check status with: hotdata ingest refresh {ingest_id}").dark_grey()
+                format!("Check status with: hotdata ingest update {ingest_id}").dark_grey()
             );
             std::process::exit(2);
         }
@@ -812,7 +812,7 @@ fn render_ack(ack: &IngestAck, output: &str) {
             println!("{}{}", label("status:"), ack.status.as_str().yellow());
             println!(
                 "{}",
-                format!("Track it with: hotdata ingest refresh {}", ack.ingest_id).dark_grey()
+                format!("Track it with: hotdata ingest update {}", ack.ingest_id).dark_grey()
             );
         }
     }
