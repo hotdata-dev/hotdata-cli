@@ -80,6 +80,18 @@ impl IngestError {
                 "the ingest service may be starting up — retry in a few seconds".dark_grey()
             );
         }
+        // A transport failure on an enqueue is usually the worker being
+        // unavailable — a cold start or a rollout — where the gateway holds the
+        // connection until its timeout rather than returning a status. "error
+        // sending request" is opaque; point at the actual cause + retry.
+        if matches!(self, IngestError::Connection(_)) {
+            eprintln!(
+                "{}",
+                "the request didn't complete — the ingest service may be starting up or \
+                 redeploying; retry in a moment (a timed-out enqueue is safe to re-run)."
+                    .dark_grey()
+            );
+        }
         if matches!(self, IngestError::NeedsApiKey) {
             eprintln!(
                 "{}",
