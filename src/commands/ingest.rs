@@ -40,10 +40,11 @@ const DEFAULT_IMPORT_LIMIT: u32 = 1_000;
 
 #[derive(clap::Subcommand)]
 pub enum IngestCommands {
-    /// Add a source connection and discover its schema — no data is loaded
-    /// (use `hotdata ingest import` to pull data). Interactive by default;
-    /// pass `--service` (with config flags) to add non-interactively / from a
-    /// script. Browse available connectors with `hotdata ingest connectors`.
+    /// Add a source connection and discover its schema (loads no data)
+    ///
+    /// Interactive by default; pass `--service` with config flags to add
+    /// non-interactively. Pull rows separately with `hotdata ingest import`;
+    /// browse connectors with `hotdata ingest connectors`.
     New {
         /// Connector to add (a catalog name: postgres, bitcoin, filesystem, …).
         /// Given → non-interactive; omit on a terminal → guided wizard.
@@ -90,7 +91,7 @@ pub enum IngestCommands {
     /// List the sources you've added
     List,
 
-    /// Browse the connector catalog (services, dialects, family templates)
+    /// Browse the connector catalog
     Connectors {
         /// Filter to connectors whose name contains this text
         name: Option<String>,
