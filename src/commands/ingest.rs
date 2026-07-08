@@ -722,8 +722,9 @@ fn run_source(
 }
 
 /// Fire the drain, then poll the ingest to a terminal state, returning the
-/// final (done) status for the caller to render. Exits the process on failure
-/// (1) or timeout / unexpected status (2). `verb` labels the spinner.
+/// final (done) status for the caller to render. Every non-terminal status is
+/// shown live in the spinner (stage + detail); exits the process on failure (1)
+/// or timeout (2). `verb` labels the spinner.
 fn poll_ingest(
     client: &IngestClient,
     ingest_id: &str,
@@ -760,24 +761,23 @@ fn poll_ingest(
                 }
                 std::process::exit(1);
             }
-            "pending" => {
-                // The enqueue-time drain may have raced the request row; double
-                // drains are harmless (loads are replace-mode).
-                if last_drain.elapsed() > DRAIN_REKICK_AFTER {
-                    let _ = client.drain();
-                    last_drain = Instant::now();
+            // Any other status is in-progress. Surface it live rather than
+            // treating it as terminal — the worker reports stage-level states
+            // (e.g. extracting / normalizing / loading) and free-text detail as
+            // the pipeline advances, and the CLI shouldn't need to know the set.
+            stage => {
+                spinner.set_message(progress_message(verb, stage, st.detail.as_deref()));
+                // Re-kick the drain if the job never left `pending` — the
+                // enqueue-time drain can race the request row (harmless double
+                // drain; loads are replace-mode).
+                if stage == "pending" {
+                    if last_drain.elapsed() > DRAIN_REKICK_AFTER {
+                        let _ = client.drain();
+                        last_drain = Instant::now();
+                    }
+                } else {
+                    last_drain = Instant::now(); // progress seen — reset the clock
                 }
-            }
-            "running" | "queued" => {}
-            other => {
-                spinner.finish_and_clear();
-                use crossterm::style::Stylize;
-                eprintln!("{}", format!("ingest status: {other}").yellow());
-                eprintln!(
-                    "{}",
-                    format!("Check status with: hotdata ingest refresh {ingest_id}").dark_grey()
-                );
-                std::process::exit(2);
             }
         }
         if Instant::now() > deadline {
@@ -791,6 +791,15 @@ fn poll_ingest(
             std::process::exit(2);
         }
         std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Spinner text for an in-progress poll: the verb plus the worker's current
+/// stage, and its free-text detail when present (e.g. row counts / table name).
+fn progress_message(verb: &str, stage: &str, detail: Option<&str>) -> String {
+    match detail.map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => format!("{verb}… {stage} — {d}"),
+        None => format!("{verb}… {stage}"),
     }
 }
 
@@ -1195,6 +1204,23 @@ mod tests {
         assert_eq!(
             names,
             vec!["postgres", "filesystem", "iceberg", "aikido", "stripe"]
+        );
+    }
+
+    #[test]
+    fn progress_message_appends_detail_when_present() {
+        assert_eq!(
+            progress_message("importing", "running", None),
+            "importing… running"
+        );
+        // Empty/whitespace detail is dropped, not shown as a dangling dash.
+        assert_eq!(
+            progress_message("importing", "pending", Some("  ")),
+            "importing… pending"
+        );
+        assert_eq!(
+            progress_message("importing", "loading", Some("region (5 rows)")),
+            "importing… loading — region (5 rows)"
         );
     }
 }
