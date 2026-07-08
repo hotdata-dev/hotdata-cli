@@ -1,17 +1,18 @@
 //! `hotdata ingest` — pull data from external sources into a managed database.
 //!
-//! The surface mirrors `hotdata connections`: `new` (guided, interactive),
-//! `list`, `create` (scriptable, `create list` browses the catalog), `import`
-//! (SQL front-door against an added source), and `refresh`.
+//! Commands: `new` (add a connection), `connectors` (browse the catalog),
+//! `list` (your added sources), `import` (SQL front-door), `refresh`.
 //!
-//! `new`/`create` **add a connection and discover its schema — they load no
-//! data** (the server's `validate_only` mode: check credentials, reflect the
-//! schema, cap extraction). Pulling rows is a separate, explicit step: `import`
-//! runs a query and lands the result in a managed database, read back through
-//! the core `query`/`databases`/`results` commands.
+//! `new` **adds a connection and discovers its schema — it loads no data** (the
+//! server's `validate_only` mode: check credentials, reflect the schema, cap
+//! extraction). It runs the guided wizard when no `--service` is given on a
+//! terminal, and is flag-driven otherwise (`--service` given, a non-TTY, or
+//! `--no-input`) — one command, two front doors. Pulling rows is the separate,
+//! explicit `import` step, read back through the core `query`/`databases`/
+//! `results` commands.
 //!
-//! The `new` wizard is catalog-driven: the `/ingest/connectors` catalog returns
-//! a `template` per REST service with the `base_url`, auth shape, and resources
+//! The wizard is catalog-driven: the `/ingest/connectors` catalog returns a
+//! `template` per REST service with the `base_url`, auth shape, and resources
 //! already filled in, so the user only supplies the `<PLACEHOLDER>` secrets —
 //! never a URL the catalog already knows. Enqueueing needs a durable `hd_` API
 //! key (`--api-key`/`HOTDATA_API_KEY`); results land in the authenticated
@@ -39,21 +40,13 @@ const DEFAULT_IMPORT_LIMIT: u32 = 1_000;
 
 #[derive(clap::Subcommand)]
 pub enum IngestCommands {
-    /// Interactively add a source connection and discover its schema (no data
-    /// loaded), guided by the connector catalog
-    New,
-
-    /// List the sources you've ingested
-    List,
-
     /// Add a source connection and discover its schema — no data is loaded
-    /// (use `hotdata ingest import` to pull data). Or `create list` to browse
-    /// the catalog.
-    Create {
-        #[command(subcommand)]
-        command: Option<CreateCommands>,
-
-        /// Connector to add (a catalog name: postgres, bitcoin, filesystem, …)
+    /// (use `hotdata ingest import` to pull data). Interactive by default;
+    /// pass `--service` (with config flags) to add non-interactively / from a
+    /// script. Browse available connectors with `hotdata ingest connectors`.
+    New {
+        /// Connector to add (a catalog name: postgres, bitcoin, filesystem, …).
+        /// Given → non-interactive; omit on a terminal → guided wizard.
         #[arg(long)]
         service: Option<String>,
 
@@ -92,6 +85,18 @@ pub enum IngestCommands {
         /// Reuse an existing managed database (by id) instead of minting one
         #[arg(long = "database-id")]
         database_id: Option<String>,
+    },
+
+    /// List the sources you've added
+    List,
+
+    /// Browse the connector catalog (services, dialects, family templates)
+    Connectors {
+        /// Filter to connectors whose name contains this text
+        name: Option<String>,
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// Import data from an added source via SQL (defaults to a sample)
@@ -136,29 +141,10 @@ pub struct WaitArgs {
     wait_timeout: u64,
 }
 
-#[derive(clap::Subcommand)]
-pub enum CreateCommands {
-    /// List the connector catalog (services, dialects, family templates)
-    List {
-        /// Filter to connectors whose name contains this text
-        name: Option<String>,
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-}
-
 /// Entry point from `main`. Keeps `main.rs` thin — one call per group.
 pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
     match command {
-        IngestCommands::New => wizard(workspace_id, output),
-        IngestCommands::List => list(workspace_id, output),
-        IngestCommands::Create {
-            command: Some(CreateCommands::List { name, output }),
-            ..
-        } => catalog_list(workspace_id, name.as_deref(), &output),
-        IngestCommands::Create {
-            command: None,
+        IngestCommands::New {
             service,
             config,
             tables,
@@ -169,7 +155,7 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             catalog_type,
             wait,
             database_id,
-        } => create(
+        } => add_connection(
             workspace_id,
             output,
             CreateArgs {
@@ -185,6 +171,10 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             },
             &wait,
         ),
+        IngestCommands::List => list(workspace_id, output),
+        IngestCommands::Connectors { name, output } => {
+            catalog_list(workspace_id, name.as_deref(), &output)
+        }
         IngestCommands::Import {
             sql,
             source,
@@ -197,17 +187,20 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
     }
 }
 
-// --- new: the guided wizard ----------------------------------------------
+// --- new: add a connection (wizard or flag-driven) -----------------------
 
-fn wizard(workspace_id: &str, output: &str) {
-    if !util::is_interactive() {
-        eprintln!(
-            "error: 'ingest new' is interactive and stdin is not a TTY. \
-             Use 'hotdata ingest create list' to browse connectors, then \
-             'hotdata ingest create --service <name> …'."
-        );
-        std::process::exit(1);
+/// `ingest new`. The guided wizard runs when no connector was named and we're
+/// on a terminal; otherwise (a `--service` was given, or a non-TTY / `--no-input`
+/// run) it's flag-driven and needs `--service`.
+fn add_connection(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
+    if args.service.is_none() && util::is_interactive() {
+        wizard(workspace_id, output, wait);
+    } else {
+        add_from_flags(workspace_id, output, args, wait);
     }
+}
+
+fn wizard(workspace_id: &str, output: &str, wait: &WaitArgs) {
     let client = IngestClient::new(workspace_id);
     let entries = fetch_catalog(&client);
     let entry = select_connector(&entries);
@@ -220,7 +213,7 @@ fn wizard(workspace_id: &str, output: &str) {
     };
     // Adding a connection discovers the schema only — never loads data.
     req.validate_only = true;
-    run_source(&client, output, false, 300, req);
+    run_source(&client, output, wait.no_wait, wait.wait_timeout, req);
 }
 
 /// Present the catalog as a filterable menu and return the chosen entry.
@@ -429,7 +422,7 @@ fn substitute_placeholder(v: &mut serde_json::Value, token: &str, value: &str) {
     }
 }
 
-// --- create: scriptable onboarding ---------------------------------------
+// --- new (flag-driven): non-interactive add ------------------------------
 
 struct CreateArgs {
     service: Option<String>,
@@ -443,11 +436,12 @@ struct CreateArgs {
     database_id: Option<String>,
 }
 
-fn create(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
+fn add_from_flags(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
     let Some(service) = args.service.as_deref() else {
         eprintln!(
-            "error: --service is required (a catalog connector name). \
-             Browse them with 'hotdata ingest create list', or run 'hotdata ingest new'."
+            "error: --service is required to add a connection non-interactively. \
+             Browse connectors with 'hotdata ingest connectors', or run \
+             'hotdata ingest new' in a terminal for the guided wizard."
         );
         std::process::exit(1);
     };
@@ -458,7 +452,7 @@ fn create(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
         .find(|c| c.name == service)
         .cloned()
         .unwrap_or_else(|| {
-            eprintln!("error: unknown connector '{service}'. Run 'hotdata ingest create list'.");
+            eprintln!("error: unknown connector '{service}'. Run 'hotdata ingest connectors'.");
             std::process::exit(1);
         });
 
