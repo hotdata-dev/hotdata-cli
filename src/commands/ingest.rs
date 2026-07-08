@@ -2,10 +2,13 @@
 //!
 //! The surface mirrors `hotdata connections`: `new` (guided, interactive),
 //! `list`, `create` (scriptable, `create list` browses the catalog), `import`
-//! (SQL front-door against an onboarded source), and `refresh`. Onboarding
-//! enqueues a source, fires the drain, and polls to completion — the read side
-//! (inspecting/querying results) is the core `query`/`databases`/`results`
-//! commands, so it isn't duplicated here.
+//! (SQL front-door against an added source), and `refresh`.
+//!
+//! `new`/`create` **add a connection and discover its schema — they load no
+//! data** (the server's `validate_only` mode: check credentials, reflect the
+//! schema, cap extraction). Pulling rows is a separate, explicit step: `import`
+//! runs a query and lands the result in a managed database, read back through
+//! the core `query`/`databases`/`results` commands.
 //!
 //! The `new` wizard is catalog-driven: the `/ingest/connectors` catalog returns
 //! a `template` per REST service with the `base_url`, auth shape, and resources
@@ -36,18 +39,21 @@ const DEFAULT_IMPORT_LIMIT: u32 = 1_000;
 
 #[derive(clap::Subcommand)]
 pub enum IngestCommands {
-    /// Interactively onboard a source, guided by the connector catalog
+    /// Interactively add a source connection and discover its schema (no data
+    /// loaded), guided by the connector catalog
     New,
 
     /// List the sources you've ingested
     List,
 
-    /// Onboard a source non-interactively (or `create list` to browse the catalog)
+    /// Add a source connection and discover its schema — no data is loaded
+    /// (use `hotdata ingest import` to pull data). Or `create list` to browse
+    /// the catalog.
     Create {
         #[command(subcommand)]
         command: Option<CreateCommands>,
 
-        /// Connector to onboard (a catalog name: postgres, bitcoin, filesystem, …)
+        /// Connector to add (a catalog name: postgres, bitcoin, filesystem, …)
         #[arg(long)]
         service: Option<String>,
 
@@ -56,11 +62,11 @@ pub enum IngestCommands {
         #[arg(long)]
         config: Option<String>,
 
-        /// Table to ingest (repeatable; sql/iceberg — omit for all)
+        /// Restrict discovery to this table (repeatable; sql/iceberg)
         #[arg(long = "table")]
         tables: Vec<String>,
 
-        /// Schema to ingest (sql)
+        /// Schema to discover (sql)
         #[arg(long)]
         schema: Option<String>,
 
@@ -80,10 +86,6 @@ pub enum IngestCommands {
         #[arg(long = "catalog-type")]
         catalog_type: Option<String>,
 
-        /// Credential-check + schema discovery only (no full download)
-        #[arg(long = "validate-only")]
-        validate_only: bool,
-
         #[command(flatten)]
         wait: WaitArgs,
 
@@ -92,7 +94,7 @@ pub enum IngestCommands {
         database_id: Option<String>,
     },
 
-    /// Import data from an onboarded source via SQL (defaults to a sample)
+    /// Import data from an added source via SQL (defaults to a sample)
     Import {
         /// SELECT <cols|*> FROM <source>[.<resource>] [WHERE …] [LIMIT n].
         /// Omit to import a sample from --source.
@@ -165,7 +167,6 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             format,
             glob,
             catalog_type,
-            validate_only,
             wait,
             database_id,
         } => create(
@@ -180,7 +181,6 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
                 format,
                 glob,
                 catalog_type,
-                validate_only,
                 database_id,
             },
             &wait,
@@ -212,12 +212,14 @@ fn wizard(workspace_id: &str, output: &str) {
     let entries = fetch_catalog(&client);
     let entry = select_connector(&entries);
 
-    let req = match entry.family.as_str() {
+    let mut req = match entry.family.as_str() {
         "sql" => build_sql_interactive(&entry),
         "filesystem" => build_filesystem_interactive(),
         "iceberg" => build_iceberg_interactive(&entry),
         _ => build_rest_interactive(&entry),
     };
+    // Adding a connection discovers the schema only — never loads data.
+    req.validate_only = true;
     run_source(&client, output, false, 300, req);
 }
 
@@ -438,7 +440,6 @@ struct CreateArgs {
     format: Option<String>,
     glob: Option<String>,
     catalog_type: Option<String>,
-    validate_only: bool,
     database_id: Option<String>,
 }
 
@@ -514,7 +515,8 @@ fn create(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
             }
         }
     };
-    req.validate_only = args.validate_only;
+    // Adding a connection discovers the schema only — never loads data.
+    req.validate_only = true;
     req.database_id = args.database_id;
     run_source(&client, output, wait.no_wait, wait.wait_timeout, req);
 }
@@ -609,7 +611,8 @@ fn import(
         render_ack(&ack, output);
         return;
     }
-    poll_ingest(&client, &ack.ingest_id, wait.wait_timeout, output);
+    let st = poll_ingest(&client, &ack.ingest_id, wait.wait_timeout, "importing");
+    render_done(&st, output);
 }
 
 fn looks_like_ingest_id(s: &str) -> bool {
@@ -623,7 +626,8 @@ fn refresh(workspace_id: &str, output: &str, id: &str, wait_timeout: u64) {
     // so refresh means "re-process": re-drain and poll the ingest to a terminal
     // state. Useful for a job stuck pending, and a no-op reload for a done one.
     let client = IngestClient::new(workspace_id);
-    poll_ingest(&client, id, wait_timeout, output);
+    let st = poll_ingest(&client, id, wait_timeout, "processing");
+    render_done(&st, output);
 }
 
 // --- list ----------------------------------------------------------------
@@ -701,9 +705,9 @@ fn run_source(
     wait_timeout: u64,
     req: IngestRequest,
 ) {
-    // The first enqueue in a workspace deploys the dlt runtime (~15-30s); later
-    // enqueues hash-short-circuit. The HTTP client allows 300s.
-    let spinner = util::spinner("enqueuing ingest… (the first one in a workspace takes ~30s)");
+    // The first add in a workspace deploys the dlt runtime (~15-30s); later
+    // ones hash-short-circuit. The HTTP client allows 300s.
+    let spinner = util::spinner("adding connection… (the first one in a workspace takes ~30s)");
     let ack = client.create_source(&req).unwrap_or_else(|e| {
         spinner.finish_and_clear();
         e.exit()
@@ -713,16 +717,23 @@ fn run_source(
         render_ack(&ack, output);
         return;
     }
-    poll_ingest(client, &ack.ingest_id, wait_timeout, output);
+    let st = poll_ingest(client, &ack.ingest_id, wait_timeout, "discovering schema");
+    render_connection_added(client, &st, output);
 }
 
-/// Fire the drain, then poll the ingest to a terminal state.
-/// Exit codes: 0 done, 1 failed, 2 still running / timed out.
-fn poll_ingest(client: &IngestClient, ingest_id: &str, timeout_secs: u64, output: &str) {
+/// Fire the drain, then poll the ingest to a terminal state, returning the
+/// final (done) status for the caller to render. Exits the process on failure
+/// (1) or timeout / unexpected status (2). `verb` labels the spinner.
+fn poll_ingest(
+    client: &IngestClient,
+    ingest_id: &str,
+    timeout_secs: u64,
+    verb: &str,
+) -> crate::client::ingest::JobStatus {
     let _ = client.drain();
     let mut last_drain = Instant::now();
 
-    let spinner = util::spinner("ingesting…");
+    let spinner = util::spinner(&format!("{verb}…"));
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         let st = client.job_status(ingest_id).unwrap_or_else(|e| {
@@ -732,8 +743,7 @@ fn poll_ingest(client: &IngestClient, ingest_id: &str, timeout_secs: u64, output
         match st.status.as_str() {
             "done" => {
                 spinner.finish_and_clear();
-                render_done(&st, output);
-                return;
+                return st;
             }
             "failed" => {
                 spinner.finish_and_clear();
@@ -815,6 +825,74 @@ fn render_done(st: &crate::client::ingest::JobStatus, output: &str) {
             println!(
                 "{}",
                 format!("Query it: hotdata query --database {db} \"SELECT * FROM …\"").dark_grey()
+            );
+        }
+    }
+}
+
+/// Render the result of adding a connection: the discovered schema (tables +
+/// columns), fetched from the schema-preview the metadata-only run landed. No
+/// data was loaded — the closing hint points at `import` for that.
+fn render_connection_added(
+    client: &IngestClient,
+    st: &crate::client::ingest::JobStatus,
+    output: &str,
+) {
+    let db = st.database_id.as_deref().unwrap_or("");
+    let schema = (!db.is_empty()).then(|| client.schema(db).ok()).flatten();
+    let tables = schema
+        .as_ref()
+        .and_then(|s| s.get("tables"))
+        .and_then(|t| t.as_object());
+
+    match output {
+        "json" | "yaml" => {
+            let mut v = serde_json::to_value(st).unwrap_or_default();
+            if let serde_json::Value::Object(ref mut m) = v {
+                m.insert(
+                    "tables".into(),
+                    schema
+                        .as_ref()
+                        .and_then(|s| s.get("tables").cloned())
+                        .unwrap_or(serde_json::Value::Null),
+                );
+            }
+            if output == "yaml" {
+                print!("{}", serde_yaml::to_string(&v).unwrap());
+            } else {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            }
+        }
+        _ => {
+            use crossterm::style::Stylize;
+            let source = st.connector_type.as_deref().unwrap_or("source");
+            println!("{} {}", "connection added".green(), source.dark_grey());
+            if !db.is_empty() {
+                println!("{}{}", format!("{:<12}", "database:").dark_grey(), db);
+            }
+            match tables {
+                Some(t) if !t.is_empty() => {
+                    println!(
+                        "{}",
+                        format!("discovered {} table(s):", t.len()).dark_grey()
+                    );
+                    for (name, cols) in t {
+                        let names: Vec<&str> = cols.as_array().map_or(Vec::new(), |a| {
+                            a.iter().filter_map(|c| c.as_str()).collect()
+                        });
+                        println!(
+                            "  {}  {}",
+                            name.as_str().cyan(),
+                            names.join(", ").dark_grey()
+                        );
+                    }
+                }
+                _ => println!("{}", "no tables discovered".dark_grey()),
+            }
+            println!(
+                "{}",
+                format!("Import data with: hotdata ingest import --source {source} \"SELECT …\"")
+                    .dark_grey()
             );
         }
     }

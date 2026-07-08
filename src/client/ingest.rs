@@ -257,6 +257,18 @@ impl IngestClient {
             None,
         )
     }
+
+    /// Tables + columns discovered for a result database — the schema preview a
+    /// metadata-only onboard lands: `{database_id, tables: {table: [columns]}}`.
+    pub fn schema(&self, database_id: &str) -> Result<serde_json::Value, IngestError> {
+        self.send(
+            self.authed(
+                reqwest::Method::GET,
+                &format!("/databases/{database_id}/schema"),
+            ),
+            None,
+        )
+    }
 }
 
 /// `IngestRequest` fields that carry source secrets: SQL passwords /
