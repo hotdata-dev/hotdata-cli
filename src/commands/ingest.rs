@@ -928,22 +928,22 @@ fn list_imports(workspace_id: &str, output: &str) {
                 .iter()
                 .map(|q| {
                     vec![
+                        q.ingest_id.clone(),
                         q.connector_type.clone().unwrap_or_else(|| "-".into()),
                         q.query.clone().unwrap_or_default(),
                         colored_status(&q.status),
                         date_only(q.created_at.as_deref()),
-                        q.ingest_id.clone(),
                         q.database_id.clone().unwrap_or_else(|| "-".into()),
                     ]
                 })
                 .collect();
             crate::output::table::print(
                 &[
+                    "IMPORT ID",
                     "SOURCE",
                     "SQL",
                     "STATUS",
                     "CREATED",
-                    "IMPORT ID",
                     "DATABASE",
                 ],
                 &rows,
