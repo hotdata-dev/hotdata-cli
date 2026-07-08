@@ -1,15 +1,20 @@
 //! `hotdata ingest` — pull data from external sources into a managed database.
 //!
-//! Commands: `new` (add a connection), `connectors` (browse the catalog),
-//! `list` (your added sources), `import` (SQL front-door), `update`.
+//! Two nouns, named explicitly in every command: **connections** (onboarded,
+//! credentialed sources — schema discovered, no data loaded) and **imports**
+//! (managed DBs materialized from a connection). Commands: `new-connection`,
+//! `list-connections`, `connectors` (the catalog), `new-import` (--all or
+//! SQL), `list-imports`, `trigger-import` (re-run: refresh an ingest's DB
+//! from source). The pre-rename verbs (`new`/`list`/`import`/`update`) remain
+//! as hidden aliases for one release.
 //!
-//! `new` **adds a connection and discovers its schema — it loads no data** (the
-//! server's `validate_only` mode: check credentials, reflect the schema, cap
-//! extraction). It runs the guided wizard when no `--service` is given on a
-//! terminal, and is flag-driven otherwise (`--service` given, a non-TTY, or
-//! `--no-input`) — one command, two front doors. Pulling rows is the separate,
-//! explicit `import` step, read back through the core `query`/`databases`/
-//! `results` commands.
+//! `new-connection` **adds a connection and discovers its schema — it loads no
+//! data** (the server's `validate_only` mode: check credentials, reflect the
+//! schema, cap extraction). It runs the guided wizard when no `--service` is
+//! given on a terminal, and is flag-driven otherwise (`--service` given, a
+//! non-TTY, or `--no-input`) — one command, two front doors. Pulling rows is
+//! the separate, explicit `new-import` step, read back through the core
+//! `query`/`databases`/`results` commands.
 //!
 //! The wizard is catalog-driven: the `/ingest/connectors` catalog returns a
 //! `template` per REST service with the `base_url`, auth shape, and resources
@@ -21,7 +26,6 @@
 use crate::client::ingest::{
     ConnectorEntry, IngestAck, IngestClient, IngestRequest, QueryToIngest,
 };
-use crate::client::sdk::Api;
 use crate::util;
 use inquire::{Password, Select, Text};
 use std::time::{Duration, Instant};
@@ -34,18 +38,15 @@ const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
 /// read lag). If a job sits pending this long, kick the drain again.
 const DRAIN_REKICK_AFTER: Duration = Duration::from_secs(30);
 
-/// Rows an `import` with no explicit SQL pulls — "a reasonable amount" without
-/// committing the user to a full-table download they didn't ask for.
-const DEFAULT_IMPORT_LIMIT: u32 = 1_000;
-
 #[derive(clap::Subcommand)]
 pub enum IngestCommands {
     /// Add a source connection and discover its schema (loads no data)
     ///
     /// Interactive by default; pass `--service` with config flags to add
-    /// non-interactively. Pull rows separately with `hotdata ingest import`;
-    /// browse connectors with `hotdata ingest connectors`.
-    New {
+    /// non-interactively. Pull rows separately with `hotdata ingest
+    /// new-import`; browse connectors with `hotdata ingest connectors`.
+    #[command(alias = "new")]
+    NewConnection {
         /// Connector to add (a catalog name: postgres, bitcoin, filesystem, …).
         /// Given → non-interactive; omit on a terminal → guided wizard.
         #[arg(long)]
@@ -88,10 +89,17 @@ pub enum IngestCommands {
         database_id: Option<String>,
     },
 
-    /// List the sources you've added
-    List,
+    /// List the connections you've added (each has its own connection id)
+    #[command(alias = "list")]
+    ListConnections {
+        /// Include superseded onboards (older connections a newer onboard of
+        /// the same connector replaced)
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Browse the connector catalog
+    #[command(alias = "supported-connectors")]
     Connectors {
         /// Filter to connectors whose name contains this text
         name: Option<String>,
@@ -100,18 +108,22 @@ pub enum IngestCommands {
         output: String,
     },
 
-    /// Import data from an added source via SQL (defaults to a sample)
-    Import {
-        /// SELECT <cols|*> FROM <source>[.<resource>] [WHERE …] [LIMIT n].
-        /// Omit to import a sample from --source.
+    /// Import data from a connection into a managed database (--all or SQL)
+    #[command(alias = "import")]
+    NewImport {
+        /// SELECT <cols|*> FROM <connection>[.<resource>] [WHERE …] [LIMIT n]
         sql: Option<String>,
 
-        /// Source to import from: a connector name (used in FROM / for the
-        /// default sample) or an onboard ingest-id (pins resolution)
+        /// Import everything from --source (SELECT * with no LIMIT)
+        #[arg(long, conflicts_with = "sql")]
+        all: bool,
+
+        /// Connection to import from: a connector name (used in FROM) or a
+        /// connection id from `list-connections` (pins resolution)
         #[arg(long)]
         source: Option<String>,
 
-        /// Reuse an existing managed database (by id)
+        /// Reuse an existing managed database (by id) instead of minting one
         #[arg(long = "database-id")]
         database_id: Option<String>,
 
@@ -119,9 +131,18 @@ pub enum IngestCommands {
         wait: WaitArgs,
     },
 
-    /// Re-run an ingest by id (re-drains and polls it to completion)
-    Update {
-        /// Ingest id (from `new`/`import`, or `ingest list`)
+    /// List your imports: the SQL behind each and the database it landed in
+    ListImports,
+
+    /// Re-run an ingest: refresh its database from the source
+    ///
+    /// The worker resets the ingest to pending and re-drains it; loads are
+    /// replace-mode, so the same managed database is refreshed with the
+    /// stored credentials — nothing is re-entered.
+    #[command(alias = "update")]
+    TriggerImport {
+        /// Ingest id: an import from `list-imports`, or a connection from
+        /// `list-connections` (re-validates and refreshes its schema)
         id: String,
 
         /// Seconds to wait for completion (default 300)
@@ -145,7 +166,7 @@ pub struct WaitArgs {
 /// Entry point from `main`. Keeps `main.rs` thin — one call per group.
 pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
     match command {
-        IngestCommands::New {
+        IngestCommands::NewConnection {
             service,
             config,
             tables,
@@ -172,25 +193,27 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             },
             &wait,
         ),
-        IngestCommands::List => list(workspace_id, output),
+        IngestCommands::ListConnections { all } => list_connections(workspace_id, output, all),
         IngestCommands::Connectors { name, output } => {
             catalog_list(workspace_id, name.as_deref(), &output)
         }
-        IngestCommands::Import {
+        IngestCommands::NewImport {
             sql,
+            all,
             source,
             database_id,
             wait,
-        } => import(workspace_id, output, sql, source, database_id, &wait),
-        IngestCommands::Update { id, wait_timeout } => {
-            update(workspace_id, output, &id, wait_timeout)
+        } => new_import(workspace_id, output, sql, all, source, database_id, &wait),
+        IngestCommands::ListImports => list_imports(workspace_id, output),
+        IngestCommands::TriggerImport { id, wait_timeout } => {
+            trigger_import(workspace_id, output, &id, wait_timeout)
         }
     }
 }
 
 // --- new: add a connection (wizard or flag-driven) -----------------------
 
-/// `ingest new`. The guided wizard runs when no connector was named and we're
+/// `ingest new-connection`. The guided wizard runs when no connector was named and we're
 /// on a terminal; otherwise (a `--service` was given, or a non-TTY / `--no-input`
 /// run) it's flag-driven and needs `--service`.
 fn add_connection(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
@@ -342,7 +365,7 @@ fn build_rest_interactive(entry: &ConnectorEntry) -> IngestRequest {
             }
         }
         None => {
-            let name = ask_text("Connection name (names the source for `ingest import`):");
+            let name = ask_text("Connection name (names the connection for `ingest new-import`):");
             IngestRequest {
                 family: "rest".into(),
                 connector_type: Some(name),
@@ -442,7 +465,7 @@ fn add_from_flags(workspace_id: &str, output: &str, args: CreateArgs, wait: &Wai
         eprintln!(
             "error: --service is required to add a connection non-interactively. \
              Browse connectors with 'hotdata ingest connectors', or run \
-             'hotdata ingest new' in a terminal for the guided wizard."
+             'hotdata ingest new-connection' in a terminal for the guided wizard."
         );
         std::process::exit(1);
     };
@@ -498,7 +521,7 @@ fn add_from_flags(workspace_id: &str, output: &str, args: CreateArgs, wait: &Wai
             collect_placeholders(&rest_config, &mut leftover);
             if !leftover.is_empty() {
                 fail(&format!(
-                    "connector '{service}' needs secrets ({}) — pass a filled --config, or use 'hotdata ingest new'",
+                    "connector '{service}' needs secrets ({}) — pass a filled --config, or use 'hotdata ingest new-connection'",
                     leftover.join(", ")
                 ));
             }
@@ -524,10 +547,10 @@ fn catalog_list(workspace_id: &str, filter: Option<&str>, output: &str) {
         entries.retain(|c| c.name.to_lowercase().contains(&f));
     }
     let entries = sorted_for_display(&entries);
-    // "active" = a connector this workspace has already added (there's an
-    // ingest-/query- managed DB for it). Best-effort: if the DB list is
-    // unavailable the catalog still shows, just without active marks.
-    let active = active_source_names(&Api::new(Some(workspace_id)));
+    // "active" = a connector this workspace has already added (it appears in
+    // the onboarded-source registry). Best-effort: if the registry read fails
+    // the catalog still shows, just without active marks.
+    let active = active_source_names(&client);
     let is_active = |name: &str| active.contains(name);
 
     match output {
@@ -567,46 +590,51 @@ fn catalog_list(workspace_id: &str, filter: Option<&str>, output: &str) {
     }
 }
 
-/// Source names this workspace has added (onboarded or imported), derived from
-/// the ingest-minted managed DBs. Used to flag which catalog connectors are
-/// active. Best-effort — an unavailable DB list yields an empty set.
-fn active_source_names(api: &Api) -> std::collections::HashSet<String> {
-    crate::commands::databases::list_id_name_pairs(api)
+/// Connector names this workspace has onboarded, from the sources registry.
+/// Used to flag which catalog connectors are active. Best-effort — an
+/// unavailable registry yields an empty set.
+fn active_source_names(client: &IngestClient) -> std::collections::HashSet<String> {
+    client
+        .list_sources(false)
+        .map(|r| {
+            r.sources
+                .into_iter()
+                .filter_map(|s| s.connector_type)
+                .collect()
+        })
         .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(_, name)| ingest_db_source(name?.as_str()).map(|(_, source)| source))
-        .collect()
 }
 
-// --- import: SQL front-door ----------------------------------------------
+// --- new-import: SQL front-door -------------------------------------------
 
-fn import(
+fn new_import(
     workspace_id: &str,
     output: &str,
     sql: Option<String>,
+    all: bool,
     source: Option<String>,
     database_id: Option<String>,
     wait: &WaitArgs,
 ) {
-    // A 32-char hex --source is an onboard id (pin resolution); anything else is
-    // a connector name (the FROM target for the default sample).
+    // A 32-char hex --source is a connection id (pins resolution); anything
+    // else is a connector name (the FROM target).
     let (pin, name) = match source {
         Some(s) if looks_like_ingest_id(&s) => (Some(s), None),
         Some(s) => (None, Some(s)),
         None => (None, None),
     };
 
-    let query = match sql {
-        Some(q) => q,
-        None => match &name {
-            Some(n) => format!("SELECT * FROM {n} LIMIT {DEFAULT_IMPORT_LIMIT}"),
-            None => {
-                fail("provide a SQL query, or --source <connector-name> to import a default sample")
-            }
-        },
-    };
-
     let client = IngestClient::new(workspace_id);
+    // `--all` against a pinned id needs the connector name for FROM — resolve
+    // it from the sources registry, only when actually needed.
+    let pinned_name = (all && name.is_none())
+        .then(|| {
+            pin.as_deref()
+                .and_then(|p| pinned_connector_name(&client, p))
+        })
+        .flatten();
+    let query = build_import_query(sql, all, name.as_deref(), pinned_name.as_deref())
+        .unwrap_or_else(|msg| fail(msg));
     let req = QueryToIngest {
         query,
         source_ingest_id: pin,
@@ -635,7 +663,13 @@ fn import(
         render_ack(&ack, output);
         return;
     }
-    let st = poll_ingest(&client, &ack.ingest_id, wait.wait_timeout, "importing");
+    let st = poll_ingest(
+        &client,
+        &ack.ingest_id,
+        wait.wait_timeout,
+        "importing",
+        true,
+    );
     render_done(&st, output);
 }
 
@@ -643,87 +677,170 @@ fn looks_like_ingest_id(s: &str) -> bool {
     s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-// --- update --------------------------------------------------------------
+/// The SQL a `new-import` runs: explicit SQL wins; `--all` becomes a full
+/// `SELECT *` against the connection's name (`pinned_name` when --source was
+/// a connection id). Errors are messages for `fail`.
+fn build_import_query(
+    sql: Option<String>,
+    all: bool,
+    name: Option<&str>,
+    pinned_name: Option<&str>,
+) -> Result<String, &'static str> {
+    match (sql, all) {
+        (Some(q), _) => Ok(q), // clap rejects sql + --all together
+        (None, true) => name
+            .or(pinned_name)
+            .map(|n| format!("SELECT * FROM {n}"))
+            .ok_or("--all needs --source <connection> (a connector name or connection id)"),
+        (None, false) => Err(
+            "provide SQL (SELECT … FROM <connection> …), or --all to import \
+             everything from --source",
+        ),
+    }
+}
 
-fn update(workspace_id: &str, output: &str, id: &str, wait_timeout: u64) {
-    // No stored source config to re-onboard from (the worker holds it encrypted),
-    // so update means "re-process": re-drain and poll the ingest to a terminal
-    // state. Useful for a job stuck pending, and a no-op reload for a done one.
+/// Resolve a pinned connection id to its connector name (the FROM target)
+/// via the sources registry.
+fn pinned_connector_name(client: &IngestClient, ingest_id: &str) -> Option<String> {
+    client
+        .list_sources(true)
+        .ok()?
+        .sources
+        .into_iter()
+        .find(|s| s.ingest_id == ingest_id)
+        .and_then(|s| s.connector_type)
+}
+
+// --- trigger-import --------------------------------------------------------
+
+fn trigger_import(workspace_id: &str, output: &str, id: &str, wait_timeout: u64) {
     let client = IngestClient::new(workspace_id);
-    let st = poll_ingest(&client, id, wait_timeout, "processing");
+    let spinner = util::spinner("requesting re-run…");
+    // The worker resets the ingest to pending and fires the drain (409 if one
+    // is already mid-flight — its message says to retry shortly).
+    let ack = client.rerun(id).unwrap_or_else(|e| {
+        spinner.finish_and_clear();
+        e.exit()
+    });
+    spinner.finish_and_clear();
+    // The rerun already drained; poll only.
+    let st = poll_ingest(&client, &ack.ingest_id, wait_timeout, "re-running", false);
     render_done(&st, output);
 }
 
-// --- list ----------------------------------------------------------------
+// --- list-connections ------------------------------------------------------
 
-fn list(workspace_id: &str, output: &str) {
-    let api = Api::new(Some(workspace_id));
-    let dbs = crate::commands::databases::list_id_name_pairs(&api).unwrap_or_else(|e| e.exit());
-    // Ingest mints result databases named `ingest-<source>-<id8>` (onboards) and
-    // `query-<source>-<id8>` (imports); everything else is a plain managed DB.
-    let mut rows: Vec<IngestedRow> = dbs
-        .into_iter()
-        .filter_map(|(id, name)| {
-            let (kind, source) = ingest_db_source(name?.as_str())?;
-            Some(IngestedRow {
-                source,
-                kind: kind.to_string(),
-                database_id: id,
-            })
-        })
-        .collect();
-    rows.sort_by(|a, b| a.source.cmp(&b.source).then_with(|| a.kind.cmp(&b.kind)));
+fn list_connections(workspace_id: &str, output: &str, all: bool) {
+    let client = IngestClient::new(workspace_id);
+    let spinner = util::spinner("loading connections…");
+    let resp = client.list_sources(all).unwrap_or_else(|e| {
+        spinner.finish_and_clear();
+        e.exit()
+    });
+    spinner.finish_and_clear();
 
     match output {
-        "json" => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&rows).unwrap()),
+        "json" => println!("{}", serde_json::to_string_pretty(&resp.sources).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&resp.sources).unwrap()),
         _ => {
             use crossterm::style::Stylize;
-            if rows.is_empty() {
+            if resp.sources.is_empty() {
                 eprintln!(
                     "{}",
-                    "No ingested sources yet. Onboard one with 'hotdata ingest new'.".dark_grey()
+                    "No connections yet. Add one with 'hotdata ingest new-connection'.".dark_grey()
                 );
                 return;
             }
-            let table: Vec<Vec<String>> = rows
+            let mut headers = vec!["NAME", "FAMILY", "STATUS", "CREATED", "CONNECTION ID"];
+            if all {
+                headers.push("ACTIVE");
+            }
+            let rows: Vec<Vec<String>> = resp
+                .sources
                 .iter()
-                .map(|r| vec![r.source.clone(), r.kind.clone(), r.database_id.clone()])
+                .map(|s| {
+                    let mut row = vec![
+                        s.connector_type.clone().unwrap_or_else(|| "-".into()),
+                        s.family.clone().unwrap_or_default(),
+                        s.status.clone(),
+                        date_only(s.created_at.as_deref()),
+                        s.ingest_id.clone(),
+                    ];
+                    if all {
+                        row.push(if s.active {
+                            "yes".into()
+                        } else {
+                            String::new()
+                        });
+                    }
+                    row
+                })
                 .collect();
-            crate::output::table::print(&["SOURCE", "KIND", "DATABASE"], &table);
+            crate::output::table::print(&headers, &rows);
         }
     }
 }
 
-#[derive(serde::Serialize)]
-struct IngestedRow {
-    source: String,
-    kind: String,
-    database_id: String,
-}
+// --- list-imports ----------------------------------------------------------
 
-/// Classify an ingest-minted managed DB by its name: `ingest-<source>-<id8>`
-/// → `("onboard", source)`, `query-<source>-<id8>` → `("import", source)`.
-/// `None` for any other managed database.
-fn ingest_db_source(name: &str) -> Option<(&'static str, String)> {
-    if let Some(rest) = name.strip_prefix("ingest-") {
-        Some(("onboard", strip_id_suffix(rest)))
-    } else if let Some(rest) = name.strip_prefix("query-") {
-        Some(("import", strip_id_suffix(rest)))
-    } else {
-        None
-    }
-}
+fn list_imports(workspace_id: &str, output: &str) {
+    let client = IngestClient::new(workspace_id);
+    let spinner = util::spinner("loading imports…");
+    let resp = client.list_queries().unwrap_or_else(|e| {
+        spinner.finish_and_clear();
+        e.exit()
+    });
+    spinner.finish_and_clear();
 
-/// Drop the trailing `-<8 hex>` id the worker appends to a result-DB name,
-/// leaving the source/connector label.
-fn strip_id_suffix(s: &str) -> String {
-    match s.rsplit_once('-') {
-        Some((head, tail)) if tail.len() == 8 && tail.chars().all(|c| c.is_ascii_hexdigit()) => {
-            head.to_string()
+    match output {
+        "json" => println!("{}", serde_json::to_string_pretty(&resp.queries).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&resp.queries).unwrap()),
+        _ => {
+            use crossterm::style::Stylize;
+            if resp.queries.is_empty() {
+                eprintln!(
+                    "{}",
+                    "No imports yet. Create one with 'hotdata ingest new-import \
+                     --source <connection> --all' (or pass SQL)."
+                        .dark_grey()
+                );
+                return;
+            }
+            let rows: Vec<Vec<String>> = resp
+                .queries
+                .iter()
+                .map(|q| {
+                    vec![
+                        q.connector_type.clone().unwrap_or_else(|| "-".into()),
+                        q.query.clone().unwrap_or_default(),
+                        q.status.clone(),
+                        date_only(q.created_at.as_deref()),
+                        q.ingest_id.clone(),
+                        q.database_id.clone().unwrap_or_else(|| "-".into()),
+                    ]
+                })
+                .collect();
+            crate::output::table::print(
+                &[
+                    "SOURCE",
+                    "SQL",
+                    "STATUS",
+                    "CREATED",
+                    "IMPORT ID",
+                    "DATABASE",
+                ],
+                &rows,
+            );
         }
-        _ => s.to_string(),
     }
+}
+
+/// Date part of an ISO timestamp for table display
+/// (`2026-07-08T10:12:00+00:00` → `2026-07-08`).
+fn date_only(ts: Option<&str>) -> String {
+    ts.and_then(|t| t.split('T').next())
+        .unwrap_or("-")
+        .to_string()
 }
 
 // --- shared run + poll ----------------------------------------------------
@@ -747,21 +864,31 @@ fn run_source(
         render_ack(&ack, output);
         return;
     }
-    let st = poll_ingest(client, &ack.ingest_id, wait_timeout, "discovering schema");
+    let st = poll_ingest(
+        client,
+        &ack.ingest_id,
+        wait_timeout,
+        "discovering schema",
+        true,
+    );
     render_connection_added(client, &st, output);
 }
 
-/// Fire the drain, then poll the ingest to a terminal state, returning the
-/// final (done) status for the caller to render. Every non-terminal status is
-/// shown live in the spinner (stage + detail); exits the process on failure (1)
-/// or timeout (2). `verb` labels the spinner.
+/// Poll the ingest to a terminal state, returning the final (done) status for
+/// the caller to render. `kick_drain` fires the drain up front (enqueue paths;
+/// `trigger-import` skips it — the rerun already drained). Every non-terminal
+/// status is shown live in the spinner (stage + detail); exits the process on
+/// failure (1) or timeout (2). `verb` labels the spinner.
 fn poll_ingest(
     client: &IngestClient,
     ingest_id: &str,
     timeout_secs: u64,
     verb: &str,
+    kick_drain: bool,
 ) -> crate::client::ingest::JobStatus {
-    let _ = client.drain();
+    if kick_drain {
+        let _ = client.drain();
+    }
     let mut last_drain = Instant::now();
 
     let spinner = util::spinner(&format!("{verb}…"));
@@ -816,7 +943,11 @@ fn poll_ingest(
             eprintln!("{}", "ingest timed out".red());
             eprintln!(
                 "{}",
-                format!("Check status with: hotdata ingest update {ingest_id}").dark_grey()
+                format!(
+                    "Check progress with: hotdata ingest list-imports (or list-connections) — \
+                     or re-kick it: hotdata ingest trigger-import {ingest_id}"
+                )
+                .dark_grey()
             );
             std::process::exit(2);
         }
@@ -847,7 +978,11 @@ fn render_ack(ack: &IngestAck, output: &str) {
             println!("{}{}", label("status:"), ack.status.as_str().yellow());
             println!(
                 "{}",
-                format!("Track it with: hotdata ingest update {}", ack.ingest_id).dark_grey()
+                format!(
+                    "Track it with: hotdata ingest trigger-import {}",
+                    ack.ingest_id
+                )
+                .dark_grey()
             );
         }
     }
@@ -930,8 +1065,10 @@ fn render_connection_added(
             }
             println!(
                 "{}",
-                format!("Import data with: hotdata ingest import --source {source} \"SELECT …\"")
-                    .dark_grey()
+                format!(
+                    "Import data with: hotdata ingest new-import --source {source} --all (or SQL)"
+                )
+                .dark_grey()
             );
         }
     }
@@ -1183,30 +1320,45 @@ mod tests {
     }
 
     #[test]
-    fn ingest_db_source_classifies_result_db_names() {
-        assert_eq!(
-            ingest_db_source("ingest-postgres-6ed3a0ed"),
-            Some(("onboard", "postgres".to_string()))
+    fn import_query_explicit_sql_wins() {
+        let q = build_import_query(
+            Some("SELECT id FROM pg.orders LIMIT 5".into()),
+            false,
+            Some("pg"),
+            None,
         );
-        assert_eq!(
-            ingest_db_source("query-bitcoin-4cc2e74d"),
-            Some(("import", "bitcoin".to_string()))
-        );
-        // A plain managed DB (not ingest-minted) is not a source.
-        assert_eq!(ingest_db_source("sdkci-shared"), None);
-        assert_eq!(ingest_db_source("my-analytics-db"), None);
+        assert_eq!(q.unwrap(), "SELECT id FROM pg.orders LIMIT 5");
     }
 
     #[test]
-    fn strip_id_suffix_drops_the_8hex_tail_only() {
-        assert_eq!(strip_id_suffix("bitcoin-6ed3a0ed"), "bitcoin");
+    fn import_query_all_uses_the_connection_name() {
+        // Named source.
         assert_eq!(
-            strip_id_suffix("cli_e2e_bitcoin-4cc2e74d"),
-            "cli_e2e_bitcoin"
+            build_import_query(None, true, Some("bitcoin"), None).unwrap(),
+            "SELECT * FROM bitcoin"
         );
-        // no 8-hex tail → unchanged
-        assert_eq!(strip_id_suffix("postgres"), "postgres");
-        assert_eq!(strip_id_suffix("my-source"), "my-source");
+        // Pinned connection id — name resolved from the registry by the caller.
+        assert_eq!(
+            build_import_query(None, true, None, Some("postgres")).unwrap(),
+            "SELECT * FROM postgres"
+        );
+    }
+
+    #[test]
+    fn import_query_errors_without_sql_or_all() {
+        // Neither SQL nor --all: the two modes must be chosen explicitly.
+        let err = build_import_query(None, false, Some("bitcoin"), None).unwrap_err();
+        assert!(err.contains("--all"), "got: {err}");
+        // --all with no resolvable source name.
+        let err = build_import_query(None, true, None, None).unwrap_err();
+        assert!(err.contains("--source"), "got: {err}");
+    }
+
+    #[test]
+    fn date_only_trims_iso_timestamps() {
+        assert_eq!(date_only(Some("2026-07-08T10:12:00+00:00")), "2026-07-08");
+        assert_eq!(date_only(Some("2026-07-08")), "2026-07-08");
+        assert_eq!(date_only(None), "-");
     }
 
     #[test]

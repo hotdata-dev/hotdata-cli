@@ -22,11 +22,12 @@
 //! When the ingest routes land in the public OpenAPI and the SDK regenerates,
 //! delete this module and move the commands onto `sdk::Api`.
 //!
-//! Surface: `create_source` (onboard, backs `new`/`create`/`refresh`),
-//! `create_query` (SQL front-door, backs `import`), `connectors` (the catalog),
-//! `drain` + `job_status` (the async run loop). The result-reading endpoints
-//! are intentionally absent — that path is the core `query`/`databases`/
-//! `results` commands.
+//! Surface: `create_source` (onboard, backs `new-connection`), `create_query`
+//! (SQL front-door, backs `new-import`), `list_sources` / `list_queries` (the
+//! registries behind `list-connections` / `list-imports`), `rerun` (backs
+//! `trigger-import`), `connectors` (the catalog), `drain` + `job_status` (the
+//! async run loop). The result-reading endpoints are intentionally absent —
+//! that path is the core `query`/`databases`/`results` commands.
 #![allow(dead_code)] // Response structs are read only through serde/printing.
 
 use crate::client::jwt;
@@ -241,6 +242,19 @@ impl IngestClient {
         self.send(self.authed(reqwest::Method::POST, "/jobs/drain"), None)
     }
 
+    /// Re-run an ingest: the worker resets it to pending and fires the drain.
+    /// Replace-mode loads + the stored (encrypted) source and destination
+    /// credentials mean this refreshes the SAME managed DB from source. No
+    /// API-key guard: the drain reuses the destination stored at enqueue, so
+    /// the server accepts any credential its write check does. A 409 means a
+    /// drain is mid-flight — the worker's message says to retry shortly.
+    pub fn rerun(&self, ingest_id: &str) -> Result<IngestAck, IngestError> {
+        self.send(
+            self.authed(reqwest::Method::POST, &format!("/jobs/{ingest_id}/rerun")),
+            None,
+        )
+    }
+
     // --- read endpoints --------------------------------------------------
 
     /// The connector catalog. REST entries carry a ready-to-edit `template`
@@ -256,6 +270,22 @@ impl IngestClient {
             self.authed(reqwest::Method::GET, &format!("/jobs/{ingest_id}")),
             None,
         )
+    }
+
+    /// The onboarded-source registry (`GET /sources`) — one row per connection,
+    /// newest first, each with its own ingest id (the connection id). The
+    /// default view is the current set: the latest onboard per connector name
+    /// plus unnamed onboards; `all` includes superseded onboards too.
+    pub fn list_sources(&self, all: bool) -> Result<SourcesResponse, IngestError> {
+        let path = if all { "/sources?all=true" } else { "/sources" };
+        self.send(self.authed(reqwest::Method::GET, path), None)
+    }
+
+    /// The import registry (`GET /queries`) — every SQL import, newest first,
+    /// with the SQL that produced it, its source connection, and the managed
+    /// DB it landed in.
+    pub fn list_queries(&self) -> Result<QueriesResponse, IngestError> {
+        self.send(self.authed(reqwest::Method::GET, "/queries"), None)
     }
 
     /// Tables + columns discovered for a result database — the schema preview a
@@ -369,6 +399,66 @@ pub struct JobStatus {
     pub family: Option<String>,
     #[serde(default)]
     pub database_id: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+/// `GET /sources` body.
+#[derive(Deserialize)]
+pub struct SourcesResponse {
+    pub sources: Vec<SourceRow>,
+}
+
+/// One connection in the onboarded-source registry. `ingest_id` is the
+/// connection's own id — the pin key `new-import --source` accepts. `active`
+/// marks the row by-name resolution picks (always true in the default view;
+/// superseded onboards surface with `all=true`).
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SourceRow {
+    pub ingest_id: String,
+    #[serde(default)]
+    pub connector_type: Option<String>,
+    #[serde(default)]
+    pub family: Option<String>,
+    #[serde(default)]
+    pub database_id: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub active: bool,
+}
+
+/// `GET /queries` body.
+#[derive(Deserialize)]
+pub struct QueriesResponse {
+    pub queries: Vec<QueryRow>,
+}
+
+/// One import in the registry: the SQL that produced it (verbatim for new
+/// rows, server-reconstructed for older ones), the connection it drew from,
+/// and the managed DB it landed in.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct QueryRow {
+    pub ingest_id: String,
+    pub source_ingest_id: String,
+    #[serde(default)]
+    pub connector_type: Option<String>,
+    #[serde(default)]
+    pub family: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub database_id: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub detail: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
@@ -548,6 +638,111 @@ mod tests {
             aikido.template.as_ref().unwrap()["client"]["base_url"],
             "https://app.aikido.dev/api/public/v1/"
         );
+    }
+
+    // --- registry reads ------------------------------------------------------
+
+    #[test]
+    fn list_sources_default_and_all_hit_the_right_paths() {
+        let mut server = mockito::Server::new();
+        let m_default = server
+            .mock("GET", "/ingest/sources")
+            .match_header("x-workspace-id", "ws-1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"sources":[{"ingest_id":"a1","connector_type":"postgres","family":"sql",
+                    "database_id":"db-1","status":"done","detail":null,
+                    "created_at":"2026-07-08T10:00:00+00:00","updated_at":null,"active":true}]}"#,
+            )
+            .create();
+        let m_all = server
+            .mock("GET", "/ingest/sources?all=true")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"sources":[]}"#)
+            .create();
+
+        let client = api_key_client(&server);
+        let resp = client.list_sources(false).unwrap();
+        assert_eq!(resp.sources.len(), 1);
+        let s = &resp.sources[0];
+        assert_eq!(s.ingest_id, "a1");
+        assert_eq!(s.connector_type.as_deref(), Some("postgres"));
+        assert!(s.active);
+
+        assert!(client.list_sources(true).unwrap().sources.is_empty());
+        m_default.assert();
+        m_all.assert();
+    }
+
+    #[test]
+    fn list_queries_decodes_sql_and_source_link() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/queries")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"queries":[{"ingest_id":"q1","source_ingest_id":"a1",
+                    "connector_type":"bitcoin","family":"rest",
+                    "query":"SELECT id, height FROM bitcoin.blocks LIMIT 100",
+                    "database_id":"db-2","status":"done","detail":null,
+                    "created_at":"2026-07-08T10:05:00+00:00","updated_at":null}]}"#,
+            )
+            .create();
+
+        let resp = api_key_client(&server).list_queries().unwrap();
+        m.assert();
+        let q = &resp.queries[0];
+        assert_eq!(q.source_ingest_id, "a1");
+        assert_eq!(
+            q.query.as_deref(),
+            Some("SELECT id, height FROM bitcoin.blocks LIMIT 100")
+        );
+        assert_eq!(q.database_id.as_deref(), Some("db-2"));
+    }
+
+    #[test]
+    fn rerun_posts_and_decodes_the_pending_ack() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/ingest/jobs/q1/rerun")
+            .match_header("authorization", "Bearer hd_test")
+            .match_header("x-workspace-id", "ws-1")
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"ingest_id":"q1","database_id":"db-2","connector_type":"bitcoin",
+                    "family":"rest","status":"pending","status_url":"/ingest/jobs/q1"}"#,
+            )
+            .create();
+
+        let ack = api_key_client(&server).rerun("q1").unwrap();
+        m.assert();
+        assert_eq!(ack.ingest_id, "q1");
+        assert_eq!(ack.database_id, "db-2");
+        assert_eq!(ack.status, "pending");
+    }
+
+    #[test]
+    fn rerun_409_surfaces_the_in_flight_detail() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/ingest/jobs/q1/rerun")
+            .with_status(409)
+            .with_body(r#"{"detail":"a drain appears to be running (in flight: a1); retry once it settles"}"#)
+            .create();
+
+        let err = api_key_client(&server).rerun("q1").unwrap_err();
+        m.assert();
+        match err {
+            IngestError::Http { status, body } => {
+                assert_eq!(status, 409);
+                assert!(body.contains("retry once it settles"), "got: {body}");
+            }
+            other => panic!("expected Http, got: {}", other.message()),
+        }
     }
 
     // --- debug-log redaction -------------------------------------------------
