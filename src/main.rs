@@ -67,40 +67,30 @@ fn resolve_workspace(provided: Option<String>) -> String {
         let _ = ACTIVE_WORKSPACE_ID.set(ws.clone());
         return ws;
     }
-    match config::load("default") {
-        Ok(profile) => {
-            // An api-key credential (e.g. a database API token, passed via
-            // --api-key / HOTDATA_API_KEY) is authorized for its own
-            // workspace(s), independent of the CLI session's saved default.
-            // When the caller didn't pin one and the token is scoped to exactly
-            // one workspace, target it — otherwise the gateway rejects the
-            // mismatched X-Workspace-Id with "workspace not allowed" before the
-            // request ever reaches the resource.
-            if provided.is_none()
-                && matches!(
-                    profile.api_key_source,
-                    config::ApiKeySource::Flag | config::ApiKeySource::Env
-                )
-            {
-                let ids = credentials::api_key_workspace_ids(&profile);
-                if let [only] = ids.as_slice() {
-                    let _ = ACTIVE_WORKSPACE_ID.set(only.clone());
-                    return only.clone();
-                }
-            }
-            match config::resolve_workspace_id(provided, &profile) {
-                Ok(id) => {
-                    let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
-                    id
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                }
-            }
+    let profile = config::load("default").unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
+    // An explicit --workspace-id always wins.
+    if let Some(id) = provided {
+        let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
+        return id;
+    }
+    // Otherwise the profile's default, computed by the same helper `auth
+    // status` displays — so the reported workspace is the one commands hit.
+    // For an api-key credential that's its own authorized workspace (a database
+    // token's sole one, or the saved default when the key can reach it), not a
+    // possibly-different CLI-session cache.
+    match credentials::default_workspace_id(&profile) {
+        Some(id) => {
+            let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
+            id
         }
-        Err(e) => {
-            eprintln!("{e}");
+        None => {
+            eprintln!(
+                "error: no workspace-id provided and no default workspace found. \
+                 Run 'hotdata auth login' or specify --workspace-id."
+            );
             std::process::exit(1);
         }
     }

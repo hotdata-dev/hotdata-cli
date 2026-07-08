@@ -86,27 +86,31 @@ pub fn status(profile: &str) {
             if let Some(src) = api_key_jwt_source(&profile_config) {
                 print_row("API Key Source", &src.as_str().cyan().to_string());
             }
-            // An api key (--api-key / HOTDATA_API_KEY) is authorized for its own
-            // workspaces, which may differ from the CLI session's cached
-            // `config.workspaces`. Show the workspace the *credential* can reach
-            // (a database API token is bound to exactly one) rather than a stale
-            // session cache. The CLI-session path keeps its cached list.
-            let display_workspaces = match profile_config.api_key_source {
+            // Show the workspace commands will actually target — the exact
+            // value `resolve_workspace` uses — so the readout can't lie about
+            // where work lands. Resolve a display name from the credential's
+            // own authorized workspaces (api key) or the cached list (session),
+            // falling back to the bare id if the name isn't known.
+            let default_id = crate::client::credentials::default_workspace_id(&profile_config);
+            let known = match profile_config.api_key_source {
                 ApiKeySource::Flag | ApiKeySource::Env => {
                     api_key_authorized_workspaces(&profile_config)
                 }
                 ApiKeySource::Config => profile_config.workspaces.clone(),
             };
-            match display_workspaces.first() {
-                Some(w) => {
-                    print_row(
-                        "Workspace",
-                        &format!(
-                            "{} {}",
-                            w.name.as_str().cyan(),
-                            format!("({})", w.public_id).dark_grey()
-                        ),
-                    );
+            match default_id {
+                Some(id) => {
+                    let name = known
+                        .iter()
+                        .find(|w| w.public_id == id)
+                        .map(|w| w.name.clone());
+                    let display = match &name {
+                        Some(n) => {
+                            format!("{} {}", n.as_str().cyan(), format!("({id})").dark_grey())
+                        }
+                        None => id.cyan().to_string(),
+                    };
+                    print_row("Workspace", &display);
                     print_row(
                         "",
                         &"use 'hotdata workspaces set' to switch workspaces"
