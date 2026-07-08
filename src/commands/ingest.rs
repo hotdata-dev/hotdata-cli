@@ -524,29 +524,58 @@ fn catalog_list(workspace_id: &str, filter: Option<&str>, output: &str) {
         entries.retain(|c| c.name.to_lowercase().contains(&f));
     }
     let entries = sorted_for_display(&entries);
+    // "active" = a connector this workspace has already added (there's an
+    // ingest-/query- managed DB for it). Best-effort: if the DB list is
+    // unavailable the catalog still shows, just without active marks.
+    let active = active_source_names(&Api::new(Some(workspace_id)));
+    let is_active = |name: &str| active.contains(name);
+
     match output {
-        "json" => {
+        "json" | "yaml" => {
             let v: Vec<_> = entries
                 .iter()
-                .map(|c| serde_json::json!({"name": c.name, "family": c.family, "description": c.description}))
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "family": c.family,
+                        "active": is_active(&c.name),
+                        "description": c.description,
+                    })
+                })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&v).unwrap());
-        }
-        "yaml" => {
-            let v: Vec<_> = entries
-                .iter()
-                .map(|c| serde_json::json!({"name": c.name, "family": c.family, "description": c.description}))
-                .collect();
-            print!("{}", serde_yaml::to_string(&v).unwrap());
+            if output == "yaml" {
+                print!("{}", serde_yaml::to_string(&v).unwrap());
+            } else {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+            }
         }
         _ => {
             let rows: Vec<Vec<String>> = entries
                 .iter()
-                .map(|c| vec![c.name.clone(), c.family.clone(), c.description.clone()])
+                .map(|c| {
+                    let status = if is_active(&c.name) { "active" } else { "" };
+                    vec![
+                        c.name.clone(),
+                        c.family.clone(),
+                        status.to_string(),
+                        c.description.clone(),
+                    ]
+                })
                 .collect();
-            crate::output::table::print(&["NAME", "FAMILY", "DESCRIPTION"], &rows);
+            crate::output::table::print(&["NAME", "FAMILY", "STATUS", "DESCRIPTION"], &rows);
         }
     }
+}
+
+/// Source names this workspace has added (onboarded or imported), derived from
+/// the ingest-minted managed DBs. Used to flag which catalog connectors are
+/// active. Best-effort — an unavailable DB list yields an empty set.
+fn active_source_names(api: &Api) -> std::collections::HashSet<String> {
+    crate::commands::databases::list_id_name_pairs(api)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(_, name)| ingest_db_source(name?.as_str()).map(|(_, source)| source))
+        .collect()
 }
 
 // --- import: SQL front-door ----------------------------------------------
@@ -635,14 +664,7 @@ fn list(workspace_id: &str, output: &str) {
     let mut rows: Vec<IngestedRow> = dbs
         .into_iter()
         .filter_map(|(id, name)| {
-            let name = name?;
-            let (kind, source) = if let Some(rest) = name.strip_prefix("ingest-") {
-                ("onboard", strip_id_suffix(rest))
-            } else if let Some(rest) = name.strip_prefix("query-") {
-                ("import", strip_id_suffix(rest))
-            } else {
-                return None;
-            };
+            let (kind, source) = ingest_db_source(name?.as_str())?;
             Some(IngestedRow {
                 source,
                 kind: kind.to_string(),
@@ -678,6 +700,19 @@ struct IngestedRow {
     source: String,
     kind: String,
     database_id: String,
+}
+
+/// Classify an ingest-minted managed DB by its name: `ingest-<source>-<id8>`
+/// → `("onboard", source)`, `query-<source>-<id8>` → `("import", source)`.
+/// `None` for any other managed database.
+fn ingest_db_source(name: &str) -> Option<(&'static str, String)> {
+    if let Some(rest) = name.strip_prefix("ingest-") {
+        Some(("onboard", strip_id_suffix(rest)))
+    } else if let Some(rest) = name.strip_prefix("query-") {
+        Some(("import", strip_id_suffix(rest)))
+    } else {
+        None
+    }
 }
 
 /// Drop the trailing `-<8 hex>` id the worker appends to a result-DB name,
@@ -1145,6 +1180,21 @@ mod tests {
         assert!(!looks_like_ingest_id("bitcoin"));
         assert!(!looks_like_ingest_id("6232a169")); // too short
         assert!(!looks_like_ingest_id("zzzz1694a1b4451957c053a56756ffff")); // non-hex
+    }
+
+    #[test]
+    fn ingest_db_source_classifies_result_db_names() {
+        assert_eq!(
+            ingest_db_source("ingest-postgres-6ed3a0ed"),
+            Some(("onboard", "postgres".to_string()))
+        );
+        assert_eq!(
+            ingest_db_source("query-bitcoin-4cc2e74d"),
+            Some(("import", "bitcoin".to_string()))
+        );
+        // A plain managed DB (not ingest-minted) is not a source.
+        assert_eq!(ingest_db_source("sdkci-shared"), None);
+        assert_eq!(ingest_db_source("my-analytics-db"), None);
     }
 
     #[test]
