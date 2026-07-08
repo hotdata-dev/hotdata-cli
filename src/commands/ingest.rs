@@ -253,15 +253,10 @@ fn family_rank(family: &str) -> u8 {
     }
 }
 
-/// Sort the catalog for display and drop redundant SQL dialect aliases.
-///
-/// The server lists both spellings of a dialect (`postgres`/`postgresql`,
-/// `mssql`/`sqlserver`) with identical descriptions, which reads as noise in
-/// the menu. Collapse SQL entries that share a description, keeping the
-/// alphabetically-first (canonical) name. Only SQL is deduped — `mysql` and
-/// `mariadb` are distinct products, and REST descriptions are per-service.
-/// This is display-only: `create --service <alias>` still resolves against the
-/// full catalog, so a hidden alias stays usable.
+/// Sort the catalog for display: generic families (sql, filesystem, iceberg)
+/// first, then the REST services, each group alphabetical. Redundant SQL
+/// dialect aliases are collapsed at the source (the dlthubworker catalog), not
+/// here.
 fn sorted_for_display(entries: &[ConnectorEntry]) -> Vec<ConnectorEntry> {
     let mut sorted = entries.to_vec();
     sorted.sort_by(|a, b| {
@@ -269,8 +264,6 @@ fn sorted_for_display(entries: &[ConnectorEntry]) -> Vec<ConnectorEntry> {
             .cmp(&family_rank(&b.family))
             .then_with(|| a.name.cmp(&b.name))
     });
-    let mut seen_sql = std::collections::HashSet::new();
-    sorted.retain(|c| c.family != "sql" || seen_sql.insert(c.description.clone()));
     sorted
 }
 
@@ -1097,58 +1090,33 @@ mod tests {
         assert_eq!(v["connection_string"], "postgresql://u:p@h/db");
     }
 
-    fn entry(name: &str, family: &str, description: &str) -> ConnectorEntry {
+    fn entry(name: &str, family: &str) -> ConnectorEntry {
         ConnectorEntry {
             name: name.into(),
             family: family.into(),
-            description: description.into(),
+            description: String::new(),
             auth: None,
             template: None,
         }
     }
 
     #[test]
-    fn sorted_for_display_drops_sql_aliases_keeping_canonical() {
+    fn sorted_for_display_groups_generic_families_before_rest() {
         let entries = vec![
-            entry(
-                "postgresql",
-                "sql",
-                "PostgreSQL tables via a connection string",
-            ),
-            entry(
-                "postgres",
-                "sql",
-                "PostgreSQL tables via a connection string",
-            ),
-            entry(
-                "sqlserver",
-                "sql",
-                "Microsoft SQL Server tables via a connection string",
-            ),
-            entry(
-                "mssql",
-                "sql",
-                "Microsoft SQL Server tables via a connection string",
-            ),
-            entry("mysql", "sql", "MySQL tables via a connection string"),
-            entry("mariadb", "sql", "MariaDB tables via a connection string"),
+            entry("stripe", "rest"),
+            entry("postgres", "sql"),
+            entry("filesystem", "filesystem"),
+            entry("aikido", "rest"),
+            entry("iceberg", "iceberg"),
         ];
         let names: Vec<String> = sorted_for_display(&entries)
             .into_iter()
             .map(|c| c.name)
             .collect();
-        // Aliases collapse to the alphabetically-first name; distinct products stay.
-        assert_eq!(names, vec!["mariadb", "mssql", "mysql", "postgres"]);
-    }
-
-    #[test]
-    fn sorted_for_display_never_dedupes_rest_services() {
-        // Two REST services with an (unlikely) shared description must both survive
-        // — only SQL is deduped.
-        let entries = vec![
-            entry("svc_a", "rest", "same words"),
-            entry("svc_b", "rest", "same words"),
-        ];
-        assert_eq!(sorted_for_display(&entries).len(), 2);
+        // Generic families (sql, filesystem, iceberg) first, then rest A→Z.
+        assert_eq!(
+            names,
+            vec!["postgres", "filesystem", "iceberg", "aikido", "stripe"]
+        );
     }
 }
