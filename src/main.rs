@@ -15,6 +15,7 @@ use commands::context::{self, ContextCommands};
 use commands::databases::{self, DatabaseTablesCommands, DatabasesCommands};
 use commands::embedding_providers::{self, EmbeddingProvidersCommands};
 use commands::indexes::{self, IndexesCommands};
+use commands::ingest;
 use commands::jobs::{self, JobsCommands};
 use commands::queries::{self, QueriesCommands};
 use commands::query::{self, QueryCommands};
@@ -586,6 +587,14 @@ fn main() {
                         }
                     }
                 }
+            }
+            Commands::Ingest {
+                workspace_id,
+                output,
+                command,
+            } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                ingest::dispatch(&workspace_id, &output, command);
             }
             Commands::Indexes {
                 workspace_id,

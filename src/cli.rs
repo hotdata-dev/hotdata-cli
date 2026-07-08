@@ -4,6 +4,7 @@ use crate::commands::context::ContextCommands;
 use crate::commands::databases::DatabasesCommands;
 use crate::commands::embedding_providers::EmbeddingProvidersCommands;
 use crate::commands::indexes::IndexesCommands;
+use crate::commands::ingest::IngestCommands;
 use crate::commands::jobs::JobsCommands;
 use crate::commands::queries::QueriesCommands;
 use crate::commands::query::QueryCommands;
@@ -130,6 +131,21 @@ pub enum Commands {
 
         #[command(subcommand)]
         command: Option<JobsCommands>,
+    },
+
+    /// Ingest data from external connectors (databases, REST APIs, files, Iceberg)
+    /// into a managed database via the hotdata ingest service
+    Ingest {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w', global = true)]
+        workspace_id: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"], global = true)]
+        output: String,
+
+        #[command(subcommand)]
+        command: IngestCommands,
     },
 
     /// Manage indexes on a table

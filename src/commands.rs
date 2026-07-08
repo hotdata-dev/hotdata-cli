@@ -4,6 +4,7 @@ pub mod context;
 pub mod databases;
 pub mod embedding_providers;
 pub mod indexes;
+pub mod ingest;
 pub mod jobs;
 pub mod queries;
 pub mod query;
