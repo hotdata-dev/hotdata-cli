@@ -167,6 +167,10 @@ impl IngestClient {
     }
 
     /// Send a request, enforce a 2xx, and decode the JSON body into `T`.
+    ///
+    /// `body_log` is the *printable* form for `--debug` — callers whose body
+    /// carries secrets must pass a view through [`redact_secret_fields`], never
+    /// the wire body itself.
     fn send<T: for<'de> Deserialize<'de>>(
         &self,
         builder: reqwest::blocking::RequestBuilder,
@@ -199,9 +203,10 @@ impl IngestClient {
     pub fn create_source(&self, req: &IngestRequest) -> Result<IngestAck, IngestError> {
         self.require_api_key()?;
         let body = serde_json::to_value(req).expect("IngestRequest serializes");
+        let body_log = redact_secret_fields(&body);
         self.send(
             self.authed(reqwest::Method::POST, "/sources").json(&body),
-            Some(&body),
+            Some(&body_log),
         )
     }
 
@@ -299,6 +304,28 @@ impl IngestClient {
         }
         Ok((bytes.to_vec(), truncated))
     }
+}
+
+/// `IngestRequest` fields that carry source secrets: SQL passwords /
+/// connection strings, REST bearer tokens inside `rest_config`, Iceberg
+/// catalog tokens, filesystem access keys.
+const SECRET_BODY_FIELDS: &[&str] = &["credentials", "rest_config", "catalog_config"];
+
+/// Debug-log view of an enqueue body with the secret-bearing subtrees
+/// replaced wholesale. These fields are nested *objects* whose secret keys
+/// vary by connector, so dropping the whole subtree beats field-level
+/// masking (`util::redact_json_fields` only masks string values). Mirrors
+/// the `redacted_form_body` pattern in `jwt.rs`.
+fn redact_secret_fields(body: &serde_json::Value) -> serde_json::Value {
+    let mut v = body.clone();
+    if let serde_json::Value::Object(map) = &mut v {
+        for key in SECRET_BODY_FIELDS {
+            if let Some(val) = map.get_mut(*key) {
+                *val = serde_json::Value::String("***".into());
+            }
+        }
+    }
+    v
 }
 
 // --- request / response types -------------------------------------------
@@ -535,6 +562,41 @@ mod tests {
         m.assert();
         assert_eq!(bytes, b"PAR1fake");
         assert!(truncated);
+    }
+
+    // --- debug-log redaction -------------------------------------------------
+
+    #[test]
+    fn redact_secret_fields_masks_all_secret_subtrees_and_keeps_the_rest() {
+        let body = serde_json::json!({
+            "family": "rest",
+            "connector_type": "svc",
+            "credentials": {"connection_string": "postgresql://u:s3cret@h/db"},
+            "rest_config": {"client": {"auth": {"type": "bearer", "token": "tok-abc"}}},
+            "catalog_config": {"catalog_uri": "http://c", "token": "iceberg-tok"},
+            "table_names": ["users"],
+        });
+        let logged = redact_secret_fields(&body);
+        for key in super::SECRET_BODY_FIELDS {
+            assert_eq!(
+                logged[*key], "***",
+                "{key} must be dropped from the debug view"
+            );
+        }
+        let printed = logged.to_string();
+        assert!(
+            !printed.contains("s3cret")
+                && !printed.contains("tok-abc")
+                && !printed.contains("iceberg-tok"),
+            "no secret may survive into the printable body: {printed}"
+        );
+        // Non-secret fields stay readable, and the wire body is untouched.
+        assert_eq!(logged["family"], "rest");
+        assert_eq!(logged["table_names"][0], "users");
+        assert_eq!(
+            body["credentials"]["connection_string"],
+            "postgresql://u:s3cret@h/db"
+        );
     }
 
     // --- request serialization ----------------------------------------------
