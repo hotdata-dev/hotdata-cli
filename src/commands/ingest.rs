@@ -879,7 +879,7 @@ fn list_connections(workspace_id: &str, output: &str, all: bool) {
                     let mut row = vec![
                         s.connector_type.clone().unwrap_or_else(|| "-".into()),
                         s.family.clone().unwrap_or_default(),
-                        s.status.clone(),
+                        colored_status(&s.status),
                         date_only(s.created_at.as_deref()),
                         s.ingest_id.clone(),
                     ];
@@ -930,7 +930,7 @@ fn list_imports(workspace_id: &str, output: &str) {
                     vec![
                         q.connector_type.clone().unwrap_or_else(|| "-".into()),
                         q.query.clone().unwrap_or_default(),
-                        q.status.clone(),
+                        colored_status(&q.status),
                         date_only(q.created_at.as_deref()),
                         q.ingest_id.clone(),
                         q.database_id.clone().unwrap_or_else(|| "-".into()),
@@ -958,6 +958,18 @@ fn date_only(ts: Option<&str>) -> String {
     ts.and_then(|t| t.split('T').next())
         .unwrap_or("-")
         .to_string()
+}
+
+/// Status cell for the listing tables, in the repo's status colors:
+/// done → green, failed → red, anything in flight (pending/running/worker
+/// stage states) → yellow. Table cells are ANSI-safe (`tabled` ansi feature).
+fn colored_status(status: &str) -> String {
+    use crossterm::style::Stylize;
+    match status {
+        "done" => status.green().to_string(),
+        "failed" => status.red().to_string(),
+        _ => status.yellow().to_string(),
+    }
 }
 
 // --- shared run + poll ----------------------------------------------------
