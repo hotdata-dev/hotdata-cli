@@ -382,6 +382,9 @@ fn build_iceberg_interactive(entry: &ConnectorEntry) -> IngestRequest {
     let tables = prompt_list("Tables (namespace.table, comma-separated):");
     IngestRequest {
         family: "iceberg".into(),
+        // connector_type is the registry name `new-import` resolves FROM —
+        // without it the connection lands unnamed and is un-importable.
+        connector_type: Some(entry.name.clone()),
         catalog_name: Some(entry.name.clone()),
         catalog_type,
         catalog_config: Some(iceberg_catalog_config()),
@@ -599,6 +602,8 @@ fn build_create_request(
         },
         "iceberg" => IngestRequest {
             family: "iceberg".into(),
+            // Same as the wizard path: named, so imports can resolve it.
+            connector_type: Some(entry.name.clone()),
             catalog_name: Some(entry.name.clone()),
             catalog_type: args.catalog_type.or_else(|| Some("rest".into())),
             catalog_config: Some(config.ok_or("iceberg needs --config with the catalog config")?),
@@ -1580,6 +1585,8 @@ mod tests {
         // The catalog type defaults to rest when not specified.
         assert_eq!(req.catalog_type.as_deref(), Some("rest"));
         assert_eq!(req.tables, vec!["ns.t"]);
+        // Named in the registry (connector_type), or new-import can't FROM it.
+        assert_eq!(req.connector_type.as_deref(), Some("iceberg"));
     }
 
     #[test]
