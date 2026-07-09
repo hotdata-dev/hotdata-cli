@@ -1,3 +1,8 @@
+## [0.13.1] - 2026-07-09
+
+### 🚜 Refactor
+
+- *(ingest)* [**breaking**] Remove the pre-rename verb aliases (#209)
 ## [0.13.0] - 2026-07-09
 
 ### 🚀 Features
