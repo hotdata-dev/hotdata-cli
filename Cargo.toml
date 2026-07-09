@@ -79,7 +79,7 @@ pre-release-replacements = [
   { file = "skills/hotdata-search/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   { file = "skills/hotdata-analytics/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   { file = "skills/hotdata-geospatial/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
-  { file = "README.md", search = "version-[0-9.]+-blue", replace = "version-{{version}}-blue", exactly = 1 },
+  # README.md no longer carries a hardcoded version badge — it tracks GitHub releases.
 ]
 
 # The profile that 'dist' will build with
