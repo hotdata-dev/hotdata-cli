@@ -5,12 +5,16 @@
   <br>
   Command line interface for <a href="https://www.hotdata.dev">Hotdata</a>.
   <br><br>
-  <img src="https://img.shields.io/badge/version-0.12.0-blue" alt="version">
+  <a href="https://github.com/hotdata-dev/hotdata-cli/releases"><img src="https://img.shields.io/github/v/release/hotdata-dev/hotdata-cli" alt="release"></a>
   <a href="https://github.com/hotdata-dev/hotdata-cli/actions/workflows/ci.yml"><img src="https://github.com/hotdata-dev/hotdata-cli/actions/workflows/ci.yml/badge.svg" alt="build"></a>
   <a href="https://codecov.io/gh/hotdata-dev/hotdata-cli"><img src="https://codecov.io/gh/hotdata-dev/hotdata-cli/branch/main/graph/badge.svg" alt="coverage"></a>
 </p>
 
 ---
+
+Query, search, and join your data from one place — live databases, APIs, cloud
+storage, Iceberg catalogs, and files you upload — with plain SQL and a few
+commands.
 
 ## Install
 
@@ -20,357 +24,200 @@
 brew install hotdata-dev/tap/cli
 ```
 
-**Binary (macOS, Linux)**
+**Binary (macOS, Linux)** — download from [Releases](https://github.com/hotdata-dev/hotdata-cli/releases).
 
-Download a binary from [Releases](https://github.com/hotdata-dev/hotdata-cli/releases).
-
-**Build from source** (requires Rust)
+**From source** (requires Rust)
 
 ```sh
-cargo build --release
-cp target/release/hotdata /usr/local/bin/hotdata
+cargo install --path .
 ```
 
-## Connect
+Stay current with `hotdata upgrade`, and enable tab completion with
+`hotdata completions bash|zsh|fish`.
 
-Run:
+## Quickstart
 
 ```sh
+# 1. Sign in (or create an account with `hotdata auth register`)
 hotdata auth login
+
+# 2. Create a database and load some data — any parquet file, local or by URL
+hotdata databases create --catalog demo
+hotdata databases load --catalog demo --table trips \
+  --url https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
+
+# 3. Query it
+hotdata query "SELECT count(*) AS trips, round(avg(fare_amount), 2) AS avg_fare
+               FROM demo.public.trips"
 ```
 
-This launches a browser window where you can authorize the CLI to access your Hotdata account. (Bare `hotdata auth` prints the `auth` subcommand help.)
+That's the core loop: create a **managed database**, put data in it, query it
+with PostgreSQL-dialect SQL. Everything else builds on that.
 
-Alternatively, authenticate with an API key using the `--api-key` flag:
+## Getting your data in
+
+There are two ways to make your data queryable, and they compose:
+
+- **Connect** — a live, synced view of an external source. The data stays
+  where it is; Hotdata keeps the schema and cache fresh.
+- **Import** — copy data *into* a managed database, either from a file you
+  have or from an external source via `hotdata ingest`.
+
+### Connect a live database
 
 ```sh
-hotdata <command> --api-key <api_key>
+hotdata connections new                     # guided wizard
+# or non-interactively:
+hotdata connections create --name "prod-replica" --type postgres \
+  --config '{"host":"db.example.com","port":5432,"user":"reader","database":"app","password":"'"$DB_PASSWORD"'"}'
+
+hotdata tables list                         # see what's now queryable
 ```
 
-Or set the `HOTDATA_API_KEY` environment variable (also loaded from `.env` files):
+`hotdata connections create list` shows every supported type, and
+`hotdata connections create list <type> -o json` prints the exact config
+fields it takes.
+
+### Import from external sources (`ingest`)
+
+Pull data from SQL databases, APIs, S3/GCS/Azure buckets, or Iceberg catalogs
+into a managed database:
 
 ```sh
-export HOTDATA_API_KEY=<api_key>
-hotdata <command>
+hotdata ingest connectors                   # browse: SQL dialects, ~150 API services,
+                                            # buckets, iceberg, api (bring-your-own)
+
+# Add a connection — validates credentials and discovers the schema, loads no data.
+# Keep secrets out of argv with --config @file.json or @- (stdin):
+hotdata ingest new-connection --service postgres --config @conn.json --schema public
+hotdata ingest new-connection --service buckets --bucket-url s3://bucket/prefix --format parquet
+hotdata ingest new-connection --service iceberg --config @catalog.json --table ns.orders
+
+# Import — a plain SELECT against the connection; returns immediately:
+hotdata ingest new-import "SELECT * FROM postgres.orders WHERE status = 'open'"
+hotdata ingest new-import --source postgres --all
+hotdata ingest status <ingest-id> --wait    # or one-shot: exits 0 done / 1 failed / 2 running
+
+# The import lands in a managed database — query it like any other:
+hotdata query --database <db-id> "SELECT count(*) FROM public.orders"
 ```
 
-API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var → `--api-key` flag.
+Public buckets need no credentials. Re-run an import any time with
+`hotdata ingest trigger-import <ingest-id>` — it refreshes the same database
+from the source.
 
-## Commands
+### Upload files
 
-| Command | Subcommands | Description |
-| :-- | :-- | :-- |
-| `auth` | `login`, `status`, `logout` | `login` opens browser login; `status` / `logout` manage the saved profile |
-| `workspaces` | `list`, `set` | Manage workspaces |
-| `connections` | `list`, `create`, `refresh`, `new` | Manage connections |
-| `databases` | `list`, `create`, `delete`, `tables` | Managed databases (create and load tables via parquet) |
-| `tables` | `list` | List tables and columns |
-| `context` | `list`, `show`, `pull`, `push` | Workspace Markdown context (e.g. data model `DATAMODEL`) via the context API |
-| `query` | | Execute a SQL query |
-| `queries` | `list` | Inspect query run history |
-| `search` | | Full-text search across a table column |
-| `indexes` | `list`, `create`, `delete` | Manage indexes on a table |
-| `embedding-providers` | `list`, `get`, `create`, `update`, `delete` | Manage embedding providers used by vector indexes |
-| `results` | `list` | Retrieve stored query results |
-| `jobs` | `list` | Manage background jobs |
-| `ingest` | `new-connection`, `show-connection`, `list-connections`, `delete-connection`, `connectors`, `new-import`, `list-imports`, `trigger-import`, `status` | Pull data from external sources (databases, APIs, buckets, Iceberg) into managed databases |
-| `skills` | `install`, `status` | Manage the hotdata agent skill |
-
-## Global options
-
-| Option | Description | Type | Default |
-| :-- | :-- | :-- | :-- |
-| `--api-key` | API key (overrides env var and config) | string | |
-| `-v, --version` | Print version | boolean | |
-| `-h, --help` | Print help | boolean | |
-
-## Workspaces
+Managed databases load **parquet** directly (convert CSV/JSON first):
 
 ```sh
-hotdata workspaces list [--format table|json|yaml]
-hotdata workspaces set [<workspace_id>]
+hotdata databases load --catalog demo --table listings --file ./listings.parquet
 ```
 
-- `list` shows all workspaces with a `*` marker on the active one.
-- `set` switches the active workspace. Omit the ID for interactive selection.
-- The active workspace is used as the default for all commands that accept `--workspace-id`.
-
-## Connections
+## Query and explore
 
 ```sh
-hotdata connections list [-w <id>] [-o table|json|yaml]
-hotdata connections <connection_id> [-w <id>] [-o table|json|yaml]
-hotdata connections refresh <connection_id> [-w <id>] [--data] [--schema <name> --table <name>] [--async] [--include-uncached]
-hotdata connections new [-w <id>]
+hotdata tables list                          # every queryable table, as connection.schema.table
+hotdata tables list --connection-id <id>     # with column names and types
+hotdata query "<sql>" [-o table|json|csv]    # PostgreSQL dialect
 ```
 
-- `list` returns `id`, `name`, `source_type` for each connection.
-- Pass a connection ID to view details (id, name, source type, table counts).
-- `refresh` triggers a schema refresh by default. Pass `--data` to refresh cached row data instead.
-- `--schema` and `--table` narrow a data refresh to a single table (must be supplied together).
-- `--async` submits a data refresh as a background job and returns a job ID; poll with `hotdata jobs <job_id>`. Only valid with `--data` — schema refresh is always synchronous.
-- `--include-uncached` includes tables that haven't been cached yet in a connection-wide data refresh. Only valid with `--data` and no `--table`.
-- `new` launches an interactive connection creation wizard.
+Long-running queries fall back to async and print a `query_run_id` — poll with
+`hotdata query status <id>` (exit codes: `0` done, `1` failed, `2` running).
+Every result gets a `result-id`; re-fetch past results with
+`hotdata results <result-id>` instead of re-running, and browse history with
+`hotdata queries list`.
 
-### Create a connection
+## Join across sources
+
+A query runs inside one managed database and sees its own tables plus any
+**attached** connections — attach a live source to join against it directly,
+no copying:
 
 ```sh
-# List available connection types
-hotdata connections create list [--format table|json|yaml]
+hotdata databases attach prod-replica --alias prod
 
-# Inspect schema for a connection type
-hotdata connections create list <type_name> --format json
-
-# Create a connection
-hotdata connections create --name "my-conn" --type postgres --config '{"host":"...","port":5432,...}'
+hotdata query "
+  SELECT t.id, o.total
+  FROM demo.public.tickets t
+  JOIN prod.public.orders o ON o.ticket_id = t.id
+"
 ```
-
-## Databases
-
-Managed databases are Hotdata-owned catalogs you create and populate yourself (no remote source to sync). Query them with SQL as `<catalog>.schema.table`.
-
-```sh
-hotdata databases list [-w <id>] [-o table|json|yaml]
-hotdata databases create [--name <display_name>] [--catalog <alias>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [-o table|json|yaml]
-hotdata databases set <id>
-hotdata databases unset
-hotdata databases <name_or_id> [-o table|json|yaml]
-hotdata databases delete <name_or_id>
-hotdata databases run [--database <id>] [--name <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] <cmd> [args...]
-hotdata databases <id> run <cmd> [args...]
-
-# Attach a connection as a queryable catalog (enables cross-source queries)
-hotdata databases attach <connection_id|name> [--database <id>] [--alias <alias>]
-hotdata databases detach <connection_id|name|alias> [--database <id>]
-
-# Preferred: load by catalog alias (auto-declares table if needed)
-hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id>)
-
-# Also available: explicit database flag
-hotdata databases tables list [--database <id_or_name>] [--schema <name>] [-o table|json|yaml]
-hotdata databases tables load <table> [--database <id_or_name>] [--schema public] (--file <path> | --url <url> | --upload-id <id>)
-hotdata databases tables delete <table> [--database <id_or_name>] [--schema public]
-```
-
-- `create` registers a managed connection with no external credentials. `--name` is a human-readable display name; `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`) and must be `[a-z_][a-z0-9_]*`.
-- `set` / `unset` — save or clear the active database. All `databases tables` and `context` commands default to it. The active database is marked with `*` in `databases list`.
-- `load` (top-level shorthand) — loads a parquet file into `--catalog.--schema.--table`. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
-- `tables load` uploads a **parquet** file (or uses a staged `upload_id` from `POST /v1/files`) and publishes it as the table generation (`replace` mode).
-- `run` mints a database-scoped JWT and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected into its environment.
-- `attach` / `detach` — a query runs inside one managed database, whose scope sees its own catalog plus **attached** connection catalogs only. Attach a connection to make its **live** tables queryable there and to join across sources in one query; `--alias` sets the SQL name (defaults to the connection's name). `create --attach <connection>[=<alias>]` attaches at creation. Don't export a connection to parquet just to query it — attach is the live, sync-preserving path.
-- Managed table loads accept **parquet** only — convert CSV/JSON to parquet first.
-
-Example:
-
-```sh
-hotdata databases create --catalog airbnb
-hotdata databases load --catalog airbnb --table listings --url https://example.com/listings.parquet
-hotdata query "SELECT count(*) FROM airbnb.public.listings"
-```
-
-## Tables
-
-```sh
-hotdata tables list [--workspace-id <id>] [--connection-id <id>] [--schema <pattern>] [--table <pattern>] [--limit <n>] [--cursor <token>] [--format table|json|yaml]
-```
-
-- Without `--connection-id`: lists all tables with `table`, `synced`, `last_sync`.
-- With `--connection-id`: includes column details (`column`, `data_type`, `nullable`).
-- `--schema` and `--table` support SQL `%` wildcard patterns.
-- Tables are displayed as `<connection>.<schema>.<table>` — use this format in SQL queries.
-
-## Workspace context
-
-Named Markdown documents for a workspace (data model, glossary, etc.) are stored in the **context API**. The CLI treats the server as the **source of truth**; local files are only used where the tool requires a path on disk.
-
-```sh
-hotdata context list [-w <id>] [--prefix <stem>] [-o table|json|yaml]
-hotdata context show <name> [-w <id>]
-hotdata context pull <name> [-w <id>] [--force] [--dry-run]
-hotdata context push <name> [-w <id>] [--dry-run]
-```
-
-- **`show`** prints Markdown to stdout (no local file needed). Use this to read the workspace data model in scripts or agents.
-- **`pull`** writes `./<name>.md` in the **current directory** from the API. Refuses to overwrite an existing file unless `--force`.
-- **`push`** reads `./<name>.md` and upserts that name in the workspace. Use after editing the file in your project directory.
-- Names follow SQL identifier rules (ASCII letters, digits, underscore; max 128 characters; SQL reserved words are not allowed). The usual stem for the semantic data model is **`DATAMODEL`** (file **`DATAMODEL.md`** for push/pull only).
-
-## Query
-
-```sh
-hotdata query "<sql>" [-w <id>] [-d <database>] [-o table|json|csv]
-hotdata query status <query_run_id> [-o table|json|csv]
-```
-
-- Default output is `table`, which prints results with row count and execution time.
-- Use `-d`/`--database` to run the query against a specific managed database.
-- Long-running queries automatically fall back to async execution and return a `query_run_id`.
-- Use `hotdata query status <query_run_id>` to poll for results.
-- Exit codes for `query status`: `0` = succeeded, `1` = failed, `2` = still running (poll again).
-- `json` output carries `truncated`, `preview_row_count`, and `total_row_count` so a consumer can detect a partial result from the body alone.
-- If the server returns only a bounded preview that can't be completed (truncated and unfetchable), the CLI prints the preview, warns on stderr, and exits `3` — so pipelines break rather than silently ingest partial data.
-
-## Query Run History
-
-```sh
-hotdata queries list [--limit <n>] [--cursor <token>] [--status <csv>] [-o table|json|yaml]
-hotdata queries <query_run_id> [-o table|json|yaml]
-```
-
-- `list` shows past query executions with status, creation time, duration, row count, and a truncated SQL preview (default limit 20).
-- `--status` filters by run status (comma-separated, e.g. `--status running,failed`).
-- View a run by ID to see full metadata (timings, `result_id`, snapshot, hashes) and the formatted, syntax-highlighted SQL.
-- If a run has a `result_id`, fetch its rows with `hotdata results <result_id>`.
 
 ## Search
 
-Both run entirely server-side. `--type` and `--column` are **optional** when the table has exactly one search index — they are inferred automatically. Pass them explicitly when multiple indexes exist.
+Create an index once, then search server-side — no embedding keys or client
+setup needed for vector search (the column is auto-embedded, and queries use
+the same model automatically):
 
 ```sh
-# BM25 full-text search (requires a BM25 index on the column)
-hotdata search "<query>" --table <connection.schema.table> [--type bm25] [--column <column>] [--select <columns>] [--limit <n>] [-o table|json|csv]
+hotdata indexes create --catalog demo --schema public --table trips \
+  --column notes --type bm25
+hotdata search "airport surcharge dispute" --table demo.public.trips
 
-# Vector search (requires a vector index with auto-embedding on the column)
-hotdata search "<query>" --table <table> [--type vector] [--column <source_text_column>] [--limit <n>]
+hotdata indexes create --catalog demo --schema public --table trips \
+  --column notes --type vector
+hotdata search "rides that mention lost items" --table demo.public.trips --type vector
 ```
 
-- **`--type vector`** — pass your query as **plain text**, name the **source text column** (e.g. `title`). The server embeds the query at the same time, using the same provider that auto-embedded the column when the index was built — so distance metric, model, and dimensions all match automatically. No `OPENAI_API_KEY`, no client-side embedding, no need to know about the auto-generated `_embedding` column. Generated SQL: `vector_distance(col, 'query')` server-side.
-- **`--type bm25`** runs `bm25_search(table, col, 'query')` — requires a BM25 index on the column.
-- **No vector index, or want to use a different model than the index?** Skip `hotdata search` and use raw SQL via `hotdata query` (e.g. `SELECT *, cosine_distance(col, [<your_vec>]) FROM ...`). The SQL reference covers the available distance functions and table UDFs.
-- BM25 results sort by score (descending). Vector results sort by distance (ascending).
-- `--select` specifies which columns to return (comma-separated, defaults to all).
-- The previous `--model` flag and stdin-piped-vector path are **removed** — both hardcoded `l2_distance` regardless of the index's actual metric, which silently produced wrong rankings on cosine indexes. For client-side embedding or precomputed-vector workflows, use raw SQL via `hotdata query` (e.g. `SELECT *, cosine_distance(col, [<vec>]) ...`).
+System embedding providers come pre-configured; bring your own with
+`hotdata embedding-providers create`.
 
-## Indexes
+## Use it from scripts and agents
 
-`create` attaches an index to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` and `delete` accept `--connection-id` (+ `--schema` + `--table`) for connection-scoped operations.
+The CLI is built to be driven programmatically:
 
-```sh
-# Create — by catalog alias (resolves a managed-database catalog or a connection name)
-hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
-  --column <cols> --type bm25|vector|sorted \
-  [--name <name>] [--metric l2|cosine|dot] [--async] \
-  [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+- Every listing command takes `-o json|yaml`; long-running commands expose
+  script-friendly exit codes (`query status`, `ingest status`).
+- Authenticate non-interactively with an API key: `--api-key`, or
+  `HOTDATA_API_KEY` in the environment or a `.env` file.
+- `hotdata databases run <cmd>` launches a child process (an agent, a script)
+  with credentials scoped to a single database.
+- `hotdata skills install` installs bundled agent skills — Markdown playbooks
+  that teach AI coding agents (Claude Code and friends) the full CLI surface.
+- `hotdata context push|show DATAMODEL` stores your data model as shared,
+  server-side Markdown so humans and agents query with the same map.
 
-# List — workspace scan, optionally filtered by connection / schema / table
-hotdata indexes list   [--connection-id <id>] [--schema <schema>] [--table <table>] [-o table|json|yaml]
+## Commands
 
-# Delete — connection scope (--connection-id + --schema + --table)
-hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
-```
+Run `hotdata <command> --help` for full flags on any command.
 
-- `--type` is **required** — choose `sorted` (B-tree-like), `bm25` (full-text), or `vector` (similarity).
-- `--type vector` requires exactly one column.
-- `--async` submits index creation as a background job and returns a job ID; poll with `hotdata jobs <job_id>`.
-- **Auto-embedding (text → vector):** when `--type vector` is used on a text column, embeddings are generated automatically. The embedding provider can be specified with `--embedding-provider-id`; if omitted, the first system provider is used. The generated column defaults to `{column}_embedding` and can be overridden with `--output-column`.
-
-## Embedding providers
-
-```sh
-hotdata embedding-providers list [-o table|json|yaml]
-hotdata embedding-providers get <id> [-o table|json|yaml]
-hotdata embedding-providers create --name <name> --provider-type service|local \
-  [--config '<json>'] [--provider-api-key <key> | --secret-name <name>]
-hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] \
-  [--provider-api-key <key> | --secret-name <name>]
-hotdata embedding-providers delete <id>
-```
-
-- `list`/`get` show registered providers (system providers like `sys_emb_openai` come pre-configured).
-- `--provider-api-key` auto-creates a managed secret for the provider; `--secret-name` references an existing secret. They are mutually exclusive.
-- `--provider-api-key` pairs with `--provider-type` and avoids colliding with the global `--api-key` (Hotdata auth).
-
-## Results
-
-```sh
-hotdata results <result_id> [--workspace-id <id>] [--format table|json|csv]
-hotdata results list [--workspace-id <id>] [--limit <n>] [--offset <n>] [--format table|json|yaml]
-```
-
-- Query results include a `result-id` in the table footer — use it to retrieve past results without re-running queries.
-
-## Ingest
-
-Pull data from external sources into managed databases. Two nouns: **connections** (onboarded, credentialed sources — schema discovered, no data loaded) and **imports** (managed databases materialized from a connection).
-
-```bash
-# Browse the connector catalog (SQL dialects, ~150 API services, buckets, Iceberg)
-hotdata ingest connectors postgres
-
-# Add a connection: validates credentials and discovers the schema (loads no data).
-# Run bare for a guided wizard, or non-interactively with --service + --config
-# (@file or @- keeps secrets out of argv):
-hotdata ingest new-connection --service postgres --config @conn.json --schema public
-# conn.json holds {"connection_string": "postgresql://user:pass@host/db"}
-
-# Files in S3/GCS/Azure buckets — public buckets need no credentials:
-hotdata ingest new-connection --service buckets --bucket-url s3://bucket/prefix --format parquet
-
-# Iceberg via a REST catalog — --table required; --config holds the catalog
-# properties (uri, warehouse, token/credential), passed through to the service:
-hotdata ingest new-connection --service iceberg --config @catalog.json --table ns.orders
-
-hotdata ingest list-connections            # each connection has its own id
-hotdata ingest show-connection <id>        # status + discovered tables/columns
-hotdata ingest delete-connection <id>      # registry + credentials + discovery DB
-                                           # (--keep-database keeps the DB)
-
-# Import data — returns immediately; track with `status`:
-hotdata ingest new-import "SELECT * FROM postgres.orders LIMIT 1000"
-hotdata ingest new-import --source postgres --all      # everything, no LIMIT
-hotdata ingest status <ingest-id> --wait               # attach until done/failed
-
-hotdata ingest list-imports                # the SQL behind each import + its database
-hotdata ingest trigger-import <ingest-id>  # re-run: refresh the same database from source
-```
-
-`status` exits `0` (done), `1` (failed), or `2` (still in flight) for scripting.
-Statuses stream through stages (`preparing`, `extracting`, `normalizing`,
-`loading`); treat any non-terminal value as in-flight. Secret-bearing configs
-can be passed as `--config @file.json` or `--config @-` (stdin) to keep them
-out of `argv`. Enqueue commands (`new-connection`, `new-import`,
-`trigger-import`) need a durable workspace API key (`--api-key` /
-`HOTDATA_API_KEY`, `hd_...`) — the ingest pipeline runs after a short-lived
-session token would expire. Once an import is `done`, its database works with
-all the regular commands (`query`, `databases`, `results`).
-
-## Jobs
-
-```sh
-hotdata jobs list [--workspace-id <id>] [--job-type <type>] [--status <status>] [--all] [--limit <n>] [--offset <n>] [--format table|json|yaml]
-hotdata jobs <job_id> [--workspace-id <id>] [--format table|json|yaml]
-```
-
-- `list` shows only active jobs (`pending` and `running`) by default. Use `--all` to see all jobs.
-- `--job-type` accepts: `data_refresh_table`, `data_refresh_connection`, `create_index`.
-- `--status` accepts: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
+| Command | What it does |
+| :-- | :-- |
+| `auth` | `login`, `register`, `status`, `logout` |
+| `workspaces` | List workspaces, set the active one |
+| `connections` | Live external sources: create, list, refresh |
+| `databases` | Managed databases: create, load parquet, attach connections, scoped `run` |
+| `tables` | List queryable tables and columns |
+| `query` | Run SQL; `status` polls async runs |
+| `queries` / `results` | Query history and stored results |
+| `search` | BM25 and vector search over indexed columns |
+| `indexes` | Create/list/delete `sorted`, `bm25`, `vector` indexes |
+| `embedding-providers` | Manage embedding providers for vector indexes |
+| `ingest` | Import from databases, APIs, buckets, Iceberg |
+| `context` | Shared server-side Markdown (`DATAMODEL`, glossaries) |
+| `jobs` | Background jobs (refreshes, index builds) |
+| `skills` | Install/inspect the bundled agent skills |
+| `completions` | Shell tab-completion scripts |
+| `upgrade` | Upgrade the CLI in place |
 
 ## Configuration
 
-Config is stored at `~/.hotdata/config.yml` keyed by profile (default: `default`).
+Config lives at `~/.hotdata/config.yml` (profile-keyed). Environment variables:
 
 | Variable | Description | Default |
 | :-- | :-- | :-- |
-| `HOTDATA_API_KEY` | API key (overrides config file) | |
+| `HOTDATA_API_KEY` | API key (overrides config file; also read from `.env`) | |
+| `HOTDATA_WORKSPACE` | Lock every command to one workspace | |
 | `HOTDATA_API_URL` | API base URL | `https://api.hotdata.dev/v1` |
 | `HOTDATA_APP_URL` | App URL for browser login | `https://app.hotdata.dev` |
 
-## Releasing
+Precedence for the API key, lowest to highest: config file → `HOTDATA_API_KEY` → `--api-key`.
 
-Releases use a two-phase workflow wrapping [`cargo-release`](https://github.com/crate-ci/cargo-release).
-
-**Phase 1 — prepare**
+## Development
 
 ```sh
-scripts/release.sh prepare <version>
+cargo build && cargo test
 ```
 
-Creates a `release/<version>` branch, bumps the version, updates `CHANGELOG.md`, pushes the branch, and opens a pull request.
-
-**Phase 2 — finish**
-
-```sh
-scripts/release.sh finish
-```
-
-Switches to `main`, pulls latest, tags the release, and triggers the dist workflow.
+Release process: see [docs/RELEASING.md](docs/RELEASING.md).
