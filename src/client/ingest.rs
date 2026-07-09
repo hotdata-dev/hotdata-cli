@@ -54,7 +54,11 @@ pub enum IngestError {
 impl IngestError {
     pub fn message(&self) -> String {
         match self {
-            IngestError::Http { status, body } => format!("HTTP {status}: {body}"),
+            // util::api_error extracts the server's human message from the
+            // JSON body shapes in the wild, matching every SDK-backed command.
+            IngestError::Http { status, body } => {
+                format!("HTTP {status}: {}", util::api_error(body.clone()))
+            }
             IngestError::Connection(e) => format!("connection error: {e}"),
             IngestError::Decode(e) => format!("malformed response: {e}"),
             IngestError::NeedsApiKey => {
@@ -100,6 +104,15 @@ impl IngestError {
                     .dark_grey()
             );
         }
+        // Expired/invalid session: same re-auth hint every SDK-backed
+        // command prints, so ingest is not the one group that answers an
+        // expired login with raw JSON.
+        if matches!(self, IngestError::Http { status: 401, .. }) {
+            eprintln!(
+                "{}",
+                "Run 'hotdata auth login' to authenticate.".dark_grey()
+            );
+        }
         // The worker refuses to trust X-Workspace-Id on the JWT route, and a
         // CLI login session is a *user*-scoped JWT — so every workspace-scoped
         // ingest endpoint 403s on it. Only an API key carries the workspace.
@@ -139,7 +152,17 @@ impl IngestClient {
             eprintln!("{e}");
             std::process::exit(1);
         });
-        let (token, token_is_api_key) = match profile.api_key.clone() {
+        // Same trust filter as sdk::Api / credentials: an empty or template
+        // key must fall through to the session JWT, not ship as a bearer.
+        // (HOTDATA_DATABASE_TOKEN is deliberately NOT consulted here:
+        // database-scoped tokens cannot serve as ingest destinations — the
+        // drain load fails Forbidden — so ingest always uses the workspace
+        // credential.)
+        let api_key = profile
+            .api_key
+            .clone()
+            .filter(|k| !k.is_empty() && *k != "PLACEHOLDER");
+        let (token, token_is_api_key) = match api_key {
             Some(key) => (key, true),
             None => {
                 let jwt = jwt::ensure_access_token(&profile, None).unwrap_or_else(|e| {
@@ -171,6 +194,13 @@ impl IngestClient {
             workspace_id: workspace_id.to_string(),
             client: crate::client::raw_http::build_http_client(),
         }
+    }
+
+    /// Whether this client holds a durable `hd_` API key (vs a session JWT).
+    /// Callers use this to skip requests the server will always reject on a
+    /// JWT (see the module docs).
+    pub fn has_api_key(&self) -> bool {
+        self.token_is_api_key
     }
 
     fn url(&self, path: &str) -> String {
@@ -329,7 +359,7 @@ fn redact_secret_fields(body: &serde_json::Value) -> serde_json::Value {
 /// `rest_config`, `catalog_config`) are forwarded over TLS and Fernet-encrypted
 /// at rest by the worker. `None`/empty fields are omitted so the worker applies
 /// its own defaults.
-#[derive(Serialize, Default)]
+#[derive(Debug, Serialize, Default)]
 pub struct IngestRequest {
     pub family: String,
     #[serde(skip_serializing_if = "Option::is_none")]

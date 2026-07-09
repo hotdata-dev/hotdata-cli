@@ -316,16 +316,18 @@ fn colorize_json_value(v: &str) -> String {
     format!("{colored}{comma}")
 }
 
-/// Color a status string for terminal output. Covers vocabulary from both
-/// query runs (succeeded/failed/running/queued/pending) and results (ready/expired/processing).
+/// Color a status string for terminal output. Covers vocabulary from query
+/// runs (succeeded/failed/running/queued/pending), results (ready/expired/
+/// processing), and ingest (done, plus an open set of in-flight stage states
+/// like extracting/loading — which is why the fallback is yellow: terminal
+/// statuses are all named here, so anything unknown is in flight).
 pub fn color_status(status: &str) -> String {
     use crossterm::style::{Color, Stylize};
     let color = match status {
-        "succeeded" | "ready" => Color::Green,
+        "succeeded" | "ready" | "done" => Color::Green,
         "failed" => Color::Red,
-        "running" | "queued" | "pending" | "processing" => Color::Yellow,
         "expired" => Color::DarkGrey,
-        _ => Color::Reset,
+        _ => Color::Yellow,
     };
     status.with(color).to_string()
 }

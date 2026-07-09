@@ -6,6 +6,7 @@ pub mod embedding_providers;
 pub mod indexes;
 pub mod ingest;
 pub mod jobs;
+pub mod prompt;
 pub mod queries;
 pub mod query;
 pub mod results;

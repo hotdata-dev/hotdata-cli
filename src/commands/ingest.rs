@@ -33,8 +33,11 @@
 use crate::client::ingest::{
     ConnectorEntry, IngestAck, IngestClient, IngestRequest, QueryToIngest,
 };
+use crate::commands::prompt::{
+    ask_secret, ask_text, optional, optional_default, prompt_list, select_optional,
+};
 use crate::util;
-use inquire::{Password, Select, Text};
+use inquire::{Select, Text};
 use std::time::{Duration, Instant};
 
 /// Status-poll cadence (what the hotdlt UI uses). Each poll is a control-store
@@ -45,6 +48,37 @@ const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
 /// read lag). If a job sits pending this long, kick the drain again.
 const DRAIN_REKICK_AFTER: Duration = Duration::from_secs(30);
 
+/// Render a value for `-o json|yaml`, or fall through to the human branch.
+/// One definition so the json-println / yaml-print convention cannot drift
+/// between the (many) commands that support all three formats.
+fn render<T: serde::Serialize>(output: &str, value: &T, human: impl FnOnce()) {
+    match output {
+        "json" => println!("{}", serde_json::to_string_pretty(value).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(value).unwrap()),
+        _ => human(),
+    }
+}
+
+/// Run `f` under a spinner, clearing it before either returning the value or
+/// printing the error — the clear-before-exit invariant lives here instead of
+/// being copy-discipline at every call site.
+fn with_spinner<T>(
+    msg: &str,
+    f: impl FnOnce() -> Result<T, crate::client::ingest::IngestError>,
+) -> T {
+    let spinner = util::spinner(msg);
+    match f() {
+        Ok(v) => {
+            spinner.finish_and_clear();
+            v
+        }
+        Err(e) => {
+            spinner.finish_and_clear();
+            e.exit()
+        }
+    }
+}
+
 #[derive(clap::Subcommand)]
 pub enum IngestCommands {
     /// Add a source connection and discover its schema (loads no data)
@@ -54,46 +88,11 @@ pub enum IngestCommands {
     /// new-import`; browse connectors with `hotdata ingest connectors`.
     #[command(alias = "new")]
     NewConnection {
-        /// Connector to add (a catalog name: postgres, bitcoin, filesystem, …).
-        /// Given → non-interactive; omit on a terminal → guided wizard.
-        #[arg(long)]
-        service: Option<String>,
-
-        /// Family payload as JSON (inline, @file.json, or @-): SQL credentials,
-        /// a REST rest_config, filesystem creds, or an Iceberg catalog_config
-        #[arg(long)]
-        config: Option<String>,
-
-        /// Restrict discovery to this table (repeatable; sql/iceberg)
-        #[arg(long = "table")]
-        tables: Vec<String>,
-
-        /// Schema to discover (sql)
-        #[arg(long)]
-        schema: Option<String>,
-
-        /// Bucket URL, e.g. s3://bucket/prefix (filesystem)
-        #[arg(long = "bucket-url")]
-        bucket_url: Option<String>,
-
-        /// File format (filesystem)
-        #[arg(long, value_parser = ["csv", "jsonl", "parquet"])]
-        format: Option<String>,
-
-        /// File glob, e.g. **/*.parquet (filesystem)
-        #[arg(long)]
-        glob: Option<String>,
-
-        /// Catalog type, e.g. rest (iceberg)
-        #[arg(long = "catalog-type")]
-        catalog_type: Option<String>,
+        #[command(flatten)]
+        create: CreateArgs,
 
         #[command(flatten)]
         wait: WaitArgs,
-
-        /// Reuse an existing managed database (by id) instead of minting one
-        #[arg(long = "database-id")]
-        database_id: Option<String>,
     },
 
     /// List the connections you've added (each has its own connection id)
@@ -110,9 +109,6 @@ pub enum IngestCommands {
     Connectors {
         /// Filter to connectors whose name contains this text
         name: Option<String>,
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
     },
 
     /// Import data from a connection into a managed database (--all or SQL)
@@ -134,14 +130,8 @@ pub enum IngestCommands {
         #[arg(long = "database-id")]
         database_id: Option<String>,
 
-        /// Block until the import completes (default: return immediately;
-        /// track with `hotdata ingest status <id> --wait`)
-        #[arg(long)]
-        wait: bool,
-
-        /// Seconds to wait for completion with --wait (default 300)
-        #[arg(long = "wait-timeout", default_value = "300")]
-        wait_timeout: u64,
+        #[command(flatten)]
+        poll: PollArgs,
     },
 
     /// List your imports: the SQL behind each and the database it landed in
@@ -158,14 +148,8 @@ pub enum IngestCommands {
         /// `list-connections` (re-validates and refreshes its schema)
         id: String,
 
-        /// Block until the re-run completes (default: return immediately;
-        /// track with `hotdata ingest status <id> --wait`)
-        #[arg(long)]
-        wait: bool,
-
-        /// Seconds to wait for completion with --wait (default 300)
-        #[arg(long = "wait-timeout", default_value = "300")]
-        wait_timeout: u64,
+        #[command(flatten)]
+        poll: PollArgs,
     },
 
     /// Show an ingest's status (an import or a connection onboard)
@@ -177,15 +161,24 @@ pub enum IngestCommands {
         /// Ingest id (from `new-import`, `list-imports`, or `list-connections`)
         id: String,
 
-        /// Poll until the ingest reaches done/failed instead of returning
-        /// the current status
-        #[arg(long)]
-        wait: bool,
-
-        /// Seconds to wait for completion with --wait (default 300)
-        #[arg(long = "wait-timeout", default_value = "300")]
-        wait_timeout: u64,
+        #[command(flatten)]
+        poll: PollArgs,
     },
+}
+
+/// Wait flags shared by the non-blocking commands (`new-import`,
+/// `trigger-import`, `status`): one definition so the default timeout and
+/// help text cannot drift between them.
+#[derive(clap::Args)]
+pub struct PollArgs {
+    /// Block until the ingest completes (default: return immediately; track
+    /// with `hotdata ingest status <id> --wait`)
+    #[arg(long)]
+    wait: bool,
+
+    /// Seconds to wait for completion with --wait (default 300)
+    #[arg(long = "wait-timeout", default_value = "300")]
+    wait_timeout: u64,
 }
 
 /// Wait flags for `new-connection` — the one enqueue command that still
@@ -206,65 +199,23 @@ pub struct WaitArgs {
 /// Entry point from `main`. Keeps `main.rs` thin — one call per group.
 pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
     match command {
-        IngestCommands::NewConnection {
-            service,
-            config,
-            tables,
-            schema,
-            bucket_url,
-            format,
-            glob,
-            catalog_type,
-            wait,
-            database_id,
-        } => add_connection(
-            workspace_id,
-            output,
-            CreateArgs {
-                service,
-                config,
-                tables,
-                schema,
-                bucket_url,
-                format,
-                glob,
-                catalog_type,
-                database_id,
-            },
-            &wait,
-        ),
-        IngestCommands::ListConnections { all } => list_connections(workspace_id, output, all),
-        IngestCommands::Connectors { name, output } => {
-            catalog_list(workspace_id, name.as_deref(), &output)
+        IngestCommands::NewConnection { create, wait } => {
+            add_connection(workspace_id, output, create, &wait)
         }
+        IngestCommands::ListConnections { all } => list_connections(workspace_id, output, all),
+        IngestCommands::Connectors { name } => catalog_list(workspace_id, name.as_deref(), output),
         IngestCommands::NewImport {
             sql,
             all,
             source,
             database_id,
-            wait,
-            wait_timeout,
-        } => new_import(
-            workspace_id,
-            output,
-            sql,
-            all,
-            source,
-            database_id,
-            wait,
-            wait_timeout,
-        ),
+            poll,
+        } => new_import(workspace_id, output, sql, all, source, database_id, &poll),
         IngestCommands::ListImports => list_imports(workspace_id, output),
-        IngestCommands::TriggerImport {
-            id,
-            wait,
-            wait_timeout,
-        } => trigger_import(workspace_id, output, &id, wait, wait_timeout),
-        IngestCommands::Status {
-            id,
-            wait,
-            wait_timeout,
-        } => status(workspace_id, output, &id, wait, wait_timeout),
+        IngestCommands::TriggerImport { id, poll } => {
+            trigger_import(workspace_id, output, &id, &poll)
+        }
+        IngestCommands::Status { id, poll } => status(workspace_id, output, &id, &poll),
     }
 }
 
@@ -275,6 +226,14 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
 /// run) it's flag-driven and needs `--service`.
 fn add_connection(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
     if args.service.is_none() && util::is_interactive() {
+        if args.any_given() {
+            // The wizard prompts from scratch and would silently ignore
+            // every provided flag — refuse instead of discarding input.
+            fail(
+                "--service is required when other flags are given (e.g. --service postgres); \
+                 run plain 'hotdata ingest new-connection' for the guided wizard",
+            );
+        }
         wizard(workspace_id, output, wait);
     } else {
         add_from_flags(workspace_id, output, args, wait);
@@ -385,7 +344,7 @@ fn build_filesystem_interactive() -> IngestRequest {
     let glob = optional(None, "File glob (e.g. **/*.parquet, blank for all):");
     IngestRequest {
         family: "filesystem".into(),
-        credentials: filesystem_credentials(None),
+        credentials: filesystem_credentials(),
         bucket_url: Some(bucket_url),
         file_glob: glob,
         file_format: format,
@@ -400,7 +359,7 @@ fn build_iceberg_interactive(entry: &ConnectorEntry) -> IngestRequest {
         family: "iceberg".into(),
         catalog_name: Some(entry.name.clone()),
         catalog_type,
-        catalog_config: Some(iceberg_catalog_config(None)),
+        catalog_config: Some(iceberg_catalog_config()),
         tables,
         ..Default::default()
     }
@@ -426,7 +385,7 @@ fn build_rest_interactive(entry: &ConnectorEntry) -> IngestRequest {
             IngestRequest {
                 family: "rest".into(),
                 connector_type: Some(name),
-                rest_config: Some(rest_config(None)),
+                rest_config: Some(rest_config()),
                 ..Default::default()
             }
         }
@@ -505,16 +464,60 @@ fn substitute_placeholder(v: &mut serde_json::Value, token: &str, value: &str) {
 
 // --- new (flag-driven): non-interactive add ------------------------------
 
-struct CreateArgs {
+#[derive(clap::Args)]
+pub struct CreateArgs {
+    /// Connector to add (a catalog name: postgres, bitcoin, filesystem, …).
+    /// Given → non-interactive; omit on a terminal → guided wizard.
+    #[arg(long)]
     service: Option<String>,
+
+    /// Family payload as JSON (inline, @file.json, or @-): SQL credentials,
+    /// a REST rest_config, filesystem creds, or an Iceberg catalog_config
+    #[arg(long)]
     config: Option<String>,
+
+    /// Restrict discovery to this table (repeatable; sql/iceberg)
+    #[arg(long = "table")]
     tables: Vec<String>,
+
+    /// Schema to discover (sql)
+    #[arg(long)]
     schema: Option<String>,
+
+    /// Bucket URL, e.g. s3://bucket/prefix (filesystem)
+    #[arg(long = "bucket-url")]
     bucket_url: Option<String>,
+
+    /// File format (filesystem)
+    #[arg(long, value_parser = ["csv", "jsonl", "parquet"])]
     format: Option<String>,
+
+    /// File glob, e.g. **/*.parquet (filesystem)
+    #[arg(long)]
     glob: Option<String>,
+
+    /// Catalog type, e.g. rest (iceberg)
+    #[arg(long = "catalog-type")]
     catalog_type: Option<String>,
+
+    /// Reuse an existing managed database (by id) instead of minting one
+    #[arg(long = "database-id")]
     database_id: Option<String>,
+}
+
+impl CreateArgs {
+    /// Any flag beyond `--service` — the wizard never reads these, so
+    /// entering it with any of them set would silently discard user input.
+    fn any_given(&self) -> bool {
+        self.config.is_some()
+            || !self.tables.is_empty()
+            || self.schema.is_some()
+            || self.bucket_url.is_some()
+            || self.format.is_some()
+            || self.glob.is_some()
+            || self.catalog_type.is_some()
+            || self.database_id.is_some()
+    }
 }
 
 fn add_from_flags(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
@@ -538,47 +541,57 @@ fn add_from_flags(workspace_id: &str, output: &str, args: CreateArgs, wait: &Wai
         });
 
     let config = args.config.as_deref().map(parse_config_arg);
+    let req = build_create_request(&entry, args, config).unwrap_or_else(|msg| fail(&msg));
+    run_source(&client, output, wait.no_wait, wait.wait_timeout, req);
+}
+
+/// Flag-driven request construction for one catalog entry. Pure (config is
+/// pre-parsed, errors are returned) so the per-family mapping — the part a
+/// server-side 422 would otherwise be the first to catch — is unit-testable.
+fn build_create_request(
+    entry: &ConnectorEntry,
+    args: CreateArgs,
+    config: Option<serde_json::Value>,
+) -> Result<IngestRequest, String> {
     let mut req = match entry.family.as_str() {
         "sql" => IngestRequest {
             family: "sql".into(),
             connector_type: Some(entry.name.clone()),
-            credentials: config.unwrap_or_else(|| {
-                fail("sql connectors need --config with credentials (a connection_string or host/user/…)")
-            }),
+            credentials: config.ok_or(
+                "sql connectors need --config with credentials (a connection_string or host/user/…)",
+            )?,
             schema: args.schema,
             table_names: args.tables,
             ..Default::default()
         },
-        "filesystem" => {
-            let bucket_url = args.bucket_url.unwrap_or_else(|| fail("filesystem needs --bucket-url"));
-            IngestRequest {
-                family: "filesystem".into(),
-                credentials: config.unwrap_or(serde_json::Value::Null),
-                bucket_url: Some(bucket_url),
-                file_glob: args.glob,
-                file_format: args.format,
-                ..Default::default()
-            }
-        }
+        "filesystem" => IngestRequest {
+            family: "filesystem".into(),
+            credentials: config.unwrap_or(serde_json::Value::Null),
+            bucket_url: Some(args.bucket_url.ok_or("filesystem needs --bucket-url")?),
+            file_glob: args.glob,
+            file_format: args.format,
+            ..Default::default()
+        },
         "iceberg" => IngestRequest {
             family: "iceberg".into(),
             catalog_name: Some(entry.name.clone()),
             catalog_type: args.catalog_type.or_else(|| Some("rest".into())),
-            catalog_config: Some(config.unwrap_or_else(|| fail("iceberg needs --config with the catalog config"))),
+            catalog_config: Some(config.ok_or("iceberg needs --config with the catalog config")?),
             tables: args.tables,
             ..Default::default()
         },
         _ => {
             // REST: an explicit --config wins; otherwise the catalog template,
             // which only works untouched for keyless services.
-            let rest_config = config.or_else(|| entry.template.clone()).unwrap_or_else(|| {
-                fail("this REST connector needs --config with a rest_config")
-            });
+            let rest_config = config
+                .or_else(|| entry.template.clone())
+                .ok_or("this REST connector needs --config with a rest_config")?;
             let mut leftover = Vec::new();
             collect_placeholders(&rest_config, &mut leftover);
             if !leftover.is_empty() {
-                fail(&format!(
-                    "connector '{service}' needs secrets ({}) — pass a filled --config, or use 'hotdata ingest new-connection'",
+                return Err(format!(
+                    "connector '{}' needs secrets ({}) — pass a filled --config, or use 'hotdata ingest new-connection'",
+                    entry.name,
                     leftover.join(", ")
                 ));
             }
@@ -593,7 +606,7 @@ fn add_from_flags(workspace_id: &str, output: &str, args: CreateArgs, wait: &Wai
     // Adding a connection discovers the schema only — never loads data.
     req.validate_only = true;
     req.database_id = args.database_id;
-    run_source(&client, output, wait.no_wait, wait.wait_timeout, req);
+    Ok(req)
 }
 
 fn catalog_list(workspace_id: &str, filter: Option<&str>, output: &str) {
@@ -607,44 +620,41 @@ fn catalog_list(workspace_id: &str, filter: Option<&str>, output: &str) {
     // "active" = a connector this workspace has already added (it appears in
     // the onboarded-source registry). Best-effort: if the registry read fails
     // the catalog still shows, just without active marks.
-    let active = active_source_names(&client);
+    // Session JWTs are rejected on every workspace-scoped read (module docs
+    // in client/ingest) — don't pay a doomed round-trip for the marks.
+    let active = if client.has_api_key() {
+        active_source_names(&client)
+    } else {
+        Default::default()
+    };
     let is_active = |name: &str| active.contains(name);
 
-    match output {
-        "json" | "yaml" => {
-            let v: Vec<_> = entries
-                .iter()
-                .map(|c| {
-                    serde_json::json!({
-                        "name": c.name,
-                        "family": c.family,
-                        "active": is_active(&c.name),
-                        "description": c.description,
-                    })
-                })
-                .collect();
-            if output == "yaml" {
-                print!("{}", serde_yaml::to_string(&v).unwrap());
-            } else {
-                println!("{}", serde_json::to_string_pretty(&v).unwrap());
-            }
-        }
-        _ => {
-            let rows: Vec<Vec<String>> = entries
-                .iter()
-                .map(|c| {
-                    let status = if is_active(&c.name) { "active" } else { "" };
-                    vec![
-                        c.name.clone(),
-                        c.family.clone(),
-                        status.to_string(),
-                        c.description.clone(),
-                    ]
-                })
-                .collect();
-            crate::output::table::print(&["NAME", "FAMILY", "STATUS", "DESCRIPTION"], &rows);
-        }
-    }
+    let projected: Vec<_> = entries
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "family": c.family,
+                "active": is_active(&c.name),
+                "description": c.description,
+            })
+        })
+        .collect();
+    render(output, &projected, || {
+        let rows: Vec<Vec<String>> = entries
+            .iter()
+            .map(|c| {
+                let status = if is_active(&c.name) { "active" } else { "" };
+                vec![
+                    c.name.clone(),
+                    c.family.clone(),
+                    status.to_string(),
+                    c.description.clone(),
+                ]
+            })
+            .collect();
+        crate::output::table::print(&["NAME", "FAMILY", "STATUS", "DESCRIPTION"], &rows);
+    });
 }
 
 /// Connector names this workspace has onboarded, from the sources registry.
@@ -664,7 +674,6 @@ fn active_source_names(client: &IngestClient) -> std::collections::HashSet<Strin
 
 // --- new-import: SQL front-door -------------------------------------------
 
-#[allow(clippy::too_many_arguments)] // mirrors the clap surface one-to-one
 fn new_import(
     workspace_id: &str,
     output: &str,
@@ -672,8 +681,7 @@ fn new_import(
     all: bool,
     source: Option<String>,
     database_id: Option<String>,
-    wait: bool,
-    wait_timeout: u64,
+    poll: &PollArgs,
 ) {
     // A 32-char hex --source is a connection id (pins resolution); anything
     // else is a connector name (the FROM target).
@@ -692,6 +700,17 @@ fn new_import(
                 .and_then(|p| pinned_connector_name(&client, p))
         })
         .flatten();
+    // A pin that fails to resolve is ITS OWN error — falling through to
+    // build_import_query would blame the --source flag the user did pass.
+    if all
+        && name.is_none()
+        && pinned_name.is_none()
+        && let Some(p) = pin.as_deref()
+    {
+        fail(&format!(
+            "could not resolve connection id {p} — check 'hotdata ingest list-connections'"
+        ));
+    }
     let query = build_import_query(sql, all, name.as_deref(), pinned_name.as_deref())
         .unwrap_or_else(|msg| fail(msg));
     let req = QueryToIngest {
@@ -700,10 +719,12 @@ fn new_import(
         database_id,
     };
     let spinner = util::spinner("submitting import…");
-    // The by-name FROM lookup reads control-store snapshots that lag writes, so
-    // an import right after onboarding can 404 briefly — retry a few times.
+    // The by-name FROM lookup reads control-store snapshots that lag writes,
+    // so an import right after onboarding can 404 briefly. Retry ONCE: lag is
+    // usually under one poll interval, and every extra retry makes a typo'd
+    // connection name look like infrastructure lag for 2.5s more.
     let mut ack = client.create_query(&req);
-    for _ in 0..3 {
+    for _ in 0..1 {
         match &ack {
             Err(crate::client::ingest::IngestError::Http { status: 404, .. }) => {
                 spinner.set_message("waiting for the source to register…");
@@ -718,8 +739,15 @@ fn new_import(
         e.exit()
     });
     spinner.finish_and_clear();
-    if wait {
-        let st = poll_ingest(&client, &ack.ingest_id, wait_timeout, "importing", true);
+    if poll.wait {
+        let st = poll_ingest(
+            &client,
+            output,
+            &ack.ingest_id,
+            poll.wait_timeout,
+            "importing",
+            true,
+        );
         render_done(&st, output);
         return;
     }
@@ -756,33 +784,29 @@ fn build_import_query(
     }
 }
 
-/// Resolve a pinned connection id to its connector name (the FROM target)
-/// via the sources registry.
+/// Resolve a pinned connection id to its connector name (the FROM target).
+/// GET /jobs/{id} returns it directly — no need to page the full registry.
 fn pinned_connector_name(client: &IngestClient, ingest_id: &str) -> Option<String> {
-    client
-        .list_sources(true)
-        .ok()?
-        .sources
-        .into_iter()
-        .find(|s| s.ingest_id == ingest_id)
-        .and_then(|s| s.connector_type)
+    client.job_status(ingest_id).ok()?.connector_type
 }
 
 // --- trigger-import --------------------------------------------------------
 
-fn trigger_import(workspace_id: &str, output: &str, id: &str, wait: bool, wait_timeout: u64) {
+fn trigger_import(workspace_id: &str, output: &str, id: &str, poll: &PollArgs) {
     let client = IngestClient::new(workspace_id);
-    let spinner = util::spinner("requesting re-run…");
     // The worker resets the ingest to pending and fires the drain (409 if one
     // is already mid-flight — its message says to retry shortly).
-    let ack = client.rerun(id).unwrap_or_else(|e| {
-        spinner.finish_and_clear();
-        e.exit()
-    });
-    spinner.finish_and_clear();
-    if wait {
+    let ack = with_spinner("requesting re-run…", || client.rerun(id));
+    if poll.wait {
         // The rerun already drained; poll only.
-        let st = poll_ingest(&client, &ack.ingest_id, wait_timeout, "re-running", false);
+        let st = poll_ingest(
+            &client,
+            output,
+            &ack.ingest_id,
+            poll.wait_timeout,
+            "re-running",
+            false,
+        );
         render_done(&st, output);
         return;
     }
@@ -801,47 +825,38 @@ fn status_exit_code(status: &str) -> i32 {
     }
 }
 
-fn status(workspace_id: &str, output: &str, id: &str, wait: bool, wait_timeout: u64) {
+fn status(workspace_id: &str, output: &str, id: &str, poll: &PollArgs) {
     let client = IngestClient::new(workspace_id);
-    if wait {
+    if poll.wait {
         // Attach and poll to a terminal state. No initial drain kick — the
         // enqueue already fired one — but the poll loop still re-kicks a job
         // stuck in `pending` (control-store read lag), so attaching also
         // rescues an import whose first drain missed the row.
-        let st = poll_ingest(&client, id, wait_timeout, "waiting", false);
+        let st = poll_ingest(&client, output, id, poll.wait_timeout, "waiting", false);
         render_done(&st, output);
         return;
     }
     let st = client.job_status(id).unwrap_or_else(|e| e.exit());
-    match output {
-        "json" => println!("{}", serde_json::to_string_pretty(&st).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&st).unwrap()),
-        _ => {
-            use crossterm::style::Stylize;
-            let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
-            let colored = match st.status.as_str() {
-                "done" => st.status.as_str().green(),
-                "failed" => st.status.as_str().red(),
-                other => other.yellow(),
-            };
-            println!("{}{}", label("status:"), colored);
-            if let Some(d) = st.detail.as_deref().filter(|d| !d.trim().is_empty()) {
-                println!("{}{}", label("detail:"), d);
-            }
-            if let Some(db) = st.database_id.as_deref() {
-                println!("{}{}", label("database:"), db);
-            }
-            if let Some(t) = st.updated_at.as_deref() {
-                println!("{}{}", label("updated:"), t);
-            }
-            if status_exit_code(&st.status) == 2 {
-                println!(
-                    "{}",
-                    format!("Attach with: hotdata ingest status {id} --wait").dark_grey()
-                );
-            }
+    render(output, &st, || {
+        use crossterm::style::Stylize;
+        let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
+        println!("{}{}", label("status:"), util::color_status(&st.status));
+        if let Some(d) = st.detail.as_deref().filter(|d| !d.trim().is_empty()) {
+            println!("{}{}", label("detail:"), d);
         }
-    }
+        if let Some(db) = st.database_id.as_deref() {
+            println!("{}{}", label("database:"), db);
+        }
+        if let Some(t) = st.updated_at.as_deref() {
+            println!("{}{}", label("updated:"), t);
+        }
+        if status_exit_code(&st.status) == 2 {
+            println!(
+                "{}",
+                format!("Attach with: {}", status_wait_hint(id)).dark_grey()
+            );
+        }
+    });
     std::process::exit(status_exit_code(&st.status));
 }
 
@@ -849,127 +864,95 @@ fn status(workspace_id: &str, output: &str, id: &str, wait: bool, wait_timeout: 
 
 fn list_connections(workspace_id: &str, output: &str, all: bool) {
     let client = IngestClient::new(workspace_id);
-    let spinner = util::spinner("loading connections…");
-    let resp = client.list_sources(all).unwrap_or_else(|e| {
-        spinner.finish_and_clear();
-        e.exit()
-    });
-    spinner.finish_and_clear();
+    let resp = with_spinner("loading connections…", || client.list_sources(all));
 
-    match output {
-        "json" => println!("{}", serde_json::to_string_pretty(&resp.sources).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&resp.sources).unwrap()),
-        _ => {
-            use crossterm::style::Stylize;
-            if resp.sources.is_empty() {
-                eprintln!(
-                    "{}",
-                    "No connections yet. Add one with 'hotdata ingest new-connection'.".dark_grey()
-                );
-                return;
-            }
-            let mut headers = vec!["NAME", "FAMILY", "STATUS", "CREATED", "CONNECTION ID"];
-            if all {
-                headers.push("ACTIVE");
-            }
-            let rows: Vec<Vec<String>> = resp
-                .sources
-                .iter()
-                .map(|s| {
-                    let mut row = vec![
-                        s.connector_type.clone().unwrap_or_else(|| "-".into()),
-                        s.family.clone().unwrap_or_default(),
-                        colored_status(&s.status),
-                        date_only(s.created_at.as_deref()),
-                        s.ingest_id.clone(),
-                    ];
-                    if all {
-                        row.push(if s.active {
-                            "yes".into()
-                        } else {
-                            String::new()
-                        });
-                    }
-                    row
-                })
-                .collect();
-            crate::output::table::print(&headers, &rows);
+    render(output, &resp.sources, || {
+        use crossterm::style::Stylize;
+        if resp.sources.is_empty() {
+            eprintln!(
+                "{}",
+                "No connections yet. Add one with 'hotdata ingest new-connection'.".dark_grey()
+            );
+            return;
         }
-    }
+        let mut headers = vec!["NAME", "FAMILY", "STATUS", "CREATED", "CONNECTION ID"];
+        if all {
+            headers.push("ACTIVE");
+        }
+        let rows: Vec<Vec<String>> = resp
+            .sources
+            .iter()
+            .map(|s| {
+                let mut row = vec![
+                    s.connector_type.clone().unwrap_or_else(|| "-".into()),
+                    s.family.clone().unwrap_or_default(),
+                    util::color_status(&s.status),
+                    created_cell(s.created_at.as_deref()),
+                    s.ingest_id.clone(),
+                ];
+                if all {
+                    row.push(if s.active {
+                        "yes".into()
+                    } else {
+                        String::new()
+                    });
+                }
+                row
+            })
+            .collect();
+        crate::output::table::print(&headers, &rows);
+    });
 }
 
 // --- list-imports ----------------------------------------------------------
 
 fn list_imports(workspace_id: &str, output: &str) {
     let client = IngestClient::new(workspace_id);
-    let spinner = util::spinner("loading imports…");
-    let resp = client.list_queries().unwrap_or_else(|e| {
-        spinner.finish_and_clear();
-        e.exit()
-    });
-    spinner.finish_and_clear();
+    let resp = with_spinner("loading imports…", || client.list_queries());
 
-    match output {
-        "json" => println!("{}", serde_json::to_string_pretty(&resp.queries).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&resp.queries).unwrap()),
-        _ => {
-            use crossterm::style::Stylize;
-            if resp.queries.is_empty() {
-                eprintln!(
-                    "{}",
-                    "No imports yet. Create one with 'hotdata ingest new-import \
+    render(output, &resp.queries, || {
+        use crossterm::style::Stylize;
+        if resp.queries.is_empty() {
+            eprintln!(
+                "{}",
+                "No imports yet. Create one with 'hotdata ingest new-import \
                      --source <connection> --all' (or pass SQL)."
-                        .dark_grey()
-                );
-                return;
-            }
-            let rows: Vec<Vec<String>> = resp
-                .queries
-                .iter()
-                .map(|q| {
-                    vec![
-                        q.ingest_id.clone(),
-                        q.connector_type.clone().unwrap_or_else(|| "-".into()),
-                        q.query.clone().unwrap_or_default(),
-                        colored_status(&q.status),
-                        date_only(q.created_at.as_deref()),
-                        q.database_id.clone().unwrap_or_else(|| "-".into()),
-                    ]
-                })
-                .collect();
-            crate::output::table::print(
-                &[
-                    "IMPORT ID",
-                    "SOURCE",
-                    "SQL",
-                    "STATUS",
-                    "CREATED",
-                    "DATABASE",
-                ],
-                &rows,
+                    .dark_grey()
             );
+            return;
         }
-    }
+        let rows: Vec<Vec<String>> = resp
+            .queries
+            .iter()
+            .map(|q| {
+                vec![
+                    q.ingest_id.clone(),
+                    q.connector_type.clone().unwrap_or_else(|| "-".into()),
+                    q.query.clone().unwrap_or_default(),
+                    util::color_status(&q.status),
+                    created_cell(q.created_at.as_deref()),
+                    q.database_id.clone().unwrap_or_else(|| "-".into()),
+                ]
+            })
+            .collect();
+        crate::output::table::print(
+            &[
+                "IMPORT ID",
+                "SOURCE",
+                "SQL",
+                "STATUS",
+                "CREATED",
+                "DATABASE",
+            ],
+            &rows,
+        );
+    });
 }
 
-/// Date part of an ISO timestamp for table display
-/// (`2026-07-08T10:12:00+00:00` → `2026-07-08`).
-fn date_only(ts: Option<&str>) -> String {
-    ts.and_then(|t| t.split('T').next())
-        .unwrap_or("-")
-        .to_string()
-}
-
-/// Status cell for the listing tables, in the repo's status colors:
-/// done → green, failed → red, anything in flight (pending/running/worker
-/// stage states) → yellow. Table cells are ANSI-safe (`tabled` ansi feature).
-fn colored_status(status: &str) -> String {
-    use crossterm::style::Stylize;
-    match status {
-        "done" => status.green().to_string(),
-        "failed" => status.red().to_string(),
-        _ => status.yellow().to_string(),
-    }
+/// CREATED cell for the listing tables — util::format_date, aligned with
+/// every other table in the CLI ("2026-07-08 10:12").
+fn created_cell(ts: Option<&str>) -> String {
+    ts.map(util::format_date).unwrap_or_else(|| "-".into())
 }
 
 // --- shared run + poll ----------------------------------------------------
@@ -983,18 +966,20 @@ fn run_source(
 ) {
     // The first add in a workspace deploys the dlt runtime (~15-30s); later
     // ones hash-short-circuit. The HTTP client allows 300s.
-    let spinner = util::spinner("adding connection… (the first one in a workspace takes ~30s)");
-    let ack = client.create_source(&req).unwrap_or_else(|e| {
-        spinner.finish_and_clear();
-        e.exit()
-    });
-    spinner.finish_and_clear();
+    let ack = with_spinner(
+        "adding connection… (the first one in a workspace takes ~30s)",
+        || client.create_source(&req),
+    );
     if no_wait {
+        // The worker is on-demand: without this drain the onboard would sit
+        // pending until some other command fires one.
+        let _ = client.drain();
         render_ack(&ack, output);
         return;
     }
     let st = poll_ingest(
         client,
+        output,
         &ack.ingest_id,
         wait_timeout,
         "discovering schema",
@@ -1003,13 +988,34 @@ fn run_source(
     render_connection_added(client, &st, output);
 }
 
+/// The canonical "track this ingest" invocation. Every hint goes through
+/// here so the next verb rename has ONE string to update, not ten.
+fn status_wait_hint(ingest_id: &str) -> String {
+    format!("hotdata ingest status {ingest_id} --wait")
+}
+
+/// Timeout exit for a wait: code 2 = still in flight, distinct from 1 = the
+/// ingest itself failed. One place so every wait path agrees.
+fn poll_timeout_exit(ingest_id: &str) -> ! {
+    use crossterm::style::Stylize;
+    eprintln!("{}", "ingest timed out".red());
+    eprintln!(
+        "{}",
+        format!("Keep tracking it with: {}", status_wait_hint(ingest_id)).dark_grey()
+    );
+    std::process::exit(2);
+}
+
 /// Poll the ingest to a terminal state, returning the final (done) status for
 /// the caller to render. `kick_drain` fires the drain up front (enqueue paths;
 /// `trigger-import` skips it — the rerun already drained). Every non-terminal
 /// status is shown live in the spinner (stage + detail); exits the process on
-/// failure (1) or timeout (2). `verb` labels the spinner.
+/// failure (1) or timeout (2). On failure with `-o json|yaml` the status
+/// object (with the worker's detail) still lands on stdout, matching the
+/// one-shot `status` path.
 fn poll_ingest(
     client: &IngestClient,
+    output: &str,
     ingest_id: &str,
     timeout_secs: u64,
     verb: &str,
@@ -1034,9 +1040,16 @@ fn poll_ingest(
             }
             Err(e) => {
                 consecutive_errors += 1;
-                if consecutive_errors >= 3 || Instant::now() > deadline {
+                if consecutive_errors >= 3 {
                     spinner.finish_and_clear();
                     e.exit();
+                }
+                // The deadline outranks the retry budget: a transient blip AT
+                // the deadline is a timeout (exit 2 — the job may well still
+                // be running), not an ingest failure (exit 1).
+                if Instant::now() > deadline {
+                    spinner.finish_and_clear();
+                    poll_timeout_exit(ingest_id);
                 }
                 std::thread::sleep(POLL_INTERVAL);
                 continue;
@@ -1049,17 +1062,21 @@ fn poll_ingest(
             }
             "failed" => {
                 spinner.finish_and_clear();
-                use crossterm::style::Stylize;
-                let detail = st.detail.as_deref().unwrap_or("unknown error");
-                eprintln!("{}", format!("ingest failed: {detail}").red());
-                if detail.contains("Forbidden") {
-                    eprintln!(
-                        "{}",
-                        "Forbidden at load time usually means a database-scoped API token — \
-                         ingest needs a regular workspace API token."
-                            .dark_grey()
-                    );
-                }
+                // Machine formats get the status object (with the worker's
+                // detail) on stdout, matching one-shot `status`.
+                render(output, &st, || {
+                    use crossterm::style::Stylize;
+                    let detail = st.detail.as_deref().unwrap_or("unknown error");
+                    eprintln!("{}", format!("ingest failed: {detail}").red());
+                    if detail.contains("Forbidden") {
+                        eprintln!(
+                            "{}",
+                            "Forbidden at load time usually means a database-scoped API token — \
+                                 ingest needs a regular workspace API token."
+                                .dark_grey()
+                        );
+                    }
+                });
                 std::process::exit(1);
             }
             // Any other status is in-progress. Surface it live rather than
@@ -1083,14 +1100,7 @@ fn poll_ingest(
         }
         if Instant::now() > deadline {
             spinner.finish_and_clear();
-            use crossterm::style::Stylize;
-            eprintln!("{}", "ingest timed out".red());
-            eprintln!(
-                "{}",
-                format!("Keep tracking it with: hotdata ingest status {ingest_id} --wait")
-                    .dark_grey()
-            );
-            std::process::exit(2);
+            poll_timeout_exit(ingest_id);
         }
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -1108,46 +1118,48 @@ fn progress_message(verb: &str, stage: &str, detail: Option<&str>) -> String {
 // --- rendering -----------------------------------------------------------
 
 fn render_ack(ack: &IngestAck, output: &str) {
-    match output {
-        "json" => println!("{}", serde_json::to_string_pretty(ack).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(ack).unwrap()),
-        _ => {
-            use crossterm::style::Stylize;
-            let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
-            println!("{}{}", label("ingest id:"), ack.ingest_id);
-            println!("{}{}", label("database:"), ack.database_id);
-            println!("{}{}", label("status:"), ack.status.as_str().yellow());
-            println!(
-                "{}",
-                format!(
-                    "Track it with: hotdata ingest status {} --wait  (or: hotdata ingest list-imports)",
-                    ack.ingest_id
-                )
-                .dark_grey()
-            );
-        }
-    }
+    render(output, ack, || {
+        use crossterm::style::Stylize;
+        let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
+        println!("{}{}", label("ingest id:"), ack.ingest_id);
+        println!("{}{}", label("database:"), ack.database_id);
+        println!("{}{}", label("status:"), ack.status.as_str().yellow());
+        println!(
+            "{}",
+            format!(
+                "Track it with: hotdata ingest status {} --wait  (or: hotdata ingest list-imports)",
+                ack.ingest_id
+            )
+            .dark_grey()
+        );
+    });
 }
 
 fn render_done(st: &crate::client::ingest::JobStatus, output: &str) {
-    match output {
-        "json" => println!("{}", serde_json::to_string_pretty(st).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(st).unwrap()),
-        _ => {
-            use crossterm::style::Stylize;
-            let db = st.database_id.as_deref().unwrap_or("-");
-            println!("{} → {}", "done".green(), db);
-            println!(
-                "{}",
-                format!("Query it: hotdata query --database {db} \"SELECT * FROM …\"").dark_grey()
-            );
-        }
-    }
+    render(output, st, || {
+        use crossterm::style::Stylize;
+        let db = st.database_id.as_deref().unwrap_or("-");
+        println!("{} → {}", "done".green(), db);
+        println!(
+            "{}",
+            format!("Query it: hotdata query --database {db} \"SELECT * FROM …\"").dark_grey()
+        );
+    });
 }
 
 /// Render the result of adding a connection: the discovered schema (tables +
 /// columns), fetched from the schema-preview the metadata-only run landed. No
 /// data was loaded — the closing hint points at `import` for that.
+/// Machine view of a completed onboard: the job status plus the discovered
+/// schema. Typed (instead of mutating a serde_json::Value) so serialization
+/// cannot silently degrade to null.
+#[derive(serde::Serialize)]
+struct ConnectionAdded<'a> {
+    #[serde(flatten)]
+    status: &'a crate::client::ingest::JobStatus,
+    tables: Option<&'a serde_json::Value>,
+}
+
 fn render_connection_added(
     client: &IngestClient,
     st: &crate::client::ingest::JobStatus,
@@ -1155,150 +1167,56 @@ fn render_connection_added(
 ) {
     let db = st.database_id.as_deref().unwrap_or("");
     let schema = (!db.is_empty()).then(|| client.schema(db).ok()).flatten();
-    let tables = schema
-        .as_ref()
-        .and_then(|s| s.get("tables"))
-        .and_then(|t| t.as_object());
+    let tables_value = schema.as_ref().and_then(|s| s.get("tables"));
+    let tables = tables_value.and_then(|t| t.as_object());
 
-    match output {
-        "json" | "yaml" => {
-            let mut v = serde_json::to_value(st).unwrap_or_default();
-            if let serde_json::Value::Object(ref mut m) = v {
-                m.insert(
-                    "tables".into(),
-                    schema
-                        .as_ref()
-                        .and_then(|s| s.get("tables").cloned())
-                        .unwrap_or(serde_json::Value::Null),
+    let machine = ConnectionAdded {
+        status: st,
+        tables: tables_value,
+    };
+    render(output, &machine, || {
+        use crossterm::style::Stylize;
+        let source = st.connector_type.as_deref().unwrap_or("source");
+        println!("{} {}", "connection added".green(), source.dark_grey());
+        if !db.is_empty() {
+            println!("{}{}", format!("{:<12}", "database:").dark_grey(), db);
+        }
+        match tables {
+            Some(t) if !t.is_empty() => {
+                println!(
+                    "{}",
+                    format!("discovered {} table(s):", t.len()).dark_grey()
                 );
-            }
-            if output == "yaml" {
-                print!("{}", serde_yaml::to_string(&v).unwrap());
-            } else {
-                println!("{}", serde_json::to_string_pretty(&v).unwrap());
-            }
-        }
-        _ => {
-            use crossterm::style::Stylize;
-            let source = st.connector_type.as_deref().unwrap_or("source");
-            println!("{} {}", "connection added".green(), source.dark_grey());
-            if !db.is_empty() {
-                println!("{}{}", format!("{:<12}", "database:").dark_grey(), db);
-            }
-            match tables {
-                Some(t) if !t.is_empty() => {
+                for (name, cols) in t {
+                    let names: Vec<&str> = cols.as_array().map_or(Vec::new(), |a| {
+                        a.iter().filter_map(|c| c.as_str()).collect()
+                    });
                     println!(
-                        "{}",
-                        format!("discovered {} table(s):", t.len()).dark_grey()
+                        "  {}  {}",
+                        name.as_str().cyan(),
+                        names.join(", ").dark_grey()
                     );
-                    for (name, cols) in t {
-                        let names: Vec<&str> = cols.as_array().map_or(Vec::new(), |a| {
-                            a.iter().filter_map(|c| c.as_str()).collect()
-                        });
-                        println!(
-                            "  {}  {}",
-                            name.as_str().cyan(),
-                            names.join(", ").dark_grey()
-                        );
-                    }
                 }
-                _ => println!("{}", "no tables discovered".dark_grey()),
             }
-            println!(
-                "{}",
-                format!(
-                    "Import data with: hotdata ingest new-import --source {source} --all (or SQL)"
-                )
-                .dark_grey()
-            );
+            _ => println!("{}", "no tables discovered".dark_grey()),
         }
-    }
+        println!(
+            "{}",
+            format!("Import data with: hotdata ingest new-import --source {source} --all (or SQL)")
+                .dark_grey()
+        );
+    });
 }
 
 // --- catalog fetch --------------------------------------------------------
 
 fn fetch_catalog(client: &IngestClient) -> Vec<ConnectorEntry> {
-    let spinner = util::spinner("loading connectors…");
-    let resp = client.connectors().unwrap_or_else(|e| {
-        spinner.finish_and_clear();
-        e.exit()
-    });
-    spinner.finish_and_clear();
-    resp.connectors
-}
-
-// --- input helpers --------------------------------------------------------
-//
-// All prompting is TTY-gated by callers (the wizard errors early on a non-TTY).
-// `inquire` returns Err on Ctrl-C/ESC — exit cleanly, matching
-// `connections/interactive`.
-
-fn ask_text(label: &str) -> String {
-    Text::new(label)
-        .prompt()
-        .unwrap_or_else(|_| std::process::exit(0))
-}
-
-fn ask_secret(label: &str) -> String {
-    Password::new(label)
-        .without_confirmation()
-        .prompt()
-        .unwrap_or_else(|_| std::process::exit(0))
-}
-
-/// Optional value: the flag, else a prompt (TTY) whose blank answer = none.
-fn optional(flag: Option<String>, label: &str) -> Option<String> {
-    if flag.is_some() {
-        return flag;
-    }
-    if util::is_interactive() {
-        let v = ask_text(label);
-        return (!v.trim().is_empty()).then_some(v);
-    }
-    None
-}
-
-/// Optional value with a default; non-interactive falls back to the default.
-fn optional_default(label: &str, default: &str) -> Option<String> {
-    if !util::is_interactive() {
-        return Some(default.to_string());
-    }
-    let v = Text::new(label)
-        .with_default(default)
-        .prompt()
-        .unwrap_or_else(|_| std::process::exit(0));
-    (!v.trim().is_empty()).then_some(v)
-}
-
-/// Select one of `options` (TTY only; None otherwise or on ESC).
-fn select_optional(label: &str, options: &[&str]) -> Option<String> {
-    if !util::is_interactive() {
-        return None;
-    }
-    Select::new(label, options.to_vec())
-        .prompt()
-        .ok()
-        .map(|s| s.to_string())
-}
-
-/// Prompt for a comma-separated list (TTY only; empty otherwise).
-fn prompt_list(label: &str) -> Vec<String> {
-    if !util::is_interactive() {
-        return Vec::new();
-    }
-    ask_text(label)
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+    with_spinner("loading connectors…", || client.connectors()).connectors
 }
 
 /// Bare `rest` family: build a minimal dlt rest_api config interactively
 /// (base_url + optional bearer token + resource paths).
-fn rest_config(config: Option<&str>) -> serde_json::Value {
-    if let Some(c) = config {
-        return parse_config_arg(c);
-    }
+fn rest_config() -> serde_json::Value {
     let base_url = ask_text("REST base URL:");
     let token = ask_secret("Bearer token (blank if none):");
     let resources: Vec<serde_json::Value> = ask_text("Resource paths (comma-separated):")
@@ -1320,10 +1238,7 @@ fn rest_config(config: Option<&str>) -> serde_json::Value {
 
 /// Filesystem object-store credentials: prompt for S3-style creds (all optional
 /// — blank access key = public bucket, no creds sent).
-fn filesystem_credentials(config: Option<&str>) -> serde_json::Value {
-    if let Some(c) = config {
-        return parse_config_arg(c);
-    }
+fn filesystem_credentials() -> serde_json::Value {
     if !util::is_interactive() {
         return serde_json::Value::Null;
     }
@@ -1348,10 +1263,7 @@ fn filesystem_credentials(config: Option<&str>) -> serde_json::Value {
 
 /// Iceberg catalog connection config: prompt for catalog URI + warehouse +
 /// token + namespace.
-fn iceberg_catalog_config(config: Option<&str>) -> serde_json::Value {
-    if let Some(c) = config {
-        return parse_config_arg(c);
-    }
+fn iceberg_catalog_config() -> serde_json::Value {
     let mut m = serde_json::Map::new();
     m.insert("catalog_uri".into(), ask_text("Catalog URI:").into());
     if let Some(w) = optional(None, "Warehouse (blank if none):") {
@@ -1495,6 +1407,86 @@ mod tests {
         assert!(err.contains("--source"), "got: {err}");
     }
 
+    fn create_args() -> CreateArgs {
+        CreateArgs {
+            service: None,
+            config: None,
+            tables: Vec::new(),
+            schema: None,
+            bucket_url: None,
+            format: None,
+            glob: None,
+            catalog_type: None,
+            database_id: None,
+        }
+    }
+
+    #[test]
+    fn create_request_sql_requires_and_carries_credentials() {
+        let e = entry("postgres", "sql");
+        assert!(
+            build_create_request(&e, create_args(), None)
+                .unwrap_err()
+                .contains("--config")
+        );
+
+        let creds = serde_json::json!({"connection_string": "postgresql://u:p@h/db"});
+        let mut args = create_args();
+        args.schema = Some("tpch_sf1".into());
+        args.tables = vec!["region".into()];
+        args.database_id = Some("db_1".into());
+        let req = build_create_request(&e, args, Some(creds.clone())).unwrap();
+        assert_eq!(req.family, "sql");
+        assert_eq!(req.connector_type.as_deref(), Some("postgres"));
+        assert_eq!(req.credentials, creds);
+        assert_eq!(req.schema.as_deref(), Some("tpch_sf1"));
+        assert_eq!(req.table_names, vec!["region"]);
+        // Onboards never load data, and the db reuse flag rides through.
+        assert!(req.validate_only);
+        assert_eq!(req.database_id.as_deref(), Some("db_1"));
+    }
+
+    #[test]
+    fn create_request_filesystem_and_iceberg_required_fields() {
+        let fs = entry("filesystem", "filesystem");
+        assert!(
+            build_create_request(&fs, create_args(), None)
+                .unwrap_err()
+                .contains("--bucket-url")
+        );
+
+        let ice = entry("iceberg", "iceberg");
+        assert!(
+            build_create_request(&ice, create_args(), None)
+                .unwrap_err()
+                .contains("--config")
+        );
+        let mut args = create_args();
+        args.tables = vec!["ns.t".into()];
+        let req = build_create_request(&ice, args, Some(serde_json::json!({"catalog_uri": "u"})))
+            .unwrap();
+        // The catalog type defaults to rest when not specified.
+        assert_eq!(req.catalog_type.as_deref(), Some("rest"));
+        assert_eq!(req.tables, vec!["ns.t"]);
+    }
+
+    #[test]
+    fn create_request_rest_template_placeholders_fail_fast() {
+        let mut e = entry("aikido", "rest");
+        e.template = Some(serde_json::json!({
+            "client": {"auth": {"client_id": "<CLIENT_ID>"}}
+        }));
+        let err = build_create_request(&e, create_args(), None).unwrap_err();
+        assert!(err.contains("<CLIENT_ID>"), "got: {err}");
+
+        // Keyless template (no placeholders) passes through verbatim.
+        let mut keyless = entry("bitcoin", "rest");
+        keyless.template = Some(serde_json::json!({"client": {"base_url": "https://x"}}));
+        let req = build_create_request(&keyless, create_args(), None).unwrap();
+        assert_eq!(req.family, "rest");
+        assert!(req.rest_config.is_some());
+    }
+
     #[test]
     fn status_exit_codes_mirror_query_status() {
         assert_eq!(status_exit_code("done"), 0);
@@ -1507,10 +1499,12 @@ mod tests {
     }
 
     #[test]
-    fn date_only_trims_iso_timestamps() {
-        assert_eq!(date_only(Some("2026-07-08T10:12:00+00:00")), "2026-07-08");
-        assert_eq!(date_only(Some("2026-07-08")), "2026-07-08");
-        assert_eq!(date_only(None), "-");
+    fn created_cell_matches_repo_date_format() {
+        assert_eq!(
+            created_cell(Some("2026-07-08T10:12:00+00:00")),
+            "2026-07-08 10:12"
+        );
+        assert_eq!(created_cell(None), "-");
     }
 
     #[test]
