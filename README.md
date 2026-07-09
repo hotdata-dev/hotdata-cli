@@ -84,7 +84,7 @@ Pull data from SQL databases, APIs, S3/GCS/Azure buckets, or Iceberg catalogs
 into a managed database:
 
 ```sh
-hotdata ingest connectors                   # browse: SQL dialects, ~150 API services,
+hotdata ingest datasources                  # browse: SQL dialects, ~150 API services,
                                             # buckets, iceberg, api (bring-your-own)
 
 # Add a datasource — validates credentials and discovers the schema, loads no data.
