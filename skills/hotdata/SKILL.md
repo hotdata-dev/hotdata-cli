@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "execute a query", "database context", "context:DATAMODEL", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "execute a query", "database context", "context:DATAMODEL", "ingest", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/a REST API/S3/Iceberg", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
 version: 0.12.0
 ---
 
@@ -20,7 +20,7 @@ Install all skills with **`hotdata skills install`**. Load specialized skills on
 
 | Skill | Use for |
 |-------|---------|
-| **`hotdata`** (this file) | Auth, workspaces, connections, databases, tables, basic `query`, context, jobs |
+| **`hotdata`** (this file) | Auth, workspaces, connections, databases, tables, basic `query`, context, jobs, ingest |
 | **`hotdata-search`** | BM25, vector search, `hotdata search`, bm25/vector indexes, embedding providers |
 | **`hotdata-analytics`** | OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes |
 | **`hotdata-geospatial`** | PostGIS-style `ST_*`, WKB, spatial joins |
@@ -72,7 +72,7 @@ Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and manage
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`ingest`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -294,6 +294,42 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 - `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`.
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
+
+### Ingest external data (`ingest`)
+
+Pull data from external sources (SQL databases, REST APIs, S3/GCS files, Iceberg) into managed databases. Two nouns: **connections** (onboarded, credentialed sources — schema discovered, no data loaded; each has its own id) and **imports** (managed databases materialized from a connection).
+
+Enqueue commands (`new-connection`, `new-import`, `trigger-import`, `delete-connection`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — a login session is not enough, because the ingest pipeline runs after a short-lived session token would expire.
+
+```bash
+hotdata ingest connectors [filter]     # browse the catalog; "active" = already added
+hotdata ingest new-connection --service postgres   --config '{"connection_string": "postgresql://user:pass@host/db"}' --schema public
+# --config accepts inline JSON, @file.json, or @- (stdin) — keep secrets out of argv.
+# Validates credentials + discovers the schema; loads NO data. Blocks until done
+# and prints the discovered tables (--no-wait to return immediately).
+
+hotdata ingest list-connections               # ids, statuses; --all includes superseded
+hotdata ingest show-connection <id>           # status + discovered tables/columns
+hotdata ingest delete-connection <id>         # registry + credentials + discovery DB
+                                              # (--keep-database keeps the DB)
+
+# Imports return IMMEDIATELY (non-blocking). Track with `status`:
+hotdata ingest new-import "SELECT * FROM postgres.orders LIMIT 1000"
+hotdata ingest new-import --source postgres --all       # everything, no LIMIT
+hotdata ingest status <ingest-id>             # one-shot; exits 0 done / 1 failed / 2 in flight
+hotdata ingest status <ingest-id> --wait      # attach and poll to done/failed
+
+hotdata ingest list-imports                   # the SQL behind each import + its database
+hotdata ingest trigger-import <ingest-id>     # re-run: refresh the same DB from source
+```
+
+Agent tips:
+- Import SQL is a **restricted grammar**: `SELECT <cols|*> FROM <connection>[.<resource>] [WHERE …] [LIMIT n]` — no joins/GROUP BY. Run real analytics with `hotdata query` against the imported database afterward.
+- Prefer `-o json` + the `status` exit codes for scripting; poll one-shot `status` rather than holding `--wait` when doing other work in between.
+- In-flight statuses stream through stages (`preparing`, `extracting`, `normalizing`, `loading`); treat **any non-terminal value as in-flight** — the set can grow. Terminal = `done` | `failed`.
+- Tables print oldest→newest; `-o json` is newest-first (`[0]` = latest).
+- Once an import is `done`, its database is a regular managed DB: query it with `hotdata query --database <db-id> "SELECT … FROM public.<table>"`.
+- `ingest` connections are independent of `hotdata connections` (the federated-query store) — ingest owns its own credentials.
 
 ### Usage
 ```
