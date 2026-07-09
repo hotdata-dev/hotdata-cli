@@ -133,8 +133,8 @@ pub enum Commands {
         command: Option<JobsCommands>,
     },
 
-    /// Ingest data from external connectors (databases, REST APIs, files, Iceberg)
-    /// into a managed database via the hotdata ingest service
+    /// Pull data from external sources (databases, APIs, buckets, Iceberg)
+    /// into managed databases: datasources + imports
     Ingest {
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long, short = 'w', global = true)]

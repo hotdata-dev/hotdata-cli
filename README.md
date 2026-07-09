@@ -87,23 +87,27 @@ into a managed database:
 hotdata ingest connectors                   # browse: SQL dialects, ~150 API services,
                                             # buckets, iceberg, api (bring-your-own)
 
-# Add a connection — validates credentials and discovers the schema, loads no data.
+# Add a datasource — validates credentials and discovers the schema, loads no data.
 # Keep secrets out of argv with --config @file.json or @- (stdin):
-hotdata ingest new-connection --service postgres --config @conn.json --schema public
-hotdata ingest new-connection --service buckets --bucket-url s3://bucket/prefix --format parquet
-hotdata ingest new-connection --service iceberg --config @catalog.json --table ns.orders
+hotdata ingest new-datasource --service postgres --config @conn.json --schema public
+hotdata ingest new-datasource --service buckets --bucket-url s3://bucket/prefix --format parquet
+hotdata ingest new-datasource --service iceberg --config @catalog.json --table ns.orders
 
-# Import — a plain SELECT against the connection; returns immediately:
-hotdata ingest new-import "SELECT * FROM postgres.orders WHERE status = 'open'"
-hotdata ingest new-import --source postgres --all
-hotdata ingest status <ingest-id> --wait    # or one-shot: exits 0 done / 1 failed / 2 running
+# --name sets the FROM target (default: the connector name), so several
+# datasources of one connector can coexist:
+hotdata ingest new-datasource --service postgres --name prod_pg --config @conn.json
+
+# Import — a plain SELECT against the datasource; returns immediately:
+hotdata ingest new-import "SELECT * FROM prod_pg.orders WHERE status = 'open'"
+hotdata ingest new-import --source prod_pg --all
+hotdata ingest status <import-id> --wait    # or one-shot: exits 0 done / 1 failed / 2 running
 
 # The import lands in a managed database — query it like any other:
 hotdata query --database <db-id> "SELECT count(*) FROM public.orders"
 ```
 
 Public buckets need no credentials. Re-run an import any time with
-`hotdata ingest trigger-import <ingest-id>` — it refreshes the same database
+`hotdata ingest trigger-import <import-id>` — it refreshes the same database
 from the source.
 
 ### Upload files

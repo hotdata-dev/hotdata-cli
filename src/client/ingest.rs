@@ -62,8 +62,8 @@ impl IngestError {
             IngestError::Connection(e) => format!("connection error: {e}"),
             IngestError::Decode(e) => format!("malformed response: {e}"),
             IngestError::NeedsApiKey => {
-                "enqueueing an ingest requires a durable API key — the ingest pipeline \
-                 runs after a short-lived session token would expire"
+                "this command needs a workspace API key (hd_...) — a login session \
+                 cannot be used here"
                     .into()
             }
         }
@@ -121,8 +121,8 @@ impl IngestError {
         {
             eprintln!(
                 "{}",
-                "Your CLI session is user-scoped; ingest needs a workspace credential — \
-                 pass --api-key or set HOTDATA_API_KEY."
+                "This command needs workspace access — pass --api-key or set \
+                 HOTDATA_API_KEY with a workspace API key (hd_...)."
                     .dark_grey()
             );
         }
@@ -376,6 +376,10 @@ pub struct IngestRequest {
     pub family: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connector_type: Option<String>,
+    /// User-chosen datasource name — the FROM target for imports. Omitted →
+    /// the datasource answers to its connector name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "serde_json::Value::is_null")]
     pub credentials: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -423,6 +427,8 @@ pub struct IngestAck {
     pub database_id: String,
     pub status: String,
     #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
     pub status_url: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -433,8 +439,15 @@ pub struct IngestAck {
 pub struct JobStatus {
     pub ingest_id: String,
     pub status: String,
+    /// Finer in-flight progress state (extracting/loading/…) — split from
+    /// `status` by newer servers; the command layer falls back to a
+    /// stage-shaped `status` for older ones.
+    #[serde(default)]
+    pub stage: Option<String>,
     #[serde(default)]
     pub detail: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub connector_type: Option<String>,
     #[serde(default)]
@@ -451,6 +464,8 @@ pub struct JobStatus {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DeleteSourceAck {
     pub ingest_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub connector_type: Option<String>,
     #[serde(default)]
@@ -472,12 +487,16 @@ pub struct SourcesResponse {
 pub struct SourceRow {
     pub ingest_id: String,
     #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
     pub connector_type: Option<String>,
     #[serde(default)]
     pub family: Option<String>,
     #[serde(default)]
     pub database_id: Option<String>,
     pub status: String,
+    #[serde(default)]
+    pub stage: Option<String>,
     #[serde(default)]
     pub detail: Option<String>,
     #[serde(default)]
@@ -502,6 +521,8 @@ pub struct QueryRow {
     pub ingest_id: String,
     pub source_ingest_id: String,
     #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
     pub connector_type: Option<String>,
     #[serde(default)]
     pub family: Option<String>,
@@ -510,6 +531,8 @@ pub struct QueryRow {
     #[serde(default)]
     pub database_id: Option<String>,
     pub status: String,
+    #[serde(default)]
+    pub stage: Option<String>,
     #[serde(default)]
     pub detail: Option<String>,
     #[serde(default)]
@@ -538,6 +561,9 @@ pub struct ConnectorEntry {
     pub auth: Option<String>,
     #[serde(default)]
     pub template: Option<serde_json::Value>,
+    /// JSON Schema for the entry's `--config` payload (generic families).
+    #[serde(default)]
+    pub config_schema: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
