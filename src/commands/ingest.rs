@@ -5,8 +5,8 @@
 //! (managed DBs materialized from a connection). Commands: `new-connection`,
 //! `list-connections`, `connectors` (the catalog), `new-import` (--all or
 //! SQL), `list-imports`, `trigger-import` (re-run: refresh an ingest's DB
-//! from source), `status` (one-shot or `--wait` attach). The pre-rename verbs
-//! (`new`/`list`/`import`/`update`) remain as hidden aliases for one release.
+//! from source), `status` (one-shot or `--wait` attach). The pre-rename verb
+//! aliases (`new`/`list`/`import`/`update`) were removed in 0.13.1.
 //!
 //! **Imports don't block.** `new-import` and `trigger-import` enqueue, fire
 //! the drain, print the ingest id, and return; progress is tracked with
@@ -86,7 +86,6 @@ pub enum IngestCommands {
     /// Interactive by default; pass `--service` with config flags to add
     /// non-interactively. Pull rows separately with `hotdata ingest
     /// new-import`; browse connectors with `hotdata ingest connectors`.
-    #[command(alias = "new")]
     NewConnection {
         #[command(flatten)]
         create: CreateArgs,
@@ -117,7 +116,6 @@ pub enum IngestCommands {
     },
 
     /// List the connections you've added (each has its own connection id)
-    #[command(alias = "list")]
     ListConnections {
         /// Include superseded onboards (older connections a newer onboard of
         /// the same connector replaced)
@@ -126,14 +124,12 @@ pub enum IngestCommands {
     },
 
     /// Browse the connector catalog
-    #[command(alias = "supported-connectors")]
     Connectors {
         /// Filter to connectors whose name contains this text
         name: Option<String>,
     },
 
     /// Import data from a connection into a managed database (--all or SQL)
-    #[command(alias = "import")]
     NewImport {
         /// SELECT <cols|*> FROM <connection>[.<resource>] [WHERE …] [LIMIT n]
         sql: Option<String>,
@@ -163,7 +159,6 @@ pub enum IngestCommands {
     /// The worker resets the ingest to pending and re-drains it; loads are
     /// replace-mode, so the same managed database is refreshed with the
     /// stored credentials — nothing is re-entered.
-    #[command(alias = "update")]
     TriggerImport {
         /// Ingest id: an import from `list-imports`, or a connection from
         /// `list-connections` (re-validates and refreshes its schema)
