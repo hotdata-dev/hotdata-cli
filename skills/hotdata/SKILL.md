@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "execute a query", "database context", "context:DATAMODEL", "ingest", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/a REST API/S3/Iceberg", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "execute a query", "database context", "context:DATAMODEL", "ingest", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
 version: 0.12.0
 ---
 
@@ -297,17 +297,29 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 
 ### Ingest external data (`ingest`)
 
-Pull data from external sources (SQL databases, REST APIs, S3/GCS files, Iceberg) into managed databases. Two nouns: **connections** (onboarded, credentialed sources — schema discovered, no data loaded; each has its own id) and **imports** (managed databases materialized from a connection).
+Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceberg catalogs) into managed databases. Two nouns: **connections** (onboarded, credentialed sources — schema discovered, no data loaded; each has its own id) and **imports** (managed databases materialized from a connection). A connection registers under the connector name you added (`postgres`, `buckets`, `iceberg`, a named API service) — that name is the `FROM` target for imports.
 
 Enqueue commands (`new-connection`, `new-import`, `trigger-import`, `delete-connection`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — a login session is not enough, because the ingest pipeline runs after a short-lived session token would expire.
 
 ```bash
-hotdata ingest connectors [filter]     # browse the catalog; "active" = already added
+hotdata ingest connectors [filter]     # browse the catalog; "active" = already added.
+                                       # SQL dialects + ~150 named API services + generic
+                                       # buckets / iceberg / api (bring-your-own config)
 hotdata ingest new-connection --service postgres --config @conn.json --schema public
 # conn.json holds {"connection_string": "postgresql://user:pass@host/db"}
 # --config accepts @file.json, @- (stdin), or inline JSON — keep secrets out of argv.
 # Validates credentials + discovers the schema; loads NO data. Blocks until done
 # and prints the discovered tables (--no-wait to return immediately).
+
+hotdata ingest new-connection --service buckets --bucket-url s3://bucket/prefix --format parquet
+# Files in S3/GCS/Azure buckets (csv, jsonl, parquet); --glob narrows the match.
+# Public buckets need no credentials; private ones take --config @creds.json
+# ({"aws_access_key_id": …, "aws_secret_access_key": …, "endpoint_url": …}).
+
+hotdata ingest new-connection --service iceberg --config @catalog.json --table ns.orders
+# Iceberg via a REST catalog. --table is REQUIRED (repeatable, namespace.table).
+# catalog.json = pyiceberg catalog properties passed verbatim — {"uri": …,
+# "warehouse": …, "token": …} or "credential" + "scope" for an OAuth exchange.
 
 hotdata ingest list-connections               # ids, statuses; --all includes superseded
 hotdata ingest show-connection <id>           # status + discovered tables/columns
@@ -330,6 +342,7 @@ Agent tips:
 - In-flight statuses stream through stages (`preparing`, `extracting`, `normalizing`, `loading`); treat **any non-terminal value as in-flight** — the set can grow. Terminal = `done` | `failed`.
 - Tables print oldest→newest; `-o json` is newest-first (`[0]` = latest).
 - Once an import is `done`, its database is a regular managed DB: query it with `hotdata query --database <db-id> "SELECT … FROM public.<table>"`.
+- Resources per family: `buckets` connections expose a single resource named `files` (`FROM buckets` or `FROM buckets.files`); iceberg resources are the onboarded tables — address one as `FROM iceberg.NAMESPACE_TABLE` (dots become underscores, same case as onboarded) or by its bare table name.
 - `ingest` connections are independent of `hotdata connections` (the federated-query store) — ingest owns its own credentials.
 
 ### Usage

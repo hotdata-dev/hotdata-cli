@@ -73,7 +73,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `embedding-providers` | `list`, `get`, `create`, `update`, `delete` | Manage embedding providers used by vector indexes |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
-| `ingest` | `new-connection`, `show-connection`, `list-connections`, `delete-connection`, `connectors`, `new-import`, `list-imports`, `trigger-import`, `status` | Pull data from external sources (databases, REST APIs, files, Iceberg) into managed databases |
+| `ingest` | `new-connection`, `show-connection`, `list-connections`, `delete-connection`, `connectors`, `new-import`, `list-imports`, `trigger-import`, `status` | Pull data from external sources (databases, APIs, buckets, Iceberg) into managed databases |
 | `skills` | `install`, `status` | Manage the hotdata agent skill |
 
 ## Global options
@@ -294,13 +294,21 @@ hotdata results list [--workspace-id <id>] [--limit <n>] [--offset <n>] [--forma
 Pull data from external sources into managed databases. Two nouns: **connections** (onboarded, credentialed sources — schema discovered, no data loaded) and **imports** (managed databases materialized from a connection).
 
 ```bash
-# Browse the connector catalog (150+ SQL dialects, REST services, files, Iceberg)
+# Browse the connector catalog (SQL dialects, ~150 API services, buckets, Iceberg)
 hotdata ingest connectors postgres
 
 # Add a connection: validates credentials and discovers the schema (loads no data).
-# Run bare for a guided wizard, or non-interactively with --service + --config:
-hotdata ingest new-connection --service postgres \
-  --config '{"connection_string": "postgresql://user:pass@host/db"}' --schema public
+# Run bare for a guided wizard, or non-interactively with --service + --config
+# (@file or @- keeps secrets out of argv):
+hotdata ingest new-connection --service postgres --config @conn.json --schema public
+# conn.json holds {"connection_string": "postgresql://user:pass@host/db"}
+
+# Files in S3/GCS/Azure buckets — public buckets need no credentials:
+hotdata ingest new-connection --service buckets --bucket-url s3://bucket/prefix --format parquet
+
+# Iceberg via a REST catalog — --table required; --config holds the catalog
+# properties (uri, warehouse, token/credential), passed through to the service:
+hotdata ingest new-connection --service iceberg --config @catalog.json --table ns.orders
 
 hotdata ingest list-connections            # each connection has its own id
 hotdata ingest show-connection <id>        # status + discovered tables/columns
