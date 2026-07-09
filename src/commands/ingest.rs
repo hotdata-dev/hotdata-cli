@@ -272,7 +272,7 @@ fn wizard(workspace_id: &str, output: &str, wait: &WaitArgs) {
 
     let mut req = match entry.family.as_str() {
         "sql" => build_sql_interactive(&entry),
-        "filesystem" => build_filesystem_interactive(),
+        "filesystem" => build_filesystem_interactive(&entry),
         "iceberg" => build_iceberg_interactive(&entry),
         _ => build_rest_interactive(&entry),
     };
@@ -363,12 +363,15 @@ fn build_sql_interactive(entry: &ConnectorEntry) -> IngestRequest {
     }
 }
 
-fn build_filesystem_interactive() -> IngestRequest {
+fn build_filesystem_interactive(entry: &ConnectorEntry) -> IngestRequest {
     let bucket_url = ask_text("Bucket URL (e.g. s3://bucket/prefix):");
     let format = select_optional("File format:", &["parquet", "csv", "jsonl"]);
     let glob = optional(None, "File glob (e.g. **/*.parquet, blank for all):");
     IngestRequest {
         family: "filesystem".into(),
+        // connector_type is the registry name `new-import` resolves FROM —
+        // without it the connection lands unnamed and is un-importable.
+        connector_type: Some(entry.name.clone()),
         credentials: filesystem_credentials(),
         bucket_url: Some(bucket_url),
         file_glob: glob,
@@ -594,6 +597,8 @@ fn build_create_request(
         },
         "filesystem" => IngestRequest {
             family: "filesystem".into(),
+            // Same as the wizard path: named, so imports can resolve it.
+            connector_type: Some(entry.name.clone()),
             credentials: config.unwrap_or(serde_json::Value::Null),
             bucket_url: Some(args.bucket_url.ok_or("filesystem needs --bucket-url")?),
             file_glob: args.glob,
@@ -1572,6 +1577,12 @@ mod tests {
                 .unwrap_err()
                 .contains("--bucket-url")
         );
+        let mut fs_args = create_args();
+        fs_args.bucket_url = Some("s3://bucket/prefix".into());
+        let req = build_create_request(&fs, fs_args, None).unwrap();
+        assert_eq!(req.bucket_url.as_deref(), Some("s3://bucket/prefix"));
+        // Named in the registry (connector_type), or new-import can't FROM it.
+        assert_eq!(req.connector_type.as_deref(), Some("filesystem"));
 
         let ice = entry("iceberg", "iceberg");
         assert!(
