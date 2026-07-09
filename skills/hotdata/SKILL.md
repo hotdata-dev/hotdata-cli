@@ -303,8 +303,9 @@ Enqueue commands (`new-connection`, `new-import`, `trigger-import`, `delete-conn
 
 ```bash
 hotdata ingest connectors [filter]     # browse the catalog; "active" = already added
-hotdata ingest new-connection --service postgres   --config '{"connection_string": "postgresql://user:pass@host/db"}' --schema public
-# --config accepts inline JSON, @file.json, or @- (stdin) — keep secrets out of argv.
+hotdata ingest new-connection --service postgres --config @conn.json --schema public
+# conn.json holds {"connection_string": "postgresql://user:pass@host/db"}
+# --config accepts @file.json, @- (stdin), or inline JSON — keep secrets out of argv.
 # Validates credentials + discovers the schema; loads NO data. Blocks until done
 # and prints the discovered tables (--no-wait to return immediately).
 
