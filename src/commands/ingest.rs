@@ -292,7 +292,12 @@ fn select_connector(entries: &[ConnectorEntry]) -> ConnectorEntry {
             if c.description.is_empty() {
                 format!("{}  ({})", c.name, family_label(&c.family))
             } else {
-                format!("{}  ({}) — {}", c.name, family_label(&c.family), c.description)
+                format!(
+                    "{}  ({}) — {}",
+                    c.name,
+                    family_label(&c.family),
+                    c.description
+                )
             }
         })
         .collect();
@@ -936,7 +941,11 @@ fn list_connections(workspace_id: &str, output: &str, all: bool) {
             .map(|s| {
                 let mut row = vec![
                     s.connector_type.clone().unwrap_or_else(|| "-".into()),
-                    s.family.as_deref().map(family_label).unwrap_or_default().to_string(),
+                    s.family
+                        .as_deref()
+                        .map(family_label)
+                        .unwrap_or_default()
+                        .to_string(),
                     util::color_status(&s.status),
                     created_cell(s.created_at.as_deref()),
                     s.ingest_id.clone(),
