@@ -398,8 +398,12 @@ fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> 
 /// rediscovers managed databases here and resolves each one's
 /// `default_connection_id` via [`get_database`]. The list summary omits the
 /// connection id, hence ids only.
+///
+/// Deliberately spinner-less (plain [`block`], unlike
+/// [`list_database_summaries`]): the caller owns its own "Loading indexes…"
+/// spinner, and two indicatif bars would fight over the same line.
 pub(crate) fn list_database_ids(api: &Api) -> Result<Vec<String>, ApiError> {
-    list_database_summaries(api).map(|dbs| dbs.into_iter().map(|d| d.id).collect())
+    block(api.client().databases().list()).map(|r| r.databases.into_iter().map(|d| d.id).collect())
 }
 
 fn fetch_database(api: &Api, id: &str) -> Database {

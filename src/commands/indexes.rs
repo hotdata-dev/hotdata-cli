@@ -500,6 +500,11 @@ pub fn list(
 ) {
     let api = Api::new(Some(workspace_id));
 
+    // One spinner over the whole fetch — the unscoped path is a
+    // whole-workspace scan (many requests) that otherwise sits silent.
+    // The database discovery inside is deliberately spinner-less
+    // (databases::list_database_ids) so nothing fights for the line.
+    let spinner = crate::util::spinner("Loading indexes…");
     let (rows, multi_table) = match (connection_id, schema, table) {
         (Some(cid), Some(sch), Some(tbl)) => {
             let indexes = list_one_table(&api, cid, sch, tbl);
@@ -517,6 +522,7 @@ pub fn list(
             true,
         ),
     };
+    spinner.finish_and_clear();
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
