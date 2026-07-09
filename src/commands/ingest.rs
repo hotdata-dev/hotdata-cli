@@ -1376,7 +1376,9 @@ fn filesystem_credentials() -> serde_json::Value {
 /// token + namespace.
 fn iceberg_catalog_config() -> serde_json::Value {
     let mut m = serde_json::Map::new();
-    m.insert("catalog_uri".into(), ask_text("Catalog URI:").into());
+    // pyiceberg's load_catalog requires the key "uri" (not "catalog_uri") —
+    // the worker passes this map to it verbatim.
+    m.insert("uri".into(), ask_text("Catalog URI:").into());
     if let Some(w) = optional(None, "Warehouse (blank if none):") {
         m.insert("warehouse".into(), w.into());
     }
@@ -1574,8 +1576,7 @@ mod tests {
         );
         let mut args = create_args();
         args.tables = vec!["ns.t".into()];
-        let req = build_create_request(&ice, args, Some(serde_json::json!({"catalog_uri": "u"})))
-            .unwrap();
+        let req = build_create_request(&ice, args, Some(serde_json::json!({"uri": "u"}))).unwrap();
         // The catalog type defaults to rest when not specified.
         assert_eq!(req.catalog_type.as_deref(), Some("rest"));
         assert_eq!(req.tables, vec!["ns.t"]);

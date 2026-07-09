@@ -852,7 +852,7 @@ mod tests {
             "connector_type": "svc",
             "credentials": {"connection_string": "postgresql://u:s3cret@h/db"},
             "rest_config": {"client": {"auth": {"type": "bearer", "token": "tok-abc"}}},
-            "catalog_config": {"catalog_uri": "http://c", "token": "iceberg-tok"},
+            "catalog_config": {"uri": "http://c", "token": "iceberg-tok"},
             "table_names": ["users"],
         });
         let logged = redact_secret_fields(&body);
