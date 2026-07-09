@@ -1,6 +1,6 @@
 [package]
 name = "hotdata-cli"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 repository = "https://github.com/hotdata-dev/hotdata-cli"
 description = "CLI tool for Hotdata.dev"
@@ -79,7 +79,7 @@ pre-release-replacements = [
   { file = "skills/hotdata-search/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   { file = "skills/hotdata-analytics/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   { file = "skills/hotdata-geospatial/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
-  { file = "README.md", search = "version-[0-9.]+-blue", replace = "version-{{version}}-blue", exactly = 1 },
+  # README.md no longer carries a hardcoded version badge — it tracks GitHub releases.
 ]
 
 # The profile that 'dist' will build with

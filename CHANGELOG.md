@@ -1,3 +1,52 @@
+## [0.13.0] - 2026-07-09
+
+### 🚀 Features
+
+- *(databases)* Load a query result via --result-id (#203)
+- *(ingest)* Add `hotdata ingest` command group
+- *(ingest)* Add-connection discovers schema only, loads no data
+- *(ingest)* Show live stage progress while polling
+- *(ingest)* Mark active connectors in `connectors`
+- *(ingest)* Connection/import command surface, API-backed listings, true re-run
+- *(ingest)* Imports return immediately; add `status` for tracking
+- *(ingest)* Color the STATUS column in list-imports/list-connections
+- *(ingest)* IMPORT ID is the leftmost list-imports column
+- *(ingest)* Listing tables read oldest-to-newest
+- *(ingest)* Show-connection and delete-connection
+- *(ingest)* Product-noun connection type labels — SQL, buckets, API
+
+### 🐛 Bug Fixes
+
+- *(ingest)* Redact source secrets from --debug request logging
+- *(ingest)* Actionable hint on enqueue transport failures
+- *(workspace)* Report the workspace commands actually target
+- *(ingest)* Wizard iceberg catalog key is uri, not catalog_uri
+- *(ingest)* Send connector_type for iceberg so imports can resolve it
+- *(ingest)* Send connector_type for filesystem so imports can resolve it
+
+### 💼 Other
+
+- *(release)* Drop README version-badge replacement
+
+### 🚜 Refactor
+
+- *(ingest)* Mirror the `connections` UX — new/list/create/import/refresh
+- *(ingest)* Drop display-side connector dedup (fixed at the source)
+- *(ingest)* Consolidate add-connection under `new`; drop `create`
+- *(ingest)* Rename `refresh` to `update`
+- *(ingest)* Quality-review pass — bugs, reuse, DRY, docs
+
+### 📚 Documentation
+
+- *(ingest)* Terse one-line command summaries in help
+- *(skills)* Teach the hotdata agent skill the ingest surface
+- *(skills)* Lead the new-connection example with @file config
+- Buckets and iceberg connectors in the skill and README
+- *(readme)* Rework for users — quickstart first, tasks over flags (#207)
+
+### 🎨 Styling
+
+- Rustfmt
 ## [0.12.0] - 2026-07-07
 
 ### 🚀 Features
