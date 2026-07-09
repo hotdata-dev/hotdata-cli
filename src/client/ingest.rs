@@ -302,6 +302,18 @@ impl IngestClient {
         )
     }
 
+    /// Remove a connection from the registry (`DELETE /sources/{id}`):
+    /// the request row (with its stored encrypted credentials) and any run
+    /// row. The discovery database is untouched — the command layer decides
+    /// its fate. The server 422s import rows and 409s while a drain is in
+    /// flight.
+    pub fn delete_source(&self, ingest_id: &str) -> Result<DeleteSourceAck, IngestError> {
+        self.send(
+            self.authed(reqwest::Method::DELETE, &format!("/sources/{ingest_id}")),
+            None,
+        )
+    }
+
     /// The onboarded-source registry (`GET /sources`) — one row per connection,
     /// newest first, each with its own ingest id (the connection id). The
     /// default view is the current set: the latest onboard per connector name
@@ -433,6 +445,17 @@ pub struct JobStatus {
     pub created_at: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+}
+
+/// `DELETE /sources/{id}` body.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeleteSourceAck {
+    pub ingest_id: String,
+    #[serde(default)]
+    pub connector_type: Option<String>,
+    #[serde(default)]
+    pub database_id: Option<String>,
+    pub deleted: bool,
 }
 
 /// `GET /sources` body.
@@ -770,6 +793,51 @@ mod tests {
             IngestError::Http { status, body } => {
                 assert_eq!(status, 409);
                 assert!(body.contains("retry once it settles"), "got: {body}");
+            }
+            other => panic!("expected Http, got: {}", other.message()),
+        }
+    }
+
+    #[test]
+    fn delete_source_removes_and_acks() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("DELETE", "/ingest/sources/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1")
+            .match_header("authorization", "Bearer hd_test")
+            .match_header("x-workspace-id", "ws-1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"ingest_id":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+                    "connector_type":"postgres","database_id":"db-1","deleted":true}"#,
+            )
+            .create();
+
+        let ack = api_key_client(&server)
+            .delete_source("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1")
+            .unwrap();
+        m.assert();
+        assert!(ack.deleted);
+        assert_eq!(ack.database_id.as_deref(), Some("db-1"));
+    }
+
+    #[test]
+    fn delete_source_surfaces_import_422() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("DELETE", "/ingest/sources/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2")
+            .with_status(422)
+            .with_body(r#"{"detail":"that ingest is an import, not a connection"}"#)
+            .create();
+
+        let err = api_key_client(&server)
+            .delete_source("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2")
+            .unwrap_err();
+        m.assert();
+        match err {
+            IngestError::Http { status, body } => {
+                assert_eq!(status, 422);
+                assert!(body.contains("import"), "got: {body}");
             }
             other => panic!("expected Http, got: {}", other.message()),
         }

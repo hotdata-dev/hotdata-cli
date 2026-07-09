@@ -73,7 +73,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `embedding-providers` | `list`, `get`, `create`, `update`, `delete` | Manage embedding providers used by vector indexes |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
-| `ingest` | `new-connection`, `list-connections`, `connectors`, `new-import`, `list-imports`, `trigger-import`, `status` | Pull data from external sources (databases, REST APIs, files, Iceberg) into managed databases |
+| `ingest` | `new-connection`, `show-connection`, `list-connections`, `delete-connection`, `connectors`, `new-import`, `list-imports`, `trigger-import`, `status` | Pull data from external sources (databases, REST APIs, files, Iceberg) into managed databases |
 | `skills` | `install`, `status` | Manage the hotdata agent skill |
 
 ## Global options
@@ -303,6 +303,9 @@ hotdata ingest new-connection --service postgres \
   --config '{"connection_string": "postgresql://user:pass@host/db"}' --schema public
 
 hotdata ingest list-connections            # each connection has its own id
+hotdata ingest show-connection <id>        # status + discovered tables/columns
+hotdata ingest delete-connection <id>      # registry + credentials + discovery DB
+                                           # (--keep-database keeps the DB)
 
 # Import data — returns immediately; track with `status`:
 hotdata ingest new-import "SELECT * FROM postgres.orders LIMIT 1000"

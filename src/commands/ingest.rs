@@ -95,6 +95,27 @@ pub enum IngestCommands {
         wait: WaitArgs,
     },
 
+    /// Show a connection's details: status, database, discovered tables + columns
+    ShowConnection {
+        /// Connection id (from `list-connections`)
+        id: String,
+    },
+
+    /// Delete a connection: its registry entry, stored credentials, and
+    /// (by default) its schema-discovery database
+    ///
+    /// Existing imports keep working — each carries its own credential copy.
+    /// Deleting the active onboard makes the next-newest onboard of that
+    /// connector active again.
+    DeleteConnection {
+        /// Connection id (from `list-connections`)
+        id: String,
+
+        /// Keep the connection's schema-discovery database
+        #[arg(long = "keep-database")]
+        keep_database: bool,
+    },
+
     /// List the connections you've added (each has its own connection id)
     #[command(alias = "list")]
     ListConnections {
@@ -201,6 +222,10 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
     match command {
         IngestCommands::NewConnection { create, wait } => {
             add_connection(workspace_id, output, create, &wait)
+        }
+        IngestCommands::ShowConnection { id } => show_connection(workspace_id, output, &id),
+        IngestCommands::DeleteConnection { id, keep_database } => {
+            delete_connection(workspace_id, output, &id, keep_database)
         }
         IngestCommands::ListConnections { all } => list_connections(workspace_id, output, all),
         IngestCommands::Connectors { name } => catalog_list(workspace_id, name.as_deref(), output),
@@ -1166,50 +1191,130 @@ struct ConnectionAdded<'a> {
     tables: Option<&'a serde_json::Value>,
 }
 
+/// Fetch the schema-preview of a connection's discovery database: the raw
+/// `{"tables": {name: [columns]}}` value, when the DB exists and answers.
+fn discovered_tables(
+    client: &IngestClient,
+    st: &crate::client::ingest::JobStatus,
+) -> Option<serde_json::Value> {
+    let db = st.database_id.as_deref().filter(|d| !d.is_empty())?;
+    client.schema(db).ok()?.get("tables").cloned()
+}
+
+/// Human rendering of the discovered schema: one line per table with its
+/// column names. Shared by `new-connection` and `show-connection`.
+fn print_discovered_tables(tables_value: Option<&serde_json::Value>) {
+    use crossterm::style::Stylize;
+    match tables_value.and_then(|t| t.as_object()) {
+        Some(t) if !t.is_empty() => {
+            println!(
+                "{}",
+                format!("discovered {} table(s):", t.len()).dark_grey()
+            );
+            for (name, cols) in t {
+                let names: Vec<&str> = cols.as_array().map_or(Vec::new(), |a| {
+                    a.iter().filter_map(|c| c.as_str()).collect()
+                });
+                println!(
+                    "  {}  {}",
+                    name.as_str().cyan(),
+                    names.join(", ").dark_grey()
+                );
+            }
+        }
+        _ => println!("{}", "no tables discovered".dark_grey()),
+    }
+}
+
 fn render_connection_added(
     client: &IngestClient,
     st: &crate::client::ingest::JobStatus,
     output: &str,
 ) {
-    let db = st.database_id.as_deref().unwrap_or("");
-    let schema = (!db.is_empty()).then(|| client.schema(db).ok()).flatten();
-    let tables_value = schema.as_ref().and_then(|s| s.get("tables"));
-    let tables = tables_value.and_then(|t| t.as_object());
+    let tables_value = discovered_tables(client, st);
 
     let machine = ConnectionAdded {
         status: st,
-        tables: tables_value,
+        tables: tables_value.as_ref(),
     };
     render(output, &machine, || {
         use crossterm::style::Stylize;
         let source = st.connector_type.as_deref().unwrap_or("source");
         println!("{} {}", "connection added".green(), source.dark_grey());
-        if !db.is_empty() {
+        if let Some(db) = st.database_id.as_deref().filter(|d| !d.is_empty()) {
             println!("{}{}", format!("{:<12}", "database:").dark_grey(), db);
         }
-        match tables {
-            Some(t) if !t.is_empty() => {
-                println!(
-                    "{}",
-                    format!("discovered {} table(s):", t.len()).dark_grey()
-                );
-                for (name, cols) in t {
-                    let names: Vec<&str> = cols.as_array().map_or(Vec::new(), |a| {
-                        a.iter().filter_map(|c| c.as_str()).collect()
-                    });
-                    println!(
-                        "  {}  {}",
-                        name.as_str().cyan(),
-                        names.join(", ").dark_grey()
-                    );
-                }
-            }
-            _ => println!("{}", "no tables discovered".dark_grey()),
-        }
+        print_discovered_tables(tables_value.as_ref());
         println!(
             "{}",
             format!("Import data with: hotdata ingest new-import --source {source} --all (or SQL)")
                 .dark_grey()
+        );
+    });
+}
+
+// --- show-connection / delete-connection ------------------------------------
+
+fn show_connection(workspace_id: &str, output: &str, id: &str) {
+    let client = IngestClient::new(workspace_id);
+    let st = client.job_status(id).unwrap_or_else(|e| e.exit());
+    let tables_value = discovered_tables(&client, &st);
+
+    let machine = ConnectionAdded {
+        status: &st,
+        tables: tables_value.as_ref(),
+    };
+    render(output, &machine, || {
+        use crossterm::style::Stylize;
+        let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
+        println!(
+            "{}{}",
+            label("name:"),
+            st.connector_type.as_deref().unwrap_or("-")
+        );
+        if let Some(f) = st.family.as_deref() {
+            println!("{}{}", label("family:"), f);
+        }
+        println!("{}{}", label("status:"), util::color_status(&st.status));
+        if let Some(d) = st.detail.as_deref().filter(|d| !d.trim().is_empty()) {
+            println!("{}{}", label("detail:"), d);
+        }
+        if let Some(db) = st.database_id.as_deref() {
+            println!("{}{}", label("database:"), db);
+        }
+        if let Some(t) = st.created_at.as_deref() {
+            println!("{}{}", label("created:"), util::format_date(t));
+        }
+        if let Some(t) = st.updated_at.as_deref() {
+            println!("{}{}", label("updated:"), util::format_date(t));
+        }
+        print_discovered_tables(tables_value.as_ref());
+    });
+}
+
+fn delete_connection(workspace_id: &str, output: &str, id: &str, keep_database: bool) {
+    let client = IngestClient::new(workspace_id);
+    let ack = with_spinner("deleting connection…", || client.delete_source(id));
+
+    // Drop the discovery database first so the ack (json/yaml) is the last
+    // thing on stdout for scripting.
+    match ack.database_id.as_deref() {
+        Some(db) if !keep_database => crate::commands::databases::delete(workspace_id, db),
+        Some(db) => {
+            use crossterm::style::Stylize;
+            println!(
+                "{}",
+                format!("kept database {db} (--keep-database)").dark_grey()
+            );
+        }
+        None => {}
+    }
+    render(output, &ack, || {
+        use crossterm::style::Stylize;
+        println!(
+            "{} {}",
+            "connection deleted".green(),
+            ack.connector_type.as_deref().unwrap_or(id).dark_grey()
         );
     });
 }
