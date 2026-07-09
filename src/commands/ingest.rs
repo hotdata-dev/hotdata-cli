@@ -290,9 +290,9 @@ fn select_connector(entries: &[ConnectorEntry]) -> ConnectorEntry {
         .iter()
         .map(|c| {
             if c.description.is_empty() {
-                format!("{}  ({})", c.name, c.family)
+                format!("{}  ({})", c.name, family_label(&c.family))
             } else {
-                format!("{}  ({}) — {}", c.name, c.family, c.description)
+                format!("{}  ({}) — {}", c.name, family_label(&c.family), c.description)
             }
         })
         .collect();
@@ -310,6 +310,18 @@ fn family_rank(family: &str) -> u8 {
         "filesystem" => 1,
         "iceberg" => 2,
         _ => 3, // rest services
+    }
+}
+
+/// Display label for a wire family value. Connection types read as product
+/// nouns (SQL, buckets, API), not protocol jargon; json/yaml output keeps
+/// the wire values for scripting.
+fn family_label(family: &str) -> &str {
+    match family {
+        "sql" => "SQL",
+        "filesystem" => "buckets",
+        "rest" => "API",
+        other => other,
     }
 }
 
@@ -497,33 +509,33 @@ fn substitute_placeholder(v: &mut serde_json::Value, token: &str, value: &str) {
 
 #[derive(clap::Args)]
 pub struct CreateArgs {
-    /// Connector to add (a catalog name: postgres, bitcoin, filesystem, …).
+    /// Connector to add (a catalog name: postgres, bitcoin, buckets, …).
     /// Given → non-interactive; omit on a terminal → guided wizard.
     #[arg(long)]
     service: Option<String>,
 
     /// Family payload as JSON (inline, @file.json, or @-): SQL credentials,
-    /// a REST rest_config, filesystem creds, or an Iceberg catalog_config
+    /// an API rest_config, buckets creds, or an Iceberg catalog_config
     #[arg(long)]
     config: Option<String>,
 
-    /// Restrict discovery to this table (repeatable; sql/iceberg)
+    /// Restrict discovery to this table (repeatable; SQL/iceberg)
     #[arg(long = "table")]
     tables: Vec<String>,
 
-    /// Schema to discover (sql)
+    /// Schema to discover (SQL)
     #[arg(long)]
     schema: Option<String>,
 
-    /// Bucket URL, e.g. s3://bucket/prefix (filesystem)
+    /// Bucket URL, e.g. s3://bucket/prefix (buckets)
     #[arg(long = "bucket-url")]
     bucket_url: Option<String>,
 
-    /// File format (filesystem)
+    /// File format (buckets)
     #[arg(long, value_parser = ["csv", "jsonl", "parquet"])]
     format: Option<String>,
 
-    /// File glob, e.g. **/*.parquet (filesystem)
+    /// File glob, e.g. **/*.parquet (buckets)
     #[arg(long)]
     glob: Option<String>,
 
@@ -589,7 +601,7 @@ fn build_create_request(
             family: "sql".into(),
             connector_type: Some(entry.name.clone()),
             credentials: config.ok_or(
-                "sql connectors need --config with credentials (a connection_string or host/user/…)",
+                "SQL connectors need --config with credentials (a connection_string or host/user/…)",
             )?,
             schema: args.schema,
             table_names: args.tables,
@@ -600,7 +612,7 @@ fn build_create_request(
             // Same as the wizard path: named, so imports can resolve it.
             connector_type: Some(entry.name.clone()),
             credentials: config.unwrap_or(serde_json::Value::Null),
-            bucket_url: Some(args.bucket_url.ok_or("filesystem needs --bucket-url")?),
+            bucket_url: Some(args.bucket_url.ok_or("buckets connectors need --bucket-url")?),
             file_glob: args.glob,
             file_format: args.format,
             ..Default::default()
@@ -620,7 +632,7 @@ fn build_create_request(
             // which only works untouched for keyless services.
             let rest_config = config
                 .or_else(|| entry.template.clone())
-                .ok_or("this REST connector needs --config with a rest_config")?;
+                .ok_or("this API connector needs --config with a rest_config")?;
             let mut leftover = Vec::new();
             collect_placeholders(&rest_config, &mut leftover);
             if !leftover.is_empty() {
@@ -682,7 +694,7 @@ fn catalog_list(workspace_id: &str, filter: Option<&str>, output: &str) {
                 let status = if is_active(&c.name) { "active" } else { "" };
                 vec![
                     c.name.clone(),
-                    c.family.clone(),
+                    family_label(&c.family).to_string(),
                     status.to_string(),
                     c.description.clone(),
                 ]
@@ -924,7 +936,7 @@ fn list_connections(workspace_id: &str, output: &str, all: bool) {
             .map(|s| {
                 let mut row = vec![
                     s.connector_type.clone().unwrap_or_else(|| "-".into()),
-                    s.family.clone().unwrap_or_default(),
+                    s.family.as_deref().map(family_label).unwrap_or_default().to_string(),
                     util::color_status(&s.status),
                     created_cell(s.created_at.as_deref()),
                     s.ingest_id.clone(),
@@ -1283,7 +1295,7 @@ fn show_connection(workspace_id: &str, output: &str, id: &str) {
             st.connector_type.as_deref().unwrap_or("-")
         );
         if let Some(f) = st.family.as_deref() {
-            println!("{}{}", label("family:"), f);
+            println!("{}{}", label("family:"), family_label(f));
         }
         println!("{}{}", label("status:"), util::color_status(&st.status));
         if let Some(d) = st.detail.as_deref().filter(|d| !d.trim().is_empty()) {
@@ -1338,7 +1350,7 @@ fn fetch_catalog(client: &IngestClient) -> Vec<ConnectorEntry> {
 /// Bare `rest` family: build a minimal dlt rest_api config interactively
 /// (base_url + optional bearer token + resource paths).
 fn rest_config() -> serde_json::Value {
-    let base_url = ask_text("REST base URL:");
+    let base_url = ask_text("API base URL:");
     let token = ask_secret("Bearer token (blank if none):");
     let resources: Vec<serde_json::Value> = ask_text("Resource paths (comma-separated):")
         .split(',')
@@ -1571,7 +1583,7 @@ mod tests {
 
     #[test]
     fn create_request_filesystem_and_iceberg_required_fields() {
-        let fs = entry("filesystem", "filesystem");
+        let fs = entry("buckets", "filesystem");
         assert!(
             build_create_request(&fs, create_args(), None)
                 .unwrap_err()
@@ -1582,7 +1594,7 @@ mod tests {
         let req = build_create_request(&fs, fs_args, None).unwrap();
         assert_eq!(req.bucket_url.as_deref(), Some("s3://bucket/prefix"));
         // Named in the registry (connector_type), or new-import can't FROM it.
-        assert_eq!(req.connector_type.as_deref(), Some("filesystem"));
+        assert_eq!(req.connector_type.as_deref(), Some("buckets"));
 
         let ice = entry("iceberg", "iceberg");
         assert!(
@@ -1645,6 +1657,14 @@ mod tests {
     }
 
     #[test]
+    fn family_labels_read_as_product_nouns() {
+        assert_eq!(family_label("sql"), "SQL");
+        assert_eq!(family_label("filesystem"), "buckets");
+        assert_eq!(family_label("rest"), "API");
+        assert_eq!(family_label("iceberg"), "iceberg");
+    }
+
+    #[test]
     fn parse_config_accepts_inline_json() {
         let v = parse_config_arg(r#"{"connection_string": "postgresql://u:p@h/db"}"#);
         assert_eq!(v["connection_string"], "postgresql://u:p@h/db");
@@ -1665,7 +1685,7 @@ mod tests {
         let entries = vec![
             entry("stripe", "rest"),
             entry("postgres", "sql"),
-            entry("filesystem", "filesystem"),
+            entry("buckets", "filesystem"),
             entry("aikido", "rest"),
             entry("iceberg", "iceberg"),
         ];
@@ -1673,10 +1693,10 @@ mod tests {
             .into_iter()
             .map(|c| c.name)
             .collect();
-        // Generic families (sql, filesystem, iceberg) first, then rest A→Z.
+        // Generic families (SQL, buckets, iceberg) first, then API services A→Z.
         assert_eq!(
             names,
-            vec!["postgres", "filesystem", "iceberg", "aikido", "stripe"]
+            vec!["postgres", "buckets", "iceberg", "aikido", "stripe"]
         );
     }
 
