@@ -1,3 +1,8 @@
+## [0.14.0] - 2026-07-09
+
+### 🚀 Features
+
+- *(ingest)* [**breaking**] Datasources rename + stop leaking service internals (#211)
 ## [0.13.1] - 2026-07-09
 
 ### 🚜 Refactor
