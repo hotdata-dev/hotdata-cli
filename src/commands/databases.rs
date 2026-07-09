@@ -830,7 +830,7 @@ pub fn list(workspace_id: &str, format: &str) {
                         ]
                     })
                     .collect();
-                crate::output::table::print(&["", "ID", "NAME", "CREATED"], &rows);
+                crate::output::table::print(&["DEFAULT", "ID", "NAME", "CREATED"], &rows);
             }
         }
         _ => unreachable!(),
