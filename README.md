@@ -73,6 +73,7 @@ API key priority (lowest to highest): config file → `HOTDATA_API_KEY` env var 
 | `embedding-providers` | `list`, `get`, `create`, `update`, `delete` | Manage embedding providers used by vector indexes |
 | `results` | `list` | Retrieve stored query results |
 | `jobs` | `list` | Manage background jobs |
+| `ingest` | `new-connection`, `show-connection`, `list-connections`, `delete-connection`, `connectors`, `new-import`, `list-imports`, `trigger-import`, `status` | Pull data from external sources (databases, APIs, buckets, Iceberg) into managed databases |
 | `skills` | `install`, `status` | Manage the hotdata agent skill |
 
 ## Global options
@@ -287,6 +288,51 @@ hotdata results list [--workspace-id <id>] [--limit <n>] [--offset <n>] [--forma
 ```
 
 - Query results include a `result-id` in the table footer — use it to retrieve past results without re-running queries.
+
+## Ingest
+
+Pull data from external sources into managed databases. Two nouns: **connections** (onboarded, credentialed sources — schema discovered, no data loaded) and **imports** (managed databases materialized from a connection).
+
+```bash
+# Browse the connector catalog (SQL dialects, ~150 API services, buckets, Iceberg)
+hotdata ingest connectors postgres
+
+# Add a connection: validates credentials and discovers the schema (loads no data).
+# Run bare for a guided wizard, or non-interactively with --service + --config
+# (@file or @- keeps secrets out of argv):
+hotdata ingest new-connection --service postgres --config @conn.json --schema public
+# conn.json holds {"connection_string": "postgresql://user:pass@host/db"}
+
+# Files in S3/GCS/Azure buckets — public buckets need no credentials:
+hotdata ingest new-connection --service buckets --bucket-url s3://bucket/prefix --format parquet
+
+# Iceberg via a REST catalog — --table required; --config holds the catalog
+# properties (uri, warehouse, token/credential), passed through to the service:
+hotdata ingest new-connection --service iceberg --config @catalog.json --table ns.orders
+
+hotdata ingest list-connections            # each connection has its own id
+hotdata ingest show-connection <id>        # status + discovered tables/columns
+hotdata ingest delete-connection <id>      # registry + credentials + discovery DB
+                                           # (--keep-database keeps the DB)
+
+# Import data — returns immediately; track with `status`:
+hotdata ingest new-import "SELECT * FROM postgres.orders LIMIT 1000"
+hotdata ingest new-import --source postgres --all      # everything, no LIMIT
+hotdata ingest status <ingest-id> --wait               # attach until done/failed
+
+hotdata ingest list-imports                # the SQL behind each import + its database
+hotdata ingest trigger-import <ingest-id>  # re-run: refresh the same database from source
+```
+
+`status` exits `0` (done), `1` (failed), or `2` (still in flight) for scripting.
+Statuses stream through stages (`preparing`, `extracting`, `normalizing`,
+`loading`); treat any non-terminal value as in-flight. Secret-bearing configs
+can be passed as `--config @file.json` or `--config @-` (stdin) to keep them
+out of `argv`. Enqueue commands (`new-connection`, `new-import`,
+`trigger-import`) need a durable workspace API key (`--api-key` /
+`HOTDATA_API_KEY`, `hd_...`) — the ingest pipeline runs after a short-lived
+session token would expire. Once an import is `done`, its database works with
+all the regular commands (`query`, `databases`, `results`).
 
 ## Jobs
 

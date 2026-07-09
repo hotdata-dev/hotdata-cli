@@ -253,20 +253,6 @@ pub fn clear_current_database(profile: &str, workspace_id: &str) -> Result<(), S
     write_config(&config_path, &content)
 }
 
-pub fn resolve_workspace_id(
-    provided: Option<String>,
-    profile_config: &ProfileConfig,
-) -> Result<String, String> {
-    if let Some(id) = provided {
-        return Ok(id);
-    }
-    profile_config
-        .workspaces
-        .first()
-        .map(|w| w.public_id.clone())
-        .ok_or_else(|| "no workspace-id provided and no default workspace found. Run 'hotdata auth login' or specify --workspace-id.".to_string())
-}
-
 /// Global API key override set via --api-key flag.
 /// Call `set_api_key_flag` once at startup; `load` picks it up automatically.
 static API_KEY_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -465,38 +451,5 @@ mod tests {
             !yaml.contains("api_key"),
             "api_key must not appear in YAML, got:\n{yaml}"
         );
-    }
-
-    #[test]
-    fn resolve_workspace_id_prefers_provided() {
-        let profile = ProfileConfig {
-            workspaces: vec![WorkspaceEntry {
-                public_id: "ws-1".into(),
-                name: "WS".into(),
-            }],
-            ..Default::default()
-        };
-        let result = resolve_workspace_id(Some("explicit-id".into()), &profile).unwrap();
-        assert_eq!(result, "explicit-id");
-    }
-
-    #[test]
-    fn resolve_workspace_id_falls_back_to_first() {
-        let profile = ProfileConfig {
-            workspaces: vec![WorkspaceEntry {
-                public_id: "ws-1".into(),
-                name: "WS".into(),
-            }],
-            ..Default::default()
-        };
-        let result = resolve_workspace_id(None, &profile).unwrap();
-        assert_eq!(result, "ws-1");
-    }
-
-    #[test]
-    fn resolve_workspace_id_errors_when_none() {
-        let profile = ProfileConfig::default();
-        let result = resolve_workspace_id(None, &profile);
-        assert!(result.is_err());
     }
 }

@@ -50,6 +50,45 @@ pub fn check_status(profile_config: &config::ProfileConfig) -> AuthStatus {
     }
 }
 
+/// The workspace a command with no `--workspace-id` targets for this profile —
+/// the single source of truth shared by `main`'s `resolve_workspace` and
+/// `auth status`, so the status readout can never disagree with where commands
+/// actually run.
+///
+/// An api-key credential scoped to exactly one workspace (a database API token)
+/// pins that workspace. For a multi-workspace or unrestricted api key we honor
+/// the saved default (`workspaces set` moves a workspace to the front of the
+/// config list) when the key can reach it, otherwise fall back to the
+/// credential's own first authorized workspace — never a workspace the gateway
+/// would reject. A CLI session uses the saved default. `None` means no default
+/// is known and the caller must pass `--workspace-id`.
+pub(crate) fn default_workspace_id(profile_config: &config::ProfileConfig) -> Option<String> {
+    let saved_default = || {
+        profile_config
+            .workspaces
+            .first()
+            .map(|w| w.public_id.clone())
+    };
+    if !matches!(
+        profile_config.api_key_source,
+        ApiKeySource::Flag | ApiKeySource::Env
+    ) {
+        return saved_default();
+    }
+    let ids = api_key_workspace_ids(profile_config);
+    if let [only] = ids.as_slice() {
+        return Some(only.clone());
+    }
+    // Multi/unrestricted key: prefer the saved default when the key authorizes
+    // it (empty `ids` = unrestricted, reaches everything), else the key's first.
+    if let Some(first) = saved_default()
+        && (ids.is_empty() || ids.contains(&first))
+    {
+        return Some(first);
+    }
+    ids.into_iter().next()
+}
+
 /// Workspace public-ids the active api-key credential (`--api-key` /
 /// `HOTDATA_API_KEY`) is scoped to, read from its minted JWT's `workspaces`
 /// claim. A database API token carries exactly one. Empty when there's no api
@@ -210,6 +249,93 @@ mod tests {
         let ids = api_key_workspace_ids(&profile);
         mint.assert();
         assert_eq!(ids, vec!["workbound".to_string()]);
+    }
+
+    // --- default_workspace_id tests ---
+
+    fn ws(id: &str) -> config::WorkspaceEntry {
+        config::WorkspaceEntry {
+            public_id: id.into(),
+            name: id.into(),
+        }
+    }
+
+    /// Mint mock returning a JWT whose `workspaces` claim is `ids`.
+    fn mock_token_with_workspaces(server: &mut mockito::Server, ids: &[&str]) -> mockito::Mock {
+        let claim = serde_json::json!({ "workspaces": ids }).to_string();
+        let jwt = format!("header.{}.sig", URL_SAFE_NO_PAD.encode(claim.as_bytes()));
+        server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "grant_type".into(),
+                "api_token".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"access_token":"{jwt}","expires_in":300,"refresh_token":"r"}}"#
+            ))
+            .create()
+    }
+
+    #[test]
+    fn default_workspace_id_session_uses_saved_default_without_network() {
+        // Config source (a CLI session): the saved default, no mint call.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let profile = ProfileConfig {
+            workspaces: vec![ws("work_saved"), ws("work_other")],
+            ..Default::default() // api_key_source defaults to Config
+        };
+        assert_eq!(
+            default_workspace_id(&profile),
+            Some("work_saved".to_string())
+        );
+    }
+
+    #[test]
+    fn default_workspace_id_single_workspace_token_pins_its_own() {
+        // A database token authorizes exactly one workspace — use it even when a
+        // different workspace sits at the front of the (unrelated) config cache.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let mint = mock_token_with_workspaces(&mut server, &["work_only"]);
+        let mut profile = mock_profile(&server.url(), Some("hd_dbtoken"));
+        profile.api_key_source = ApiKeySource::Env;
+        profile.workspaces = vec![ws("work_saved")];
+        assert_eq!(
+            default_workspace_id(&profile),
+            Some("work_only".to_string())
+        );
+        mint.assert();
+    }
+
+    #[test]
+    fn default_workspace_id_multi_key_honors_saved_default_when_authorized() {
+        // Multi-workspace key + a saved default the key can reach → the saved
+        // default wins (so `workspaces set` keeps working).
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let _mint = mock_token_with_workspaces(&mut server, &["work_a", "work_saved", "work_b"]);
+        let mut profile = mock_profile(&server.url(), Some("hd_org"));
+        profile.api_key_source = ApiKeySource::Env;
+        profile.workspaces = vec![ws("work_saved")];
+        assert_eq!(
+            default_workspace_id(&profile),
+            Some("work_saved".to_string())
+        );
+    }
+
+    #[test]
+    fn default_workspace_id_multi_key_falls_back_to_first_authorized() {
+        // Saved default is NOT one the key authorizes → the credential's first
+        // authorized workspace, never a workspace the gateway would 403.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let _mint = mock_token_with_workspaces(&mut server, &["work_a", "work_b"]);
+        let mut profile = mock_profile(&server.url(), Some("hd_org"));
+        profile.api_key_source = ApiKeySource::Env;
+        profile.workspaces = vec![ws("work_unauthorized")];
+        assert_eq!(default_workspace_id(&profile), Some("work_a".to_string()));
     }
 
     // --- check_status tests ---
