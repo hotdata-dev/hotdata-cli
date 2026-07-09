@@ -882,6 +882,10 @@ fn list_connections(workspace_id: &str, output: &str, all: bool) {
         let rows: Vec<Vec<String>> = resp
             .sources
             .iter()
+            // Oldest at the top, newest at the bottom — the freshest row
+            // lands next to the prompt. (The server returns newest-first;
+            // json/yaml keep that order for scripting.)
+            .rev()
             .map(|s| {
                 let mut row = vec![
                     s.connector_type.clone().unwrap_or_else(|| "-".into()),
@@ -924,6 +928,8 @@ fn list_imports(workspace_id: &str, output: &str) {
         let rows: Vec<Vec<String>> = resp
             .queries
             .iter()
+            // Oldest at the top, newest at the bottom (see list_connections).
+            .rev()
             .map(|q| {
                 vec![
                     q.ingest_id.clone(),
