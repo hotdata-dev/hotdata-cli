@@ -800,7 +800,8 @@ fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<I
 
 pub fn list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let databases = list_database_summaries(&api).unwrap_or_else(|e| e.exit());
+    let mut databases = list_database_summaries(&api).unwrap_or_else(|e| e.exit());
+    databases.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&databases).unwrap()),
