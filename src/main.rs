@@ -401,7 +401,6 @@ fn main() {
                 }
                 TablesCommands::List {
                     workspace_id,
-                    connection_id,
                     schema,
                     table,
                     limit,
@@ -409,10 +408,7 @@ fn main() {
                     output,
                 } => {
                     let workspace_id = resolve_workspace(workspace_id);
-                    if connection_id.is_none()
-                        && crate::config::load_current_database("default", &workspace_id)
-                            .is_some()
-                    {
+                    if crate::config::load_current_database("default", &workspace_id).is_some() {
                         databases::tables_list(
                             &workspace_id,
                             None,
@@ -422,7 +418,6 @@ fn main() {
                     } else {
                         tables::list(
                             &workspace_id,
-                            connection_id.as_deref(),
                             schema.as_deref(),
                             table.as_deref(),
                             limit,

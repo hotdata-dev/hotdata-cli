@@ -1,13 +1,13 @@
-use crate::client::sdk::Api;
+use crate::client::sdk::{Api, block_with_wakeup};
 use hotdata::models::TableInfo;
 use serde::Serialize;
 
 /// Subcommands for `hotdata tables`.
 #[derive(clap::Subcommand)]
 pub enum TablesCommands {
-    /// Show column definitions for a specific table (connection.schema.table)
+    /// Show column definitions for a specific table (catalog.schema.table or schema.table)
     Show {
-        /// Table name as connection.schema.table
+        /// Table as catalog.schema.table (or schema.table when a database is active)
         table: String,
 
         /// Output format
@@ -15,15 +15,11 @@ pub enum TablesCommands {
         output: String,
     },
 
-    /// List all tables in a workspace
+    /// List tables in the active database, or all workspace tables if none is set
     List {
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long, short = 'w')]
         workspace_id: Option<String>,
-
-        /// Filter by connection ID (also enables column output)
-        #[arg(long, short = 'c')]
-        connection_id: Option<String>,
 
         /// Filter by schema name (supports % wildcards)
         #[arg(long)]
@@ -74,7 +70,6 @@ struct TableWithColumns {
 
 pub fn list(
     workspace_id: &str,
-    connection_id: Option<&str>,
     schema: Option<&str>,
     table_filter: Option<&str>,
     limit: Option<u32>,
@@ -83,18 +78,14 @@ pub fn list(
 ) {
     let api = Api::new(Some(workspace_id));
 
-    // The CLI only requests columns when a connection is specified, matching
-    // the old behavior (include_columns=true iff connection_id is set).
-    let include_columns = connection_id.map(|_| true);
-
-    let body = crate::client::sdk::block_with_wakeup(
+    let body = block_with_wakeup(
         &api,
         "Loading tables…",
         api.client().information_schema().get(
-            connection_id,
+            None,
             schema,
             table_filter,
-            include_columns,
+            None,
             limit.map(|l| l as i32),
             cursor,
         ),
@@ -104,91 +95,41 @@ pub fn list(
     let has_more = body.has_more;
     let next_cursor = body.next_cursor.flatten();
 
-    if connection_id.is_some() {
-        let out: Vec<TableWithColumns> = body
-            .tables
-            .into_iter()
-            .map(|t| TableWithColumns {
-                table: full_name(&t),
-                columns: t
-                    .columns
-                    .flatten()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|c| Column {
-                        name: c.name,
-                        data_type: c.data_type,
-                        nullable: c.nullable,
+    let mut out: Vec<TableRow> = body
+        .tables
+        .iter()
+        .map(|t| TableRow {
+            table: full_name(t),
+            synced: t.synced,
+            last_sync: t.last_sync.clone().flatten(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.table.cmp(&b.table));
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
+        "table" => {
+            if out.is_empty() {
+                use crossterm::style::Stylize;
+                eprintln!("{}", "No tables found.".dark_grey());
+            } else {
+                let rows: Vec<Vec<String>> = out
+                    .iter()
+                    .map(|r| {
+                        vec![
+                            r.table.clone(),
+                            r.synced.to_string(),
+                            r.last_sync
+                                .as_deref()
+                                .map(crate::util::format_date)
+                                .unwrap_or_else(|| "-".to_string()),
+                        ]
                     })
-                    .collect(),
-            })
-            .collect();
-        match format {
-            "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
-            "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
-            "table" => {
-                if out.is_empty() {
-                    use crossterm::style::Stylize;
-                    eprintln!("{}", "No tables found.".dark_grey());
-                } else {
-                    let rows: Vec<Vec<String>> = out
-                        .iter()
-                        .flat_map(|t| {
-                            t.columns.iter().map(|col| {
-                                vec![
-                                    t.table.clone(),
-                                    col.name.clone(),
-                                    col.data_type.clone(),
-                                    col.nullable.to_string(),
-                                ]
-                            })
-                        })
-                        .collect();
-                    crate::output::table::print(
-                        &["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"],
-                        &rows,
-                    );
-                }
+                    .collect();
+                crate::output::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &rows);
             }
-            _ => unreachable!(),
         }
-    } else {
-        let mut out: Vec<TableRow> = body
-            .tables
-            .iter()
-            .map(|t| TableRow {
-                table: full_name(t),
-                synced: t.synced,
-                last_sync: t.last_sync.clone().flatten(),
-            })
-            .collect();
-        out.sort_by(|a, b| a.table.cmp(&b.table));
-        match format {
-            "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
-            "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
-            "table" => {
-                if out.is_empty() {
-                    use crossterm::style::Stylize;
-                    eprintln!("{}", "No tables found.".dark_grey());
-                } else {
-                    let rows: Vec<Vec<String>> = out
-                        .iter()
-                        .map(|r| {
-                            vec![
-                                r.table.clone(),
-                                r.synced.to_string(),
-                                r.last_sync
-                                    .as_deref()
-                                    .map(crate::util::format_date)
-                                    .unwrap_or_else(|| "-".to_string()),
-                            ]
-                        })
-                        .collect();
-                    crate::output::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &rows);
-                }
-            }
-            _ => unreachable!(),
-        }
+        _ => unreachable!(),
     }
 
     if has_more {
@@ -205,28 +146,51 @@ pub fn list(
 }
 
 pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
-    // Parse "connection.schema.table" — require all three parts.
+    let api = Api::new(Some(workspace_id));
+
+    // Accept "schema.table" (active database) or "catalog.schema.table".
     let parts: Vec<&str> = table_ref.splitn(3, '.').collect();
     let (connection_id, schema, table_name) = match parts.as_slice() {
-        [c, s, t] => (*c, *s, *t),
+        [schema, table] => {
+            // Two-part: resolve active database's connection.
+            let db_id = crate::config::load_current_database("default", workspace_id)
+                .unwrap_or_else(|| {
+                    use crossterm::style::Stylize;
+                    eprintln!(
+                        "{}",
+                        "error: use catalog.schema.table, or set an active database with \
+                         `hotdata databases set <id>`."
+                            .red()
+                    );
+                    std::process::exit(1);
+                });
+            let db = crate::commands::databases::get_database(&api, &db_id)
+                .unwrap_or_else(|e| e.exit());
+            (db.default_connection_id, schema.to_string(), table.to_string())
+        }
+        [catalog, schema, table] => {
+            // Three-part: resolve the catalog/name as a database or connection.
+            let conn_id =
+                crate::commands::connections::resolve_connection_id(&api, catalog);
+            (conn_id, schema.to_string(), table.to_string())
+        }
         _ => {
             use crossterm::style::Stylize;
             eprintln!(
                 "{}",
-                "error: table must be specified as connection.schema.table".red()
+                "error: table must be specified as schema.table or catalog.schema.table".red()
             );
             std::process::exit(1);
         }
     };
 
-    let api = Api::new(Some(workspace_id));
-    let body = crate::client::sdk::block_with_wakeup(
+    let body = block_with_wakeup(
         &api,
         "Loading table…",
         api.client().information_schema().get(
-            Some(connection_id),
-            Some(schema),
-            Some(table_name),
+            Some(&connection_id),
+            Some(&schema),
+            Some(&table_name),
             Some(true),
             None,
             None,
@@ -234,12 +198,15 @@ pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
     )
     .unwrap_or_else(|e| e.exit());
 
-    let table = body.tables.into_iter().find(|t| t.table == table_name);
-    let Some(t) = table else {
-        use crossterm::style::Stylize;
-        eprintln!("{}", format!("Table '{table_ref}' not found.").red());
-        std::process::exit(1);
-    };
+    let t = body
+        .tables
+        .into_iter()
+        .find(|t| t.table == table_name)
+        .unwrap_or_else(|| {
+            use crossterm::style::Stylize;
+            eprintln!("{}", format!("Table '{table_ref}' not found.").red());
+            std::process::exit(1);
+        });
 
     let out = TableWithColumns {
         table: full_name(&t),
