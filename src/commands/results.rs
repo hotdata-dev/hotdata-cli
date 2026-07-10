@@ -5,6 +5,16 @@ use serde::{Deserialize, Serialize};
 /// Subcommands for `hotdata results`.
 #[derive(clap::Subcommand)]
 pub enum ResultsCommands {
+    /// Show a stored result by ID (downloads and prints the data)
+    Show {
+        /// Result ID
+        id: String,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
+    },
+
     /// List stored query results
     List {
         /// Maximum number of results (default: 100, max: 1000)

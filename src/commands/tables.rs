@@ -5,6 +5,16 @@ use serde::Serialize;
 /// Subcommands for `hotdata tables`.
 #[derive(clap::Subcommand)]
 pub enum TablesCommands {
+    /// Show column definitions for a specific table (connection.schema.table)
+    Show {
+        /// Table name as connection.schema.table
+        table: String,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
     /// List all tables in a workspace
     List {
         /// Workspace ID (defaults to first workspace from login)
@@ -191,5 +201,84 @@ pub fn list(
             )
             .dark_grey()
         );
+    }
+}
+
+pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
+    // Parse "connection.schema.table" — require all three parts.
+    let parts: Vec<&str> = table_ref.splitn(3, '.').collect();
+    let (connection_id, schema, table_name) = match parts.as_slice() {
+        [c, s, t] => (*c, *s, *t),
+        _ => {
+            use crossterm::style::Stylize;
+            eprintln!(
+                "{}",
+                "error: table must be specified as connection.schema.table".red()
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let api = Api::new(Some(workspace_id));
+    let body = crate::client::sdk::block_with_wakeup(
+        &api,
+        "Loading table…",
+        api.client().information_schema().get(
+            Some(connection_id),
+            Some(schema),
+            Some(table_name),
+            Some(true),
+            None,
+            None,
+        ),
+    )
+    .unwrap_or_else(|e| e.exit());
+
+    let table = body.tables.into_iter().find(|t| t.table == table_name);
+    let Some(t) = table else {
+        use crossterm::style::Stylize;
+        eprintln!("{}", format!("Table '{table_ref}' not found.").red());
+        std::process::exit(1);
+    };
+
+    let out = TableWithColumns {
+        table: full_name(&t),
+        columns: t
+            .columns
+            .flatten()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| Column {
+                name: c.name,
+                data_type: c.data_type,
+                nullable: c.nullable,
+            })
+            .collect(),
+    };
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
+        "table" => {
+            if out.columns.is_empty() {
+                use crossterm::style::Stylize;
+                eprintln!("{}", "No columns found.".dark_grey());
+            } else {
+                let rows: Vec<Vec<String>> = out
+                    .columns
+                    .iter()
+                    .map(|c| {
+                        vec![
+                            out.table.clone(),
+                            c.name.clone(),
+                            c.data_type.clone(),
+                            c.nullable.to_string(),
+                        ]
+                    })
+                    .collect();
+                crate::output::table::print(&["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"], &rows);
+            }
+        }
+        _ => unreachable!(),
     }
 }

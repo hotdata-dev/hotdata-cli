@@ -1,5 +1,4 @@
 use crate::commands::auth::AuthCommands;
-use crate::commands::connections::ConnectionsCommands;
 use crate::commands::context::ContextCommands;
 use crate::commands::databases::DatabasesCommands;
 use crate::commands::embedding_providers::EmbeddingProvidersCommands;
@@ -47,23 +46,6 @@ pub enum Commands {
     Workspaces {
         #[command(subcommand)]
         command: WorkspaceCommands,
-    },
-
-    /// Manage workspace connections
-    Connections {
-        /// Connection ID to show details
-        id: Option<String>,
-
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, short = 'w', global = true)]
-        workspace_id: Option<String>,
-
-        /// Output format (used with connection ID)
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-
-        #[command(subcommand)]
-        command: Option<ConnectionsCommands>,
     },
 
     /// Managed databases you create and populate with tables (parquet uploads)

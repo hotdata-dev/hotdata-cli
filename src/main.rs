@@ -10,7 +10,7 @@ use clap::{Parser, builder::Styles};
 use cli::Commands;
 use client::{credentials, database_session, sdk};
 use commands::auth::{self, AuthCommands};
-use commands::connections::{self, ConnectionsCommands, ConnectionsCreateCommands};
+use commands::connections;
 use commands::context::{self, ContextCommands};
 use commands::databases::{self, DatabaseTablesCommands, DatabasesCommands};
 use commands::embedding_providers::{self, EmbeddingProvidersCommands};
@@ -222,91 +222,6 @@ fn main() {
                 WorkspaceCommands::List { output } => workspace::list(&output),
                 WorkspaceCommands::Set { workspace_id } => workspace::set(workspace_id.as_deref()),
             },
-            Commands::Connections {
-                id,
-                workspace_id,
-                output,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                if let Some(id) = id {
-                    connections::get(&workspace_id, &id, &output)
-                } else {
-                    match command {
-                        Some(ConnectionsCommands::New) => {
-                            connections::interactive::run(&workspace_id)
-                        }
-                        Some(ConnectionsCommands::List { output }) => {
-                            connections::list(&workspace_id, &output)
-                        }
-                        Some(ConnectionsCommands::Create {
-                            command,
-                            name,
-                            source_type,
-                            config,
-                            output,
-                        }) => match command {
-                            Some(ConnectionsCreateCommands::List { name, output }) => {
-                                match name.as_deref() {
-                                    Some(name) => {
-                                        connections::types_get(&workspace_id, name, &output)
-                                    }
-                                    None => connections::types_list(&workspace_id, &output),
-                                }
-                            }
-                            None => {
-                                let missing: Vec<&str> = [
-                                    name.is_none().then_some("--name"),
-                                    source_type.is_none().then_some("--type"),
-                                    config.is_none().then_some("--config"),
-                                ]
-                                .into_iter()
-                                .flatten()
-                                .collect();
-                                if !missing.is_empty() {
-                                    eprintln!(
-                                        "error: missing required arguments: {}",
-                                        missing.join(", ")
-                                    );
-                                    std::process::exit(1);
-                                }
-                                connections::create(
-                                    &workspace_id,
-                                    &name.unwrap(),
-                                    &source_type.unwrap(),
-                                    &config.unwrap(),
-                                    &output,
-                                )
-                            }
-                        },
-                        Some(ConnectionsCommands::Refresh {
-                            connection_id,
-                            data,
-                            schema,
-                            table,
-                            r#async,
-                            include_uncached,
-                        }) => connections::refresh(
-                            &workspace_id,
-                            &connection_id,
-                            data,
-                            schema.as_deref(),
-                            table.as_deref(),
-                            r#async,
-                            include_uncached,
-                        ),
-                        None => {
-                            use clap::CommandFactory;
-                            let mut cmd = Cli::command();
-                            cmd.build();
-                            cmd.find_subcommand_mut("connections")
-                                .unwrap()
-                                .print_help()
-                                .unwrap();
-                        }
-                    }
-                }
-            }
             Commands::Databases {
                 name_or_id,
                 workspace_id,
@@ -480,6 +395,10 @@ fn main() {
                 }
             }
             Commands::Tables { command } => match command {
+                TablesCommands::Show { table, output } => {
+                    let workspace_id = resolve_workspace(None);
+                    tables::show(&workspace_id, &table, &output)
+                }
                 TablesCommands::List {
                     workspace_id,
                     connection_id,
@@ -532,6 +451,9 @@ fn main() {
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
+                    Some(ResultsCommands::Show { id, output }) => {
+                        results::get(&id, &workspace_id, database.as_deref(), &output)
+                    }
                     Some(ResultsCommands::List {
                         limit,
                         offset,
