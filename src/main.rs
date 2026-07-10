@@ -327,6 +327,7 @@ fn main() {
                                 &workspace_id,
                                 db_flag.as_deref().or(database.as_deref()),
                                 schema.as_deref(),
+                                None,
                                 &output,
                             ),
                             Some(DatabaseTablesCommands::Load {
@@ -362,6 +363,7 @@ fn main() {
                                     databases::tables_list(
                                         &workspace_id,
                                         Some(db.as_str()),
+                                        None,
                                         None,
                                         "table",
                                     )
@@ -408,11 +410,16 @@ fn main() {
                     output,
                 } => {
                     let workspace_id = resolve_workspace(workspace_id);
-                    if crate::config::load_current_database("default", &workspace_id).is_some() {
+                    let use_db_path = limit.is_none()
+                        && cursor.is_none()
+                        && crate::config::load_current_database("default", &workspace_id)
+                            .is_some();
+                    if use_db_path {
                         databases::tables_list(
                             &workspace_id,
                             None,
                             schema.as_deref(),
+                            table.as_deref(),
                             &output,
                         )
                     } else {

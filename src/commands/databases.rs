@@ -766,14 +766,19 @@ fn download_to_temp(
     Ok(temp)
 }
 
-fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<InfoTable> {
+fn collect_tables(
+    api: &Api,
+    connection_id: &str,
+    schema: Option<&str>,
+    table: Option<&str>,
+) -> Vec<InfoTable> {
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
         let resp = crate::client::sdk::block(api.client().information_schema().get(
             Some(connection_id),
             schema,
-            None,
+            table,
             None,
             None,
             cursor.as_deref(),
@@ -1333,7 +1338,13 @@ pub fn delete(workspace_id: &str, id_or_name: &str) {
     println!("{}", "Database deleted.".green());
 }
 
-pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&str>, format: &str) {
+pub fn tables_list(
+    workspace_id: &str,
+    database: Option<&str>,
+    schema: Option<&str>,
+    table: Option<&str>,
+    format: &str,
+) {
     let database = resolve_current_database(database, workspace_id);
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
@@ -1342,7 +1353,7 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
         .as_deref()
         .or(db.name.as_deref())
         .unwrap_or("default");
-    let tables = collect_tables(&api, &db.default_connection_id, schema);
+    let tables = collect_tables(&api, &db.default_connection_id, schema, table);
 
     let rows = table_rows(catalog, tables);
 
@@ -1473,7 +1484,7 @@ pub fn tables_load(
         // The table wasn't declared at create time. Collect existing tables so
         // they are re-declared in the replacement database, then delete and
         // recreate with all tables (including the new one) declared.
-        let existing = collect_tables(&api, &db.default_connection_id, None);
+        let existing = collect_tables(&api, &db.default_connection_id, None, None);
         let mut all_tables: Vec<String> = existing
             .iter()
             .map(|t| format!("{}.{}", t.schema, t.table))
@@ -2098,7 +2109,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let tables = collect_tables(&api, "conn1", None);
+        let tables = collect_tables(&api, "conn1", None, None);
         page0.assert();
         page1.assert();
         assert_eq!(tables.len(), 2);
