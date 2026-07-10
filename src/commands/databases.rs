@@ -766,17 +766,50 @@ fn download_to_temp(
     Ok(temp)
 }
 
-fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<InfoTable> {
+fn collect_tables(
+    api: &Api,
+    connection_id: &str,
+    schema: Option<&str>,
+    table: Option<&str>,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+) -> (Vec<InfoTable>, bool, Option<String>) {
+    // When limit/cursor are provided do a single paged fetch; otherwise exhaust all pages.
+    if limit.is_some() || cursor.is_some() {
+        let resp = crate::client::sdk::block(api.client().information_schema().get(
+            Some(connection_id),
+            schema,
+            table,
+            None,
+            limit.map(|l| l as i32),
+            cursor,
+        ))
+        .unwrap_or_else(|e| e.exit());
+        let mut out: Vec<InfoTable> = resp
+            .tables
+            .into_iter()
+            .map(|t| InfoTable {
+                connection: t.connection,
+                schema: t.schema,
+                table: t.table,
+                synced: t.synced,
+                last_sync: t.last_sync.flatten(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.schema.cmp(&b.schema).then_with(|| a.table.cmp(&b.table)));
+        return (out, resp.has_more, resp.next_cursor.flatten());
+    }
+
     let mut out = Vec::new();
-    let mut cursor: Option<String> = None;
+    let mut page_cursor: Option<String> = None;
     loop {
         let resp = crate::client::sdk::block(api.client().information_schema().get(
             Some(connection_id),
             schema,
+            table,
             None,
             None,
-            None,
-            cursor.as_deref(),
+            page_cursor.as_deref(),
         ))
         .unwrap_or_else(|e| e.exit());
         out.extend(resp.tables.into_iter().map(|t| InfoTable {
@@ -792,10 +825,10 @@ fn collect_tables(api: &Api, connection_id: &str, schema: Option<&str>) -> Vec<I
         let Some(c) = resp.next_cursor.flatten() else {
             break;
         };
-        cursor = Some(c);
+        page_cursor = Some(c);
     }
     out.sort_by(|a, b| a.schema.cmp(&b.schema).then_with(|| a.table.cmp(&b.table)));
-    out
+    (out, false, None)
 }
 
 pub fn list(workspace_id: &str, format: &str) {
@@ -879,10 +912,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
             println!(
                 "{}{}",
                 label("sql_prefix:"),
-                format!(
-                    "{catalog}.{{schema}}.{{table}}"
-                )
-                .green()
+                format!("{catalog}.{{schema}}.{{table}}").green()
             );
             if !db.attachments.is_empty() {
                 println!("{}({})", label("attached catalogs:"), db.attachments.len());
@@ -1333,7 +1363,15 @@ pub fn delete(workspace_id: &str, id_or_name: &str) {
     println!("{}", "Database deleted.".green());
 }
 
-pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&str>, format: &str) {
+pub fn tables_list(
+    workspace_id: &str,
+    database: Option<&str>,
+    schema: Option<&str>,
+    table: Option<&str>,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+    format: &str,
+) {
     let database = resolve_current_database(database, workspace_id);
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
@@ -1342,7 +1380,14 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
         .as_deref()
         .or(db.name.as_deref())
         .unwrap_or("default");
-    let tables = collect_tables(&api, &db.default_connection_id, schema);
+    let (tables, has_more, next_cursor) = collect_tables(
+        &api,
+        &db.default_connection_id,
+        schema,
+        table,
+        limit,
+        cursor,
+    );
 
     let rows = table_rows(catalog, tables);
 
@@ -1371,6 +1416,17 @@ pub fn tables_list(workspace_id: &str, database: Option<&str>, schema: Option<&s
             }
         }
         _ => unreachable!(),
+    }
+    if has_more {
+        use crossterm::style::Stylize;
+        eprintln!(
+            "{}",
+            format!(
+                "More results available. Use --cursor {} to fetch the next page.",
+                next_cursor.as_deref().unwrap_or("")
+            )
+            .dark_grey()
+        );
     }
 }
 
@@ -1473,7 +1529,8 @@ pub fn tables_load(
         // The table wasn't declared at create time. Collect existing tables so
         // they are re-declared in the replacement database, then delete and
         // recreate with all tables (including the new one) declared.
-        let existing = collect_tables(&api, &db.default_connection_id, None);
+        let (existing, _, _) =
+            collect_tables(&api, &db.default_connection_id, None, None, None, None);
         let mut all_tables: Vec<String> = existing
             .iter()
             .map(|t| format!("{}.{}", t.schema, t.table))
@@ -2098,12 +2155,62 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let tables = collect_tables(&api, "conn1", None);
+        let (tables, _, _) = collect_tables(&api, "conn1", None, None, None, None);
         page0.assert();
         page1.assert();
         assert_eq!(tables.len(), 2);
         assert_eq!(tables[0].table, "a");
         assert_eq!(tables[1].table, "b");
+    }
+
+    #[test]
+    fn collect_tables_with_limit_makes_single_request_and_returns_cursor() {
+        let mut server = mockito::Server::new();
+        // Only one mock — verifies we do NOT follow the cursor when limit is set.
+        let mock = server
+            .mock("GET", "/v1/information_schema")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("connection_id".into(), "conn1".into()),
+                mockito::Matcher::UrlEncoded("limit".into(), "5".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
+            )
+            .expect(1)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let (tables, has_more, next_cursor) =
+            collect_tables(&api, "conn1", None, None, Some(5), None);
+        mock.assert();
+        assert_eq!(tables.len(), 1);
+        assert!(has_more);
+        assert_eq!(next_cursor.as_deref(), Some("page2"));
+    }
+
+    #[test]
+    fn collect_tables_with_table_filter_passes_it_to_api() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/v1/information_schema")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("connection_id".into(), "conn1".into()),
+                mockito::Matcher::UrlEncoded("table".into(), "orders".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let (tables, _, _) = collect_tables(&api, "conn1", None, Some("orders"), None, None);
+        mock.assert();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].table, "orders");
     }
 
     #[test]

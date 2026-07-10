@@ -10,7 +10,7 @@ use clap::{Parser, builder::Styles};
 use cli::Commands;
 use client::{credentials, database_session, sdk};
 use commands::auth::{self, AuthCommands};
-use commands::connections::{self, ConnectionsCommands, ConnectionsCreateCommands};
+use commands::connections;
 use commands::context::{self, ContextCommands};
 use commands::databases::{self, DatabaseTablesCommands, DatabasesCommands};
 use commands::embedding_providers::{self, EmbeddingProvidersCommands};
@@ -222,91 +222,6 @@ fn main() {
                 WorkspaceCommands::List { output } => workspace::list(&output),
                 WorkspaceCommands::Set { workspace_id } => workspace::set(workspace_id.as_deref()),
             },
-            Commands::Connections {
-                id,
-                workspace_id,
-                output,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                if let Some(id) = id {
-                    connections::get(&workspace_id, &id, &output)
-                } else {
-                    match command {
-                        Some(ConnectionsCommands::New) => {
-                            connections::interactive::run(&workspace_id)
-                        }
-                        Some(ConnectionsCommands::List { output }) => {
-                            connections::list(&workspace_id, &output)
-                        }
-                        Some(ConnectionsCommands::Create {
-                            command,
-                            name,
-                            source_type,
-                            config,
-                            output,
-                        }) => match command {
-                            Some(ConnectionsCreateCommands::List { name, output }) => {
-                                match name.as_deref() {
-                                    Some(name) => {
-                                        connections::types_get(&workspace_id, name, &output)
-                                    }
-                                    None => connections::types_list(&workspace_id, &output),
-                                }
-                            }
-                            None => {
-                                let missing: Vec<&str> = [
-                                    name.is_none().then_some("--name"),
-                                    source_type.is_none().then_some("--type"),
-                                    config.is_none().then_some("--config"),
-                                ]
-                                .into_iter()
-                                .flatten()
-                                .collect();
-                                if !missing.is_empty() {
-                                    eprintln!(
-                                        "error: missing required arguments: {}",
-                                        missing.join(", ")
-                                    );
-                                    std::process::exit(1);
-                                }
-                                connections::create(
-                                    &workspace_id,
-                                    &name.unwrap(),
-                                    &source_type.unwrap(),
-                                    &config.unwrap(),
-                                    &output,
-                                )
-                            }
-                        },
-                        Some(ConnectionsCommands::Refresh {
-                            connection_id,
-                            data,
-                            schema,
-                            table,
-                            r#async,
-                            include_uncached,
-                        }) => connections::refresh(
-                            &workspace_id,
-                            &connection_id,
-                            data,
-                            schema.as_deref(),
-                            table.as_deref(),
-                            r#async,
-                            include_uncached,
-                        ),
-                        None => {
-                            use clap::CommandFactory;
-                            let mut cmd = Cli::command();
-                            cmd.build();
-                            cmd.find_subcommand_mut("connections")
-                                .unwrap()
-                                .print_help()
-                                .unwrap();
-                        }
-                    }
-                }
-            }
             Commands::Databases {
                 name_or_id,
                 workspace_id,
@@ -412,6 +327,9 @@ fn main() {
                                 &workspace_id,
                                 db_flag.as_deref().or(database.as_deref()),
                                 schema.as_deref(),
+                                None,
+                                None,
+                                None,
                                 &output,
                             ),
                             Some(DatabaseTablesCommands::Load {
@@ -448,6 +366,9 @@ fn main() {
                                         &workspace_id,
                                         Some(db.as_str()),
                                         None,
+                                        None,
+                                        None,
+                                        None,
                                         "table",
                                     )
                                 } else {
@@ -480,9 +401,12 @@ fn main() {
                 }
             }
             Commands::Tables { command } => match command {
+                TablesCommands::Show { table, output } => {
+                    let workspace_id = resolve_workspace(None);
+                    tables::show(&workspace_id, &table, &output)
+                }
                 TablesCommands::List {
                     workspace_id,
-                    connection_id,
                     schema,
                     table,
                     limit,
@@ -490,15 +414,26 @@ fn main() {
                     output,
                 } => {
                     let workspace_id = resolve_workspace(workspace_id);
-                    tables::list(
-                        &workspace_id,
-                        connection_id.as_deref(),
-                        schema.as_deref(),
-                        table.as_deref(),
-                        limit,
-                        cursor.as_deref(),
-                        &output,
-                    )
+                    if crate::config::load_current_database("default", &workspace_id).is_some() {
+                        databases::tables_list(
+                            &workspace_id,
+                            None,
+                            schema.as_deref(),
+                            table.as_deref(),
+                            limit,
+                            cursor.as_deref(),
+                            &output,
+                        )
+                    } else {
+                        tables::list(
+                            &workspace_id,
+                            schema.as_deref(),
+                            table.as_deref(),
+                            limit,
+                            cursor.as_deref(),
+                            &output,
+                        )
+                    }
                 }
             },
             Commands::Skills { command } => match command {
@@ -520,6 +455,9 @@ fn main() {
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
+                    Some(ResultsCommands::Show { id, output }) => {
+                        results::get(&id, &workspace_id, database.as_deref(), &output)
+                    }
                     Some(ResultsCommands::List {
                         limit,
                         offset,
@@ -593,17 +531,26 @@ fn main() {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
                     IndexesCommands::List {
-                        connection_id,
                         schema,
                         table,
                         output,
-                    } => indexes::list(
-                        &workspace_id,
-                        connection_id.as_deref(),
-                        schema.as_deref(),
-                        table.as_deref(),
-                        &output,
-                    ),
+                    } => {
+                        let connection_id =
+                            crate::config::load_current_database("default", &workspace_id)
+                                .and_then(|db_id| {
+                                    let api = sdk::Api::new(Some(&workspace_id));
+                                    crate::commands::databases::get_database(&api, &db_id)
+                                        .ok()
+                                        .map(|db| db.default_connection_id)
+                                });
+                        indexes::list(
+                            &workspace_id,
+                            connection_id.as_deref(),
+                            schema.as_deref(),
+                            table.as_deref(),
+                            &output,
+                        )
+                    }
                     IndexesCommands::Create {
                         catalog,
                         schema,
@@ -658,26 +605,12 @@ fn main() {
                     }
                     IndexesCommands::Delete {
                         catalog,
-                        connection_id,
                         schema,
                         table,
                         name,
                     } => {
-                        // clap guarantees exactly one of --catalog / --connection-id
-                        // plus --table and --name; --schema defaults to "public".
-                        // A `--catalog` alias resolves to the backing connection
-                        // (incl. a managed database's default connection), the same
-                        // way `indexes create` does; `--connection-id` is used as-is.
-                        let conn_id = match (catalog, connection_id) {
-                            (Some(cat), _) => {
-                                let api = sdk::Api::new(Some(&workspace_id));
-                                connections::resolve_connection_id(&api, &cat)
-                            }
-                            (None, Some(cid)) => cid,
-                            (None, None) => {
-                                unreachable!("clap requires --catalog or --connection-id")
-                            }
-                        };
+                        let api = sdk::Api::new(Some(&workspace_id));
+                        let conn_id = connections::resolve_connection_id(&api, &catalog);
                         indexes::delete(
                             &workspace_id,
                             indexes::IndexScope::Connection {
@@ -751,15 +684,38 @@ fn main() {
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
 
-                // Parse `connection.table` or `connection.schema.table`.
-                // Schema defaults to `public` when omitted.
-                let parts: Vec<&str> = table.splitn(4, '.').collect();
+                // Parse `catalog.schema.table` or `schema.table` (requires active database).
+                let parts: Vec<&str> = table.splitn(3, '.').collect();
                 let (conn_name, schema, table_name) = match parts.as_slice() {
-                    [conn, schema, tbl] => (conn.to_string(), schema.to_string(), tbl.to_string()),
-                    [conn, tbl] => (conn.to_string(), "public".to_string(), tbl.to_string()),
+                    [catalog, schema, tbl] => {
+                        (catalog.to_string(), schema.to_string(), tbl.to_string())
+                    }
+                    [schema, tbl] => {
+                        // Two-part: use active database's catalog.
+                        let db_id = crate::config::load_current_database("default", &workspace_id)
+                            .unwrap_or_else(|| {
+                                use crossterm::style::Stylize;
+                                eprintln!(
+                                    "{}",
+                                    "error: use catalog.schema.table, or set an active database \
+                                     with `hotdata databases set <id>`."
+                                        .red()
+                                );
+                                std::process::exit(1);
+                            });
+                        let api = sdk::Api::new(Some(&workspace_id));
+                        let db = crate::commands::databases::get_database(&api, &db_id)
+                            .unwrap_or_else(|e| e.exit());
+                        let catalog = db
+                            .default_catalog
+                            .unwrap_or_else(|| db.name.unwrap_or_else(|| "default".to_string()));
+                        (catalog, schema.to_string(), tbl.to_string())
+                    }
                     _ => {
+                        use crossterm::style::Stylize;
                         eprintln!(
-                            "error: --table must be 'connection.table' or 'connection.schema.table'"
+                            "{}",
+                            "error: --table must be 'schema.table' or 'catalog.schema.table'".red()
                         );
                         std::process::exit(1);
                     }

@@ -5,6 +5,16 @@ use serde::{Deserialize, Serialize};
 /// Subcommands for `hotdata results`.
 #[derive(clap::Subcommand)]
 pub enum ResultsCommands {
+    /// Show a stored result by ID (downloads and prints the data)
+    Show {
+        /// Result ID
+        id: String,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
+    },
+
     /// List stored query results
     List {
         /// Maximum number of results (default: 100, max: 1000)
@@ -144,4 +154,43 @@ pub fn get(result_id: &str, workspace_id: &str, database: Option<&str>, format: 
     let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
     let result = crate::commands::query::fetch_arrow_result(&api, result_id);
     crate::commands::query::print_result(&result, format);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ResultsCommands;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(subcommand)]
+        cmd: ResultsCommands,
+    }
+
+    fn parse(args: &[&str]) -> Result<ResultsCommands, clap::Error> {
+        Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).map(|w| w.cmd)
+    }
+
+    #[test]
+    fn show_parses_id_and_defaults_output_to_table() {
+        let cmd = parse(&["show", "rslt_abc123"]).unwrap();
+        match cmd {
+            ResultsCommands::Show { id, output } => {
+                assert_eq!(id, "rslt_abc123");
+                assert_eq!(output, "table");
+            }
+            _ => panic!("expected Show"),
+        }
+    }
+
+    #[test]
+    fn show_accepts_output_flag() {
+        let cmd = parse(&["show", "rslt_abc123", "--output", "csv"]).unwrap();
+        assert!(matches!(cmd, ResultsCommands::Show { output, .. } if output == "csv"));
+    }
+
+    #[test]
+    fn show_requires_id() {
+        assert!(parse(&["show"]).is_err());
+    }
 }

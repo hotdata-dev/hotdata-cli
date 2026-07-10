@@ -8,12 +8,8 @@ use std::ops::ControlFlow;
 /// Subcommands for `hotdata indexes`.
 #[derive(clap::Subcommand)]
 pub enum IndexesCommands {
-    /// List indexes (defaults to the whole workspace; narrow with filters)
+    /// List indexes in the active database, or all workspace indexes if none is set
     List {
-        /// Filter by connection ID
-        #[arg(long, short = 'c')]
-        connection_id: Option<String>,
-
         /// Filter by schema name
         #[arg(long)]
         schema: Option<String>,
@@ -80,22 +76,10 @@ pub enum IndexesCommands {
     },
 
     /// Delete an index from a table
-    ///
-    /// Scope with `--catalog <alias>` (the same flag as `indexes create`) or
-    /// `--connection-id <id>`, plus `--table` (and `--schema`, default `public`).
     Delete {
-        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`) —
-        /// resolved to the backing connection, the same flag `indexes create` uses
-        #[arg(
-            long,
-            conflicts_with = "connection_id",
-            required_unless_present = "connection_id"
-        )]
-        catalog: Option<String>,
-
-        /// Connection ID (advanced; prefer --catalog)
-        #[arg(long, short = 'c', required_unless_present = "catalog")]
-        connection_id: Option<String>,
+        /// SQL catalog alias of the target database or connection name (same flag as `indexes create`)
+        #[arg(long)]
+        catalog: String,
 
         /// Schema name (default: public)
         #[arg(long, default_value = "public")]
@@ -1354,6 +1338,48 @@ mod tests {
         assert!(result.unwrap_err().contains("has no columns"));
     }
 
+    mod list_args {
+        use crate::commands::indexes::IndexesCommands;
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(subcommand)]
+            cmd: IndexesCommands,
+        }
+
+        fn parse(args: &[&str]) -> Result<IndexesCommands, clap::Error> {
+            Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).map(|w| w.cmd)
+        }
+
+        #[test]
+        fn list_parses_with_no_flags() {
+            assert!(matches!(
+                parse(&["list"]).unwrap(),
+                IndexesCommands::List {
+                    schema: None,
+                    table: None,
+                    ..
+                }
+            ));
+        }
+
+        #[test]
+        fn list_rejects_connection_id_flag() {
+            assert!(parse(&["list", "--connection-id", "conn1"]).is_err());
+        }
+
+        #[test]
+        fn list_accepts_schema_and_table_filters() {
+            let cmd = parse(&["list", "--schema", "public", "--table", "orders"]).unwrap();
+            assert!(matches!(
+                cmd,
+                IndexesCommands::List { schema, table, .. }
+                if schema.as_deref() == Some("public") && table.as_deref() == Some("orders")
+            ));
+        }
+    }
+
     mod delete_args {
         use crate::commands::indexes::IndexesCommands;
         use clap::Parser;
@@ -1383,13 +1409,11 @@ mod tests {
             match cmd {
                 IndexesCommands::Delete {
                     catalog,
-                    connection_id,
                     schema,
                     table,
                     name,
                 } => {
-                    assert_eq!(catalog.as_deref(), Some("vtest"));
-                    assert_eq!(connection_id, None);
+                    assert_eq!(catalog, "vtest");
                     assert_eq!(schema, "public"); // defaulted, parity with `create`
                     assert_eq!(table, "hits");
                     assert_eq!(name, "idx");
@@ -1399,45 +1423,9 @@ mod tests {
         }
 
         #[test]
-        fn delete_accepts_raw_connection_id() {
-            let cmd = parse(&[
-                "delete",
-                "--connection-id",
-                "conn_x",
-                "--table",
-                "hits",
-                "--name",
-                "idx",
-            ])
-            .unwrap();
-            assert!(matches!(
-                cmd,
-                IndexesCommands::Delete { connection_id, catalog: None, .. } if connection_id.as_deref() == Some("conn_x")
-            ));
-        }
-
-        #[test]
-        fn delete_requires_a_scope_flag() {
-            // neither --catalog nor --connection-id
+        fn delete_requires_catalog() {
+            // --catalog is now required
             assert!(parse(&["delete", "--table", "hits", "--name", "idx"]).is_err());
-        }
-
-        #[test]
-        fn delete_rejects_catalog_and_connection_id_together() {
-            assert!(
-                parse(&[
-                    "delete",
-                    "--catalog",
-                    "x",
-                    "--connection-id",
-                    "c",
-                    "--table",
-                    "t",
-                    "--name",
-                    "n"
-                ])
-                .is_err()
-            );
         }
 
         #[test]
