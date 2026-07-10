@@ -150,7 +150,7 @@ pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
 
     // Accept "schema.table" (active database) or "catalog.schema.table".
     let parts: Vec<&str> = table_ref.splitn(3, '.').collect();
-    let (connection_id, schema, table_name) = match parts.as_slice() {
+    let (connection_id, display_catalog, schema, table_name) = match parts.as_slice() {
         [schema, table] => {
             // Two-part: resolve active database's connection.
             let db_id = crate::config::load_current_database("default", workspace_id)
@@ -166,13 +166,16 @@ pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
                 });
             let db = crate::commands::databases::get_database(&api, &db_id)
                 .unwrap_or_else(|e| e.exit());
-            (db.default_connection_id, schema.to_string(), table.to_string())
+            let catalog = db
+                .default_catalog
+                .unwrap_or_else(|| db.name.unwrap_or_else(|| "default".to_string()));
+            (db.default_connection_id, catalog, schema.to_string(), table.to_string())
         }
         [catalog, schema, table] => {
             // Three-part: resolve the catalog/name as a database or connection.
             let conn_id =
                 crate::commands::connections::resolve_connection_id(&api, catalog);
-            (conn_id, schema.to_string(), table.to_string())
+            (conn_id, catalog.to_string(), schema.to_string(), table.to_string())
         }
         _ => {
             use crossterm::style::Stylize;
@@ -209,7 +212,7 @@ pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
         });
 
     let out = TableWithColumns {
-        table: full_name(&t),
+        table: format!("{display_catalog}.{}.{}", t.schema, t.table),
         columns: t
             .columns
             .flatten()
