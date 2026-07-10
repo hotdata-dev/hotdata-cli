@@ -1,3 +1,20 @@
+## [0.16.0] - 2026-07-10
+
+### 🚀 Features
+
+- *(tables)* Scope `tables list` to active database; honor `--table`, `--limit`, `--cursor` within that scope (#221)
+- *(tables)* New `tables show <schema.table>` subcommand; accepts `schema.table` (active DB) or `catalog.schema.table` (#221)
+- *(results)* New `results show <id>` subcommand; downloads and prints stored result (#221)
+- *(indexes)* Scope `indexes list` to active database's connection; remove `--connection-id` flag (#221)
+- *(indexes)* `indexes delete` now uses `--catalog` instead of `--connection-id` (#221)
+- *(search)* `--table` now accepts `schema.table` (active DB) or `catalog.schema.table` (#221)
+
+### 🔧 Breaking Changes
+
+- *(connections)* `hotdata connections` command removed; use `hotdata databases` for managed databases (#221)
+- *(indexes)* `indexes list --connection-id` removed; scopes automatically to active database (#221)
+- *(indexes)* `indexes delete --connection-id` removed; use `--catalog` instead (#221)
+
 ## [0.15.0] - 2026-07-10
 
 ### 🚀 Features
