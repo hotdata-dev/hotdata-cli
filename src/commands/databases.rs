@@ -771,9 +771,37 @@ fn collect_tables(
     connection_id: &str,
     schema: Option<&str>,
     table: Option<&str>,
-) -> Vec<InfoTable> {
+    limit: Option<u32>,
+    cursor: Option<&str>,
+) -> (Vec<InfoTable>, bool, Option<String>) {
+    // When limit/cursor are provided do a single paged fetch; otherwise exhaust all pages.
+    if limit.is_some() || cursor.is_some() {
+        let resp = crate::client::sdk::block(api.client().information_schema().get(
+            Some(connection_id),
+            schema,
+            table,
+            None,
+            limit.map(|l| l as i32),
+            cursor,
+        ))
+        .unwrap_or_else(|e| e.exit());
+        let mut out: Vec<InfoTable> = resp
+            .tables
+            .into_iter()
+            .map(|t| InfoTable {
+                connection: t.connection,
+                schema: t.schema,
+                table: t.table,
+                synced: t.synced,
+                last_sync: t.last_sync.flatten(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.schema.cmp(&b.schema).then_with(|| a.table.cmp(&b.table)));
+        return (out, resp.has_more, resp.next_cursor.flatten());
+    }
+
     let mut out = Vec::new();
-    let mut cursor: Option<String> = None;
+    let mut page_cursor: Option<String> = None;
     loop {
         let resp = crate::client::sdk::block(api.client().information_schema().get(
             Some(connection_id),
@@ -781,7 +809,7 @@ fn collect_tables(
             table,
             None,
             None,
-            cursor.as_deref(),
+            page_cursor.as_deref(),
         ))
         .unwrap_or_else(|e| e.exit());
         out.extend(resp.tables.into_iter().map(|t| InfoTable {
@@ -797,10 +825,10 @@ fn collect_tables(
         let Some(c) = resp.next_cursor.flatten() else {
             break;
         };
-        cursor = Some(c);
+        page_cursor = Some(c);
     }
     out.sort_by(|a, b| a.schema.cmp(&b.schema).then_with(|| a.table.cmp(&b.table)));
-    out
+    (out, false, None)
 }
 
 pub fn list(workspace_id: &str, format: &str) {
@@ -1343,6 +1371,8 @@ pub fn tables_list(
     database: Option<&str>,
     schema: Option<&str>,
     table: Option<&str>,
+    limit: Option<u32>,
+    cursor: Option<&str>,
     format: &str,
 ) {
     let database = resolve_current_database(database, workspace_id);
@@ -1353,7 +1383,8 @@ pub fn tables_list(
         .as_deref()
         .or(db.name.as_deref())
         .unwrap_or("default");
-    let tables = collect_tables(&api, &db.default_connection_id, schema, table);
+    let (tables, has_more, next_cursor) =
+        collect_tables(&api, &db.default_connection_id, schema, table, limit, cursor);
 
     let rows = table_rows(catalog, tables);
 
@@ -1382,6 +1413,17 @@ pub fn tables_list(
             }
         }
         _ => unreachable!(),
+    }
+    if has_more {
+        use crossterm::style::Stylize;
+        eprintln!(
+            "{}",
+            format!(
+                "More results available. Use --cursor {} to fetch the next page.",
+                next_cursor.as_deref().unwrap_or("")
+            )
+            .dark_grey()
+        );
     }
 }
 
@@ -1484,7 +1526,7 @@ pub fn tables_load(
         // The table wasn't declared at create time. Collect existing tables so
         // they are re-declared in the replacement database, then delete and
         // recreate with all tables (including the new one) declared.
-        let existing = collect_tables(&api, &db.default_connection_id, None, None);
+        let (existing, _, _) = collect_tables(&api, &db.default_connection_id, None, None, None, None);
         let mut all_tables: Vec<String> = existing
             .iter()
             .map(|t| format!("{}.{}", t.schema, t.table))
@@ -2109,7 +2151,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let tables = collect_tables(&api, "conn1", None, None);
+        let (tables, _, _) = collect_tables(&api, "conn1", None, None, None, None);
         page0.assert();
         page1.assert();
         assert_eq!(tables.len(), 2);

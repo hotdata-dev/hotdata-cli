@@ -1367,13 +1367,11 @@ mod tests {
             match cmd {
                 IndexesCommands::Delete {
                     catalog,
-                    connection_id,
                     schema,
                     table,
                     name,
                 } => {
-                    assert_eq!(catalog.as_deref(), Some("vtest"));
-                    assert_eq!(connection_id, None);
+                    assert_eq!(catalog, "vtest");
                     assert_eq!(schema, "public"); // defaulted, parity with `create`
                     assert_eq!(table, "hits");
                     assert_eq!(name, "idx");
@@ -1383,45 +1381,9 @@ mod tests {
         }
 
         #[test]
-        fn delete_accepts_raw_connection_id() {
-            let cmd = parse(&[
-                "delete",
-                "--connection-id",
-                "conn_x",
-                "--table",
-                "hits",
-                "--name",
-                "idx",
-            ])
-            .unwrap();
-            assert!(matches!(
-                cmd,
-                IndexesCommands::Delete { connection_id, catalog: None, .. } if connection_id.as_deref() == Some("conn_x")
-            ));
-        }
-
-        #[test]
-        fn delete_requires_a_scope_flag() {
-            // neither --catalog nor --connection-id
+        fn delete_requires_catalog() {
+            // --catalog is now required
             assert!(parse(&["delete", "--table", "hits", "--name", "idx"]).is_err());
-        }
-
-        #[test]
-        fn delete_rejects_catalog_and_connection_id_together() {
-            assert!(
-                parse(&[
-                    "delete",
-                    "--catalog",
-                    "x",
-                    "--connection-id",
-                    "c",
-                    "--table",
-                    "t",
-                    "--name",
-                    "n"
-                ])
-                .is_err()
-            );
         }
 
         #[test]
