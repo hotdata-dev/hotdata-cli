@@ -302,8 +302,8 @@ Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceb
 Commands that create or change things (`new-datasource`, `new-import`, `trigger-import`, `delete-datasource`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`); a login session is not accepted.
 
 ```bash
-hotdata ingest connectors [filter]     # browse the catalog; "added" = you have a
-                                       # datasource for it. SQL dialects + ~150 named
+hotdata ingest datasources [filter]    # browse available datasource types; "added" =
+                                       # you already have one. SQL dialects + ~150 named
                                        # API services + generic buckets / iceberg / api.
                                        # -o json includes each entry's config_schema —
                                        # the exact fields --config takes.
@@ -323,7 +323,7 @@ hotdata ingest new-datasource --service buckets --bucket-url s3://bucket/prefix 
 hotdata ingest new-datasource --service iceberg --config @catalog.json --table ns.orders
 # Iceberg via a REST catalog. --table is REQUIRED (repeatable, namespace.table).
 # catalog.json fields: {"uri": …, "warehouse": …, "token": …} or "credential" +
-# "scope" for an OAuth exchange — see the iceberg config_schema in `connectors -o json`.
+# "scope" for an OAuth exchange — see the iceberg config_schema in `datasources -o json`.
 
 hotdata ingest list-datasources               # names, ids, statuses; --all includes replaced ones
 hotdata ingest show-datasource <id>           # status + discovered tables/columns
