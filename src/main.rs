@@ -691,15 +691,39 @@ fn main() {
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
 
-                // Parse `connection.table` or `connection.schema.table`.
-                // Schema defaults to `public` when omitted.
-                let parts: Vec<&str> = table.splitn(4, '.').collect();
+                // Parse `catalog.schema.table` or `schema.table` (requires active database).
+                let parts: Vec<&str> = table.splitn(3, '.').collect();
                 let (conn_name, schema, table_name) = match parts.as_slice() {
-                    [conn, schema, tbl] => (conn.to_string(), schema.to_string(), tbl.to_string()),
-                    [conn, tbl] => (conn.to_string(), "public".to_string(), tbl.to_string()),
+                    [catalog, schema, tbl] => {
+                        (catalog.to_string(), schema.to_string(), tbl.to_string())
+                    }
+                    [schema, tbl] => {
+                        // Two-part: use active database's catalog.
+                        let db_id = crate::config::load_current_database("default", &workspace_id)
+                            .unwrap_or_else(|| {
+                                use crossterm::style::Stylize;
+                                eprintln!(
+                                    "{}",
+                                    "error: use catalog.schema.table, or set an active database \
+                                     with `hotdata databases set <id>`."
+                                        .red()
+                                );
+                                std::process::exit(1);
+                            });
+                        let api = sdk::Api::new(Some(&workspace_id));
+                        let db = crate::commands::databases::get_database(&api, &db_id)
+                            .unwrap_or_else(|e| e.exit());
+                        let catalog = db.default_catalog.unwrap_or_else(|| {
+                            db.name.unwrap_or_else(|| "default".to_string())
+                        });
+                        (catalog, schema.to_string(), tbl.to_string())
+                    }
                     _ => {
+                        use crossterm::style::Stylize;
                         eprintln!(
-                            "error: --table must be 'connection.table' or 'connection.schema.table'"
+                            "{}",
+                            "error: --table must be 'schema.table' or 'catalog.schema.table'"
+                                .red()
                         );
                         std::process::exit(1);
                     }

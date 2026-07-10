@@ -167,8 +167,7 @@ pub enum Commands {
         #[arg(long, value_parser = ["vector", "bm25"])]
         r#type: Option<String>,
 
-        /// Table to search (`connection.table` or `connection.schema.table`).
-        /// Schema defaults to `public` when omitted.
+        /// Table to search (`catalog.schema.table` or `schema.table` when a database is active).
         #[arg(long)]
         table: String,
 

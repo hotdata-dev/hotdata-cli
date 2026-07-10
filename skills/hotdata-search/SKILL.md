@@ -8,7 +8,7 @@ version: 0.15.0
 
 Retrieval workloads in Hotdata: **BM25 full-text**, **vector similarity**, and the **indexes** and **embedding providers** that power them.
 
-**Prerequisites:** Authenticate and select a workspace (see the **`hotdata`** skill). Use fully qualified table names: `<connection>.<schema>.<table>`.
+**Prerequisites:** Authenticate, set a workspace, and set an active database (`hotdata databases set <id>`) — see the **`hotdata`** skill. Use fully qualified table names: `<catalog>.<schema>.<table>`.
 
 **Related skills:** **`hotdata-analytics`** (OLAP SQL, query history, materialized chains), **`hotdata-geospatial`** (PostGIS-style functions).
 
@@ -20,12 +20,15 @@ Both run server-side. `--type` and `--column` are **optional** when the table ha
 
 ```bash
 # BM25 (requires a BM25 index on the column)
-hotdata search "<query>" --table <connection.schema.table> [--type bm25] [--column <column>] \
+hotdata search "<query>" --table <catalog.schema.table> [--type bm25] [--column <column>] \
   [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 
 # Vector (requires a vector index; server auto-embeds the query text)
-hotdata search "<query>" --table <connection.schema.table> [--type vector] [--column <source_text_column>] \
+hotdata search "<query>" --table <catalog.schema.table> [--type vector] [--column <source_text_column>] \
   [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
+
+# With active database: schema.table is enough (catalog resolved from active DB)
+hotdata search "<query>" --table <schema.table> [--type bm25|vector] [--column <col>]
 ```
 
 | Type | Behavior |
@@ -37,19 +40,17 @@ hotdata search "<query>" --table <connection.schema.table> [--type vector] [--co
 - **Custom embedding model, raw query vector, or no vector index?** Use `hotdata query` directly (e.g. `cosine_distance(col, [<vec>])`) — `search` only auto-embeds the query text via the index's own provider.
 - **Before search:** create the right index (`indexes create --type bm25` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
 - Default `--limit` is 10.
-- **Managed databases:** set the database active (`hotdata databases set <db>`) and reference the table by its **SQL catalog** — `<default_catalog>.<schema>.<table>`, usually `default.public.<table>`. Do **not** use the internal `__db_<id>` label that `indexes list` displays, nor a connection id — `bm25_search`/`vector_distance` resolve a catalog attached to the active database, so a `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
+- **Active database:** with `hotdata databases set <db>`, you can pass `schema.table` directly (e.g. `--table public.articles`) — the active database's catalog is resolved automatically. Or use the full `catalog.schema.table` form. Do **not** use the internal `__db_<id>` label or raw connection ID prefix — `bm25_search`/`vector_distance` resolve a catalog attached to the active database, so an `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
 
 ---
 
 ## Indexes (BM25 and vector)
 
-Create attaches to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` filters by any of `--connection-id` (short `-c`) / `--schema` / `--table` (all optional). `delete` **requires all of** `--connection-id` (short `-c`) + `--schema` + `--table` + `--name`.
-
-**Unscoped `hotdata indexes list` (no `--connection-id`) scans the whole workspace — both regular connections *and* managed databases** — so managed-database indexes appear without any flags. In that whole-workspace view the `table` column shows a managed database under its internal `__db_<id>.<schema>.<table>` label (a connection-scoped `indexes list --connection-id <db-conn>` shows the same rows).
+Create attaches to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` narrows to the **active database** when one is set; without one it scans the whole workspace. Filter further with `--schema` / `--table`. `delete` **requires all of** `--connection-id` (short `-c`) + `--schema` + `--table` + `--name`.
 
 ```bash
-# List — whole-workspace scan, incl. managed databases (filter by connection, schema, or table)
-hotdata indexes list [--connection-id <id>] [--schema <schema>] [--table <table>] [--workspace-id <ws>] [--output table|json|yaml]
+# List — active-database scope when a DB is set, else whole-workspace scan
+hotdata indexes list [--schema <schema>] [--table <table>] [--workspace-id <ws>] [--output table|json|yaml]
 
 # Create — by catalog alias (resolves a managed-database catalog or a connection name)
 hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
@@ -88,8 +89,8 @@ hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
 
 ## Quick workflow
 
-1. `hotdata tables list --connection-id <id>` — confirm column types.
-2. `hotdata indexes list` — avoid duplicate indexes.
+1. `hotdata databases set <id>` — set an active database, then `hotdata tables list` to confirm column types.
+2. `hotdata indexes list` — avoid duplicate indexes (scoped to active DB automatically).
 3. `hotdata indexes create --catalog <alias> --table <table> --column <col> --type bm25|vector` (add `--async` if large).
-4. `hotdata search "..." --table <catalog.table>` — `--type` and `--column` are inferred when there is one search index.
+4. `hotdata search "..." --table <schema.table>` — `--type` and `--column` are inferred when there is one search index.
 5. Record what exists in **context:DATAMODEL** (core skill) when the workspace should remember index choices.
