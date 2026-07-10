@@ -1,3 +1,11 @@
+## [0.15.0] - 2026-07-10
+
+### 🚀 Features
+
+- *(databases)* Show created_at in list and show commands (#217)
+- *(ingest)* Rename the catalog verb connectors -> datasources (#216)
+- *(cli)* Loading indicators for indexes list and usage (#215)
+- *(databases)* Title the active-database star column DEFAULT (#214)
 ## [0.14.0] - 2026-07-09
 
 ### 🚀 Features

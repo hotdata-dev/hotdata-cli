@@ -1,7 +1,7 @@
 ---
 name: hotdata
 description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
-version: 0.14.0
+version: 0.15.0
 ---
 
 # Hotdata CLI Skill
@@ -190,7 +190,7 @@ hotdata databases tables load <table> [--database <id_or_name>] [--schema public
 hotdata databases tables delete <table> [--database <id_or_name>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
-- `list` — all managed databases in the workspace. Active database is marked with `*`.
+- `list` — all managed databases in the workspace. Active database is marked with `*` under the DEFAULT column; CREATED shows when each database was made.
 - `create` — creates a new managed database. `--name` is an optional human-readable display name. `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`); must be `[a-z_][a-z0-9_]*`. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; omitting means no expiry. Repeat `--table` to declare tables up front.
 - `set` — saves `<id_or_name>` as the active database. Subsequent `databases tables` and `context` commands use it automatically.
 - `unset` — clears the active database from config.
@@ -299,7 +299,7 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 
 Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceberg catalogs) into managed databases. Two nouns: **datasources** (added, credentialed sources — schema discovered, no data loaded; each has its own id) and **imports** (managed databases materialized from a datasource). A datasource answers to its **name** — `--name` if you chose one, otherwise the connector name (`postgres`, `buckets`, …) — and that name is the `FROM` target for imports.
 
-Commands that create or change things (`new-datasource`, `new-import`, `trigger-import`, `delete-datasource`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`); a login session is not accepted.
+Read commands (`list-datasources`, `list-imports`, `status`, `show-datasource`, `datasources`) work with a login session JWT. Commands that create or change things (`new-datasource`, `new-import`, `trigger-import`, `delete-datasource`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — drain jobs outlive the 5-minute JWT.
 
 ```bash
 hotdata ingest datasources [filter]    # browse available datasource types; "added" =
