@@ -1,4 +1,4 @@
-use crate::client::sdk::{Api, block, block_with_wakeup, none_if_404};
+use crate::client::sdk::{Api, ApiError, block, block_with_wakeup, none_if_404};
 use crate::commands::databases;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -182,8 +182,8 @@ fn connection_label_to_id_map(connections: &[ConnectionRef]) -> HashMap<String, 
     m
 }
 
-fn connection_lookup(api: &Api) -> HashMap<String, String> {
-    let resp = block(api.client().connections().list()).unwrap_or_else(|e| e.exit());
+fn connection_lookup(api: &Api) -> Result<HashMap<String, String>, ApiError> {
+    let resp = block(api.client().connections().list())?;
     let refs: Vec<ConnectionRef> = resp
         .connections
         .into_iter()
@@ -192,7 +192,7 @@ fn connection_lookup(api: &Api) -> HashMap<String, String> {
             name: c.name,
         })
         .collect();
-    connection_label_to_id_map(&refs)
+    Ok(connection_label_to_id_map(&refs))
 }
 
 /// Pick the connection id to address a per-table index call with during a
@@ -233,15 +233,15 @@ struct ScanTarget {
 /// connection id, so each database needs a `databases get`; a database deleted
 /// between the list and the get (404) is skipped, any other error surfaces
 /// loudly to match the rest of this path.
-fn managed_db_connection_ids(api: &Api) -> Vec<String> {
-    let ids = databases::list_database_ids(api).unwrap_or_else(|e| e.exit());
-    ids.par_iter()
-        .filter_map(|id| {
-            none_if_404(databases::get_database(api, id))
-                .unwrap_or_else(|e| e.exit())
-                .map(|db| db.default_connection_id)
+fn managed_db_connection_ids(api: &Api) -> Result<Vec<String>, ApiError> {
+    let ids = databases::list_database_ids(api)?;
+    let conn_ids: Result<Vec<Option<String>>, ApiError> = ids
+        .par_iter()
+        .map(|id| {
+            Ok(none_if_404(databases::get_database(api, id))?.map(|db| db.default_connection_id))
         })
-        .collect()
+        .collect();
+    Ok(conn_ids?.into_iter().flatten().collect())
 }
 
 /// Build the per-table scan list for a whole-workspace (unscoped) `indexes
@@ -254,11 +254,15 @@ fn managed_db_connection_ids(api: &Api) -> Vec<String> {
 /// with a connection-scoped `information_schema` call, exactly like the
 /// `--connection-id` path. The two table sets are disjoint: a managed database's
 /// connection is never returned by `connections list`.
-fn workspace_scan_targets(api: &Api, schema: Option<&str>, table: Option<&str>) -> Vec<ScanTarget> {
+fn workspace_scan_targets(
+    api: &Api,
+    schema: Option<&str>,
+    table: Option<&str>,
+) -> Result<Vec<ScanTarget>, ApiError> {
     // Regular connections: one workspace-wide enumeration, label (= connection
     // name) mapped back to its id, falling back to the label itself (#161).
-    let name_to_id = connection_lookup(api);
-    let mut targets: Vec<ScanTarget> = collect_tables(api, None, schema, table)
+    let name_to_id = connection_lookup(api)?;
+    let mut targets: Vec<ScanTarget> = collect_tables(api, None, schema, table)?
         .into_iter()
         .map(|t| {
             let conn_id = scan_connection_id(None, &t.connection, &name_to_id).to_string();
@@ -268,21 +272,23 @@ fn workspace_scan_targets(api: &Api, schema: Option<&str>, table: Option<&str>) 
 
     // Managed databases: discover their hidden connections, then scan each
     // scoped (the per-connection enumeration is what surfaces `__db_*` tables).
-    let db_conns = managed_db_connection_ids(api);
-    let managed: Vec<ScanTarget> = db_conns
+    let db_conns = managed_db_connection_ids(api)?;
+    let managed: Result<Vec<Vec<ScanTarget>>, ApiError> = db_conns
         .par_iter()
-        .flat_map(|conn| {
-            collect_tables(api, Some(conn), schema, table)
-                .into_iter()
-                .map(|t| ScanTarget {
-                    conn_id: conn.clone(),
-                    table: t,
-                })
-                .collect::<Vec<_>>()
+        .map(|conn| {
+            collect_tables(api, Some(conn), schema, table).map(|tables| {
+                tables
+                    .into_iter()
+                    .map(|t| ScanTarget {
+                        conn_id: conn.clone(),
+                        table: t,
+                    })
+                    .collect::<Vec<_>>()
+            })
         })
         .collect();
-    targets.extend(managed);
-    targets
+    targets.extend(managed?.into_iter().flatten());
+    Ok(targets)
 }
 
 /// Gather index rows across a connection's (or the workspace's) tables — the
@@ -298,28 +304,28 @@ fn collect_connection_wide(
     connection_id: Option<&str>,
     schema: Option<&str>,
     table: Option<&str>,
-) -> Vec<IndexRow> {
+) -> Result<Vec<IndexRow>, ApiError> {
     let targets = match connection_id {
-        Some(cid) => collect_tables(api, Some(cid), schema, table)
+        Some(cid) => collect_tables(api, Some(cid), schema, table)?
             .into_iter()
             .map(|t| ScanTarget {
                 conn_id: cid.to_string(),
                 table: t,
             })
             .collect(),
-        None => workspace_scan_targets(api, schema, table),
+        None => workspace_scan_targets(api, schema, table)?,
     };
-    let per_table: Vec<(String, Vec<Index>)> = targets
+    let per_table: Result<Vec<(String, Vec<Index>)>, ApiError> = targets
         .par_iter()
         .map(|tg| {
             let t = &tg.table;
             let full = format!("{}.{}.{}", t.connection, t.schema, t.table);
-            let indexes = list_one_table_scan(api, &tg.conn_id, &t.schema, &t.table);
-            (full, indexes)
+            let indexes = list_one_table_scan(api, &tg.conn_id, &t.schema, &t.table)?;
+            Ok((full, indexes))
         })
         .collect();
     let mut rows: Vec<IndexRow> = Vec::new();
-    for (full, indexes) in per_table {
+    for (full, indexes) in per_table? {
         for i in indexes {
             rows.push(IndexRow {
                 inner: i,
@@ -327,7 +333,7 @@ fn collect_connection_wide(
             });
         }
     }
-    rows
+    Ok(rows)
 }
 
 /// How to continue after merging one `/information_schema` page.
@@ -358,7 +364,7 @@ fn collect_tables(
     connection_id: Option<&str>,
     schema: Option<&str>,
     table: Option<&str>,
-) -> Vec<InfoTable> {
+) -> Result<Vec<InfoTable>, ApiError> {
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -369,8 +375,7 @@ fn collect_tables(
             None,
             None,
             cursor.as_deref(),
-        ))
-        .unwrap_or_else(|e| e.exit());
+        ))?;
         out.extend(resp.tables.into_iter().map(|t| InfoTable {
             connection: t.connection,
             schema: t.schema,
@@ -383,23 +388,33 @@ fn collect_tables(
         }
     }
     sort_info_tables(&mut out);
-    out
+    Ok(out)
 }
 
-fn list_one_table(api: &Api, connection_id: &str, schema: &str, table: &str) -> Vec<Index> {
+fn list_one_table(
+    api: &Api,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<Index>, ApiError> {
     // The SDK's typed `IndexInfoResponse.status` is a closed `ready`/`pending`
     // enum; the CLI accepts any status string for display. Keep the CLI's own
     // tolerant deserialization via the seam's untyped GET escape hatch.
     let path = format!("/connections/{connection_id}/tables/{schema}/{table}/indexes");
-    let body: ListResponse = api.get_json(&path, &[]).unwrap_or_else(|e| e.exit());
-    body.indexes
+    let body: ListResponse = api.get_json(&path, &[])?;
+    Ok(body.indexes)
 }
 
-fn list_one_table_scan(api: &Api, connection_id: &str, schema: &str, table: &str) -> Vec<Index> {
+fn list_one_table_scan(
+    api: &Api,
+    connection_id: &str,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<Index>, ApiError> {
     let path = format!("/connections/{connection_id}/tables/{schema}/{table}/indexes");
-    match none_if_404(api.get_json::<ListResponse>(&path, &[])).unwrap_or_else(|e| e.exit()) {
-        Some(body) => body.indexes,
-        None => Vec::new(),
+    match none_if_404(api.get_json::<ListResponse>(&path, &[]))? {
+        Some(body) => Ok(body.indexes),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -479,7 +494,7 @@ pub fn infer_for_search(
     let connection_id = crate::commands::connections::resolve_connection_id(&api, connection_name);
 
     // Fetch indexes for this table
-    let indexes = list_one_table(&api, &connection_id, schema, table);
+    let indexes = list_one_table(&api, &connection_id, schema, table).unwrap_or_else(|e| e.exit());
 
     let location = format!("{}.{}.{}", connection_name, schema, table);
     match resolve_search_params(&indexes, hint_type, hint_column, &location) {
@@ -500,9 +515,13 @@ pub fn list(
 ) {
     let api = Api::new(Some(workspace_id));
 
-    let (rows, multi_table) = match (connection_id, schema, table) {
-        (Some(cid), Some(sch), Some(tbl)) => {
-            let indexes = list_one_table(&api, cid, sch, tbl);
+    // One spinner over the whole fetch — the unscoped path is a
+    // whole-workspace scan (many requests) that otherwise sits silent.
+    // The database discovery inside is deliberately spinner-less
+    // (databases::list_database_ids) so nothing fights for the line.
+    let spinner = crate::util::spinner("Loading indexes…");
+    let result = match (connection_id, schema, table) {
+        (Some(cid), Some(sch), Some(tbl)) => list_one_table(&api, cid, sch, tbl).map(|indexes| {
             let rows: Vec<IndexRow> = indexes
                 .into_iter()
                 .map(|i| IndexRow {
@@ -511,12 +530,11 @@ pub fn list(
                 })
                 .collect();
             (rows, false)
-        }
-        _ => (
-            collect_connection_wide(&api, connection_id, schema, table),
-            true,
-        ),
+        }),
+        _ => collect_connection_wide(&api, connection_id, schema, table).map(|rows| (rows, true)),
     };
+    spinner.finish_and_clear();
+    let (rows, multi_table) = result.unwrap_or_else(|e| e.exit());
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&rows).unwrap()),
@@ -872,7 +890,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let rows = collect_connection_wide(&api, Some("conn-real"), None, None);
+        let rows = collect_connection_wide(&api, Some("conn-real"), None, None).unwrap();
         info.assert();
         idx.assert();
         assert_eq!(rows.len(), 1);
@@ -954,7 +972,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let rows = collect_connection_wide(&api, None, None, None);
+        let rows = collect_connection_wide(&api, None, None, None).unwrap();
         conns.assert();
         info_ws.assert();
         dbs.assert();
@@ -1053,7 +1071,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let mut rows = collect_connection_wide(&api, None, None, None);
+        let mut rows = collect_connection_wide(&api, None, None, None).unwrap();
         conns.assert();
         info_ws.assert();
         reg_idx.assert();
@@ -1087,7 +1105,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws1"));
-        let tables = collect_tables(&api, None, None, None);
+        let tables = collect_tables(&api, None, None, None).unwrap();
         mock.assert();
         assert_eq!(tables.len(), 2);
         assert_eq!(tables[0].table, "a");
@@ -1107,7 +1125,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let rows = list_one_table_scan(&api, "cid", "sch", "tbl");
+        let rows = list_one_table_scan(&api, "cid", "sch", "tbl").unwrap();
         mock.assert();
         assert!(rows.is_empty());
     }
@@ -1134,7 +1152,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", None);
-        let rows = list_one_table(&api, "cid", "sch", "tbl");
+        let rows = list_one_table(&api, "cid", "sch", "tbl").unwrap();
         mock.assert();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].index_name, "ix1");
@@ -1164,7 +1182,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", None);
-        let rows = list_one_table(&api, "cid", "sch", "tbl");
+        let rows = list_one_table(&api, "cid", "sch", "tbl").unwrap();
         mock.assert();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, "building");
@@ -1181,7 +1199,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", None);
-        let rows = list_one_table_scan(&api, "x", "s", "t");
+        let rows = list_one_table_scan(&api, "x", "s", "t").unwrap();
         mock.assert();
         assert!(rows.is_empty());
     }

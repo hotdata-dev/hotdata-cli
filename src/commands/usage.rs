@@ -41,7 +41,10 @@ pub fn usage(workspace_id: &str, since: Option<&str>, format: &str) {
     let query: Vec<(&str, String)> = since
         .map(|s| vec![("since", s.to_string())])
         .unwrap_or_default();
-    let u: Usage = api.get_json("/usage", &query).unwrap_or_else(|e| e.exit());
+    let spinner = crate::util::spinner("Loading usage…");
+    let result = api.get_json("/usage", &query);
+    spinner.finish_and_clear();
+    let u: Usage = result.unwrap_or_else(|e| e.exit());
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&u).unwrap()),
