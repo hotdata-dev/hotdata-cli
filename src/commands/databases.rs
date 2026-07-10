@@ -880,7 +880,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                 "{}{}",
                 label("sql_prefix:"),
                 format!(
-                    "{catalog}.{{schema}}.{{table}}  (pass X-Database-Id header when querying)"
+                    "{catalog}.{{schema}}.{{table}}"
                 )
                 .green()
             );
