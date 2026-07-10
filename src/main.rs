@@ -522,17 +522,28 @@ fn main() {
                 let workspace_id = resolve_workspace(workspace_id);
                 match command {
                     IndexesCommands::List {
-                        connection_id,
                         schema,
                         table,
                         output,
-                    } => indexes::list(
-                        &workspace_id,
-                        connection_id.as_deref(),
-                        schema.as_deref(),
-                        table.as_deref(),
-                        &output,
-                    ),
+                    } => {
+                        let connection_id = crate::config::load_current_database(
+                            "default",
+                            &workspace_id,
+                        )
+                        .and_then(|db_id| {
+                            let api = sdk::Api::new(Some(&workspace_id));
+                            crate::commands::databases::get_database(&api, &db_id)
+                                .ok()
+                                .map(|db| db.default_connection_id)
+                        });
+                        indexes::list(
+                            &workspace_id,
+                            connection_id.as_deref(),
+                            schema.as_deref(),
+                            table.as_deref(),
+                            &output,
+                        )
+                    }
                     IndexesCommands::Create {
                         catalog,
                         schema,

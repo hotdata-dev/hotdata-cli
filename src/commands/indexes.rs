@@ -8,12 +8,8 @@ use std::ops::ControlFlow;
 /// Subcommands for `hotdata indexes`.
 #[derive(clap::Subcommand)]
 pub enum IndexesCommands {
-    /// List indexes (defaults to the whole workspace; narrow with filters)
+    /// List indexes in the active database, or all workspace indexes if none is set
     List {
-        /// Filter by connection ID
-        #[arg(long, short = 'c')]
-        connection_id: Option<String>,
-
         /// Filter by schema name
         #[arg(long)]
         schema: Option<String>,
