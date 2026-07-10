@@ -3,7 +3,8 @@
 //! Two nouns, named explicitly in every command: **datasources** (added,
 //! credentialed sources — schema discovered, no data loaded) and **imports**
 //! (managed DBs materialized from a datasource). Commands: `new-datasource`,
-//! `list-datasources`, `connectors` (the catalog), `new-import` (--all or
+//! `list-datasources`, `datasources` (the catalog of available types),
+//! `new-import` (--all or
 //! SQL), `list-imports`, `trigger-import` (re-run: refresh an import's DB
 //! from source), `status` (one-shot or `--wait` attach). The 0.13
 //! `*-connection` verbs survive as hidden aliases (the noun collided with
@@ -91,7 +92,7 @@ pub enum IngestCommands {
     ///
     /// Interactive by default; pass `--service` with config flags to add
     /// non-interactively. Pull rows separately with `hotdata ingest
-    /// new-import`; browse connectors with `hotdata ingest connectors`.
+    /// new-import`; browse available types with `hotdata ingest datasources`.
     #[command(alias = "new-connection")]
     NewDatasource {
         #[command(flatten)]
@@ -130,9 +131,10 @@ pub enum IngestCommands {
         all: bool,
     },
 
-    /// Browse the connector catalog
-    Connectors {
-        /// Filter to connectors whose name contains this text
+    /// Browse the catalog of available datasource types
+    #[command(alias = "connectors")]
+    Datasources {
+        /// Filter to entries whose name contains this text
         name: Option<String>,
     },
 
@@ -231,7 +233,7 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             delete_datasource(workspace_id, output, &id, keep_database)
         }
         IngestCommands::ListDatasources { all } => list_datasources(workspace_id, output, all),
-        IngestCommands::Connectors { name } => catalog_list(workspace_id, name.as_deref(), output),
+        IngestCommands::Datasources { name } => catalog_list(workspace_id, name.as_deref(), output),
         IngestCommands::NewImport {
             sql,
             all,
@@ -623,7 +625,7 @@ pub struct CreateArgs {
     name: Option<String>,
 
     /// Connector config as JSON (inline, @file.json, or @-). Field reference:
-    /// `hotdata ingest connectors -o json` (each entry's config_schema)
+    /// `hotdata ingest datasources -o json` (each entry's config_schema)
     #[arg(long)]
     config: Option<String>,
 
@@ -676,7 +678,7 @@ fn add_from_flags(workspace_id: &str, output: &str, args: CreateArgs, wait: &Wai
     let Some(service) = args.service.as_deref() else {
         eprintln!(
             "error: --service is required to add a datasource non-interactively. \
-             Browse connectors with 'hotdata ingest connectors', or run \
+             Browse available types with 'hotdata ingest datasources', or run \
              'hotdata ingest new-datasource' in a terminal for the guided wizard."
         );
         std::process::exit(1);
@@ -688,7 +690,7 @@ fn add_from_flags(workspace_id: &str, output: &str, args: CreateArgs, wait: &Wai
         .find(|c| c.name == service)
         .cloned()
         .unwrap_or_else(|| {
-            eprintln!("error: unknown connector '{service}'. Run 'hotdata ingest connectors'.");
+            eprintln!("error: unknown connector '{service}'. Run 'hotdata ingest datasources'.");
             std::process::exit(1);
         });
 
@@ -1512,7 +1514,7 @@ fn delete_datasource(workspace_id: &str, output: &str, id: &str, keep_database: 
 // --- catalog fetch --------------------------------------------------------
 
 fn fetch_catalog(client: &IngestClient) -> Vec<ConnectorEntry> {
-    with_spinner("loading connectors…", || client.connectors()).connectors
+    with_spinner("loading datasource types…", || client.connectors()).connectors
 }
 
 /// Bare `api` connector: build a minimal API config interactively
@@ -1564,7 +1566,7 @@ fn filesystem_credentials() -> serde_json::Value {
 
 /// Iceberg catalog connection config: prompt for catalog URI + warehouse +
 /// token + namespace. Field reference: the `iceberg` entry's config_schema
-/// in `hotdata ingest connectors -o json`.
+/// in `hotdata ingest datasources -o json`.
 fn iceberg_catalog_config() -> serde_json::Value {
     let mut m = serde_json::Map::new();
     m.insert("uri".into(), ask_text("Catalog URI:").into());
