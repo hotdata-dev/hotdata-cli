@@ -52,7 +52,7 @@ pub fn try_resolve_connection_id(api: &Api, name_or_id: &str) -> Result<String, 
         return Ok(db.default_connection_id);
     }
 
-    Err(format!("no connection named or with id '{name_or_id}'"))
+    Err(format!("no catalog with id '{name_or_id}'"))
 }
 
 /// Resolve a connection name or ID to a connection ID, exiting on failure.
