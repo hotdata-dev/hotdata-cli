@@ -258,6 +258,8 @@ struct DatabaseSummary {
     name: Option<String>,
     #[serde(default)]
     default_catalog: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
 }
 
 /// CLI output shape for `databases get`. A curated, stably-ordered view mapped
@@ -274,6 +276,8 @@ pub struct Database {
     pub default_connection_id: String,
     #[serde(default)]
     pub expires_at: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
     #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
 }
@@ -347,6 +351,7 @@ impl From<hotdata::models::DatabaseDetailResponse> for Database {
             default_catalog: Some(d.default_catalog),
             default_connection_id: d.default_connection_id,
             expires_at: d.expires_at.flatten(),
+            created_at: d.created_at.flatten(),
             attachments: d
                 .attachments
                 .into_iter()
@@ -360,12 +365,12 @@ impl From<hotdata::models::DatabaseDetailResponse> for Database {
 }
 
 impl From<hotdata::models::DatabaseSummary> for DatabaseSummary {
-    /// Map the SDK's typed summary into the CLI's list-row output shape.
     fn from(s: hotdata::models::DatabaseSummary) -> Self {
         DatabaseSummary {
             id: s.id,
             name: s.name.flatten(),
             default_catalog: Some(s.default_catalog),
+            created_at: s.created_at.flatten(),
         }
     }
 }
@@ -386,7 +391,7 @@ pub(crate) fn get_database(api: &Api, id: &str) -> Result<Database, ApiError> {
 /// up worker" hint instead of an unexplained pause — `databases list` is a
 /// common first command against an idle workspace.
 fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> {
-    block_with_wakeup(api, "Loading databases…", api.client().databases().list())
+    block_with_wakeup(api, "Loading databases...", api.client().databases().list())
         .map(|r| r.databases.into_iter().map(DatabaseSummary::from).collect())
 }
 
@@ -822,10 +827,14 @@ pub fn list(workspace_id: &str, format: &str) {
                             marker.to_string(),
                             d.id.clone(),
                             d.name.as_deref().unwrap_or("-").to_string(),
+                            d.created_at
+                                .as_deref()
+                                .map(crate::util::format_date)
+                                .unwrap_or_else(|| "-".to_string()),
                         ]
                     })
                     .collect();
-                crate::output::table::print(&["", "ID", "NAME"], &rows);
+                crate::output::table::print(&["", "ID", "NAME", "CREATED"], &rows);
             }
         }
         _ => unreachable!(),
@@ -848,6 +857,13 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
             }
             if let Some(c) = &db.default_catalog {
                 println!("{}{}", label("catalog:"), c.clone().cyan());
+            }
+            if let Some(ts) = &db.created_at {
+                println!(
+                    "{}{}",
+                    label("created_at:"),
+                    crate::util::format_date(ts).dark_grey()
+                );
             }
             println!(
                 "{}{}",

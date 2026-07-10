@@ -16,7 +16,7 @@ path = "src/main.rs"
 # behind a shared multi-thread tokio runtime. The `arrow` feature backs result
 # decode; `upload_file` runs the presigned direct-to-storage upload flow
 # (see src/sdk.rs::Api::upload).
-hotdata = { version = "0.8.0", features = ["arrow"] }
+hotdata = { version = "0.8.1", features = ["arrow"] }
 # Shared multi-thread runtime for the sync wrapper; block_on is called
 # concurrently from rayon worker threads (see src/indexes.rs). The presigned
 # upload (src/sdk.rs::Api::upload) drives the SDK's async `upload_file` on this
