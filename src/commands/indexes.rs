@@ -238,8 +238,7 @@ fn managed_db_connection_ids(api: &Api) -> Result<Vec<String>, ApiError> {
     let conn_ids: Result<Vec<Option<String>>, ApiError> = ids
         .par_iter()
         .map(|id| {
-            Ok(none_if_404(databases::get_database(api, id))?
-                .map(|db| db.default_connection_id))
+            Ok(none_if_404(databases::get_database(api, id))?.map(|db| db.default_connection_id))
         })
         .collect();
     Ok(conn_ids?.into_iter().flatten().collect())
@@ -522,20 +521,17 @@ pub fn list(
     // (databases::list_database_ids) so nothing fights for the line.
     let spinner = crate::util::spinner("Loading indexes…");
     let result = match (connection_id, schema, table) {
-        (Some(cid), Some(sch), Some(tbl)) => {
-            list_one_table(&api, cid, sch, tbl).map(|indexes| {
-                let rows: Vec<IndexRow> = indexes
-                    .into_iter()
-                    .map(|i| IndexRow {
-                        inner: i,
-                        table: None,
-                    })
-                    .collect();
-                (rows, false)
-            })
-        }
-        _ => collect_connection_wide(&api, connection_id, schema, table)
-            .map(|rows| (rows, true)),
+        (Some(cid), Some(sch), Some(tbl)) => list_one_table(&api, cid, sch, tbl).map(|indexes| {
+            let rows: Vec<IndexRow> = indexes
+                .into_iter()
+                .map(|i| IndexRow {
+                    inner: i,
+                    table: None,
+                })
+                .collect();
+            (rows, false)
+        }),
+        _ => collect_connection_wide(&api, connection_id, schema, table).map(|rows| (rows, true)),
     };
     spinner.finish_and_clear();
     let (rows, multi_table) = result.unwrap_or_else(|e| e.exit());
