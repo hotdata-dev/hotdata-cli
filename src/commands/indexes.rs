@@ -1338,6 +1338,45 @@ mod tests {
         assert!(result.unwrap_err().contains("has no columns"));
     }
 
+    mod list_args {
+        use crate::commands::indexes::IndexesCommands;
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(subcommand)]
+            cmd: IndexesCommands,
+        }
+
+        fn parse(args: &[&str]) -> Result<IndexesCommands, clap::Error> {
+            Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied()))
+                .map(|w| w.cmd)
+        }
+
+        #[test]
+        fn list_parses_with_no_flags() {
+            assert!(matches!(
+                parse(&["list"]).unwrap(),
+                IndexesCommands::List { schema: None, table: None, .. }
+            ));
+        }
+
+        #[test]
+        fn list_rejects_connection_id_flag() {
+            assert!(parse(&["list", "--connection-id", "conn1"]).is_err());
+        }
+
+        #[test]
+        fn list_accepts_schema_and_table_filters() {
+            let cmd = parse(&["list", "--schema", "public", "--table", "orders"]).unwrap();
+            assert!(matches!(
+                cmd,
+                IndexesCommands::List { schema, table, .. }
+                if schema.as_deref() == Some("public") && table.as_deref() == Some("orders")
+            ));
+        }
+    }
+
     mod delete_args {
         use crate::commands::indexes::IndexesCommands;
         use clap::Parser;

@@ -2160,6 +2160,56 @@ mod tests {
     }
 
     #[test]
+    fn collect_tables_with_limit_makes_single_request_and_returns_cursor() {
+        let mut server = mockito::Server::new();
+        // Only one mock — verifies we do NOT follow the cursor when limit is set.
+        let mock = server
+            .mock("GET", "/v1/information_schema")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("connection_id".into(), "conn1".into()),
+                mockito::Matcher::UrlEncoded("limit".into(), "5".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
+            )
+            .expect(1)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let (tables, has_more, next_cursor) =
+            collect_tables(&api, "conn1", None, None, Some(5), None);
+        mock.assert();
+        assert_eq!(tables.len(), 1);
+        assert!(has_more);
+        assert_eq!(next_cursor.as_deref(), Some("page2"));
+    }
+
+    #[test]
+    fn collect_tables_with_table_filter_passes_it_to_api() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/v1/information_schema")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("connection_id".into(), "conn1".into()),
+                mockito::Matcher::UrlEncoded("table".into(), "orders".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let (tables, _, _) = collect_tables(&api, "conn1", None, Some("orders"), None, None);
+        mock.assert();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].table, "orders");
+    }
+
+    #[test]
     fn create_posts_to_databases_endpoint() {
         let mut server = mockito::Server::new();
         let mock = server
