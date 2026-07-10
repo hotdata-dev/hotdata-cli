@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, connections, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list connections", "create a connection", "list databases", "managed database", "load parquet", "list tables", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "managed database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
 version: 0.15.0
 ---
 
@@ -20,7 +20,7 @@ Install all skills with **`hotdata skills install`**. Load specialized skills on
 
 | Skill | Use for |
 |-------|---------|
-| **`hotdata`** (this file) | Auth, workspaces, connections, databases, tables, basic `query`, context, jobs, ingest |
+| **`hotdata`** (this file) | Auth, workspaces, databases, tables, basic `query`, context, jobs, ingest |
 | **`hotdata-search`** | BM25, vector search, `hotdata search`, bm25/vector indexes, embedding providers |
 | **`hotdata-analytics`** | OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes |
 | **`hotdata-geospatial`** | PostGIS-style `ST_*`, WKB, spatial joins |
@@ -64,7 +64,7 @@ A workspace's query worker scales to zero after inactivity. The **first** comman
 
 These are **patterns** built from the commands below—not separate CLI subcommands:
 
-- **Model (`context:DATAMODEL`)** — The shared semantic map of the active database (entities, keys, joins across connections). Store and read it only via database context (`hotdata context list`, then `show DATAMODEL` **only when listed**, `push DATAMODEL`); refresh using `connections`, `connections refresh`, and `tables list`. For a deep pass (connector enrichment, indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
+- **Model (`context:DATAMODEL`)** — The shared semantic map of the active database (entities, keys, joins across sources). Store and read it only via database context (`hotdata context list`, then `show DATAMODEL` **only when listed**, `push DATAMODEL`); refresh using `tables list` and `tables show`. For a deep pass (indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
 - **History / Chain / OLAP SQL** — See **`hotdata-analytics`** and [references/WORKFLOWS.md](references/WORKFLOWS.md).
 - **Search / retrieval indexes** — See **`hotdata-search`**.
 
@@ -72,7 +72,7 @@ Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and manage
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`connections`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`ingest`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`ingest`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -81,83 +81,6 @@ Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**
 hotdata workspaces list [--output table|json|yaml]
 ```
 Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_status`. Table output marks the default workspace with `*`.
-
-### List Connections
-```
-hotdata connections list [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata connections <connection_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
-```
-- `list` returns `id`, `name`, `source_type` for each connection.
-- Pass a connection ID to view details (id, name, source type, table counts).
-
-### Refresh connection schema or data
-```
-hotdata connections refresh <connection_id> [--workspace-id <workspace_id>] [--data] [--schema <name> --table <name>] [--async] [--include-uncached]
-```
-- Default (no flags) refreshes the connection’s catalog so new or changed tables and columns appear in `hotdata tables list` and queries. Use after DDL or other changes in the source database when the workspace view is stale.
-- `--data` re-syncs cached row data from the source instead of refreshing the catalog.
-- `--schema` and `--table` narrow a data refresh to a single table (must be supplied together).
-- `--async` submits a data refresh as a background job and returns a job ID; poll with `hotdata jobs <job_id>`. Only valid with `--data` — schema refresh is always synchronous.
-- `--include-uncached` includes tables that haven't been cached yet in a connection-wide data refresh. Only valid with `--data` and no `--table`.
-
-### Create a Connection
-
-#### Step 1 — Discover available connection types
-```
-hotdata connections create list [--workspace-id <workspace_id>] [--output table|json|yaml]
-```
-Returns all available connection types with `name` and `label`.
-
-#### Step 2 — Inspect the schema for a specific type
-```
-hotdata connections create list <name> [--workspace-id <workspace_id>] [--output json]
-```
-Returns `config` and `auth` JSON Schema objects describing all required and optional fields for that connection type. Use **`--output json`** to get the full schema detail.
-
-- `config` — connection configuration fields (host, port, database, etc.). May be `null` for services that need no configuration.
-- `auth` — authentication fields (password, token, credentials, etc.). May be `null` for services that need no authentication. May be a `oneOf` with multiple authentication method options.
-
-#### Step 3 — Create the connection
-```
-hotdata connections create \
-  --name "my-connection" \
-  --type <source_type> \
-  --config '<json object>' \
-  [--workspace-id <workspace_id>] [--output table|json|yaml]
-```
-
-The `--config` JSON object must contain all **required** fields from `config` plus the **auth fields** merged in at the top level. Auth fields are not nested — they sit alongside config fields in the same object.
-
-Example for PostgreSQL (required: `host`, `port`, `user`, `database` + auth field `password`):
-```
-hotdata connections create \
-  --name "my-postgres" \
-  --type postgres \
-  --config '{"host":"db.example.com","port":5432,"user":"myuser","database":"mydb","password":"..."}'
-```
-
-**Security: never expose credentials in plain text.** Passwords, tokens, API keys, and any field with `"format": "password"` in the schema must never be hardcoded as literal strings in CLI commands. Always use one of these safe approaches:
-
-- Read from an environment variable:
-  ```
-  --config "{\"host\":\"db.example.com\",\"port\":5432,\"user\":\"myuser\",\"database\":\"mydb\",\"password\":\"$DB_PASSWORD\"}"
-  ```
-- Read a credential from a file and inject it:
-  ```
-  --config "{\"token\":\"$(cat ~/.secrets/my-token)\"}"
-  ```
-
-**Field-building rules from the schema:**
-
-- Include all fields listed in `config.required` — these are mandatory.
-- Include optional config fields only if the user provides values for them.
-- For `auth` with a single method (no `oneOf`): include all `auth.required` fields in the config object.
-- For `auth` with `oneOf`: pick one authentication method and include only its required fields.
-- Fields with `"format": "password"` are credentials — apply the security rules above.
-- Fields with `"type": "integer"` must be JSON numbers, not strings (e.g. `"port": 5432` not `"port": "5432"`).
-- Fields with `"type": "boolean"` must be JSON booleans (e.g. `"use_tls": true`).
-- Fields with `"type": "array"` must be JSON arrays (e.g. `"spreadsheet_ids": ["abc", "def"]`).
-- Nested `oneOf` fields must be a JSON object including a `"type"` discriminator field matching the chosen variant's `const` value.
 
 ### Managed databases (`databases`)
 
@@ -238,17 +161,26 @@ hotdata databases detach gh   # when finished (optional)
 
 Without `--alias`, the catalog answers to the connection's own name (`github.github.issues`). Do **not** export a connection to parquet just to query it — attach is the live, sync-preserving path.
 
-### List Tables and Columns
+### Tables
+
 ```
-hotdata tables list [--workspace-id <workspace_id>] [--connection-id <connection_id>] [--schema <pattern>] [--table <pattern>] [--limit <int>] [--cursor <cursor>] [--output table|json|yaml]
+hotdata tables list [--workspace-id <workspace_id>] [--schema <pattern>] [--table <pattern>] [--limit <int>] [--cursor <cursor>] [--output table|json|yaml]
+hotdata tables show <catalog.schema.table|schema.table> [--output table|json|yaml]
 ```
-- Default format is `table`.
-- **Always use this command to inspect available tables and columns.** Do NOT use the `query` command to query `information_schema` for this purpose.
-- Without `--connection-id`: lists all tables with `table`, `synced`, `last_sync`. The `table` column is formatted as `<connection>.<schema>.<table>`.
-- With `--connection-id`: includes column definitions. Lists each column as its own row with `table`, `column`, `data_type`, `nullable`. Use this to inspect the schema before writing queries.
-- **Always use the full `<connection>.<schema>.<table>` name when referencing tables in SQL queries.** A connection table is only queryable once its connection is attached to the active database (`hotdata databases attach <connection>`); see [Querying across connections (attach)](#querying-across-connections-attach).
-- `--schema` and `--table` support SQL `%` wildcard patterns (e.g. `--table order%` matches `orders`, `order_items`, etc.).
-- Results are paginated (default 100 per page). If more results are available, a `--cursor` token is printed — pass it to fetch the next page.
+
+**`tables list`**
+- **Always use this command to discover available tables.** Do NOT query `information_schema` via `hotdata query`.
+- With an **active database set** (`hotdata databases set <id>`): lists tables in that database — format `<catalog>.<schema>.<table>`, columns `TABLE`, `SYNCED`, `LAST_SYNC`.
+- With **no active database**: lists all tables across the workspace — format `<source>.<schema>.<table>`, same columns.
+- `--schema` and `--table` support SQL `%` wildcard patterns (e.g. `--table order%`).
+- Results are paginated (default 100 per page); a `--cursor` token is printed when more are available.
+
+**`tables show`**
+- Fetches column definitions (`COLUMN`, `DATA_TYPE`, `NULLABLE`) for a single table.
+- **`catalog.schema.table`** — three-part form; the catalog resolves to a managed database or an attached source by name.
+- **`schema.table`** — two-part form; uses the active database (errors if none is set).
+- Copy the name directly from `tables list` output — both forms match what `list` prints.
+- **Always use `tables show` to inspect columns before writing queries.**
 
 ### Database context (named Markdown)
 
@@ -277,7 +209,7 @@ hotdata query status <query_run_id>
 
 - Default output is `table` (row count and execution time).
 - **A query runs inside one managed database** (active database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus any attached connection catalogs only**. To query a connection's tables or join across sources, attach the connection first — see [Querying across connections (attach)](#querying-across-connections-attach).
-- Use `hotdata tables list` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
+- Use `hotdata tables list` and `hotdata tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes.
 - Async runs return `query_run_id` → poll with `query status` (do not re-run the same heavy SQL).
 - **Large results are complete, not a preview.** The server returns inline rows only up to a bounded cap and persists the full set out-of-band; `hotdata query` transparently fetches the full result, so the printed rows and row count are the complete set. (If the full result can't be retrieved, the CLI prints the preview and a `warning:` to stderr.)
@@ -347,7 +279,6 @@ Agent tips:
 - Tables print oldest→newest; `-o json` is newest-first (`[0]` = latest).
 - Once an import is `done`, its database is a regular managed DB: query it with `hotdata query --database <db-id> "SELECT … FROM public.<table>"`.
 - Table names per type: `buckets` datasources expose one table named `files` (`FROM <name>` or `FROM <name>.files`); iceberg tables are addressed by the exact onboarded name (`FROM ice."ns.orders"`), the underscored form (`FROM ice.ns_orders`), or the bare table name — `show-datasource` lists what was discovered.
-- `ingest` datasources are separate from `hotdata connections` (live, synced views for federated queries): an ingest **copies data in**, a connection stays live at the source.
 - The pre-0.14 `*-connection` verbs still work as hidden aliases of the `*-datasource` ones.
 
 ### Usage
@@ -401,10 +332,6 @@ hotdata auth logout           # Remove saved auth for the default profile
 ```
 
 `login` and `register` (both GitHub and `--email`) are **browser-based** PKCE flows: the CLI opens a browser and waits on a local callback to complete sign-in/sign-up — account details (email/password) are entered in the browser, not via CLI flags. They require a browser and an interactive terminal, so they do **not** work under `--no-input` or in headless/CI. For automation, authenticate once interactively, then use the saved session or `HOTDATA_API_KEY`.
-
-### Interactive connection wizard
-
-`hotdata connections new` creates a connection interactively (human-friendly); agents should prefer the programmatic `connections create` flow above.
 
 ## Workflows
 

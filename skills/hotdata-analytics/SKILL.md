@@ -1,6 +1,6 @@
 ---
 name: hotdata-analytics
-description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for connections, tables, and auth.
+description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for tables and auth.
 version: 0.15.0
 ---
 
@@ -61,10 +61,11 @@ hotdata queries <query_run_id> [--output table|json|yaml]
 
 ```bash
 hotdata results list [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--output table|json|yaml]
-hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]
+hotdata results show <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]
+hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]  # shorthand
 ```
 
-- Prefer **`results <id>`** over re-running identical heavy queries.
+- Prefer **`results show <id>`** over re-running identical heavy queries. The positional shorthand `results <id>` also works.
 - Query footers may include `[result-id: rslt...]`; also available from `queries <query_run_id>`.
 - `results list --limit` defaults to **100** (max **1000**) — unlike `queries list`, which defaults to **20**.
 
