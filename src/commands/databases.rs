@@ -912,10 +912,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
             println!(
                 "{}{}",
                 label("sql_prefix:"),
-                format!(
-                    "{catalog}.{{schema}}.{{table}}"
-                )
-                .green()
+                format!("{catalog}.{{schema}}.{{table}}").green()
             );
             if !db.attachments.is_empty() {
                 println!("{}({})", label("attached catalogs:"), db.attachments.len());
@@ -1383,8 +1380,14 @@ pub fn tables_list(
         .as_deref()
         .or(db.name.as_deref())
         .unwrap_or("default");
-    let (tables, has_more, next_cursor) =
-        collect_tables(&api, &db.default_connection_id, schema, table, limit, cursor);
+    let (tables, has_more, next_cursor) = collect_tables(
+        &api,
+        &db.default_connection_id,
+        schema,
+        table,
+        limit,
+        cursor,
+    );
 
     let rows = table_rows(catalog, tables);
 
@@ -1526,7 +1529,8 @@ pub fn tables_load(
         // The table wasn't declared at create time. Collect existing tables so
         // they are re-declared in the replacement database, then delete and
         // recreate with all tables (including the new one) declared.
-        let (existing, _, _) = collect_tables(&api, &db.default_connection_id, None, None, None, None);
+        let (existing, _, _) =
+            collect_tables(&api, &db.default_connection_id, None, None, None, None);
         let mut all_tables: Vec<String> = existing
             .iter()
             .map(|t| format!("{}.{}", t.schema, t.table))

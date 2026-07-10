@@ -1349,15 +1349,18 @@ mod tests {
         }
 
         fn parse(args: &[&str]) -> Result<IndexesCommands, clap::Error> {
-            Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied()))
-                .map(|w| w.cmd)
+            Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).map(|w| w.cmd)
         }
 
         #[test]
         fn list_parses_with_no_flags() {
             assert!(matches!(
                 parse(&["list"]).unwrap(),
-                IndexesCommands::List { schema: None, table: None, .. }
+                IndexesCommands::List {
+                    schema: None,
+                    table: None,
+                    ..
+                }
             ));
         }
 

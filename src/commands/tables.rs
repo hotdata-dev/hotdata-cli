@@ -164,18 +164,27 @@ pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
                     );
                     std::process::exit(1);
                 });
-            let db = crate::commands::databases::get_database(&api, &db_id)
-                .unwrap_or_else(|e| e.exit());
+            let db =
+                crate::commands::databases::get_database(&api, &db_id).unwrap_or_else(|e| e.exit());
             let catalog = db
                 .default_catalog
                 .unwrap_or_else(|| db.name.unwrap_or_else(|| "default".to_string()));
-            (db.default_connection_id, catalog, schema.to_string(), table.to_string())
+            (
+                db.default_connection_id,
+                catalog,
+                schema.to_string(),
+                table.to_string(),
+            )
         }
         [catalog, schema, table] => {
             // Three-part: resolve the catalog/name as a database or connection.
-            let conn_id =
-                crate::commands::connections::resolve_connection_id(&api, catalog);
-            (conn_id, catalog.to_string(), schema.to_string(), table.to_string())
+            let conn_id = crate::commands::connections::resolve_connection_id(&api, catalog);
+            (
+                conn_id,
+                catalog.to_string(),
+                schema.to_string(),
+                table.to_string(),
+            )
         }
         _ => {
             use crossterm::style::Stylize;

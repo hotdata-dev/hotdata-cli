@@ -535,16 +535,14 @@ fn main() {
                         table,
                         output,
                     } => {
-                        let connection_id = crate::config::load_current_database(
-                            "default",
-                            &workspace_id,
-                        )
-                        .and_then(|db_id| {
-                            let api = sdk::Api::new(Some(&workspace_id));
-                            crate::commands::databases::get_database(&api, &db_id)
-                                .ok()
-                                .map(|db| db.default_connection_id)
-                        });
+                        let connection_id =
+                            crate::config::load_current_database("default", &workspace_id)
+                                .and_then(|db_id| {
+                                    let api = sdk::Api::new(Some(&workspace_id));
+                                    crate::commands::databases::get_database(&api, &db_id)
+                                        .ok()
+                                        .map(|db| db.default_connection_id)
+                                });
                         indexes::list(
                             &workspace_id,
                             connection_id.as_deref(),
@@ -708,17 +706,16 @@ fn main() {
                         let api = sdk::Api::new(Some(&workspace_id));
                         let db = crate::commands::databases::get_database(&api, &db_id)
                             .unwrap_or_else(|e| e.exit());
-                        let catalog = db.default_catalog.unwrap_or_else(|| {
-                            db.name.unwrap_or_else(|| "default".to_string())
-                        });
+                        let catalog = db
+                            .default_catalog
+                            .unwrap_or_else(|| db.name.unwrap_or_else(|| "default".to_string()));
                         (catalog, schema.to_string(), tbl.to_string())
                     }
                     _ => {
                         use crossterm::style::Stylize;
                         eprintln!(
                             "{}",
-                            "error: --table must be 'schema.table' or 'catalog.schema.table'"
-                                .red()
+                            "error: --table must be 'schema.table' or 'catalog.schema.table'".red()
                         );
                         std::process::exit(1);
                     }
