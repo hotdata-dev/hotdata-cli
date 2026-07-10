@@ -46,7 +46,7 @@ hotdata search "<query>" --table <schema.table> [--type bm25|vector] [--column <
 
 ## Indexes (BM25 and vector)
 
-Create attaches to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` narrows to the **active database** when one is set; without one it scans the whole workspace. Filter further with `--schema` / `--table`. `delete` **requires all of** `--connection-id` (short `-c`) + `--schema` + `--table` + `--name`.
+Create attaches to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` narrows to the **active database** when one is set; without one it scans the whole workspace. Filter further with `--schema` / `--table`. `delete` **requires all of** `--catalog` + `--schema` + `--table` + `--name`.
 
 ```bash
 # List — active-database scope when a DB is set, else whole-workspace scan
@@ -58,8 +58,8 @@ hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
   [--name <name>] [--metric l2|cosine|dot] [--async] \
   [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 
-# Delete — requires --connection-id + --schema + --table + --name
-hotdata indexes delete --connection-id <id> --schema <schema> --table <table> --name <name>
+# Delete — requires --catalog + --schema + --table + --name
+hotdata indexes delete --catalog <alias> --schema <schema> --table <table> --name <name>
 ```
 
 - **`--type` is required** on create: `bm25` (one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`**.)

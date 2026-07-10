@@ -598,26 +598,12 @@ fn main() {
                     }
                     IndexesCommands::Delete {
                         catalog,
-                        connection_id,
                         schema,
                         table,
                         name,
                     } => {
-                        // clap guarantees exactly one of --catalog / --connection-id
-                        // plus --table and --name; --schema defaults to "public".
-                        // A `--catalog` alias resolves to the backing connection
-                        // (incl. a managed database's default connection), the same
-                        // way `indexes create` does; `--connection-id` is used as-is.
-                        let conn_id = match (catalog, connection_id) {
-                            (Some(cat), _) => {
-                                let api = sdk::Api::new(Some(&workspace_id));
-                                connections::resolve_connection_id(&api, &cat)
-                            }
-                            (None, Some(cid)) => cid,
-                            (None, None) => {
-                                unreachable!("clap requires --catalog or --connection-id")
-                            }
-                        };
+                        let api = sdk::Api::new(Some(&workspace_id));
+                        let conn_id = connections::resolve_connection_id(&api, &catalog);
                         indexes::delete(
                             &workspace_id,
                             indexes::IndexScope::Connection {
