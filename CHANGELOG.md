@@ -1,3 +1,8 @@
+## [0.17.1] - 2026-07-14
+
+### 🐛 Bug Fixes
+
+- *(ingest)* cancel command exits 0 on success (#225)
 ## [0.17.0] - 2026-07-14
 
 ### 🚀 Features
