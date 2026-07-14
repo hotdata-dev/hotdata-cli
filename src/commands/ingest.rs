@@ -1070,7 +1070,6 @@ fn cancel_import(workspace_id: &str, output: &str, id: &str) {
             .dark_grey()
         );
     });
-    std::process::exit(1);
 }
 
 // --- list-datasources ------------------------------------------------------
