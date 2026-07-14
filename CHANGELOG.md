@@ -1,3 +1,8 @@
+## [0.17.0] - 2026-07-14
+
+### 🚀 Features
+
+- *(ingest)* Add cancel subcommand and handle cancelled status (#223)
 ## [0.16.0] - 2026-07-10
 
 ### 🚀 Features
