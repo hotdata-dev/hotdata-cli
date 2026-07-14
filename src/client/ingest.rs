@@ -285,6 +285,17 @@ impl IngestClient {
         )
     }
 
+    /// Cancel a running or pending ingest. The dltHub drain may still be
+    /// running (we can't interrupt it remotely); the server marks the status
+    /// as `cancelled` — a non-terminal state that keeps the /rerun in-flight
+    /// guard active. A 409 from /rerun means the drain hasn't settled yet.
+    pub fn cancel(&self, ingest_id: &str) -> Result<IngestCancelAck, IngestError> {
+        self.send(
+            self.authed(reqwest::Method::POST, &format!("/jobs/{ingest_id}/cancel")),
+            None,
+        )
+    }
+
     // --- read endpoints --------------------------------------------------
 
     /// The connector catalog. REST entries carry a ready-to-edit `template`
@@ -458,6 +469,19 @@ pub struct JobStatus {
     pub created_at: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+}
+
+/// `POST /jobs/{id}/cancel` body.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IngestCancelAck {
+    pub ingest_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub database_id: Option<String>,
 }
 
 /// `DELETE /sources/{id}` body.

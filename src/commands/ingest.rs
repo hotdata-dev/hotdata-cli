@@ -190,6 +190,17 @@ pub enum IngestCommands {
         #[command(flatten)]
         poll: PollArgs,
     },
+
+    /// Cancel a running or pending import
+    ///
+    /// Marks the import cancelled immediately. The dltHub drain may still be
+    /// running and will finish on its own — use `status <id> --wait` to see
+    /// when it settles. To retry after cancellation, use `trigger-import <id>`
+    /// once the status reaches `failed`.
+    Cancel {
+        /// Import or datasource id to cancel
+        id: String,
+    },
 }
 
 /// Wait flags shared by the non-blocking commands (`new-import`,
@@ -246,6 +257,7 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             trigger_import(workspace_id, output, &id, &poll)
         }
         IngestCommands::Status { id, poll } => status(workspace_id, output, &id, &poll),
+        IngestCommands::Cancel { id } => cancel_import(workspace_id, output, &id),
     }
 }
 
@@ -261,6 +273,7 @@ fn normalize_status(raw: &str) -> (&'static str, Option<&str>) {
         "running" => ("running", None),
         "done" => ("done", None),
         "failed" => ("failed", None),
+        "cancelled" => ("cancelled", None),
         stage => ("running", Some(stage)),
     }
 }
@@ -986,7 +999,7 @@ fn trigger_import(workspace_id: &str, output: &str, id: &str, poll: &PollArgs) {
 fn status_exit_code(status: &str) -> i32 {
     match normalize_status(status).0 {
         "done" => 0,
-        "failed" => 1,
+        "failed" | "cancelled" => 1,
         _ => 2,
     }
 }
@@ -1028,6 +1041,36 @@ fn status(workspace_id: &str, output: &str, id: &str, poll: &PollArgs) {
         }
     });
     std::process::exit(status_exit_code(&st.status));
+}
+
+// --- cancel ----------------------------------------------------------------
+
+fn cancel_import(workspace_id: &str, output: &str, id: &str) {
+    let client = IngestClient::new(workspace_id);
+    let ack = with_spinner("cancelling…", || client.cancel(id));
+    let machine = serde_json::json!({
+        "ingest_id": ack.ingest_id,
+        "status": ack.status,
+        "detail": ack.detail,
+        "database_id": ack.database_id,
+    });
+    render(output, &machine, || {
+        use crossterm::style::Stylize;
+        let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
+        println!("{}{}", label("status:"), util::color_status(&ack.status));
+        if let Some(db) = ack.database_id.as_deref() {
+            println!("{}{}", label("database:"), db);
+        }
+        println!(
+            "{}",
+            format!(
+                "Drain may still be running — track with: hotdata ingest status {} --wait",
+                ack.ingest_id
+            )
+            .dark_grey()
+        );
+    });
+    std::process::exit(1);
 }
 
 // --- list-datasources ------------------------------------------------------
@@ -1280,14 +1323,15 @@ fn poll_ingest(
                 spinner.finish_and_clear();
                 return st;
             }
-            "failed" => {
+            "failed" | "cancelled" => {
                 spinner.finish_and_clear();
                 // Machine formats get the projected status object (with the
                 // server's detail) on stdout, matching one-shot `status`.
                 render(output, &status_json(&st), || {
                     use crossterm::style::Stylize;
+                    let label = st.status.as_str();
                     let detail = st.detail.as_deref().unwrap_or("unknown error");
-                    eprintln!("{}", format!("failed: {detail}").red());
+                    eprintln!("{}", format!("{label}: {detail}").red());
                     if detail.contains("Forbidden") {
                         eprintln!(
                             "{}",
