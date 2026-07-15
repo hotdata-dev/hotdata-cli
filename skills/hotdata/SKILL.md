@@ -93,6 +93,7 @@ Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_st
 ```
 hotdata databases list [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases create [--name <display_name>] [--catalog <alias>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases fork [<id_or_name>] [--name <display_name>] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases set <id_or_name>
 hotdata databases unset
 hotdata databases <id_or_name> [--workspace-id <workspace_id>] [--output table|json|yaml]
@@ -115,6 +116,7 @@ hotdata databases tables delete <table> [--database <id_or_name>] [--schema publ
 
 - `list` — all managed databases in the workspace. Active database is marked with `*` under the DEFAULT column; CREATED shows when each database was made.
 - `create` — creates a new managed database. `--name` is an optional human-readable display name. `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`); must be `[a-z_][a-z0-9_]*`. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; omitting means no expiry. Repeat `--table` to declare tables up front.
+- `fork` — creates a new managed database that is an independent deep copy of an existing one (same schemas, tables, and data); the source is left unchanged and the two diverge freely afterwards. The source defaults to the active database; pass `<id_or_name>` (id, catalog, or name) to fork another. `--name` defaults to `<source>-fork` (so the two stay distinguishable in `list`); `--expires-at` accepts a relative duration or RFC 3339 timestamp, and when omitted a still-future source expiry is carried over. The fork becomes the active database on success. The fork answers to the **same catalog alias** as its source inside its own scope; indexes are **not** carried over. Only databases created with the current (DuckLake) storage engine can be forked — older parquet-backed databases return an error.
 - `set` — saves `<id_or_name>` as the active database. Subsequent `databases tables` and `context` commands use it automatically.
 - `unset` — clears the active database from config.
 - `<id_or_name>` — inspect one database (id, catalog, name, expires_at).

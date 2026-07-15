@@ -281,6 +281,18 @@ fn main() {
                             &attach,
                             &output,
                         ),
+                        Some(DatabasesCommands::Fork {
+                            database,
+                            name,
+                            expires_at,
+                            output,
+                        }) => databases::fork(
+                            &workspace_id,
+                            database.as_deref(),
+                            name.as_deref(),
+                            expires_at.as_deref(),
+                            &output,
+                        ),
                         Some(DatabasesCommands::Attach {
                             connection,
                             database,

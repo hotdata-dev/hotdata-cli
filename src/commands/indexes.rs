@@ -914,7 +914,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"databases":[{"id":"dbidabc","name":"airbnb","default_catalog":"default"}]}"#,
+                r#"{"databases":[{"id":"dbidabc","name":"airbnb","default_catalog":"default","default_schema":"main"}]}"#,
             )
             .create();
         let db = server
@@ -922,7 +922,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"dbidabc","name":"airbnb","default_catalog":"default",
+                r#"{"id":"dbidabc","name":"airbnb","default_catalog":"default","default_schema":"main",
                 "default_connection_id":"conn-managed","attachments":[]}"#,
             )
             .create();
@@ -1014,7 +1014,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"databases":[{"id":"dbidabc","name":"airbnb","default_catalog":"default"}]}"#,
+                r#"{"databases":[{"id":"dbidabc","name":"airbnb","default_catalog":"default","default_schema":"main"}]}"#,
             )
             .create();
         let db = server
@@ -1022,7 +1022,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"dbidabc","name":"airbnb","default_catalog":"default",
+                r#"{"id":"dbidabc","name":"airbnb","default_catalog":"default","default_schema":"main",
                 "default_connection_id":"conn-managed","attachments":[]}"#,
             )
             .create();

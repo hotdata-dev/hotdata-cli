@@ -62,6 +62,33 @@ pub enum DatabasesCommands {
         output: String,
     },
 
+    /// Fork a managed database into a new, independent database.
+    ///
+    /// The fork contains the same schemas, tables, and data as the source, and
+    /// answers to the same SQL catalog alias inside its own query scope; the
+    /// two databases diverge freely afterwards (writes to one never affect the
+    /// other). Connection catalogs attached to the source are re-attached to
+    /// the fork; indexes are not carried over.
+    Fork {
+        /// Source database id, catalog, or name (defaults to the current database)
+        database: Option<String>,
+
+        /// Display name for the fork. Defaults to "<source-name>-fork" so the
+        /// two databases stay distinguishable in `databases list`.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// When the fork expires. Accepts a relative duration (e.g. 24h, 7d, 90m)
+        /// or an RFC 3339 timestamp. When omitted, a still-future expiry on the
+        /// source is carried over; otherwise the fork never expires.
+        #[arg(long)]
+        expires_at: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
     /// Attach a connection as a queryable catalog on a managed database.
     ///
     /// A `query` runs inside one managed database; attaching a connection makes
@@ -534,6 +561,31 @@ pub fn create_database_request(
     }
 
     serde_json::Value::Object(req)
+}
+
+/// Build the request body for `POST /v1/databases/{id}/fork`.
+///
+/// When `--name` is omitted the CLI defaults it to `<source-label>-fork`
+/// rather than letting the server carry the source's name over: an unnamed
+/// fork inherits the source's display name AND catalog alias, which would
+/// leave two rows in `databases list` identical in every user-facing column.
+/// `source_label` is the source's name (or catalog as a fallback).
+pub fn fork_database_request(
+    name: Option<&str>,
+    source_label: Option<&str>,
+    expires_at: Option<&str>,
+) -> hotdata::models::ForkDatabaseRequest {
+    let name = name
+        .map(str::to_string)
+        .or_else(|| source_label.map(|l| format!("{l}-fork")));
+
+    // The SDK models both fields as double-option: `None` omits the field
+    // (server applies its default — inherit the source's name/expiry), while
+    // `Some(Some(v))` sends the value. We never send an explicit null.
+    hotdata::models::ForkDatabaseRequest {
+        name: name.map(Some),
+        expires_at: expires_at.map(|e| Some(e.to_string())),
+    }
 }
 
 /// Build the typed `CreateDatabaseRequest` for the SDK's `databases().create`
@@ -1289,6 +1341,121 @@ pub fn create(
     }
 }
 
+/// Print a fork failure and exit. Preserves the server's message verbatim and,
+/// for the parquet-backed-source 400, appends a recovery hint. Non-status
+/// (transport) errors fall through to the shared [`ApiError::exit`] path.
+fn fork_error_exit(e: ApiError) -> ! {
+    use crossterm::style::Stylize;
+    if let ApiError::Status { ref body, .. } = e {
+        let msg = crate::util::api_error(body.clone());
+        eprintln!("{}", msg.clone().red());
+        // Pre-DuckLake (parquet-backed) databases can't be forked; recreating
+        // the database and reloading its data is the migration path.
+        if msg.contains("storage backend") || msg.contains("DuckLake") {
+            eprintln!(
+                "{}",
+                "hint: databases created before DuckLake storage can't be forked — \
+                 recreate the database and reload its data to get a forkable one."
+                    .dark_grey()
+            );
+        }
+        std::process::exit(1);
+    }
+    e.exit()
+}
+
+pub fn fork(
+    workspace_id: &str,
+    database: Option<&str>,
+    name: Option<&str>,
+    expires_at: Option<&str>,
+    format: &str,
+) {
+    use crossterm::style::Stylize;
+
+    let source = resolve_current_database(database, workspace_id);
+    let api = Api::new(Some(workspace_id));
+    let db = resolve_database(&api, &source);
+
+    let request = fork_database_request(
+        name,
+        db.name.as_deref().or(db.default_catalog.as_deref()),
+        expires_at,
+    );
+
+    // The copy is synchronous but bucket-internal (server-side object copy, no
+    // bytes through the pod), so it rides the default request timeout. Routed
+    // through the same typed `databases()` handle as create/get/list/delete.
+    let resp = if format == "table" {
+        block_with_wakeup(
+            &api,
+            "Forking database...",
+            api.client().databases().fork(&db.id, request),
+        )
+    } else {
+        block(api.client().databases().fork(&db.id, request))
+    }
+    .unwrap_or_else(|e| fork_error_exit(e));
+
+    let result = CreateDatabaseResponse {
+        id: resp.id,
+        name: resp.name.flatten(),
+        default_catalog: Some(resp.default_catalog),
+        default_connection_id: resp.default_connection_id,
+        expires_at: resp.expires_at.flatten(),
+    };
+
+    if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
+        eprintln!(
+            "{}",
+            format!("warning: database forked but could not set as current: {e}").yellow()
+        );
+    }
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
+        "table" => {
+            println!("{}", "Database forked".green());
+            if let Some(n) = &result.name {
+                println!("name:        {}", n.clone().cyan());
+            }
+            if let Some(c) = &result.default_catalog {
+                println!("catalog:     {}", c.clone().cyan());
+            }
+            println!("id:          {}", result.id);
+            println!("forked_from: {}", db.id);
+            // Always printed, "never" included: with --expires-at omitted a
+            // still-future expiry on the source is silently inherited.
+            println!(
+                "expires_at:  {}",
+                result.expires_at.as_deref().unwrap_or("never")
+            );
+            println!();
+            let catalog = result
+                .default_catalog
+                .as_deref()
+                .or(result.name.as_deref())
+                .unwrap_or("default");
+            println!(
+                "{}",
+                format!(
+                    concat!(
+                        "The fork is now the current database; the source is unchanged.\n",
+                        "It answers to the same catalog alias as its source inside its own scope.\n",
+                        "Indexes are not carried over — recreate them on the fork if needed.\n",
+                        "\nQuery it now:\n",
+                        "  hotdata query \"SELECT * FROM {0}.public.<table> LIMIT 10\"",
+                    ),
+                    catalog
+                )
+                .dark_grey()
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
 pub fn unset(workspace_id: &str) {
     use crossterm::style::Stylize;
     if let Err(e) = crate::config::clear_current_database("default", workspace_id) {
@@ -1980,7 +2147,7 @@ mod tests {
 
     fn full_detail(id: &str, name: &str, conn_id: &str) -> String {
         format!(
-            r#"{{"id":"{id}","name":"{name}","default_catalog":"default","default_connection_id":"{conn_id}","attachments":[]}}"#
+            r#"{{"id":"{id}","name":"{name}","default_catalog":"default","default_schema":"main","default_connection_id":"{conn_id}","attachments":[]}}"#
         )
     }
 
@@ -2005,7 +2172,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"databases":[{"id":"db_abc","name":"sales","default_catalog":"db_abc"},{"id":"db_xyz","name":"warehouse","default_catalog":"db_xyz"}]}"#,
+                r#"{"databases":[{"id":"db_abc","name":"sales","default_catalog":"db_abc","default_schema":"main"},{"id":"db_xyz","name":"warehouse","default_catalog":"db_xyz","default_schema":"main"}]}"#,
             )
             .create();
         let detail = server
@@ -2063,7 +2230,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"databases":[{"id":"db_1","name":"sales","default_catalog":"db_1"},{"id":"db_2","name":"sales","default_catalog":"db_2"}]}"#,
+                r#"{"databases":[{"id":"db_1","name":"sales","default_catalog":"db_1","default_schema":"main"},{"id":"db_2","name":"sales","default_catalog":"db_2","default_schema":"main"}]}"#,
             )
             .create();
 
@@ -2220,7 +2387,7 @@ mod tests {
             .mock("POST", "/v1/databases")
             .match_header("X-Workspace-Id", "ws-test")
             .with_status(201)
-            .with_body(r#"{"id":"db_new","name":"mydb","default_connection_id":"conn_abc"}"#)
+            .with_body(r#"{"id":"db_new","name":"mydb","default_catalog":"default","default_schema":"main","default_connection_id":"conn_abc"}"#)
             .match_body(mockito::Matcher::JsonString(
                 serde_json::to_string(&create_database_request(
                     Some("mydb"),
@@ -2242,6 +2409,96 @@ mod tests {
         assert_eq!(parsed.name.as_deref(), Some("mydb"));
         assert_eq!(parsed.default_connection_id, "conn_abc");
         mock.assert();
+    }
+
+    #[test]
+    fn fork_database_request_defaults_name_to_source_label_fork() {
+        let to_json = |r| serde_json::to_value(&r).unwrap();
+        // Explicit --name wins over the derived default.
+        assert_eq!(
+            to_json(fork_database_request(Some("my-fork"), Some("sales"), None)),
+            serde_json::json!({"name": "my-fork"})
+        );
+        // Omitted --name derives "<source-label>-fork".
+        assert_eq!(
+            to_json(fork_database_request(None, Some("sales"), Some("24h"))),
+            serde_json::json!({"name": "sales-fork", "expires_at": "24h"})
+        );
+        // No name anywhere: send nothing and let the server default.
+        assert_eq!(
+            to_json(fork_database_request(None, None, None)),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn fork_posts_to_fork_endpoint_and_parses_create_response() {
+        let mut server = mockito::Server::new();
+        // resolve_database resolves by id directly
+        let resolve = server
+            .mock("GET", "/v1/databases/db_src")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(full_detail("db_src", "sales", "conn_src"))
+            .create();
+        let fork = server
+            .mock("POST", "/v1/databases/db_src/fork")
+            .match_header("X-Workspace-Id", "ws1")
+            .match_body(mockito::Matcher::JsonString(
+                serde_json::to_string(&fork_database_request(None, Some("sales"), Some("1h")))
+                    .unwrap(),
+            ))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"db_fork","name":"sales-fork","default_catalog":"default","default_connection_id":"conn_fork","default_schema":"main","expires_at":"2026-07-15T19:00:00Z"}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws1"));
+        let db = resolve_database(&api, "db_src");
+        let request = fork_database_request(None, db.name.as_deref(), Some("1h"));
+        let resp = block(api.client().databases().fork(&db.id, request)).unwrap();
+        assert_eq!(resp.id, "db_fork");
+        assert_eq!(resp.name.flatten().as_deref(), Some("sales-fork"));
+        assert_eq!(resp.default_connection_id, "conn_fork");
+        assert_eq!(
+            resp.expires_at.flatten().as_deref(),
+            Some("2026-07-15T19:00:00Z")
+        );
+        resolve.assert();
+        fork.assert();
+    }
+
+    #[test]
+    fn fork_unforkable_source_surfaces_api_error_body() {
+        let mut server = mockito::Server::new();
+        let fork = server
+            .mock("POST", "/v1/databases/db_old/fork")
+            .with_status(400)
+            .with_body(
+                r#"{"error":{"code":"BAD_REQUEST","message":"forking a database is only supported for DuckLake-backed catalogs; source database 'db_old' uses storage backend 'parquet'"}}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws1"));
+        let err = block(
+            api.client()
+                .databases()
+                .fork("db_old", fork_database_request(None, None, None)),
+        )
+        .expect_err("unforkable source should return an error");
+        match err {
+            ApiError::Status { status, body } => {
+                assert_eq!(status.as_u16(), 400);
+                assert!(
+                    crate::util::api_error(body).contains("DuckLake-backed"),
+                    "expected DuckLake message"
+                );
+            }
+            other => panic!("expected Status error, got {other:?}"),
+        }
+        fork.assert();
     }
 
     #[test]
@@ -2404,7 +2661,7 @@ mod tests {
             .with_status(201)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"dbid_new","name":"scratch","default_catalog":"default","default_connection_id":"conn_1"}"#,
+                r#"{"id":"dbid_new","name":"scratch","default_catalog":"default","default_schema":"main","default_connection_id":"conn_1"}"#,
             )
             .create();
         let api = Api::test_new(&server.url(), "k", Some("ws"));

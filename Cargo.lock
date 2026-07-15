@@ -1165,9 +1165,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hotdata"
-version = "0.8.1"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6457e9ad27372a828225351937ef49a6a16ec789a2ec46b2a6fbfaa41b3bb780"
+checksum = "1a1bda44232e3c33228b57881f00cd6c784cda596e88d0886c1807baf6b63ada"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
