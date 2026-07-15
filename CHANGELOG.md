@@ -1,3 +1,8 @@
+## [0.18.0] - 2026-07-15
+
+### 🚀 Features
+
+- *(databases)* Add fork subcommand (#227)
 ## [0.17.1] - 2026-07-14
 
 ### 🐛 Bug Fixes
