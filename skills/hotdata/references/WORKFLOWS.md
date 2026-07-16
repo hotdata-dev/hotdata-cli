@@ -137,12 +137,13 @@ For **Chain** materializations into managed databases, see **`hotdata-analytics`
 Before destructive experimentation (bulk replaces, schema rework, testing a load pipeline), fork the database and experiment on the copy — the source stays untouched and the two diverge freely:
 
 ```bash
-hotdata databases set sales             # source to protect
-hotdata databases fork --expires-at 24h # deep copy; becomes the active database
+hotdata databases list                    # note the source database id (dbid...)
+hotdata databases set <source_id>         # source to protect (`set` takes an id)
+hotdata databases fork --expires-at 24h   # deep copy; becomes the active database
 hotdata databases load --catalog sales --table orders --file ./risky.parquet  # hits the fork
 ```
 
-The fork answers to the same catalog alias as its source, so experimental SQL runs unchanged. Attached connections are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases set` back to the source) or `databases delete` it. Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
+**Capture the source database id up front.** After the fork, both databases answer to the same catalog alias (here `sales`), so the id is the only unambiguous way to refer back to the source. The shared alias means experimental SQL runs unchanged against the fork. Attached connections are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases set <source_id>` to switch back to the source) or `databases delete` it. Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
 
 ---
 
