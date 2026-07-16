@@ -121,7 +121,7 @@ A `hotdata query` runs inside **one** managed database; its scope sees that data
    hotdata databases load --catalog sales --table customers --url https://example.com/customers.parquet
    ```
 
-   > Auto-declaring a *new* table recreates the database (no add-table API), which **changes its `id`**. Always reference a managed database by its **catalog** (stable), not the `id` returned by `databases create` — that id goes stale after the next `load` of an undeclared table. Declare tables up front (`databases create --table orders --table customers`) to avoid the recreate.
+   > Auto-declaring a *new* table recreates the database (no add-table API), which **changes its `id`** — the id returned by `databases create` goes stale after the next `load` of an undeclared table. Declare tables up front (`databases create --table orders --table customers`) to avoid the recreate, and don't cache ids across loads: re-read the current id from `databases list` at time of use. (Selection is still always by id — names and catalogs are not unique.)
 
 3. Confirm and query:
 
@@ -131,6 +131,19 @@ A `hotdata query` runs inside **one** managed database; its scope sees that data
    ```
 
 For **Chain** materializations into managed databases, see **`hotdata-analytics`**.
+
+### Workflow: fork before risky changes
+
+Before destructive experimentation (bulk replaces, schema rework, testing a load pipeline), fork the database and experiment on the copy — the source stays untouched and the two diverge freely:
+
+```bash
+hotdata databases list                    # note the source database id (dbid...)
+hotdata databases set <source_id>         # source to protect (`set` takes an id)
+hotdata databases fork --expires-at 24h   # deep copy; becomes the active database — note the fork id it prints
+hotdata databases load --catalog sales --table orders --file ./risky.parquet  # hits the fork
+```
+
+**Capture both ids.** After the fork, both databases answer to the same catalog alias (here `sales`), so ids are the only unambiguous way to refer to either one — the source id comes from `databases list` up front, the fork id from the `fork` output. The shared alias means experimental SQL runs unchanged against the fork. Attached connections are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases set <source_id>` to switch back to the source) or delete it (`databases delete <fork_id>`). Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
 
 ---
 
