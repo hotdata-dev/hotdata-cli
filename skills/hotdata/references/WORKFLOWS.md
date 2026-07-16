@@ -132,6 +132,18 @@ A `hotdata query` runs inside **one** managed database; its scope sees that data
 
 For **Chain** materializations into managed databases, see **`hotdata-analytics`**.
 
+### Workflow: fork before risky changes
+
+Before destructive experimentation (bulk replaces, schema rework, testing a load pipeline), fork the database and experiment on the copy — the source stays untouched and the two diverge freely:
+
+```bash
+hotdata databases set sales             # source to protect
+hotdata databases fork --expires-at 24h # deep copy; becomes the active database
+hotdata databases load --catalog sales --table orders --file ./risky.parquet  # hits the fork
+```
+
+The fork answers to the same catalog alias as its source, so experimental SQL runs unchanged. Attached connections are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases set` back to the source) or `databases delete` it. Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
+
 ---
 
 ## Model
