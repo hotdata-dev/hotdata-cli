@@ -121,7 +121,7 @@ A `hotdata query` runs inside **one** managed database; its scope sees that data
    hotdata databases load --catalog sales --table customers --url https://example.com/customers.parquet
    ```
 
-   > Auto-declaring a *new* table recreates the database (no add-table API), which **changes its `id`**. Always reference a managed database by its **catalog** (stable), not the `id` returned by `databases create` — that id goes stale after the next `load` of an undeclared table. Declare tables up front (`databases create --table orders --table customers`) to avoid the recreate.
+   > Auto-declaring a *new* table recreates the database (no add-table API), which **changes its `id`** — the id returned by `databases create` goes stale after the next `load` of an undeclared table. Declare tables up front (`databases create --table orders --table customers`) to avoid the recreate, and don't cache ids across loads: re-read the current id from `databases list` at time of use. (Selection is still always by id — names and catalogs are not unique.)
 
 3. Confirm and query:
 

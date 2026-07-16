@@ -90,14 +90,16 @@ Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_st
 
 **Active database:** `hotdata databases set <id>` saves the active database to config. All `databases tables` subcommands and all `context` commands default to the active database; pass **`--database <id>`** to override per-command.
 
+**Always select databases by id** (`dbid...`, from `databases list`). Display names and catalog aliases are not unique — several databases can share a name, and a fork answers to the same catalog as its source — so name-based selection is ambiguous.
+
 ```
 hotdata databases list [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases create [--name <display_name>] [--catalog <alias>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases fork [<id_or_name>] [--name <display_name>] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases fork [<id>] [--name <display_name>] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases set <id>
 hotdata databases unset
-hotdata databases <id_or_name> [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases delete <id_or_name> [--workspace-id <workspace_id>]
+hotdata databases <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases delete <id> [--workspace-id <workspace_id>]
 hotdata databases run [--database <id>] [--name <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] <cmd> [args...]
 hotdata databases <id> run <cmd> [args...]
 
@@ -109,17 +111,17 @@ hotdata databases detach <connection_id|name|alias> [--database <id>]
 hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
 
 # Also available via tables subcommand
-hotdata databases tables list [--database <id_or_name>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases tables load <table> [--database <id_or_name>] [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
-hotdata databases tables delete <table> [--database <id_or_name>] [--schema public] [--workspace-id <workspace_id>]
+hotdata databases tables list [--database <id>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases tables load <table> [--database <id>] [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
+hotdata databases tables delete <table> [--database <id>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
 - `list` — all managed databases in the workspace. Active database is marked with `*` under the DEFAULT column; CREATED shows when each database was made.
 - `create` — creates a new managed database. `--name` is an optional human-readable display name. `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`); must be `[a-z_][a-z0-9_]*`. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; omitting means no expiry. Repeat `--table` to declare tables up front.
-- `fork` — creates a new managed database that is an independent deep copy of an existing one (same schemas, tables, and data); the source is left unchanged and the two diverge freely afterwards. The source defaults to the active database; pass `<id_or_name>` (id, catalog, or name) to fork another. `--name` defaults to `<source>-fork` (so the two stay distinguishable in `list`); `--expires-at` accepts a relative duration or RFC 3339 timestamp, and when omitted a still-future source expiry is carried over. The fork becomes the active database on success. The fork answers to the **same catalog alias** as its source inside its own scope; connection catalogs attached to the source are **re-attached** to the fork, but indexes are **not** carried over. Only databases created with the current (DuckLake) storage engine can be forked — older parquet-backed databases return an error.
-- `set` — saves the database **id** as the active database (unlike `fork`, `delete`, and inspect, `set` does not resolve catalog aliases or names — pass the `dbid...` id). Subsequent `databases tables` and `context` commands use it automatically. Note that a successful `fork` also updates this: the fork becomes the active database.
+- `fork` — creates a new managed database that is an independent deep copy of an existing one (same schemas, tables, and data); the source is left unchanged and the two diverge freely afterwards. The source defaults to the active database; pass the database `<id>` to fork another. `--name` defaults to `<source>-fork` (so the two stay distinguishable in `list`); `--expires-at` accepts a relative duration or RFC 3339 timestamp, and when omitted a still-future source expiry is carried over. The fork becomes the active database on success. The fork answers to the **same catalog alias** as its source inside its own scope; connection catalogs attached to the source are **re-attached** to the fork, but indexes are **not** carried over. Only databases created with the current (DuckLake) storage engine can be forked — older parquet-backed databases return an error.
+- `set` — saves the database **id** as the active database. Subsequent `databases tables` and `context` commands use it automatically. Note that a successful `fork` also updates this: the fork becomes the active database.
 - `unset` — clears the active database from config.
-- `<id_or_name>` — inspect one database (id, catalog, name, expires_at).
+- `<id>` — inspect one database (returns id, catalog, name, expires_at).
 - `delete` — removes the managed database; clears the active-database config if it matched.
 - `load` (top-level shorthand) — loads parquet into `--catalog.--schema.--table`. Accepts `--file`, `--url`, or `--upload-id`. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
