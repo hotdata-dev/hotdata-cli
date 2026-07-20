@@ -1,7 +1,7 @@
 ---
 name: hotdata-analytics
 description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for tables and auth.
-version: 0.19.1
+version: 0.20.0
 ---
 
 # Hotdata Analytics Skill

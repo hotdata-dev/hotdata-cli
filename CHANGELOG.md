@@ -1,3 +1,21 @@
+## [0.20.0] - 2026-07-20
+
+### 🚀 Features
+
+- *(queries)* Expose bytes_scanned and rows_scanned
+- *(query)* Surface query_run_id and serialize result struct directly
+
+### 🐛 Bug Fixes
+
+- *(query)* Preserve query_run_id when following a truncated inline result
+
+### 💼 Other
+
+- Add default CODEOWNERS
+
+### 🚜 Refactor
+
+- *(util)* Make human_bytes take u64 and clamp at call sites
 ## [0.19.1] - 2026-07-20
 
 ### 🐛 Bug Fixes
