@@ -50,15 +50,17 @@ pub fn save(session: &DatabaseSession) -> Result<(), String> {
     let json =
         serde_json::to_string_pretty(session).map_err(|e| format!("serialize failed: {e}"))?;
 
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|e| format!("open failed: {e}"))?;
-    f.write_all(json.as_bytes())
+    // Write-to-temp + rename so a concurrent load never reads a half-written
+    // file. tempfile creates with mode 0600 on Unix and the rename preserves
+    // it — the file contains a refresh token, treat it like a credential.
+    let parent = path
+        .parent()
+        .ok_or_else(|| "session path has no parent directory".to_string())?;
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("open failed: {e}"))?;
+    tmp.write_all(json.as_bytes())
+        .map_err(|e| format!("write failed: {e}"))?;
+    tmp.persist(&path)
         .map_err(|e| format!("write failed: {e}"))?;
     Ok(())
 }

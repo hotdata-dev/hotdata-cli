@@ -67,17 +67,18 @@ pub fn save_session(session: &Session) -> Result<(), String> {
     let json =
         serde_json::to_string_pretty(session).map_err(|e| format!("serialize failed: {e}"))?;
 
-    // mode 0600 — session file contains a refresh token, treat it like a
-    // credential on disk.
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|e| format!("open failed: {e}"))?;
-    f.write_all(json.as_bytes())
+    // Write-to-temp + rename so a concurrent load_session never reads a
+    // half-written file. tempfile creates with mode 0600 on Unix and the
+    // rename preserves it — the session file contains a refresh token,
+    // treat it like a credential on disk.
+    let parent = path
+        .parent()
+        .ok_or_else(|| "session path has no parent directory".to_string())?;
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("open failed: {e}"))?;
+    tmp.write_all(json.as_bytes())
+        .map_err(|e| format!("write failed: {e}"))?;
+    tmp.persist(&path)
         .map_err(|e| format!("write failed: {e}"))?;
     Ok(())
 }
@@ -320,14 +321,35 @@ pub fn ensure_access_token(
         return Ok(session.access_token);
     }
 
-    let now = now_unix();
+    fn usable_token(session: &Session, now: u64) -> Option<String> {
+        (!session.access_token.is_empty()
+            && now + REFRESH_LEEWAY_SECONDS < session.access_expires_at)
+            .then(|| session.access_token.clone())
+    }
 
-    // 1) Cached session is still good.
+    // 1) Cached session is still good — read-only fast path, no lock.
+    if let Some(session) = load_session()
+        && let Some(tok) = usable_token(&session, now_unix())
+    {
+        return Ok(tok);
+    }
+
+    // Refreshing/re-minting rewrites session.json, which every concurrent
+    // `hotdata` process shares. Serialize the slow path across processes so
+    // an expiry mid-burst produces one refresh instead of N racing ones —
+    // the losers of that race saw "session expired or revoked" and their
+    // clear_session() deleted the winner's freshly saved session. Advisory
+    // and best-effort: without flock support this degrades to the old
+    // unserialized behavior.
+    let _lock = config::lock_file("session.lock");
+
+    let now = now_unix();
     if let Some(session) = load_session() {
-        if !session.access_token.is_empty()
-            && now + REFRESH_LEEWAY_SECONDS < session.access_expires_at
-        {
-            return Ok(session.access_token);
+        // Re-check after acquiring the lock: another process may have
+        // refreshed while we waited — reuse its token instead of spending
+        // (and potentially invalidating) the shared refresh token again.
+        if let Some(tok) = usable_token(&session, now) {
+            return Ok(tok);
         }
 
         // 2) Access expired but refresh might still work.
@@ -1110,6 +1132,44 @@ mod tests {
         assert_eq!(profile.api_key_source, config::ApiKeySource::Config);
         let token = ensure_access_token(&profile, Some("hd_config_key")).unwrap();
         assert_eq!(token, "cached-jwt");
+    }
+
+    #[test]
+    fn ensure_concurrent_expiry_refreshes_once_and_shares_result() {
+        // Regression: when the access token expired mid-burst, N concurrent
+        // processes all spent the same refresh token. The winner saved a new
+        // session; the losers got a rejection, surfaced "session expired or
+        // revoked", and their clear_session() deleted the winner's fresh
+        // session. Under the session lock exactly one refresh runs and the
+        // waiters reuse its result.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let refresh_mock = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "grant_type".into(),
+                "refresh_token".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"refreshed-jwt","expires_in":300,"refresh_token":"r2"}"#)
+            .expect(1)
+            .create();
+
+        save_session(&cached_session(-10, 86400)).unwrap();
+        let profile = mock_profile(&server.url());
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let profile = profile.clone();
+                std::thread::spawn(move || ensure_access_token(&profile, None).unwrap())
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap(), "refreshed-jwt");
+        }
+        refresh_mock.assert();
+        assert_eq!(load_session().unwrap().access_token, "refreshed-jwt");
     }
 
     #[test]

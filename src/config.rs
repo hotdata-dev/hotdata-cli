@@ -1,9 +1,12 @@
 use crossterm::style::Stylize;
 use directories::UserDirs;
+use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::fs::File;
+use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
 
@@ -109,10 +112,41 @@ pub struct ConfigFile {
 }
 
 fn write_config(config_path: &std::path::Path, content: &str) -> Result<(), String> {
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("error creating config directory: {e}"))?;
-    }
-    fs::write(config_path, content).map_err(|e| format!("error writing config file: {e}"))
+    let parent = config_path
+        .parent()
+        .ok_or("config path has no parent directory")?;
+    fs::create_dir_all(parent).map_err(|e| format!("error creating config directory: {e}"))?;
+    // Write-to-temp + rename so concurrent readers never observe a
+    // truncated or half-written file (a plain fs::write truncates first,
+    // and parallel invocations were hitting "error parsing config file").
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("error writing config file: {e}"))?;
+    tmp.write_all(content.as_bytes())
+        .map_err(|e| format!("error writing config file: {e}"))?;
+    tmp.persist(config_path)
+        .map_err(|e| format!("error writing config file: {e}"))?;
+    Ok(())
+}
+
+/// Exclusive advisory lock on `<config_dir>/<name>`, blocking until granted;
+/// released on drop. Serializes read-modify-write cycles on shared on-disk
+/// state (config.yml updates, session refresh) across concurrent `hotdata`
+/// processes. Best-effort by design: on filesystems without flock support
+/// callers proceed unlocked, which is the pre-lock behavior.
+pub(crate) fn lock_file(name: &str) -> Option<Flock<File>> {
+    let dir = config_dir().ok()?;
+    fs::create_dir_all(&dir).ok()?;
+    let f = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(dir.join(name))
+        .ok()?;
+    Flock::lock(f, FlockArg::LockExclusive).ok()
+}
+
+fn lock_config() -> Option<Flock<File>> {
+    lock_file("config.lock")
 }
 
 /// Wipe the workspace cache for a profile. Paired with
@@ -120,6 +154,7 @@ fn write_config(config_path: &std::path::Path, content: &str) -> Result<(), Stri
 /// on-disk state that login populates.
 pub fn clear_workspaces(profile: &str) -> Result<(), String> {
     let config_path = config_path()?;
+    let _lock = lock_config();
 
     if !config_path.exists() {
         return Ok(());
@@ -141,6 +176,7 @@ pub fn clear_workspaces(profile: &str) -> Result<(), String> {
 
 pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result<(), String> {
     let config_path = config_path()?;
+    let _lock = lock_config();
 
     let mut config_file: ConfigFile = if config_path.exists() {
         let content = fs::read_to_string(&config_path)
@@ -166,6 +202,7 @@ pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result
 
 pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Result<(), String> {
     let config_path = config_path()?;
+    let _lock = lock_config();
 
     let mut config_file: ConfigFile = if config_path.exists() {
         let content = fs::read_to_string(&config_path)
@@ -194,6 +231,7 @@ pub fn save_current_database(
     database_id: &str,
 ) -> Result<(), String> {
     let config_path = config_path()?;
+    let _lock = lock_config();
 
     let mut config_file: ConfigFile = if config_path.exists() {
         let content = fs::read_to_string(&config_path)
@@ -234,6 +272,7 @@ pub fn load_current_database(profile: &str, workspace_id: &str) -> Option<String
 
 pub fn clear_current_database(profile: &str, workspace_id: &str) -> Result<(), String> {
     let config_path = config_path()?;
+    let _lock = lock_config();
 
     if !config_path.exists() {
         return Ok(());
@@ -417,6 +456,35 @@ mod tests {
         let staging = load("staging").unwrap();
         assert_eq!(default.workspaces[0].public_id, "ws-default");
         assert_eq!(staging.workspaces[0].public_id, "ws-staging");
+    }
+
+    #[test]
+    fn concurrent_saves_keep_all_entries_and_parse_cleanly() {
+        // Regression: parallel `hotdata` invocations doing read-modify-write
+        // on config.yml used to tear the file (readers hit "error parsing
+        // config file") and drop each other's entries. The config lock +
+        // atomic rename must keep every writer's entry.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    save_current_database("default", &format!("ws-{i}"), &format!("db-{i}"))
+                        .unwrap()
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let profile = load("default").unwrap();
+        for i in 0..8 {
+            assert_eq!(
+                profile.current_databases.get(&format!("ws-{i}")),
+                Some(&format!("db-{i}")),
+                "entry ws-{i} lost by a concurrent writer"
+            );
+        }
     }
 
     #[test]
