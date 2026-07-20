@@ -1,3 +1,12 @@
+## [0.19.0] - 2026-07-20
+
+### 🐛 Bug Fixes
+
+- *(auth)* Serialize token refresh and make config/session writes atomic (#230)
+
+### 📚 Documentation
+
+- *(skills)* Document fork re-attach behavior and add fork-before-risky-changes workflow (#229)
 ## [0.18.0] - 2026-07-15
 
 ### 🚀 Features
