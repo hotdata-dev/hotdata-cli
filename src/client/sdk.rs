@@ -894,6 +894,11 @@ pub fn format_fail_message(
             util::api_error(body.to_string())
         );
     }
+    // An empty body carries no explanation of its own — the status line is
+    // the only signal there is, so surface it instead of a blank message.
+    if body.trim().is_empty() {
+        return format!("error: HTTP {status} (empty response body)");
+    }
     util::api_error(body.to_string())
 }
 
@@ -971,6 +976,18 @@ mod tests {
         );
         assert!(!msg.contains("API key is invalid"));
         assert_eq!(msg, "server exploded");
+    }
+
+    #[test]
+    fn format_fail_message_empty_body_surfaces_status() {
+        // An empty response body used to fall through to a blank message
+        // (an error line that was only ANSI color codes). The HTTP status is
+        // the only signal available, so it must appear.
+        let msg = format_fail_message(reqwest::StatusCode::BAD_GATEWAY, "", None);
+        assert_eq!(msg, "error: HTTP 502 Bad Gateway (empty response body)");
+
+        let msg = format_fail_message(reqwest::StatusCode::SERVICE_UNAVAILABLE, " \n", None);
+        assert!(msg.contains("503"), "got: {msg}");
     }
 
     #[test]
