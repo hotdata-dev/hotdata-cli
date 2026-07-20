@@ -345,11 +345,12 @@ fn resolve_inline(api: &Api, resp: hotdata::models::QueryResponse) -> QueryRespo
     match resp.result_id.clone().flatten() {
         Some(result_id) => match try_fetch_arrow_result(api, &result_id) {
             // The Arrow fetch returns only schema + rows; carry the query-level
-            // warning and execution time the inline response reported, which
-            // `arrow_result_to_query_response` otherwise hardcodes to None.
+            // warning, execution time, and run id the inline response reported,
+            // which `arrow_result_to_query_response` otherwise hardcodes to None.
             Ok(mut full) => {
                 full.warning = resp.warning.flatten();
                 full.execution_time_ms = Some(resp.execution_time_ms.max(0) as u64);
+                full.query_run_id = (!resp.query_run_id.is_empty()).then_some(resp.query_run_id);
                 full
             }
             // The full result is persisted but the follow-up fetch failed (e.g.
@@ -801,6 +802,9 @@ mod tests {
         // Inline warning + timing carried through, not dropped by the fetch.
         assert_eq!(resolved.warning.as_deref(), Some("approximate aggregate"));
         assert_eq!(resolved.execution_time_ms, Some(5));
+        // The run id from the inline response must survive the Arrow follow — the
+        // Arrow path itself has no run id, so the follow branch must stamp it.
+        assert_eq!(resolved.query_run_id.as_deref(), Some("qrun_1"));
         m.assert();
     }
 
