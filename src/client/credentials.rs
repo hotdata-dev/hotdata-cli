@@ -39,7 +39,7 @@ pub fn check_status(profile_config: &config::ProfileConfig) -> AuthStatus {
         };
 
     let url = format!("{}/workspaces", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
+    let client = crate::client::raw_http::build_http_client();
     let req = client
         .get(&url)
         .header("Authorization", format!("Bearer {access_token}"));
