@@ -1,4 +1,5 @@
 use crate::client::sdk::Api;
+use crate::util::human_bytes;
 use serde::{Deserialize, Serialize};
 
 /// CLI output shape for `usage`, mapped from the `/v1/usage`
@@ -16,22 +17,6 @@ struct Usage {
     storage_bytes: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     storage_captured_at: Option<String>,
-}
-
-/// Human-readable byte count in binary units, keeping the exact value in
-/// parentheses (table view only; JSON/YAML keep raw integers).
-fn human_bytes(n: i64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    if n < 1024 {
-        return format!("{n} B");
-    }
-    let mut v = n as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    format!("{v:.1} {} ({n} B)", UNITS[u])
 }
 
 /// `hotdata usage` — workspace usage for the current billing window (or since a
@@ -53,8 +38,14 @@ pub fn usage(workspace_id: &str, since: Option<&str>, format: &str) {
             let rows = vec![
                 vec!["since".to_string(), u.since.clone()],
                 vec!["query_count".to_string(), u.query_count.to_string()],
-                vec!["bytes_scanned".to_string(), human_bytes(u.bytes_scanned)],
-                vec!["storage_bytes".to_string(), human_bytes(u.storage_bytes)],
+                vec![
+                    "bytes_scanned".to_string(),
+                    human_bytes(u.bytes_scanned.max(0) as u64),
+                ],
+                vec![
+                    "storage_bytes".to_string(),
+                    human_bytes(u.storage_bytes.max(0) as u64),
+                ],
                 vec![
                     "storage_captured_at".to_string(),
                     u.storage_captured_at
@@ -70,13 +61,6 @@ pub fn usage(workspace_id: &str, since: Option<&str>, format: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn human_bytes_scales_units_and_keeps_exact() {
-        assert_eq!(human_bytes(512), "512 B");
-        assert_eq!(human_bytes(1024), "1.0 KiB (1024 B)");
-        assert_eq!(human_bytes(98_209_424), "93.7 MiB (98209424 B)");
-    }
 
     #[test]
     fn usage_deserializes_real_response_shape() {

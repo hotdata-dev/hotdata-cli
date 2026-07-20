@@ -403,6 +403,24 @@ pub fn is_access_denied(body: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Human-readable byte count in binary units, keeping the exact value in
+/// parentheses (table view only; JSON/YAML keep raw integers). Takes a `u64` so
+/// the "negative bytes" state is unrepresentable; callers clamp any signed
+/// wire value at the boundary.
+pub fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    format!("{v:.1} {} ({n} B)", UNITS[u])
+}
+
 fn humanize_error_code(code: &str) -> String {
     let spaced = code.replace('_', " ");
     let mut chars = spaced.chars();
@@ -416,6 +434,13 @@ fn humanize_error_code(code: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn human_bytes_scales_units_and_keeps_exact() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1024), "1.0 KiB (1024 B)");
+        assert_eq!(human_bytes(98_209_424), "93.7 MiB (98209424 B)");
+    }
 
     #[test]
     fn mask_credential_long_shows_prefix_and_suffix() {

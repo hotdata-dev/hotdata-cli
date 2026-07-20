@@ -143,6 +143,13 @@ struct QueryRun {
     execution_time_ms: Option<u64>,
     server_processing_ms: Option<u64>,
     row_count: Option<u64>,
+    /// Bytes of table data read from storage to run this query. `None` when the
+    /// query touches no table (e.g. `SELECT 1`); may be `0` for a count served
+    /// from table statistics.
+    bytes_scanned: Option<u64>,
+    /// Rows read from storage before filtering/aggregation, distinct from
+    /// `row_count` (rows returned). `None` when no table data was read.
+    rows_scanned: Option<u64>,
     saved_query_id: Option<String>,
     saved_query_version: Option<u64>,
     snapshot_id: String,
@@ -166,6 +173,8 @@ impl From<QueryRunInfo> for QueryRun {
             execution_time_ms: r.execution_time_ms.flatten().map(|v| v.max(0) as u64),
             server_processing_ms: r.server_processing_ms.flatten().map(|v| v.max(0) as u64),
             row_count: r.row_count.flatten().map(|v| v.max(0) as u64),
+            bytes_scanned: r.bytes_scanned.flatten().map(|v| v.max(0) as u64),
+            rows_scanned: r.rows_scanned.flatten().map(|v| v.max(0) as u64),
             saved_query_id: r.saved_query_id.flatten(),
             saved_query_version: r.saved_query_version.flatten().map(|v| v.max(0) as u64),
             snapshot_id: r.snapshot_id,
@@ -301,6 +310,12 @@ fn print_detail(r: &QueryRun, format: &str) {
             if let Some(n) = r.row_count {
                 println!("{}{}", label("rows:"), n);
             }
+            if let Some(n) = r.rows_scanned {
+                println!("{}{}", label("rows scanned:"), n);
+            }
+            if let Some(n) = r.bytes_scanned {
+                println!("{}{}", label("bytes scanned:"), crate::util::human_bytes(n));
+            }
             if let Some(ref id) = r.result_id {
                 println!("{}{}", label("result id:"), id);
             }
@@ -343,5 +358,51 @@ fn print_detail(r: &QueryRun, format: &str) {
             println!("{}", highlight_sql(&formatted));
         }
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real `GET /v1/query-runs/{id}` body carries `bytes_scanned` and
+    /// `rows_scanned`; both must survive the `QueryRunInfo` → `QueryRun` mapping
+    /// and appear in the serialized (JSON/YAML) output.
+    #[test]
+    fn maps_scanned_fields_from_wire_body() {
+        let body = r#"{
+            "id":"qrun_1","status":"succeeded",
+            "created_at":"2026-07-20T00:00:00Z",
+            "snapshot_id":"snap_1","sql_hash":"h","sql_text":"SELECT 1",
+            "row_count":42,"rows_scanned":1000,"bytes_scanned":98209424
+        }"#;
+        let info: QueryRunInfo = serde_json::from_str(body).unwrap();
+        let run: QueryRun = info.into();
+
+        assert_eq!(run.row_count, Some(42));
+        assert_eq!(run.rows_scanned, Some(1000));
+        assert_eq!(run.bytes_scanned, Some(98_209_424));
+
+        let json = serde_json::to_value(&run).unwrap();
+        assert_eq!(json["bytes_scanned"], 98_209_424);
+        assert_eq!(json["rows_scanned"], 1000);
+    }
+
+    /// A constant-expression query (e.g. `SELECT 1`) reads no table, so the API
+    /// omits the scanned fields; they map to `None` and serialize as null.
+    #[test]
+    fn absent_scanned_fields_map_to_none() {
+        let info = QueryRunInfo::new(
+            "2026-07-20T00:00:00Z".to_string(),
+            "qrun_2".to_string(),
+            "snap_1".to_string(),
+            "h".to_string(),
+            "SELECT 1".to_string(),
+            "succeeded".to_string(),
+        );
+        let run: QueryRun = info.into();
+
+        assert_eq!(run.bytes_scanned, None);
+        assert_eq!(run.rows_scanned, None);
     }
 }
