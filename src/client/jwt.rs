@@ -18,11 +18,12 @@
 //! persisted to the session file — it stays in the main config or the
 //! `HOTDATA_API_KEY` env var and is only used transiently to mint.
 
+use crate::client::raw_http::build_http_client;
 use crate::config;
 use crate::util;
+use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -61,26 +62,13 @@ pub fn load_session() -> Option<Session> {
 
 pub fn save_session(session: &Session) -> Result<(), String> {
     let path = session_path().ok_or_else(|| "no session path available".to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
-    }
     let json =
         serde_json::to_string_pretty(session).map_err(|e| format!("serialize failed: {e}"))?;
 
-    // Write-to-temp + rename so a concurrent load_session never reads a
-    // half-written file. tempfile creates with mode 0600 on Unix and the
-    // rename preserves it — the session file contains a refresh token,
-    // treat it like a credential on disk.
-    let parent = path
-        .parent()
-        .ok_or_else(|| "session path has no parent directory".to_string())?;
-    let mut tmp =
-        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("open failed: {e}"))?;
-    tmp.write_all(json.as_bytes())
-        .map_err(|e| format!("write failed: {e}"))?;
-    tmp.persist(&path)
-        .map_err(|e| format!("write failed: {e}"))?;
-    Ok(())
+    // Atomic replace so a concurrent load_session never reads a half-written
+    // file; 0600 because the session file contains a refresh token — treat it
+    // like a credential on disk.
+    util::atomic_write(&path, json.as_bytes(), 0o600)
 }
 
 pub fn clear_session() {
@@ -181,7 +169,7 @@ pub fn exchange_cli_register_code(
         "code_verifier": util::mask_credential(code_verifier),
     });
 
-    let client = reqwest::blocking::Client::new();
+    let client = build_http_client();
     let req = client.post(&url).json(&body);
     let (status, body_text) =
         util::send_debug_with_redaction(&client, req, Some(&body_log), &["token"])
@@ -218,7 +206,7 @@ pub fn mint_from_pkce_code(
         ("client_id", CLIENT_ID),
     ];
 
-    let client = reqwest::blocking::Client::new();
+    let client = build_http_client();
     let req = client.post(&url).form(&params);
     let body_log = redacted_form_body(&params);
     let (status, body_text) =
@@ -244,7 +232,7 @@ pub fn mint_from_api_token(
         ("client_id", CLIENT_ID),
     ];
 
-    let client = reqwest::blocking::Client::new();
+    let client = build_http_client();
     let req = client.post(&url).form(&params);
     let body_log = redacted_form_body(&params);
     let (status, body_text) =
@@ -260,8 +248,32 @@ pub fn mint_from_api_token(
     Ok(session_from_response(body, None, "api_token"))
 }
 
+/// Why a refresh attempt failed. The distinction decides what happens to the
+/// on-disk session: a rejection means the server saw the grant and refused
+/// it, so the session is dead; a transport failure means the request never
+/// completed and the stored refresh token was not consumed.
+#[derive(Debug)]
+pub enum RefreshError {
+    /// The request never completed (DNS, connect, timeout).
+    Transport(String),
+    /// The server answered and refused the grant (or returned an unusable
+    /// body).
+    Rejected(String),
+}
+
+impl std::fmt::Display for RefreshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefreshError::Transport(msg) | RefreshError::Rejected(msg) => f.write_str(msg),
+        }
+    }
+}
+
 /// Refresh an existing session via the refresh-token grant.
-pub fn refresh(profile: &config::ProfileConfig, session: &Session) -> Result<Session, String> {
+pub fn refresh(
+    profile: &config::ProfileConfig,
+    session: &Session,
+) -> Result<Session, RefreshError> {
     let url = format!("{}/o/token/", oauth_base(profile));
     let params = [
         ("grant_type", "refresh_token"),
@@ -269,17 +281,19 @@ pub fn refresh(profile: &config::ProfileConfig, session: &Session) -> Result<Ses
         ("client_id", CLIENT_ID),
     ];
 
-    let client = reqwest::blocking::Client::new();
+    let client = build_http_client();
     let req = client.post(&url).form(&params);
     let body_log = redacted_form_body(&params);
     let (status, body_text) =
         util::send_debug_with_redaction(&client, req, Some(&body_log), TOKEN_REDACT_KEYS)
-            .map_err(|e| format!("connection error: {e}"))?;
+            .map_err(|e| RefreshError::Transport(format!("connection error: {e}")))?;
     if !status.is_success() {
-        return Err(format!("refresh failed: HTTP {status}: {body_text}"));
+        return Err(RefreshError::Rejected(format!(
+            "refresh failed: HTTP {status}: {body_text}"
+        )));
     }
-    let body: TokenResponse =
-        serde_json::from_str(&body_text).map_err(|e| format!("malformed token response: {e}"))?;
+    let body: TokenResponse = serde_json::from_str(&body_text)
+        .map_err(|e| RefreshError::Rejected(format!("malformed token response: {e}")))?;
     Ok(session_from_response(
         body,
         // Rotation is off server-side, so the same refresh token
@@ -357,12 +371,29 @@ pub fn ensure_access_token(
             match refresh(profile, &session) {
                 Ok(new_session) => {
                     let tok = new_session.access_token.clone();
-                    let _ = save_session(&new_session);
+                    if let Err(e) = save_session(&new_session) {
+                        // Not fatal for this invocation — the token is
+                        // valid — but the next process can't see it and
+                        // will spend the refresh token again, so make the
+                        // persistence failure visible.
+                        eprintln!(
+                            "{}",
+                            format!("warning: could not persist refreshed session: {e}").yellow()
+                        );
+                    }
                     return Ok(tok);
                 }
-                Err(_) => {
-                    // Refresh rejected — fall through to re-mint.
+                Err(RefreshError::Rejected(_)) => {
+                    // The server refused the grant: the session is dead.
+                    // Fall through to re-mint.
                     clear_session();
+                }
+                Err(RefreshError::Transport(e)) => {
+                    // The request never completed (network down, DNS,
+                    // timeout): the stored session was not consumed and is
+                    // likely still good, so keep it and surface the real
+                    // failure instead of forcing a re-login.
+                    return Err(e);
                 }
             }
         }
@@ -822,7 +853,10 @@ mod tests {
         };
         let err = refresh(&profile, &session).unwrap_err();
         m.assert();
-        assert!(err.contains("400"), "got: {err}");
+        assert!(
+            matches!(&err, RefreshError::Rejected(msg) if msg.contains("400")),
+            "got: {err}"
+        );
     }
 
     // --- ensure_access_token: each branch of the decision table ---
@@ -1132,6 +1166,25 @@ mod tests {
         assert_eq!(profile.api_key_source, config::ApiKeySource::Config);
         let token = ensure_access_token(&profile, Some("hd_config_key")).unwrap();
         assert_eq!(token, "cached-jwt");
+    }
+
+    #[test]
+    fn ensure_keeps_session_when_refresh_fails_at_transport_level() {
+        // A transport failure (network down, DNS, timeout) means the refresh
+        // token was never consumed — the session must survive so a working
+        // network can still use it, and the caller gets the real connection
+        // error instead of "session expired or revoked" + forced re-login.
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_session(&cached_session(-10, 86400)).unwrap();
+
+        // Nothing listens on port 1 — connection refused, not an HTTP reply.
+        let profile = mock_profile("http://127.0.0.1:1");
+        let err = ensure_access_token(&profile, None).unwrap_err();
+        assert!(err.contains("connection error"), "got: {err}");
+        assert!(
+            load_session().is_some(),
+            "session must not be cleared on a transport failure"
+        );
     }
 
     #[test]
