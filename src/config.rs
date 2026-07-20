@@ -1,9 +1,12 @@
 use crossterm::style::Stylize;
 use directories::UserDirs;
+use nix::errno::Errno;
+use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::fs::File;
 use std::ops::Deref;
 use std::path::PathBuf;
 
@@ -109,83 +112,124 @@ pub struct ConfigFile {
 }
 
 fn write_config(config_path: &std::path::Path, content: &str) -> Result<(), String> {
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("error creating config directory: {e}"))?;
+    // Atomic replace so concurrent readers never observe a truncated or
+    // half-written file (a plain fs::write truncates first, and parallel
+    // invocations were hitting "error parsing config file"). 0644 keeps the
+    // pre-atomic-write mode: config.yml holds no credentials.
+    crate::util::atomic_write(config_path, content.as_bytes(), 0o644)
+        .map_err(|e| format!("error writing config file: {e}"))
+}
+
+/// Exclusive advisory lock on `<config_dir>/<name>`, blocking until granted;
+/// released on drop. Serializes read-modify-write cycles on shared on-disk
+/// state (config.yml updates, session refresh) across concurrent `hotdata`
+/// processes. Best-effort by design: callers proceed unlocked when no lock
+/// can be taken — silently where flock simply isn't supported (some network
+/// mounts), with a warning for unexpected failures so broken locking doesn't
+/// masquerade as working.
+pub(crate) fn lock_file(name: &str) -> Option<Flock<File>> {
+    fn warn(name: &str, stage: &str, detail: impl std::fmt::Display) {
+        eprintln!(
+            "{}",
+            format!(
+                "warning: could not acquire {name} ({stage}: {detail}); proceeding without the lock"
+            )
+            .yellow()
+        );
     }
-    fs::write(config_path, content).map_err(|e| format!("error writing config file: {e}"))
+
+    let dir = match config_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            warn(name, "config dir", e);
+            return None;
+        }
+    };
+    if let Err(e) = fs::create_dir_all(&dir) {
+        warn(name, "mkdir", e);
+        return None;
+    }
+    let f = match fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(dir.join(name))
+    {
+        Ok(f) => f,
+        Err(e) => {
+            warn(name, "open", e);
+            return None;
+        }
+    };
+    match Flock::lock(f, FlockArg::LockExclusive) {
+        Ok(lock) => Some(lock),
+        // No flock support on this filesystem — degrade silently to the
+        // pre-lock behavior.
+        Err((_, Errno::ENOTSUP | Errno::ENOLCK)) => None,
+        Err((_, e)) => {
+            warn(name, "flock", e);
+            None
+        }
+    }
+}
+
+/// Locked read-modify-write on config.yml: takes the config lock, parses the
+/// current file, applies `f`, and writes the result back atomically. Every
+/// config mutation must go through here so none can skip the lock. When the
+/// file doesn't exist yet, `create` picks between starting from an empty
+/// config (true) and a no-op (false).
+fn update_config(create: bool, f: impl FnOnce(&mut ConfigFile)) -> Result<(), String> {
+    let config_path = config_path()?;
+    let _lock = lock_file("config.lock");
+
+    let mut config_file: ConfigFile = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("error reading config file: {e}"))?;
+        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
+    } else if create {
+        ConfigFile {
+            profiles: HashMap::new(),
+        }
+    } else {
+        return Ok(());
+    };
+
+    f(&mut config_file);
+
+    let content = serde_yaml::to_string(&config_file)
+        .map_err(|e| format!("error serializing config: {e}"))?;
+    write_config(&config_path, &content)
 }
 
 /// Wipe the workspace cache for a profile. Paired with
 /// `jwt::clear_session()` in `commands::auth::logout` — together they reset the
 /// on-disk state that login populates.
 pub fn clear_workspaces(profile: &str) -> Result<(), String> {
-    let config_path = config_path()?;
-
-    if !config_path.exists() {
-        return Ok(());
-    }
-
-    let content =
-        fs::read_to_string(&config_path).map_err(|e| format!("error reading config file: {e}"))?;
-    let mut config_file: ConfigFile =
-        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
-
-    if let Some(entry) = config_file.profiles.get_mut(profile) {
-        entry.workspaces.clear();
-    }
-
-    let content = serde_yaml::to_string(&config_file)
-        .map_err(|e| format!("error serializing config: {e}"))?;
-    write_config(&config_path, &content)
+    update_config(false, |config_file| {
+        if let Some(entry) = config_file.profiles.get_mut(profile) {
+            entry.workspaces.clear();
+        }
+    })
 }
 
 pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result<(), String> {
-    let config_path = config_path()?;
-
-    let mut config_file: ConfigFile = if config_path.exists() {
-        let content = fs::read_to_string(&config_path)
-            .map_err(|e| format!("error reading config file: {e}"))?;
-        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
-    } else {
-        ConfigFile {
-            profiles: HashMap::new(),
-        }
-    };
-
-    config_file
-        .profiles
-        .entry(profile.to_string())
-        .or_default()
-        .workspaces = workspaces;
-
-    let content = serde_yaml::to_string(&config_file)
-        .map_err(|e| format!("error serializing config: {e}"))?;
-
-    write_config(&config_path, &content)
+    update_config(true, move |config_file| {
+        config_file
+            .profiles
+            .entry(profile.to_string())
+            .or_default()
+            .workspaces = workspaces;
+    })
 }
 
 pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Result<(), String> {
-    let config_path = config_path()?;
-
-    let mut config_file: ConfigFile = if config_path.exists() {
-        let content = fs::read_to_string(&config_path)
-            .map_err(|e| format!("error reading config file: {e}"))?;
-        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
-    } else {
-        ConfigFile {
-            profiles: HashMap::new(),
-        }
-    };
-
-    let entry = config_file.profiles.entry(profile.to_string()).or_default();
-    entry
-        .workspaces
-        .retain(|w| w.public_id != workspace.public_id);
-    entry.workspaces.insert(0, workspace);
-
-    let content = serde_yaml::to_string(&config_file)
-        .map_err(|e| format!("error serializing config: {e}"))?;
-    write_config(&config_path, &content)
+    update_config(true, move |config_file| {
+        let entry = config_file.profiles.entry(profile.to_string()).or_default();
+        entry
+            .workspaces
+            .retain(|w| w.public_id != workspace.public_id);
+        entry.workspaces.insert(0, workspace);
+    })
 }
 
 pub fn save_current_database(
@@ -193,28 +237,14 @@ pub fn save_current_database(
     workspace_id: &str,
     database_id: &str,
 ) -> Result<(), String> {
-    let config_path = config_path()?;
-
-    let mut config_file: ConfigFile = if config_path.exists() {
-        let content = fs::read_to_string(&config_path)
-            .map_err(|e| format!("error reading config file: {e}"))?;
-        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?
-    } else {
-        ConfigFile {
-            profiles: HashMap::new(),
-        }
-    };
-
-    config_file
-        .profiles
-        .entry(profile.to_string())
-        .or_default()
-        .current_databases
-        .insert(workspace_id.to_string(), database_id.to_string());
-
-    let content = serde_yaml::to_string(&config_file)
-        .map_err(|e| format!("error serializing config: {e}"))?;
-    write_config(&config_path, &content)
+    update_config(true, |config_file| {
+        config_file
+            .profiles
+            .entry(profile.to_string())
+            .or_default()
+            .current_databases
+            .insert(workspace_id.to_string(), database_id.to_string());
+    })
 }
 
 pub fn load_current_database(profile: &str, workspace_id: &str) -> Option<String> {
@@ -233,24 +263,11 @@ pub fn load_current_database(profile: &str, workspace_id: &str) -> Option<String
 }
 
 pub fn clear_current_database(profile: &str, workspace_id: &str) -> Result<(), String> {
-    let config_path = config_path()?;
-
-    if !config_path.exists() {
-        return Ok(());
-    }
-
-    let content =
-        fs::read_to_string(&config_path).map_err(|e| format!("error reading config file: {e}"))?;
-    let mut config_file: ConfigFile =
-        serde_yaml::from_str(&content).map_err(|e| format!("error parsing config file: {e}"))?;
-
-    if let Some(entry) = config_file.profiles.get_mut(profile) {
-        entry.current_databases.remove(workspace_id);
-    }
-
-    let content = serde_yaml::to_string(&config_file)
-        .map_err(|e| format!("error serializing config: {e}"))?;
-    write_config(&config_path, &content)
+    update_config(false, |config_file| {
+        if let Some(entry) = config_file.profiles.get_mut(profile) {
+            entry.current_databases.remove(workspace_id);
+        }
+    })
 }
 
 /// Global API key override set via --api-key flag.
@@ -417,6 +434,71 @@ mod tests {
         let staging = load("staging").unwrap();
         assert_eq!(default.workspaces[0].public_id, "ws-default");
         assert_eq!(staging.workspaces[0].public_id, "ws-staging");
+    }
+
+    #[test]
+    fn lock_file_degrades_to_none_when_config_dir_unavailable() {
+        // Locking is best-effort: when the config dir can't even be
+        // created (here: the path is a regular file), lock_file must
+        // degrade to None — warn and proceed unlocked — not error or hang.
+        let (tmp, _guard) = with_temp_config_dir();
+        let not_a_dir = tmp.path().join("not-a-dir");
+        fs::write(&not_a_dir, "x").unwrap();
+        // SAFETY: serialized via with_temp_config_dir's ENV_LOCK guard.
+        unsafe {
+            std::env::set_var("HOTDATA_CONFIG_DIR", &not_a_dir);
+        }
+        let lock = lock_file("config.lock");
+        unsafe {
+            std::env::set_var("HOTDATA_CONFIG_DIR", tmp.path());
+        }
+        assert!(lock.is_none());
+    }
+
+    #[test]
+    fn config_file_stays_world_readable() {
+        // The atomic-write path must not silently flip config.yml from the
+        // fs::write-era 0644 to tempfile's 0600 — it holds no credentials
+        // and other tooling may read it.
+        use std::os::unix::fs::PermissionsExt;
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_workspaces("default", vec![ws("ws-1", "WS")]).unwrap();
+
+        let mode = fs::metadata(config_path().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o644);
+    }
+
+    #[test]
+    fn concurrent_saves_keep_all_entries_and_parse_cleanly() {
+        // Regression: parallel `hotdata` invocations doing read-modify-write
+        // on config.yml used to tear the file (readers hit "error parsing
+        // config file") and drop each other's entries. The config lock +
+        // atomic rename must keep every writer's entry.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    save_current_database("default", &format!("ws-{i}"), &format!("db-{i}"))
+                        .unwrap()
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let profile = load("default").unwrap();
+        for i in 0..8 {
+            assert_eq!(
+                profile.current_databases.get(&format!("ws-{i}")),
+                Some(&format!("db-{i}")),
+                "entry ws-{i} lost by a concurrent writer"
+            );
+        }
     }
 
     #[test]

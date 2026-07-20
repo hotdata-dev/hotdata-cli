@@ -1,6 +1,29 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+/// Atomically replace the file at `path` with `bytes`: write to a tempfile in
+/// the same directory, chmod it to `mode`, then rename over the destination.
+/// Concurrent readers never observe a truncated or half-written file. Note
+/// that rename replaces the destination entry itself — a symlinked
+/// destination becomes a regular file.
+pub fn atomic_write(path: &std::path::Path, bytes: &[u8], mode: u32) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = path.parent().ok_or("path has no parent directory")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("open failed: {e}"))?;
+    tmp.write_all(bytes)
+        .map_err(|e| format!("write failed: {e}"))?;
+    tmp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(mode))
+        .map_err(|e| format!("chmod failed: {e}"))?;
+    tmp.persist(path)
+        .map_err(|e| format!("write failed: {e}"))?;
+    Ok(())
+}
+
 /// Create a steady-ticking spinner with a cyan glyph and the given message.
 /// Writes to stderr so stdout (json/yaml output) stays clean.
 pub fn spinner(msg: &str) -> indicatif::ProgressBar {

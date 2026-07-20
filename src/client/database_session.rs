@@ -12,7 +12,6 @@ use crate::config;
 use crate::util;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,23 +43,13 @@ pub fn load() -> Option<DatabaseSession> {
 
 pub fn save(session: &DatabaseSession) -> Result<(), String> {
     let path = session_path().ok_or_else(|| "no database session path available".to_string())?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
-    }
     let json =
         serde_json::to_string_pretty(session).map_err(|e| format!("serialize failed: {e}"))?;
 
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|e| format!("open failed: {e}"))?;
-    f.write_all(json.as_bytes())
-        .map_err(|e| format!("write failed: {e}"))?;
-    Ok(())
+    // Atomic replace so a concurrent load never reads a half-written file;
+    // 0600 because the file contains a refresh token — treat it like a
+    // credential on disk.
+    util::atomic_write(&path, json.as_bytes(), 0o600)
 }
 
 #[allow(dead_code)] // Reserved for flows that re-use a cached database session.
@@ -104,7 +93,7 @@ pub fn refresh(api_url: &str, refresh_token: &str) -> Result<DatabaseSession, St
         "refresh_token": redact(refresh_token),
     });
 
-    let client = reqwest::blocking::Client::new();
+    let client = crate::client::raw_http::build_http_client();
     let req = client.post(&url).json(&body);
     let (status, body_text) =
         util::send_debug_with_redaction(&client, req, Some(&body_log), &["token", "refresh_token"])
