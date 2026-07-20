@@ -377,6 +377,11 @@ pub fn api_error(body: String) -> String {
     if body.trim_start().starts_with('<') {
         return "unexpected server error".to_string();
     }
+    // A dropped connection or bodyless 5xx yields an empty body; returning it
+    // verbatim would print as a blank (color-codes-only) error line.
+    if body.trim().is_empty() {
+        return "unexpected empty response from server".to_string();
+    }
     body
 }
 
@@ -457,6 +462,20 @@ mod tests {
     fn api_error_handles_html_body() {
         let body = "<html>500</html>".to_string();
         assert_eq!(api_error(body), "unexpected server error");
+    }
+
+    #[test]
+    fn api_error_never_returns_blank_for_empty_body() {
+        // A dropped connection or bodyless 5xx used to echo the empty body,
+        // printing an error line that was nothing but color codes.
+        assert_eq!(
+            api_error(String::new()),
+            "unexpected empty response from server"
+        );
+        assert_eq!(
+            api_error("  \n".to_string()),
+            "unexpected empty response from server"
+        );
     }
 
     #[test]
