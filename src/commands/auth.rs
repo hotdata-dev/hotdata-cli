@@ -440,7 +440,7 @@ fn cache_workspaces(
     access_token: &str,
 ) -> Result<Vec<config::WorkspaceEntry>, String> {
     let url = format!("{}/workspaces", profile.api_url);
-    let client = reqwest::blocking::Client::new();
+    let client = crate::client::raw_http::build_http_client();
     let req = client
         .get(&url)
         .header("Authorization", format!("Bearer {access_token}"));
@@ -485,7 +485,7 @@ fn api_key_authorized_workspaces(
         return Vec::new();
     };
     let url = format!("{}/workspaces", profile_config.api_url);
-    let client = reqwest::blocking::Client::new();
+    let client = crate::client::raw_http::build_http_client();
     let req = client
         .get(&url)
         .header("Authorization", format!("Bearer {access_token}"));
