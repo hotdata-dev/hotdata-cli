@@ -437,6 +437,25 @@ mod tests {
     }
 
     #[test]
+    fn lock_file_degrades_to_none_when_config_dir_unavailable() {
+        // Locking is best-effort: when the config dir can't even be
+        // created (here: the path is a regular file), lock_file must
+        // degrade to None — warn and proceed unlocked — not error or hang.
+        let (tmp, _guard) = with_temp_config_dir();
+        let not_a_dir = tmp.path().join("not-a-dir");
+        fs::write(&not_a_dir, "x").unwrap();
+        // SAFETY: serialized via with_temp_config_dir's ENV_LOCK guard.
+        unsafe {
+            std::env::set_var("HOTDATA_CONFIG_DIR", &not_a_dir);
+        }
+        let lock = lock_file("config.lock");
+        unsafe {
+            std::env::set_var("HOTDATA_CONFIG_DIR", tmp.path());
+        }
+        assert!(lock.is_none());
+    }
+
+    #[test]
     fn config_file_stays_world_readable() {
         // The atomic-write path must not silently flip config.yml from the
         // fs::write-era 0644 to tempfile's 0600 — it holds no credentials

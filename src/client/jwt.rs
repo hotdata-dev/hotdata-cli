@@ -1188,6 +1188,40 @@ mod tests {
     }
 
     #[test]
+    fn ensure_returns_token_even_when_session_persist_fails() {
+        // A refreshed token must reach the caller even when session.json
+        // can't be written (read-only config dir): the persistence failure
+        // is warned about, not fatal. The lock acquisition also fails here
+        // (session.lock can't be created), exercising the unlocked degrade.
+        use std::os::unix::fs::PermissionsExt;
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "grant_type".into(),
+                "refresh_token".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"refreshed-jwt","expires_in":300,"refresh_token":"r2"}"#)
+            .create();
+
+        save_session(&cached_session(-10, 86400)).unwrap();
+        let profile = mock_profile(&server.url());
+
+        let dir = config::config_dir().unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = ensure_access_token(&profile, None);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        m.assert();
+        assert_eq!(result.unwrap(), "refreshed-jwt");
+        // The on-disk session couldn't be updated — still the old one.
+        assert_eq!(load_session().unwrap().access_token, "cached-jwt");
+    }
+
+    #[test]
     fn ensure_concurrent_expiry_refreshes_once_and_shares_result() {
         // Regression: when the access token expired mid-burst, N concurrent
         // processes all spent the same refresh token. The winner saved a new
