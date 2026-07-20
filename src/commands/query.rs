@@ -1,5 +1,5 @@
 use crate::client::sdk::{Api, ApiError};
-use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 
 /// Subcommands for `hotdata query`.
@@ -14,8 +14,13 @@ pub enum QueryCommands {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize)]
 pub struct QueryResponse {
+    /// ID of the query run that produced this result. Surfaced so a user can
+    /// look up run-level metadata (e.g. bytes/rows scanned) with
+    /// `hotdata queries <id>`. `None` on paths that fetch a persisted result by
+    /// `result_id` alone and never learn the originating run.
+    pub query_run_id: Option<String>,
     pub result_id: Option<String>,
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Value>>,
@@ -33,6 +38,10 @@ pub struct QueryResponse {
     /// whole result. Drives the fail-closed exit in [`print_result`].
     pub truncated: bool,
     pub execution_time_ms: Option<u64>,
+    /// A human-facing completeness notice (e.g. truncation). Printed to stderr by
+    /// [`print_result`], never the stdout body — a JSON consumer reads the same
+    /// fact from the typed `truncated` / `total_row_count` fields.
+    #[serde(skip)]
     pub warning: Option<String>,
 }
 
@@ -73,6 +82,7 @@ fn query_response_from_sdk(resp: hotdata::models::QueryResponse) -> QueryRespons
             Some(row_count)
         });
     QueryResponse {
+        query_run_id: (!resp.query_run_id.is_empty()).then_some(resp.query_run_id),
         result_id: resp.result_id.flatten(),
         columns: resp.columns,
         row_count,
@@ -252,6 +262,9 @@ fn arrow_result_to_query_response(
         .and_then(|t| u64::try_from(t).ok())
         .or(Some(row_count));
     QueryResponse {
+        // The Arrow fetch is keyed by result_id and carries no run id; the
+        // async/poll callers that know it stamp it after this returns.
+        query_run_id: None,
         result_id: Some(result_id),
         columns,
         rows,
@@ -483,8 +496,9 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
                 let execution_time_ms = run.execution_time_ms;
                 match run.result_id.flatten() {
                     Some(ref result_id) => {
-                        let result =
+                        let mut result =
                             fetch_arrow_result_with_timing(&api, result_id, execution_time_ms);
+                        result.query_run_id = Some(run_id.clone());
                         print_result(&result, format);
                     }
                     None => {
@@ -544,7 +558,9 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
             let execution_time_ms = run.execution_time_ms;
             match run.result_id.flatten() {
                 Some(ref result_id) => {
-                    let result = fetch_arrow_result_with_timing(&api, result_id, execution_time_ms);
+                    let mut result =
+                        fetch_arrow_result_with_timing(&api, result_id, execution_time_ms);
+                    result.query_run_id = Some(run.id.clone());
                     print_result(&result, format);
                 }
                 None => {
@@ -573,26 +589,6 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
     }
 }
 
-/// Build the `--output json` body for a result.
-///
-/// `row_count` (rows in this body) is kept for backward compatibility, but the
-/// truncation truth is carried explicitly: `truncated`, `preview_row_count`
-/// (rows held), and `total_row_count` (grand total, `null` when unknown). A
-/// JSON consumer can detect a partial result from these rather than having to
-/// notice a stderr-only warning.
-fn result_json(result: &QueryResponse) -> Value {
-    serde_json::json!({
-        "result_id": result.result_id,
-        "columns": result.columns,
-        "rows": result.rows,
-        "row_count": result.row_count,
-        "preview_row_count": result.row_count,
-        "total_row_count": result.total_row_count,
-        "truncated": result.truncated,
-        "execution_time_ms": result.execution_time_ms,
-    })
-}
-
 /// Process exit code after rendering a result: [`EXIT_INCOMPLETE_RESULT`] when
 /// the rows are an incomplete preview (fail closed so pipelines break), else `0`.
 fn result_exit_code(result: &QueryResponse) -> i32 {
@@ -609,6 +605,11 @@ fn result_exit_code(result: &QueryResponse) -> i32 {
 /// loud — `N of TOTAL rows — INCOMPLETE PREVIEW (...)` — with `?` standing in for
 /// a total the server didn't report. The caller colours it (red vs grey).
 fn table_footer(result: &QueryResponse) -> String {
+    let run_part = result
+        .query_run_id
+        .as_deref()
+        .map(|id| format!(" [run: {id}]"))
+        .unwrap_or_default();
     let id_part = result
         .result_id
         .as_deref()
@@ -624,15 +625,16 @@ fn table_footer(result: &QueryResponse) -> String {
             .map(|t| t.to_string())
             .unwrap_or_else(|| "?".to_string());
         format!(
-            "{} of {} rows — INCOMPLETE PREVIEW ({}){}",
-            result.row_count, total, time_part, id_part
+            "{} of {} rows — INCOMPLETE PREVIEW ({}){}{}",
+            result.row_count, total, time_part, run_part, id_part
         )
     } else {
         format!(
-            "{} row{} ({}){}",
+            "{} row{} ({}){}{}",
             result.row_count,
             if result.row_count == 1 { "" } else { "s" },
             time_part,
+            run_part,
             id_part
         )
     }
@@ -645,10 +647,9 @@ pub fn print_result(result: &QueryResponse, format: &str) {
 
     match format {
         "json" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&result_json(result)).unwrap()
-            );
+            // Serialize the display struct directly; `warning` is `#[serde(skip)]`
+            // (stderr-only), the rest is the JSON body.
+            println!("{}", serde_json::to_string_pretty(result).unwrap());
         }
         "csv" => {
             println!("{}", result.columns.join(","));
@@ -897,11 +898,12 @@ mod tests {
     }
 
     #[test]
-    fn result_json_exposes_truncation_for_incomplete_preview() {
+    fn json_body_exposes_truncation_for_incomplete_preview() {
         // A JSON consumer must be able to detect a partial result from the body
-        // alone — not only from a stderr warning. truncated=true, preview <
-        // total, and both counts present.
+        // alone — not only from a stderr warning. truncated=true, row_count <
+        // total, both present. The stderr-only `warning` must NOT leak in.
         let result = QueryResponse {
+            query_run_id: None,
             result_id: None,
             columns: vec!["id".to_string()],
             rows: vec![vec![serde_json::json!(1)]],
@@ -911,16 +913,17 @@ mod tests {
             execution_time_ms: Some(5),
             warning: Some("result truncated to a preview".to_string()),
         };
-        let json = result_json(&result);
+        let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["truncated"], serde_json::json!(true));
-        assert_eq!(json["preview_row_count"], serde_json::json!(1));
         assert_eq!(json["row_count"], serde_json::json!(1));
         assert_eq!(json["total_row_count"], serde_json::json!(100));
+        assert!(json.get("warning").is_none(), "warning leaked into JSON");
     }
 
     #[test]
-    fn result_json_marks_complete_result_not_truncated() {
+    fn json_body_marks_complete_result_not_truncated() {
         let result = QueryResponse {
+            query_run_id: Some("qrun_9".to_string()),
             result_id: Some("res_9".to_string()),
             columns: vec!["id".to_string()],
             rows: vec![vec![serde_json::json!(1)], vec![serde_json::json!(2)]],
@@ -930,9 +933,9 @@ mod tests {
             execution_time_ms: Some(5),
             warning: None,
         };
-        let json = result_json(&result);
+        let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["truncated"], serde_json::json!(false));
-        assert_eq!(json["preview_row_count"], serde_json::json!(2));
+        assert_eq!(json["row_count"], serde_json::json!(2));
         assert_eq!(json["total_row_count"], serde_json::json!(2));
         // A complete result exits 0 — pipelines proceed.
         assert_eq!(result_exit_code(&result), 0);
@@ -944,6 +947,7 @@ mod tests {
         // non-generic exit code so a pipeline breaks instead of ingesting a
         // partial result that exited 0.
         let result = QueryResponse {
+            query_run_id: None,
             result_id: None,
             columns: vec!["id".to_string()],
             rows: vec![vec![serde_json::json!(1)]],
@@ -967,6 +971,7 @@ mod tests {
         truncated: bool,
     ) -> QueryResponse {
         QueryResponse {
+            query_run_id: None,
             result_id: None,
             columns: vec!["id".to_string()],
             rows: Vec::new(),
@@ -998,6 +1003,43 @@ mod tests {
         let footer = table_footer(&display_result(2, Some(2), false));
         assert!(!footer.contains("INCOMPLETE"), "footer: {footer}");
         assert!(footer.starts_with("2 rows"), "footer: {footer}");
+    }
+
+    #[test]
+    fn table_footer_includes_run_id_when_present() {
+        // The run id lets a user follow up with `hotdata queries <id>` for
+        // run-level metadata (bytes/rows scanned). It precedes the result-id.
+        let mut result = display_result(2, Some(2), false);
+        result.query_run_id = Some("qrun_7b3e04".to_string());
+        result.result_id = Some("res_9f2a1c".to_string());
+        let footer = table_footer(&result);
+        assert!(footer.contains("[run: qrun_7b3e04]"), "footer: {footer}");
+        let run_at = footer.find("[run:").unwrap();
+        let res_at = footer.find("[result-id:").unwrap();
+        assert!(run_at < res_at, "run id should precede result id: {footer}");
+    }
+
+    #[test]
+    fn table_footer_omits_run_id_when_absent() {
+        // The Arrow-only fetch path has no run id; the footer must not render an
+        // empty `[run: ]` tag.
+        let footer = table_footer(&display_result(2, Some(2), false));
+        assert!(!footer.contains("[run:"), "footer: {footer}");
+    }
+
+    #[test]
+    fn json_body_exposes_query_run_id() {
+        let mut result = display_result(2, Some(2), false);
+        result.query_run_id = Some("qrun_7b3e04".to_string());
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["query_run_id"], serde_json::json!("qrun_7b3e04"));
+    }
+
+    #[test]
+    fn inline_response_carries_query_run_id_from_sdk() {
+        // The SDK inline response carries the run id; the CLI must not drop it.
+        let resolved = query_response_from_sdk(truncated_preview(Some("res_1")));
+        assert_eq!(resolved.query_run_id.as_deref(), Some("qrun_1"));
     }
 
     #[test]
