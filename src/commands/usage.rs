@@ -38,8 +38,14 @@ pub fn usage(workspace_id: &str, since: Option<&str>, format: &str) {
             let rows = vec![
                 vec!["since".to_string(), u.since.clone()],
                 vec!["query_count".to_string(), u.query_count.to_string()],
-                vec!["bytes_scanned".to_string(), human_bytes(u.bytes_scanned)],
-                vec!["storage_bytes".to_string(), human_bytes(u.storage_bytes)],
+                vec![
+                    "bytes_scanned".to_string(),
+                    human_bytes(u.bytes_scanned.max(0) as u64),
+                ],
+                vec![
+                    "storage_bytes".to_string(),
+                    human_bytes(u.storage_bytes.max(0) as u64),
+                ],
                 vec![
                     "storage_captured_at".to_string(),
                     u.storage_captured_at

@@ -314,11 +314,7 @@ fn print_detail(r: &QueryRun, format: &str) {
                 println!("{}{}", label("rows scanned:"), n);
             }
             if let Some(n) = r.bytes_scanned {
-                println!(
-                    "{}{}",
-                    label("bytes scanned:"),
-                    crate::util::human_bytes(n as i64)
-                );
+                println!("{}{}", label("bytes scanned:"), crate::util::human_bytes(n));
             }
             if let Some(ref id) = r.result_id {
                 println!("{}{}", label("result id:"), id);

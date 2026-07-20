@@ -404,8 +404,10 @@ pub fn is_access_denied(body: &str) -> bool {
 }
 
 /// Human-readable byte count in binary units, keeping the exact value in
-/// parentheses (table view only; JSON/YAML keep raw integers).
-pub fn human_bytes(n: i64) -> String {
+/// parentheses (table view only; JSON/YAML keep raw integers). Takes a `u64` so
+/// the "negative bytes" state is unrepresentable; callers clamp any signed
+/// wire value at the boundary.
+pub fn human_bytes(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     if n < 1024 {
         return format!("{n} B");
