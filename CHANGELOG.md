@@ -1,3 +1,9 @@
+## [0.19.1] - 2026-07-20
+
+### 🐛 Bug Fixes
+
+- *(errors)* Never print a blank error for an empty response body (#232)
+- *(auth)* Use the timeout-bounded HTTP client for workspace fetch and auth probe (#233)
 ## [0.19.0] - 2026-07-20
 
 ### 🐛 Bug Fixes
