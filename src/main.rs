@@ -257,9 +257,11 @@ fn main() {
                     databases::get(&workspace_id, &name_or_id, &output);
                 } else {
                     match command {
-                        Some(DatabasesCommands::List { output }) => {
-                            databases::list(&workspace_id, &output)
-                        }
+                        Some(DatabasesCommands::List {
+                            output,
+                            limit,
+                            cursor,
+                        }) => databases::list(&workspace_id, &output, limit, cursor.as_deref()),
                         Some(DatabasesCommands::Show { name_or_id, output }) => {
                             databases::get(&workspace_id, &name_or_id, &output)
                         }

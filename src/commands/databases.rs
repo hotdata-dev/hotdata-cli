@@ -8,6 +8,14 @@ use std::path::Path;
 pub enum DatabasesCommands {
     /// List managed databases in the workspace
     List {
+        /// Maximum number of databases to return
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination cursor from a previous response
+        #[arg(long)]
+        cursor: Option<String>,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
@@ -411,15 +419,52 @@ pub(crate) fn get_database(api: &Api, id: &str) -> Result<Database, ApiError> {
     block(api.client().databases().get(id)).map(Database::from)
 }
 
-/// List databases through the SDK's typed `databases().list` handle, mapped
-/// into the CLI's summary rows.
+/// Drain every page of the paginated databases list into the full set of
+/// summary rows.
 ///
-/// Routed through [`block_with_wakeup`] so a cold KEDA start surfaces a "waking
-/// up worker" hint instead of an unexplained pause — `databases list` is a
-/// common first command against an idle workspace.
+/// `GET /v1/databases` returns one capped page plus a `next_cursor`; the CLI
+/// shows and resolves against the whole workspace, so follow the cursor to the
+/// end. When `spinner` is `Some`, the first page is fetched via
+/// [`block_with_wakeup`] so a cold KEDA start surfaces a "waking up worker"
+/// hint; the remaining pages (and the spinner-less id-only caller) use
+/// [`block`].
+fn list_all_databases(
+    api: &Api,
+    spinner: Option<&str>,
+) -> Result<Vec<hotdata::models::DatabaseSummary>, ApiError> {
+    let mut all = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut first = true;
+    loop {
+        let resp = match (first, spinner) {
+            (true, Some(msg)) => block_with_wakeup(
+                api,
+                msg,
+                api.client().databases().list(None, cursor.as_deref()),
+            )?,
+            _ => block(api.client().databases().list(None, cursor.as_deref()))?,
+        };
+        first = false;
+        // Move the page rows out first (partial move), then read next_cursor —
+        // no clone needed.
+        all.extend(resp.databases);
+        let next = resp.next_cursor.flatten();
+        // Stop at the last page, or if the server ever returns a non-advancing
+        // cursor (defensive — never loop forever).
+        match next {
+            Some(c) if !c.is_empty() && Some(&c) != cursor.as_ref() => cursor = Some(c),
+            _ => break,
+        }
+    }
+    Ok(all)
+}
+
+/// List databases, mapped into the CLI's summary rows. Drains all pages so
+/// `databases list` shows the whole workspace and name/catalog resolution sees
+/// every database (see [`list_all_databases`]).
 fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> {
-    block_with_wakeup(api, "Loading databases...", api.client().databases().list())
-        .map(|r| r.databases.into_iter().map(DatabaseSummary::from).collect())
+    list_all_databases(api, Some("Loading databases..."))
+        .map(|dbs| dbs.into_iter().map(DatabaseSummary::from).collect())
 }
 
 /// List the ids of every managed database in the workspace.
@@ -431,11 +476,10 @@ fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> 
 /// `default_connection_id` via [`get_database`]. The list summary omits the
 /// connection id, hence ids only.
 ///
-/// Deliberately spinner-less (plain [`block`], unlike
-/// [`list_database_summaries`]): the caller owns its own "Loading indexes…"
-/// spinner, and two indicatif bars would fight over the same line.
+/// Deliberately spinner-less (the caller owns its own "Loading indexes…"
+/// spinner, and two indicatif bars would fight over the same line).
 pub(crate) fn list_database_ids(api: &Api) -> Result<Vec<String>, ApiError> {
-    block(api.client().databases().list()).map(|r| r.databases.into_iter().map(|d| d.id).collect())
+    list_all_databases(api, None).map(|dbs| dbs.into_iter().map(|d| d.id).collect())
 }
 
 fn fetch_database(api: &Api, id: &str) -> Database {
@@ -883,10 +927,30 @@ fn collect_tables(
     (out, false, None)
 }
 
-pub fn list(workspace_id: &str, format: &str) {
+pub fn list(workspace_id: &str, format: &str, limit: Option<u32>, cursor: Option<&str>) {
     let api = Api::new(Some(workspace_id));
-    let mut databases = list_database_summaries(&api).unwrap_or_else(|e| e.exit());
-    databases.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    // One page, user-paginated (like `tables list` / `queries list`). Name/
+    // catalog resolution and the whole-workspace `indexes list` scan still see
+    // every database — they drain all pages internally via list_all_databases;
+    // only this display command pages.
+    let resp = block_with_wakeup(
+        &api,
+        "Loading databases...",
+        api.client()
+            .databases()
+            .list(limit.map(|l| l as i32), cursor),
+    )
+    .unwrap_or_else(|e| e.exit());
+    let has_more = resp.has_more.flatten().unwrap_or(false);
+    // Take next_cursor before moving the rows out below — no clone needed.
+    let next_cursor = resp.next_cursor.flatten();
+    // Server returns newest-first; keep that order so the cursor continuation is
+    // coherent (no client re-sort across pages).
+    let databases: Vec<DatabaseSummary> = resp
+        .databases
+        .into_iter()
+        .map(DatabaseSummary::from)
+        .collect();
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&databases).unwrap()),
@@ -924,6 +988,18 @@ pub fn list(workspace_id: &str, format: &str) {
             }
         }
         _ => unreachable!(),
+    }
+
+    if has_more {
+        use crossterm::style::Stylize;
+        eprintln!(
+            "{}",
+            format!(
+                "More results available. Use --cursor {} to fetch the next page.",
+                next_cursor.as_deref().unwrap_or("")
+            )
+            .dark_grey()
+        );
     }
 }
 
@@ -2328,6 +2404,38 @@ mod tests {
         assert_eq!(tables.len(), 2);
         assert_eq!(tables[0].table, "a");
         assert_eq!(tables[1].table, "b");
+    }
+
+    #[test]
+    fn list_all_databases_follows_cursor() {
+        let mut server = mockito::Server::new();
+        // Page 2 (reached via ?cursor=cur2): the last database, no next_cursor.
+        let page2 = server
+            .mock("GET", "/v1/databases")
+            .match_query(mockito::Matcher::UrlEncoded("cursor".into(), "cur2".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[{"id":"db2","name":"second","default_catalog":"c2","default_schema":"main"}],"count":1,"limit":1,"has_more":false,"next_cursor":null}"#,
+            )
+            .create();
+        // Page 1 (first request, no cursor): first database + a next_cursor.
+        let page1 = server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[{"id":"db1","name":"first","default_catalog":"c1","default_schema":"main"}],"count":1,"limit":1,"has_more":true,"next_cursor":"cur2"}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let dbs = list_all_databases(&api, None).unwrap();
+        page1.assert();
+        page2.assert();
+        assert_eq!(dbs.len(), 2, "drain must reassemble both pages");
+        assert_eq!(dbs[0].id, "db1");
+        assert_eq!(dbs[1].id, "db2");
     }
 
     #[test]
