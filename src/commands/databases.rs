@@ -445,8 +445,10 @@ fn list_all_databases(
             _ => block(api.client().databases().list(None, cursor.as_deref()))?,
         };
         first = false;
-        let next = resp.next_cursor.clone().flatten();
+        // Move the page rows out first (partial move), then read next_cursor —
+        // no clone needed.
         all.extend(resp.databases);
+        let next = resp.next_cursor.flatten();
         // Stop at the last page, or if the server ever returns a non-advancing
         // cursor (defensive — never loop forever).
         match next {
@@ -2401,6 +2403,38 @@ mod tests {
         assert_eq!(tables.len(), 2);
         assert_eq!(tables[0].table, "a");
         assert_eq!(tables[1].table, "b");
+    }
+
+    #[test]
+    fn list_all_databases_follows_cursor() {
+        let mut server = mockito::Server::new();
+        // Page 2 (reached via ?cursor=cur2): the last database, no next_cursor.
+        let page2 = server
+            .mock("GET", "/v1/databases")
+            .match_query(mockito::Matcher::UrlEncoded("cursor".into(), "cur2".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[{"id":"db2","name":"second","default_catalog":"c2","default_schema":"main"}],"count":1,"limit":1,"has_more":false,"next_cursor":null}"#,
+            )
+            .create();
+        // Page 1 (first request, no cursor): first database + a next_cursor.
+        let page1 = server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[{"id":"db1","name":"first","default_catalog":"c1","default_schema":"main"}],"count":1,"limit":1,"has_more":true,"next_cursor":"cur2"}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let dbs = list_all_databases(&api, None).unwrap();
+        page1.assert();
+        page2.assert();
+        assert_eq!(dbs.len(), 2, "drain must reassemble both pages");
+        assert_eq!(dbs[0].id, "db1");
+        assert_eq!(dbs[1].id, "db2");
     }
 
     #[test]
