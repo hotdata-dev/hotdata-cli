@@ -8,6 +8,14 @@ use std::path::Path;
 pub enum DatabasesCommands {
     /// List managed databases in the workspace
     List {
+        /// Maximum number of databases to return
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination cursor from a previous response
+        #[arg(long)]
+        cursor: Option<String>,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
@@ -917,10 +925,29 @@ fn collect_tables(
     (out, false, None)
 }
 
-pub fn list(workspace_id: &str, format: &str) {
+pub fn list(workspace_id: &str, format: &str, limit: Option<u32>, cursor: Option<&str>) {
     let api = Api::new(Some(workspace_id));
-    let mut databases = list_database_summaries(&api).unwrap_or_else(|e| e.exit());
-    databases.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    // One page, user-paginated (like `tables list` / `queries list`). Name/
+    // catalog resolution and the whole-workspace `indexes list` scan still see
+    // every database — they drain all pages internally via list_all_databases;
+    // only this display command pages.
+    let resp = block_with_wakeup(
+        &api,
+        "Loading databases...",
+        api.client()
+            .databases()
+            .list(limit.map(|l| l as i32), cursor),
+    )
+    .unwrap_or_else(|e| e.exit());
+    let has_more = resp.has_more.flatten().unwrap_or(false);
+    let next_cursor = resp.next_cursor.clone().flatten();
+    // Server returns newest-first; keep that order so the cursor continuation is
+    // coherent (no client re-sort across pages).
+    let databases: Vec<DatabaseSummary> = resp
+        .databases
+        .into_iter()
+        .map(DatabaseSummary::from)
+        .collect();
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&databases).unwrap()),
@@ -958,6 +985,18 @@ pub fn list(workspace_id: &str, format: &str) {
             }
         }
         _ => unreachable!(),
+    }
+
+    if has_more {
+        use crossterm::style::Stylize;
+        eprintln!(
+            "{}",
+            format!(
+                "More results available. Use --cursor {} to fetch the next page.",
+                next_cursor.as_deref().unwrap_or("")
+            )
+            .dark_grey()
+        );
     }
 }
 
