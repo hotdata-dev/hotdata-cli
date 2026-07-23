@@ -411,15 +411,50 @@ pub(crate) fn get_database(api: &Api, id: &str) -> Result<Database, ApiError> {
     block(api.client().databases().get(id)).map(Database::from)
 }
 
-/// List databases through the SDK's typed `databases().list` handle, mapped
-/// into the CLI's summary rows.
+/// Drain every page of the paginated databases list into the full set of
+/// summary rows.
 ///
-/// Routed through [`block_with_wakeup`] so a cold KEDA start surfaces a "waking
-/// up worker" hint instead of an unexplained pause — `databases list` is a
-/// common first command against an idle workspace.
+/// `GET /v1/databases` returns one capped page plus a `next_cursor`; the CLI
+/// shows and resolves against the whole workspace, so follow the cursor to the
+/// end. When `spinner` is `Some`, the first page is fetched via
+/// [`block_with_wakeup`] so a cold KEDA start surfaces a "waking up worker"
+/// hint; the remaining pages (and the spinner-less id-only caller) use
+/// [`block`].
+fn list_all_databases(
+    api: &Api,
+    spinner: Option<&str>,
+) -> Result<Vec<hotdata::models::DatabaseSummary>, ApiError> {
+    let mut all = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut first = true;
+    loop {
+        let resp = match (first, spinner) {
+            (true, Some(msg)) => block_with_wakeup(
+                api,
+                msg,
+                api.client().databases().list(None, cursor.as_deref()),
+            )?,
+            _ => block(api.client().databases().list(None, cursor.as_deref()))?,
+        };
+        first = false;
+        let next = resp.next_cursor.clone().flatten();
+        all.extend(resp.databases);
+        // Stop at the last page, or if the server ever returns a non-advancing
+        // cursor (defensive — never loop forever).
+        match next {
+            Some(c) if !c.is_empty() && Some(&c) != cursor.as_ref() => cursor = Some(c),
+            _ => break,
+        }
+    }
+    Ok(all)
+}
+
+/// List databases, mapped into the CLI's summary rows. Drains all pages so
+/// `databases list` shows the whole workspace and name/catalog resolution sees
+/// every database (see [`list_all_databases`]).
 fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> {
-    block_with_wakeup(api, "Loading databases...", api.client().databases().list())
-        .map(|r| r.databases.into_iter().map(DatabaseSummary::from).collect())
+    list_all_databases(api, Some("Loading databases..."))
+        .map(|dbs| dbs.into_iter().map(DatabaseSummary::from).collect())
 }
 
 /// List the ids of every managed database in the workspace.
@@ -431,11 +466,10 @@ fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> 
 /// `default_connection_id` via [`get_database`]. The list summary omits the
 /// connection id, hence ids only.
 ///
-/// Deliberately spinner-less (plain [`block`], unlike
-/// [`list_database_summaries`]): the caller owns its own "Loading indexes…"
-/// spinner, and two indicatif bars would fight over the same line.
+/// Deliberately spinner-less (the caller owns its own "Loading indexes…"
+/// spinner, and two indicatif bars would fight over the same line).
 pub(crate) fn list_database_ids(api: &Api) -> Result<Vec<String>, ApiError> {
-    block(api.client().databases().list()).map(|r| r.databases.into_iter().map(|d| d.id).collect())
+    list_all_databases(api, None).map(|dbs| dbs.into_iter().map(|d| d.id).collect())
 }
 
 fn fetch_database(api: &Api, id: &str) -> Database {
