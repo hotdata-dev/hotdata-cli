@@ -942,7 +942,8 @@ pub fn list(workspace_id: &str, format: &str, limit: Option<u32>, cursor: Option
     )
     .unwrap_or_else(|e| e.exit());
     let has_more = resp.has_more.flatten().unwrap_or(false);
-    let next_cursor = resp.next_cursor.clone().flatten();
+    // Take next_cursor before moving the rows out below — no clone needed.
+    let next_cursor = resp.next_cursor.flatten();
     // Server returns newest-first; keep that order so the cursor continuation is
     // coherent (no client re-sort across pages).
     let databases: Vec<DatabaseSummary> = resp
