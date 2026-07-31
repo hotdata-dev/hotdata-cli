@@ -268,6 +268,19 @@ impl IngestClient {
         )
     }
 
+    /// Ingest the result of a source-native SQL query (SQL datasources only).
+    /// The SQL runs verbatim in the source dialect; the server enforces a single
+    /// read-only statement.
+    pub fn create_raw_query(&self, req: &RawSqlIngest) -> Result<IngestAck, IngestError> {
+        self.require_api_key()?;
+        let body = serde_json::to_value(req).expect("RawSqlIngest serializes");
+        self.send(
+            self.authed(reqwest::Method::POST, "/queries/raw")
+                .json(&body),
+            Some(&body),
+        )
+    }
+
     pub fn drain(&self) -> Result<serde_json::Value, IngestError> {
         self.send(self.authed(reqwest::Method::POST, "/jobs/drain"), None)
     }
@@ -427,6 +440,18 @@ pub struct QueryToIngest {
     pub source_ingest_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_id: Option<String>,
+}
+
+/// `POST /ingest/queries/raw` body: source-native SQL run verbatim against a SQL
+/// datasource, its result loaded into `table`. The workspace rides the
+/// X-Workspace-Id header, so it is not in the body.
+#[derive(Debug, Serialize)]
+pub struct RawSqlIngest {
+    pub sql: String,
+    pub source: String,
+    pub table: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
 }
 
 /// 202 body from `POST /sources` and `POST /queries`. Common fields are typed;
