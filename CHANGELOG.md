@@ -1,3 +1,18 @@
+## [0.21.0] - 2026-07-31
+
+### 🚀 Features
+
+- *(databases)* Drain cursor for paginated databases list (#239)
+- *(ingest)* Add `hotdata ingest raw-sql` verb
+
+### 🐛 Bug Fixes
+
+- *(deps)* Bump open and quinn-proto for advisories
+- *(deps)* Drop number_prefix, bump vuln crates
+
+### 💼 Other
+
+- Disable persisted credentials on CI checkouts
 ## [0.20.0] - 2026-07-20
 
 ### 🚀 Features
