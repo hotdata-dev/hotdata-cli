@@ -274,10 +274,17 @@ hotdata ingest status <import-id> --wait      # attach and poll to done/failed
 
 hotdata ingest list-imports                   # the SQL behind each import + its database
 hotdata ingest trigger-import <import-id>     # re-run: refresh the same DB from source
+
+# raw-sql (SQL datasources only): run a source-native query VERBATIM in the
+# source dialect and ingest its result — joins, GROUP BY, window functions, CTEs,
+# engine-specific functions all run at the source. Single read-only statement.
+hotdata ingest raw-sql --source prod_pg --table rev_by_seg \
+  "SELECT c_mktsegment, SUM(o_totalprice) AS rev FROM customer c JOIN orders o ON o.o_custkey=c.c_custkey GROUP BY 1"
 ```
 
 Agent tips:
-- Import SQL is a **restricted grammar**: `SELECT <cols|*> FROM <datasource>[.<table>] [WHERE …] [LIMIT n]` — no joins/GROUP BY. Run real analytics with `hotdata query` against the imported database afterward.
+- `new-import` SQL is a **restricted grammar**: `SELECT <cols|*> FROM <datasource>[.<table>] [WHERE …] [LIMIT n]` — no joins/GROUP BY. For those, either use `raw-sql` (pushes the full query down to a SQL source) or run `hotdata query` against the imported database afterward.
+- `raw-sql` is SQL-datasources-only and read-only (a single SELECT; writes/DDL are refused). Prefer a **read-only source credential**. Cast ambiguous/mixed-precision decimal columns explicitly in the query.
 - Prefer `-o json` + the `status` exit codes for scripting; poll one-shot `status` rather than holding `--wait` when doing other work in between.
 - `status` is a **closed set**: `pending` | `running` | `done` | `failed`. While running, the finer progress state (e.g. `extracting`, `loading`) appears in `stage` — informational only, never switch on it.
 - Tables print oldest→newest; `-o json` is newest-first (`[0]` = latest).

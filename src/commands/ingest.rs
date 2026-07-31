@@ -37,7 +37,7 @@
 //! `name`, `type`, `status`, `stage`, …), not the wire rows.
 
 use crate::client::ingest::{
-    ConnectorEntry, IngestAck, IngestClient, IngestRequest, JobStatus, QueryToIngest,
+    ConnectorEntry, IngestAck, IngestClient, IngestRequest, JobStatus, QueryToIngest, RawSqlIngest,
 };
 use crate::commands::prompt::{
     ask_secret, ask_text, optional, optional_default, prompt_list, select_optional,
@@ -160,6 +160,34 @@ pub enum IngestCommands {
         poll: PollArgs,
     },
 
+    /// Ingest the result of a source-native SQL query (SQL datasources only)
+    ///
+    /// Unlike `new-import` (SELECT <cols|*> FROM <ds>[.<table>] [WHERE] [LIMIT]),
+    /// the SQL runs verbatim against the source engine in its OWN dialect —
+    /// joins, aggregation, GROUP BY, CTEs, window functions, and engine-specific
+    /// functions all execute at the source; only the result set transfers. It
+    /// must be a single read-only statement; the result lands in `--table` in a
+    /// fresh managed database.
+    RawSql {
+        /// A single read-only SQL statement, in the SOURCE engine's dialect
+        sql: String,
+
+        /// SQL datasource to run against: a name or a datasource id
+        #[arg(long)]
+        source: String,
+
+        /// Result table name in the new managed database
+        #[arg(long)]
+        table: String,
+
+        /// Cap the result at N rows
+        #[arg(long)]
+        limit: Option<u64>,
+
+        #[command(flatten)]
+        poll: PollArgs,
+    },
+
     /// List your imports: the SQL behind each and the database it landed in
     ListImports,
 
@@ -252,6 +280,13 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             database_id,
             poll,
         } => new_import(workspace_id, output, sql, all, source, database_id, &poll),
+        IngestCommands::RawSql {
+            sql,
+            source,
+            table,
+            limit,
+            poll,
+        } => raw_sql(workspace_id, output, sql, source, table, limit, &poll),
         IngestCommands::ListImports => list_imports(workspace_id, output),
         IngestCommands::TriggerImport { id, poll } => {
             trigger_import(workspace_id, output, &id, &poll)
@@ -938,6 +973,48 @@ fn new_import(
 
 fn looks_like_ingest_id(s: &str) -> bool {
     s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+// --- raw-sql: source-native SQL front-door --------------------------------
+
+fn raw_sql(
+    workspace_id: &str,
+    output: &str,
+    sql: String,
+    source: String,
+    table: String,
+    limit: Option<u64>,
+    poll: &PollArgs,
+) {
+    let client = IngestClient::new(workspace_id);
+    let req = RawSqlIngest {
+        sql,
+        source,
+        table,
+        limit,
+    };
+    let spinner = util::spinner("submitting raw-sql import…");
+    let ack = client.create_raw_query(&req).unwrap_or_else(|e| {
+        spinner.finish_and_clear();
+        e.exit()
+    });
+    spinner.finish_and_clear();
+    if poll.wait {
+        let st = poll_ingest(
+            &client,
+            output,
+            &ack.ingest_id,
+            poll.wait_timeout,
+            "importing",
+            true,
+        );
+        render_done(&st, output);
+        return;
+    }
+    // Non-blocking default: kick the drain so the enqueued job actually runs,
+    // then hand the terminal back (same as new-import).
+    let _ = client.drain();
+    render_ack(&ack, "import id:", output);
 }
 
 /// The SQL a `new-import` runs: explicit SQL wins; `--all` becomes a full
