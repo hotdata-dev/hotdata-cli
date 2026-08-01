@@ -8,7 +8,7 @@ version: 0.21.0
 
 **OLAP-style analytics** in Hotdata: PostgreSQL-dialect SQL, query execution, run history, stored results, **Chain** materializations, and **sorted** indexes for filters and joins.
 
-**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`connections`, `tables`, `databases`).
+**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`ingest` datasources, `tables`, `databases`).
 
 **Related skills:** **`hotdata-search`** (BM25, vector, retrieval indexes), **`hotdata-geospatial`** (spatial SQL).
 
@@ -24,7 +24,7 @@ hotdata query status <query_run_id>
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
 - Use **`hotdata tables list`** for schema discovery — not `information_schema` via `query`.
 - Fully qualified names: `<connection>.<schema>.<table>`, `<database>.<schema>.<table>`.
-- **Query scope:** every query runs inside one managed database (active or `--database`); it sees that database's own catalog plus **attached** connection catalogs only. To query a connection table, or **join a managed table against a connection table**, attach the connection first: `hotdata databases attach <connection>` — see **`hotdata`** skill → [Querying across connections](../hotdata/SKILL.md). No managed database set → *"a database is required."*
+- **Query scope:** every query runs inside one managed database (active or `--database`); it sees that database's own catalog plus **attached** connection catalogs only. To query a connection table, or **join a managed table against a connection table**, attach the connection first: `hotdata databases attach <connection>` — see **`hotdata`** skill → [Querying across connections](../../SKILL.md#querying-across-connections-attach). No managed database set → *"a database is required."*
 - Long-running queries may return `query_run_id` → poll with **`query status`** (exit `2` = still running). Do not re-run identical heavy SQL while polling.
 - For **workspace-wide** joins and naming, load **context:DATAMODEL** when listed (`hotdata context list` → `show DATAMODEL`) — see **`hotdata`** skill.
 
