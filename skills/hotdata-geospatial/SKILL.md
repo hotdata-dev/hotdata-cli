@@ -8,7 +8,7 @@ version: 0.21.0
 
 Hotdata supports a subset of PostGIS-style functions in **PostgreSQL-dialect SQL**. This skill is data-agnostic — apply it to any table with geometry columns.
 
-**Requires the core `hotdata` skill** for auth, workspace, and table discovery. **Related:** **`hotdata-analytics`** (OLAP SQL), **`hotdata-search`** (BM25/vector).
+**Requires the core `hotdata` skill** for auth, workspace, table discovery, and **search/retrieval indexes** (BM25/vector). **Related:** **`hotdata-analytics`** (OLAP SQL).
 
 ## Running these queries
 
@@ -20,7 +20,7 @@ hotdata query "<sql>" [--workspace-id <id>] [--database <db>] [--output table|js
 
 - **Fully qualify tables** as `<connection>.<schema>.<table>` (or `<catalog>.<schema>.<table>` for a managed database) — every `<table>` placeholder below means a qualified name.
 - **PostgreSQL dialect:** double-quote any non-lowercase identifier (e.g. `"GeoID"`).
-- Discover candidate tables/columns with **`hotdata tables list --connection-id <id>`** (connection tables) or **`hotdata databases tables`** (tables inside a managed database) — see core skill.
+- Discover candidate tables/columns with **`hotdata tables list`** (all workspace tables; narrow with `--schema`/`--table` wildcards) or **`hotdata databases tables list`** (tables inside a managed database), then inspect column types with **`hotdata tables show <catalog.schema.table>`** — see core skill.
 
 ---
 
@@ -46,7 +46,7 @@ wkb_geometry_bbox['xmin']   -- ✓ works
 (wkb_geometry_bbox).xmin    -- ✗ not supported
 ```
 
-Find these columns by their `Binary` / `Struct` types in `hotdata tables list --connection-id <id>`.
+Find these columns by their `Binary` / `Struct` types with `hotdata tables show <catalog.schema.table>` (or scan `hotdata tables list`).
 
 ---
 
@@ -155,7 +155,7 @@ SELECT <id_col>, ST_AsText(ST_Simplify(ST_GeomFromWKB(wkb_geometry), 0.0001)) AS
 
 ## Workflow: explore a new geospatial table
 
-1. **Find geometry columns** — `hotdata tables list --connection-id <id>`; look for `Binary` (WKB) / `Struct` (bbox) types.
+1. **Find geometry columns** — `hotdata tables list`, then `hotdata tables show <catalog.schema.table>`; look for `Binary` (WKB) / `Struct` (bbox) types.
 2. **Geometry types** — run the "Geometry types in a table" pattern above.
 3. **Coverage / extent** — aggregate the bbox struct:
    ```sql

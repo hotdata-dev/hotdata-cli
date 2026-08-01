@@ -1,6 +1,6 @@
 ---
 name: hotdata-analytics
-description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for tables and auth.
+description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use the core hotdata skill (search section) or hotdata-geospatial. Requires the core hotdata skill for tables and auth.
 version: 0.21.0
 ---
 
@@ -8,9 +8,9 @@ version: 0.21.0
 
 **OLAP-style analytics** in Hotdata: PostgreSQL-dialect SQL, query execution, run history, stored results, **Chain** materializations, and **sorted** indexes for filters and joins.
 
-**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`connections`, `tables`, `databases`).
+**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`tables`, `databases`; attach a connection as a queryable catalog with `databases attach`).
 
-**Related skills:** **`hotdata-search`** (BM25, vector, retrieval indexes), **`hotdata-geospatial`** (spatial SQL).
+**Related skills:** the core **`hotdata`** skill (BM25/vector search + retrieval indexes), **`hotdata-geospatial`** (spatial SQL).
 
 ---
 
@@ -103,7 +103,7 @@ Full procedure: [references/WORKFLOWS.md](references/WORKFLOWS.md).
 
 ## Sorted indexes (filters and range scans)
 
-For equality, range, and sort-heavy OLAP — not full-text or vector (see **`hotdata-search`**):
+For equality, range, and sort-heavy OLAP — not full-text or vector (see the core **`hotdata`** skill → Search & retrieval indexes):
 
 ```bash
 hotdata indexes create --catalog <catalog-alias> --schema <schema> --table <table> \

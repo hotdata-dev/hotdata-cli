@@ -13,7 +13,7 @@ Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when
 | Login, workspaces, connections, tables, context | **`hotdata`** | `auth`, `workspaces`, `connections`, `tables`, `context` |
 | Load parquet files into a managed database | **`hotdata`** | `databases create` + `databases load` |
 | SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** | `query`, `queries`, `results` |
-| BM25 / vector search, retrieval indexes | **`hotdata-search`** | `search`, `indexes create`, `embedding-providers` |
+| BM25 / vector search, retrieval indexes | core **`hotdata`** (Search & retrieval indexes) | `search`, `indexes create`, `embedding-providers` |
 | Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** | `query` with `ST_*`, WKB columns |
 
 | Concept | Where documented |
@@ -21,7 +21,7 @@ Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when
 | **Model** | This file — [Model](#model) |
 | **Upload path (managed databases)** | This file — [Managed databases](#managed-databases) |
 | **History / Chain** | **`hotdata-analytics`** — [WORKFLOWS.md](../../hotdata-analytics/references/WORKFLOWS.md) |
-| **Search indexes** | **`hotdata-search`** — [INDEXES.md](../../hotdata-search/references/INDEXES.md) |
+| **Search indexes** | core **`hotdata`** skill (Search & retrieval indexes) — [INDEXES.md](INDEXES.md) |
 | **Epic flows** | This file — [Epic flows](#epic-flows) |
 
 ---
@@ -59,7 +59,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 ### Retrieval (index then search)
 
-**Skill:** **`hotdata-search`** (schema via **`hotdata`**)
+**Skill:** core **`hotdata`** (Search & retrieval indexes)
 
 1. [ ] `hotdata tables list --connection-id <id>` — pick text column (BM25) or embedding/text column (vector)
 2. [ ] `hotdata indexes list` — avoid duplicate bm25/vector indexes on the same column
@@ -72,7 +72,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
    - [ ] `hotdata search "…" --table … --type bm25 --column <col>` (explicit)
 5. [ ] (Optional) Note indexes in **context:DATAMODEL → Search & index summary**
 
-**Detail:** [hotdata-search INDEXES.md](../../hotdata-search/references/INDEXES.md)
+**Detail:** [INDEXES.md](INDEXES.md)
 
 ### Cross-source query (attach a connection)
 

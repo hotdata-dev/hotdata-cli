@@ -76,7 +76,6 @@ pre-release-hook = ["git-cliff", "--unreleased", "--tag", "v{{version}}", "--pre
 publish = false
 pre-release-replacements = [
   { file = "skills/hotdata/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
-  { file = "skills/hotdata-search/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   { file = "skills/hotdata-analytics/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   { file = "skills/hotdata-geospatial/SKILL.md", search = "^version: .+", replace = "version: {{version}}", exactly = 1 },
   # README.md no longer carries a hardcoded version badge — it tracks GitHub releases.

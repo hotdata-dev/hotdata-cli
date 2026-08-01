@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "managed database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), full-text/vector search and retrieval indexes, and skill install. Activate for "run hotdata", "list workspaces", "list databases", "managed database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", "search", "BM25", "full-text", "vector search", "semantic search", "embedding", "create an index", or general Hotdata CLI usage. For OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
 version: 0.21.0
 ---
 
@@ -20,8 +20,7 @@ Install all skills with **`hotdata skills install`**. Load specialized skills on
 
 | Skill | Use for |
 |-------|---------|
-| **`hotdata`** (this file) | Auth, workspaces, databases, tables, basic `query`, context, jobs, ingest |
-| **`hotdata-search`** | BM25, vector search, `hotdata search`, bm25/vector indexes, embedding providers |
+| **`hotdata`** (this file) | Auth, workspaces, databases, tables, basic `query`, context, jobs, ingest, **search + retrieval indexes** (BM25/vector, embedding providers) |
 | **`hotdata-analytics`** | OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes |
 | **`hotdata-geospatial`** | PostGIS-style `ST_*`, WKB, spatial joins |
 
@@ -66,13 +65,13 @@ These are **patterns** built from the commands below—not separate CLI subcomma
 
 - **Model (`context:DATAMODEL`)** — The shared semantic map of the active database (entities, keys, joins across sources). Store and read it only via database context (`hotdata context list`, then `show DATAMODEL` **only when listed**, `push DATAMODEL`); refresh using `tables list` and `tables show`. For a deep pass (indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
 - **History / Chain / OLAP SQL** — See **`hotdata-analytics`** and [references/WORKFLOWS.md](references/WORKFLOWS.md).
-- **Search / retrieval indexes** — See **`hotdata-search`**.
+- **Search / retrieval indexes** — See the **Search & retrieval indexes** command section below.
 
 Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and managed databases: [references/WORKFLOWS.md](references/WORKFLOWS.md).
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`ingest`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`ingest`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented below (**Search & retrieval indexes**); query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -86,7 +85,7 @@ Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_st
 
 **Managed databases** are Hotdata-owned catalogs you create and populate yourself — no remote source to sync. Query them in SQL as **`<database_id>.<schema>.<table>`**. Prefer **`hotdata databases`** for this workflow.
 
-**Parquet only:** `databases tables load` accepts **parquet** files (local `--file`, remote `--url`, or a pre-staged `--upload-id`).
+**Load sources:** `databases tables load` accepts a **parquet** file (local `--file`, remote `--url`, or a pre-staged `--upload-id`) or a **saved query result** (`--result-id`, from `hotdata results` or a query's `[result-id: …]` footer).
 
 **Active database:** `hotdata databases set <id>` saves the active database to config. All `databases tables` subcommands and all `context` commands default to the active database; pass **`--database <id>`** to override per-command.
 
@@ -108,11 +107,11 @@ hotdata databases attach <connection_id|name> [--database <id>] [--alias <alias>
 hotdata databases detach <connection_id|name|alias> [--database <id>]
 
 # Preferred: load by catalog alias (auto-declares table if needed)
-hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
+hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--workspace-id <workspace_id>]
 
 # Also available via tables subcommand
 hotdata databases tables list [--database <id>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases tables load <table> [--database <id>] [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
+hotdata databases tables load <table> [--database <id>] [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--workspace-id <workspace_id>]
 hotdata databases tables delete <table> [--database <id>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
@@ -123,9 +122,9 @@ hotdata databases tables delete <table> [--database <id>] [--schema public] [--w
 - `unset` — clears the active database from config.
 - `<id>` — inspect one database (returns id, catalog, name, expires_at).
 - `delete` — removes the managed database; clears the active-database config if it matched.
-- `load` (top-level shorthand) — loads parquet into `--catalog.--schema.--table`. Accepts `--file`, `--url`, or `--upload-id`. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
+- `load` (top-level shorthand) — loads into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (a saved query result). If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
-- `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
+- `tables load` — loads a local parquet file (`--file`), a remote parquet URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`) and publishes with **replace** mode.
 - `tables delete` — drops a table from the managed database.
 - `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`) or via `--database <id>`; omit both to auto-create a scratch database using `--name` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, and `source:"database_token"` — read+write within the token's workspace, with that database as the default query scope. The child `hotdata` (or any tool) picks the token up from `HOTDATA_DATABASE_TOKEN`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
 - `attach` — attaches a **connection** as a queryable catalog on a managed database, so the connection's **live** tables become visible inside that database's query scope. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name the catalog answers to (defaults to the connection's name). This is how you query connection tables and **join across sources** — see [Querying across connections](#querying-across-connections-attach).
@@ -215,11 +214,11 @@ hotdata query status <query_run_id>
 - **A query runs inside one managed database** (active database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus any attached connection catalogs only**. To query a connection's tables or join across sources, attach the connection first — see [Querying across connections (attach)](#querying-across-connections-attach).
 - Use `hotdata tables list` and `hotdata tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes.
-- Async runs return `query_run_id` → poll with `query status` (do not re-run the same heavy SQL).
+- Async runs return `query_run_id` → poll with `query status` (do not re-run the same heavy SQL). Exit codes for scripting: `0` succeeded, `1` failed, `2` still running (poll again), `3` succeeded but the printed result is a truncated preview.
 - **Large results are complete, not a preview.** The server returns inline rows only up to a bounded cap and persists the full set out-of-band; `hotdata query` transparently fetches the full result, so the printed rows and row count are the complete set. (If the full result can't be retrieved, the CLI prints the preview and a `warning:` to stderr.)
 - **Backpressure is handled.** Under heavy concurrent load the server may shed a query with HTTP 429 (`OVERLOADED`); the CLI auto-retries (honoring `Retry-After`) before surfacing an error — no manual retry needed.
 - **OLAP** (aggregations, history, Chain, sorted indexes): **`hotdata-analytics`** skill.
-- **Search** (BM25, vector): **`hotdata-search`** skill.
+- **Search** (BM25, vector): the **Search & retrieval indexes** command section below.
 
 ### Jobs
 ```
@@ -227,7 +226,7 @@ hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status 
 hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
-- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`.
+- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`, `managed_load`.
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 
@@ -292,6 +291,61 @@ Agent tips:
 - Table names per type: `buckets` datasources expose one table named `files` (`FROM <name>` or `FROM <name>.files`); iceberg tables are addressed by the exact onboarded name (`FROM ice."ns.orders"`), the underscored form (`FROM ice.ns_orders`), or the bare table name — `show-datasource` lists what was discovered.
 - The pre-0.14 `*-connection` verbs still work as hidden aliases of the `*-datasource` ones.
 
+### Search & retrieval indexes (`search`, `indexes`, `embedding-providers`)
+
+BM25 full-text and vector similarity search, plus the indexes and embedding providers that power them. Set an active database (`hotdata databases set <id>`) and use fully-qualified `<catalog>.<schema>.<table>` names (or `schema.table` with an active DB). Sorted indexes for OLAP range/equality filters are in **`hotdata-analytics`**.
+
+**`search`** — both run server-side. `--type` and `--column` are optional when the table has exactly one search index (inferred); specify them when multiple exist.
+
+```bash
+# BM25 (requires a BM25 index on the column)
+hotdata search "<query>" --table <catalog.schema.table> [--type bm25] [--column <column>] \
+  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
+
+# Vector (requires a vector index; server auto-embeds the query text)
+hotdata search "<query>" --table <catalog.schema.table> [--type vector] [--column <source_text_column>] \
+  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
+```
+
+| Type | Behavior |
+|------|----------|
+| **`bm25`** | Server generates `bm25_search(table, col, 'text')`. Results sort by score (descending). |
+| **`vector`** | Pass a plain-text query; name the **source text column** (e.g. `title`). Server embeds using the index's provider/metric/dimensions. SQL uses `vector_distance(col, 'text')`. Results sort by distance (ascending). |
+
+- **Inference:** with `--type`/`--column` omitted, the CLI selects the table's only BM25/vector index; if multiple exist, pass both. Default `--limit` is 10.
+- **Custom embedding model / raw query vector / no vector index?** Use `hotdata query` directly (e.g. `cosine_distance(col, [<vec>])`) — `search` only auto-embeds via the index's own provider.
+- Do **not** use the internal `__db_<id>` / `conn…` label — `bm25_search`/`vector_distance` resolve a catalog attached to the active database, so those prefixes error with *catalog … is not attached*.
+
+**`indexes`** (BM25 and vector) — `create` attaches to a table via its `--catalog` alias (a managed-database catalog or connection name). `list` scopes to the active database when set, else the whole workspace (narrow with `--schema`/`--table`). `delete` **requires** `--catalog` + `--schema` + `--table` + `--name`.
+
+```bash
+hotdata indexes list [--schema <schema>] [--table <table>] [--workspace-id <ws>] [--output table|json|yaml]
+hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
+  --column <col> --type bm25|vector \
+  [--name <name>] [--metric l2|cosine|dot] [--async] \
+  [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+hotdata indexes delete --catalog <alias> --schema <schema> --table <table> --name <name>
+```
+
+- **`--type` required** on create: `bm25` (one or more text columns, comma-separated in `--column`) or `vector` (exactly one column). `sorted` is also valid (OLAP filters — see **`hotdata-analytics`**).
+- **`--async`:** poll with `hotdata jobs <job_id>` (see **Jobs** above).
+- **Auto-embedding:** `--type vector` on a **text** column embeds server-side; default output column `{column}_embedding` (override with `--output-column`).
+- Full workflow (gather workload → compare → create → verify): [references/INDEXES.md](references/INDEXES.md).
+
+**`embedding-providers`** — the providers vector indexes embed with.
+
+```bash
+hotdata embedding-providers list [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata embedding-providers get <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata embedding-providers create --name <name> --provider-type service|local \
+  [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>]
+hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
+```
+
+- System providers (e.g. `sys_emb_openai`) are pre-configured; `list` for IDs to pass to `--embedding-provider-id`.
+- `--provider-api-key` is the **embedding service** key (not Hotdata `--api-key`); `--secret-name` references an existing secret.
+
 ### Usage
 ```
 hotdata usage [--since <rfc3339>] [--workspace-id <workspace_id>] [--output table|json|yaml]
@@ -303,7 +357,7 @@ Workspace usage for the current billing window (or since `--since`): `query_coun
 
 ### Agent skills (`skills`)
 
-Bundled Markdown skills (**`hotdata`**, **`hotdata-search`**, **`hotdata-analytics`**, **`hotdata-geospatial`**) ship with the CLI release tarball.
+Bundled Markdown skills (**`hotdata`**, **`hotdata-analytics`**, **`hotdata-geospatial`**) ship with the CLI release tarball.
 
 ```
 hotdata skills install [--project]

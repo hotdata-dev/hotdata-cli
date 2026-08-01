@@ -60,7 +60,7 @@ Document safe join paths and caveats (fan-out, timing, different refresh cadence
 |-------|--------|--------------------------|--------------|-------|
 | | | | | |
 
-_Use `hotdata indexes list` (no flags — covers connection tables **and** managed databases; see **hotdata-search** skill). Record bm25/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
+_Use `hotdata indexes list` (no flags — covers connection tables **and** managed databases; see the core **hotdata** skill → Search & retrieval indexes). Record bm25/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
 
 ## Managed databases (uploaded)
 

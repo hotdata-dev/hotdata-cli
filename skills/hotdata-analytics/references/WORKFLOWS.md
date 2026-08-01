@@ -2,7 +2,7 @@
 
 OLAP-style SQL, **History** (query runs and stored results), and **Chain** (materialized follow-ups). Requires **`hotdata`** for auth, workspaces, and catalog commands.
 
-**Related:** **`hotdata-search`** for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../hotdata/references/WORKFLOWS.md) for managed databases.
+**Related:** the core **`hotdata`** skill for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../hotdata/references/WORKFLOWS.md) for managed databases.
 
 ---
 
@@ -24,7 +24,7 @@ hotdata queries <query_run_id>
 - `<query_run_id>` — full metadata (timings, `result_id`, snapshot, hashes) and formatted SQL.
 - If a run has a `result_id`, fetch rows with `hotdata results <result_id>` below.
 
-Use history to spot recurring `WHERE`, `JOIN`, `GROUP BY`, or search-style SQL before adding indexes (**`hotdata-search`**) or new Chain tables.
+Use history to spot recurring `WHERE`, `JOIN`, `GROUP BY`, or search-style SQL before adding indexes (core **`hotdata`** skill) or new Chain tables.
 
 ### Stored results
 
