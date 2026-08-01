@@ -29,8 +29,7 @@ const SKILL_NAMES: &[&str] = &["hotdata"];
 /// Skills that were previously installed as top-level entries and are now bundled
 /// under `hotdata/subskills/`. On install/update we remove any stale top-level
 /// copies so upgraders stop seeing them in the agent skill list.
-const RETIRED_SKILL_NAMES: &[&str] =
-    &["hotdata-search", "hotdata-analytics", "hotdata-geospatial"];
+const RETIRED_SKILL_NAMES: &[&str] = &["hotdata-search", "hotdata-analytics", "hotdata-geospatial"];
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Agent root directories to check for symlink installation.
