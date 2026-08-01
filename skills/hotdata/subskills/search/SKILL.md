@@ -10,7 +10,7 @@ Retrieval workloads in Hotdata: **BM25 full-text**, **vector similarity**, and t
 
 **Prerequisites:** Authenticate, set a workspace, and set an active database (`hotdata databases set <id>`) — see the **`hotdata`** skill. Use fully qualified table names: `<catalog>.<schema>.<table>`.
 
-**Related skills:** **`hotdata-analytics`** (OLAP SQL, query history, materialized chains), **`hotdata-geospatial`** (PostGIS-style functions).
+**Related sub-skills** (bundled alongside this one — `Read` on demand): **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md) — OLAP SQL, query history, materialized chains), **`hotdata-geospatial`** ([`../geospatial/SKILL.md`](../geospatial/SKILL.md) — PostGIS-style functions).
 
 ---
 
@@ -62,8 +62,8 @@ hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
 hotdata indexes delete --catalog <alias> --schema <schema> --table <table> --name <name>
 ```
 
-- **`--type` is required** on create: `bm25` (one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`**.)
-- **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** — this skill focuses on retrieval types.
+- **`--type` is required** on create: `bm25` (one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`** — [`../analytics/SKILL.md`](../analytics/SKILL.md).)
+- **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md)) — this skill focuses on retrieval types.
 - **`--async`:** poll with `hotdata jobs <job_id>` (see **`hotdata`** skill **Jobs**).
 - **Auto-embedding:** `--type vector` on a **text** column generates embeddings server-side. Optional `--embedding-provider-id`; default output column `{column}_embedding` (override with `--output-column`).
 

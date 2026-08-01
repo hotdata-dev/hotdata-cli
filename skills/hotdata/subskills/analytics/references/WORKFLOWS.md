@@ -2,7 +2,7 @@
 
 OLAP-style SQL, **History** (query runs and stored results), and **Chain** (materialized follow-ups). Requires **`hotdata`** for auth, workspaces, and catalog commands.
 
-**Related:** **`hotdata-search`** for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../../references/WORKFLOWS.md) for managed databases.
+**Related:** **`hotdata-search`** ([`../../search/SKILL.md`](../../search/SKILL.md)) for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../../references/WORKFLOWS.md) for managed databases.
 
 ---
 

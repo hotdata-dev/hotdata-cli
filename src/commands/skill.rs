@@ -168,6 +168,7 @@ pub fn maybe_auto_update_after_cli_upgrade() {
     }
 
     let _symlinks = ensure_symlinks();
+    remove_retired_skills_global();
 
     let still_needed = match read_installed_version() {
         Some(v) if v >= current && all_skill_stores_present() => false,
@@ -717,6 +718,44 @@ mod tests {
         assert_eq!(
             parse_version_from_skill_md(s),
             Some(Version::parse("0.1.14").unwrap())
+        );
+    }
+
+    #[test]
+    fn remove_retired_skills_project_clears_stale_top_level_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        let project_skills_root = cwd.join(".agents").join("skills");
+
+        // A retired skill present as a real dir in the `.agents` layer and as a
+        // symlink in the `.claude` root (exercises both branches of
+        // `remove_skill_path`), plus the surviving `hotdata` skill.
+        let agents_retired = project_skills_root.join("hotdata-search");
+        fs::create_dir_all(&agents_retired).unwrap();
+        let agents_hotdata = project_skills_root.join("hotdata");
+        fs::create_dir_all(&agents_hotdata).unwrap();
+
+        let claude_skills = cwd.join(".claude").join("skills");
+        fs::create_dir_all(&claude_skills).unwrap();
+        let claude_retired = claude_skills.join("hotdata-search");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&agents_retired, &claude_retired).unwrap();
+        #[cfg(not(unix))]
+        fs::create_dir_all(&claude_retired).unwrap();
+
+        remove_retired_skills_project(cwd, &project_skills_root);
+
+        assert!(
+            !agents_retired.exists(),
+            "retired skill in .agents should be removed"
+        );
+        assert!(
+            claude_retired.symlink_metadata().is_err(),
+            "retired skill symlink in .claude should be removed"
+        );
+        assert!(
+            agents_hotdata.exists(),
+            "the surviving hotdata skill must be left in place"
         );
     }
 }

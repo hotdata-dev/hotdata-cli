@@ -8,7 +8,7 @@ version: 0.21.0
 
 Hotdata supports a subset of PostGIS-style functions in **PostgreSQL-dialect SQL**. This skill is data-agnostic — apply it to any table with geometry columns.
 
-**Requires the core `hotdata` skill** for auth, workspace, and table discovery. **Related:** **`hotdata-analytics`** (OLAP SQL), **`hotdata-search`** (BM25/vector).
+**Requires the core `hotdata` skill** for auth, workspace, and table discovery. **Related sub-skills** (bundled alongside this one — `Read` on demand): **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md) — OLAP SQL), **`hotdata-search`** ([`../search/SKILL.md`](../search/SKILL.md) — BM25/vector).
 
 ## Running these queries
 

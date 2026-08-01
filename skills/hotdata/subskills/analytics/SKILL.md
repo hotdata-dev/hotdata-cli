@@ -10,7 +10,7 @@ version: 0.21.0
 
 **Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`ingest` datasources, `tables`, `databases`).
 
-**Related skills:** **`hotdata-search`** (BM25, vector, retrieval indexes), **`hotdata-geospatial`** (spatial SQL).
+**Related sub-skills** (bundled alongside this one — `Read` on demand): **`hotdata-search`** ([`../search/SKILL.md`](../search/SKILL.md) — BM25, vector, retrieval indexes), **`hotdata-geospatial`** ([`../geospatial/SKILL.md`](../geospatial/SKILL.md) — spatial SQL).
 
 ---
 
