@@ -10,15 +10,15 @@
 ## Overview
 
 What data exists, which business domains it covers, and who owns this document.  
-_(Large workspaces: add a **table of contents** here—per connection, table counts.)_
+_(Large workspaces: add a **table of contents** here—per catalog, table counts.)_
 
 ## Purpose
 
 Short description of what this workspace is for and how the model should be used for queries.
 
-## Connections & sources
+## Catalogs & sources
 
-| Connection ID | Name | Type | Role / domain |
+| Catalog ID | Name | Type | Role / domain |
 |---------------|------|------|---------------|
 | | | | |
 
@@ -26,7 +26,7 @@ Short description of what this workspace is for and how the model should be used
 
 _Use for important tables only, or expand all via [MODEL_BUILD.md](MODEL_BUILD.md). **Duplicate** this whole block (from the heading through the horizontal rule) for each table._
 
-#### `<connection>.<schema>.<table>`
+#### `<catalog>.<schema>.<table>`
 
 **Grain:** one row = one `…`  
 **Description:**  
@@ -45,14 +45,14 @@ For each business entity:
 
 - **Entity:**  
 - **Grain:** one row per …  
-- **Primary tables:** `connection.schema.table`  
+- **Primary tables:** `catalog.schema.table`  
 - **Key columns:**  
 
-## Cross-connection joins
+## Cross-catalog joins
 
 Document safe join paths and caveats (fan-out, timing, different refresh cadence, type mismatches).
 
-> A cross-connection join runs inside one managed database; each connection it touches must be **attached** to that database (`hotdata databases attach <connection>`) so its live tables are in query scope. Note here which connections a join requires attached, and the alias each is attached under. See **`hotdata`** skill → Querying across connections.
+> A cross-catalog join runs inside one managed database; each catalog it touches must be **attached** to that database (`hotdata databases attach <catalog>`) so its live tables are in query scope. Note here which catalogs a join requires attached, and the alias each is attached under. See **`hotdata`** skill → Querying across catalogs.
 
 ## Search & index summary (optional)
 
@@ -60,7 +60,7 @@ Document safe join paths and caveats (fan-out, timing, different refresh cadence
 |-------|--------|--------------------------|--------------|-------|
 | | | | | |
 
-_Use `hotdata indexes list` (no flags — covers connection tables **and** managed databases; see **hotdata-search** skill). Record bm25/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
+_Use `hotdata indexes list` (no flags — covers catalog tables **and** managed databases; see **hotdata-search** skill). Record bm25/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
 
 ## Managed databases (uploaded)
 

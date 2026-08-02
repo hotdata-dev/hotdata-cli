@@ -36,12 +36,11 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 1. [ ] `hotdata auth login`
 2. [ ] `hotdata workspaces list` → `hotdata workspaces set` if not on the right workspace
-3. [ ] `hotdata ingest list-datasources` — note datasource ids and names
-4. [ ] (Optional) `hotdata ingest new-datasource --service <type>` — add a datasource (see **`hotdata`** skill → **Ingest external data**)
-5. [ ] `hotdata ingest show-datasource <datasource_id>` to re-check discovered tables/columns if the source schema may have changed
-6. [ ] `hotdata tables list` (add `--schema`/`--table` filters to narrow) and `hotdata tables show <table>` for columns
-7. [ ] (Optional) `hotdata context list` — if `DATAMODEL` is listed, `hotdata context show DATAMODEL`; else skip `show`
-8. [ ] (Optional) Bootstrap **context:DATAMODEL** — [Model](#model), [DATA_MODEL.template.md](DATA_MODEL.template.md)
+3. [ ] `hotdata databases list` and `hotdata tables list` — see the catalogs and tables you can query (tables print as `<catalog>.<schema>.<table>`)
+4. [ ] `hotdata tables show <table>` for columns (add `--schema`/`--table` filters to `tables list` to narrow)
+5. [ ] (Optional, to pull external data) `hotdata ingest list-datasources`; add one with `hotdata ingest new-datasource --service <type>`, then re-check its discovered schema with `hotdata ingest show-datasource <datasource_id>` — see **`hotdata`** skill → **Ingest external data**
+6. [ ] (Optional) `hotdata context list` — if `DATAMODEL` is listed, `hotdata context show DATAMODEL`; else skip `show`
+7. [ ] (Optional) Bootstrap **context:DATAMODEL** — [Model](#model), [DATA_MODEL.template.md](DATA_MODEL.template.md)
 
 **Next:** upload data ([Managed databases](#managed-databases)) or run analytics (**Chain** below).
 
@@ -65,7 +64,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 2. [ ] `hotdata indexes list` — avoid duplicate bm25/vector indexes on the same column
 3. [ ] Create index:
    - [ ] **Managed DB:** `hotdata indexes create --catalog <alias> --table <tbl> --column <text_col> --type bm25|vector`
-   - [ ] **Connection:** `hotdata indexes create --catalog <connection-name-or-id> --schema <s> --table <t> --column <col> --type bm25|vector [--metric cosine|l2|dot]`
+   - [ ] **Catalog:** `hotdata indexes create --catalog <catalog-name-or-id> --schema <s> --table <t> --column <col> --type bm25|vector [--metric cosine|l2|dot]`
    - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
 4. [ ] Search (--type and --column inferred when one search index exists):
    - [ ] `hotdata search "…" --table <catalog.schema.table>` (auto-infer)
@@ -74,20 +73,20 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 **Detail:** [hotdata-search INDEXES.md](../subskills/search/references/INDEXES.md)
 
-### Cross-source query (attach a connection)
+### Cross-source query (attach a catalog)
 
 **Skill:** **`hotdata`**
 
-A `hotdata query` runs inside **one** managed database; its scope sees that database's own catalog plus **attached** connection catalogs only. To query a connection's tables — or join a managed table against a live connection table in one query — attach the connection. (No managed database set → *"a database is required."*; an unattached catalog → *"table not found."*)
+A `hotdata query` runs inside **one** managed database; its scope sees that database's own catalog plus **attached** catalog catalogs only. To query a catalog's tables — or join a managed table against a live catalog table in one query — attach the catalog. (No managed database set → *"a database is required."*; an unattached catalog → *"table not found."*)
 
 1. [ ] Pick/create the managed database that will be the query context (`hotdata databases set <id>` or `databases create --catalog <alias>`)
-2. [ ] Attach the connection(s) you need (live, sync intact): `hotdata databases attach <connection> [--alias <a>]`
-   - Or attach at creation: `hotdata databases create --catalog <alias> --attach <connection>[=<alias>]`
+2. [ ] Attach the catalog(s) you need (live, sync intact): `hotdata databases attach <catalog> [--alias <a>]`
+   - Or attach at creation: `hotdata databases create --catalog <alias> --attach <catalog>[=<alias>]`
 3. [ ] Confirm scope: `hotdata databases <id>` lists attached catalogs
-4. [ ] Query across sources: `hotdata query "SELECT … FROM <my_catalog>.public.<t> JOIN <connection_or_alias>.<schema>.<table> ON …"`
-5. [ ] (Optional) `hotdata databases detach <connection|alias>` when finished; record required attachments in **context:DATAMODEL → Cross-connection joins**
+4. [ ] Query across sources: `hotdata query "SELECT … FROM <my_catalog>.public.<t> JOIN <catalog_or_alias>.<schema>.<table> ON …"`
+5. [ ] (Optional) `hotdata databases detach <catalog|alias>` when finished; record required attachments in **context:DATAMODEL → Cross-catalog joins**
 
-**Do not** export a connection to parquet just to query it — attach is the live, sync-preserving path.
+**Do not** export a catalog to parquet just to query it — attach is the live, sync-preserving path.
 
 ---
 
@@ -143,13 +142,13 @@ hotdata databases fork --expires-at 24h   # deep copy; becomes the active databa
 hotdata databases load --catalog sales --table orders --file ./risky.parquet  # hits the fork
 ```
 
-**Capture both ids.** After the fork, both databases answer to the same catalog alias (here `sales`), so ids are the only unambiguous way to refer to either one — the source id comes from `databases list` up front, the fork id from the `fork` output. The shared alias means experimental SQL runs unchanged against the fork. Attached connections are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases set <source_id>` to switch back to the source) or delete it (`databases delete <fork_id>`). Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
+**Capture both ids.** After the fork, both databases answer to the same catalog alias (here `sales`), so ids are the only unambiguous way to refer to either one — the source id comes from `databases list` up front, the fork id from the `fork` output. The shared alias means experimental SQL runs unchanged against the fork. Attached catalogs are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases set <source_id>` to switch back to the source) or delete it (`databases delete <fork_id>`). Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
 
 ---
 
 ## Model
 
-**Goal:** A markdown map of entities, keys, grain, and how connections relate—stored as **context:DATAMODEL** on top of the live **catalog** from Hotdata.
+**Goal:** A markdown map of entities, keys, grain, and how catalogs relate—stored as **context:DATAMODEL** on top of the live **catalog** from Hotdata.
 
 ### Initialize
 

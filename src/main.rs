@@ -296,19 +296,18 @@ fn main() {
                             &output,
                         ),
                         Some(DatabasesCommands::Attach {
-                            connection,
+                            catalog,
                             database,
                             alias,
                         }) => databases::attach(
                             &workspace_id,
-                            &connection,
+                            &catalog,
                             database.as_deref(),
                             alias.as_deref(),
                         ),
-                        Some(DatabasesCommands::Detach {
-                            connection,
-                            database,
-                        }) => databases::detach(&workspace_id, &connection, database.as_deref()),
+                        Some(DatabasesCommands::Detach { catalog, database }) => {
+                            databases::detach(&workspace_id, &catalog, database.as_deref())
+                        }
                         Some(DatabasesCommands::Set { id }) => databases::set(&workspace_id, &id),
                         Some(DatabasesCommands::Unset) => databases::unset(&workspace_id),
                         Some(DatabasesCommands::Delete { name_or_id }) => {

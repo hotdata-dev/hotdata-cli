@@ -393,21 +393,21 @@ fn cross_source_hint(error_msg: &str) -> Option<String> {
     if lower.contains("a database is required") {
         return Some(
             "Tip: a query runs inside one managed database. Set one with `hotdata databases \
-             set <id>`, then attach any connection whose tables you need: `hotdata databases \
-             attach <connection>`. List connections with `hotdata connections list`."
+             set <id>`, then attach any catalog whose tables you need: `hotdata databases \
+             attach <catalog>`. See available catalogs and tables with `hotdata tables list`."
                 .to_string(),
         );
     }
     // "table 'catalog.schema.table' not found" — surface the catalog so the user
-    // can attach it if it's a connection simply outside this database's scope.
+    // can attach it if it's a catalog simply outside this database's scope.
     if lower.contains("not found")
         && let Some(quoted) = error_msg.split('\'').nth(1)
         && quoted.contains('.')
         && let Some(catalog) = quoted.split('.').next().filter(|c| !c.is_empty())
     {
         return Some(format!(
-            "Tip: '{catalog}' isn't in the current database's scope. If it's a connection, \
-             attach it to query across sources: `hotdata databases attach {catalog}`."
+            "Tip: '{catalog}' isn't in the current database's scope. If it's a catalog, \
+             attach it to query across catalogs: `hotdata databases attach {catalog}`."
         ));
     }
     None

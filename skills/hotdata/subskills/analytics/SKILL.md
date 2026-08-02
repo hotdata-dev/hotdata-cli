@@ -23,8 +23,8 @@ hotdata query status <query_run_id>
 
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
 - Use **`hotdata tables list`** for schema discovery — not `information_schema` via `query`.
-- Fully qualified names: `<connection>.<schema>.<table>`, `<database>.<schema>.<table>`.
-- **Query scope:** every query runs inside one managed database (active or `--database`); it sees that database's own catalog plus **attached** connection catalogs only. To query a connection table, or **join a managed table against a connection table**, attach the connection first: `hotdata databases attach <connection>` — see **`hotdata`** skill → [Querying across connections](../../SKILL.md#querying-across-connections-attach). No managed database set → *"a database is required."*
+- Fully qualified names: `<catalog>.<schema>.<table>`, `<database>.<schema>.<table>`.
+- **Query scope:** every query runs inside one managed database (active or `--database`); it sees that database's own catalog plus **attached** catalogs only. To query an attached catalog's table, or **join a managed table against an attached catalog's table**, attach the catalog first: `hotdata databases attach <catalog>` — see **`hotdata`** skill → [Querying across catalogs](../../SKILL.md#querying-across-catalogs-attach). No managed database set → *"a database is required."*
 - Long-running queries may return `query_run_id` → poll with **`query status`** (exit `2` = still running). Do not re-run identical heavy SQL while polling.
 - For **workspace-wide** joins and naming, load **context:DATAMODEL** when listed (`hotdata context list` → `show DATAMODEL`) — see **`hotdata`** skill.
 
@@ -33,7 +33,7 @@ hotdata query status <query_run_id>
 Typical analytics SQL (all via `hotdata query`):
 
 - **Aggregations:** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` with `GROUP BY`
-- **Joins:** `INNER` / `LEFT JOIN` across `<catalog>.<schema>.<table>` names — every referenced catalog (managed or connection) must be in the active database's scope; attach connections first (`hotdata databases attach`)
+- **Joins:** `INNER` / `LEFT JOIN` across `<catalog>.<schema>.<table>` names — every referenced catalog (the managed database's own or an attached one) must be in the active database's scope; attach catalogs first (`hotdata databases attach`)
 - **Filtering:** `WHERE` on partition-friendly columns (consider **sorted** indexes below)
 - **Ordering:** `ORDER BY` on metrics or dimensions
 - **Bounded exploration:** always `LIMIT` while iterating; widen once validated

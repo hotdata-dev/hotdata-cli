@@ -59,8 +59,8 @@ pub enum DatabasesCommands {
         #[arg(long)]
         expires_at: Option<String>,
 
-        /// Attach a connection as a queryable catalog on the new database (repeatable).
-        /// Accepts a connection name or id, optionally `connection=alias` to set the
+        /// Attach a catalog to the new database so its tables are queryable (repeatable).
+        /// Accepts a catalog name or id, optionally `catalog=alias` to set the
         /// SQL alias it answers to: `--attach github --attach salesdb=sales`.
         #[arg(long = "attach")]
         attach: Vec<String>,
@@ -75,7 +75,7 @@ pub enum DatabasesCommands {
     /// The fork contains the same schemas, tables, and data as the source, and
     /// answers to the same SQL catalog alias inside its own query scope; the
     /// two databases diverge freely afterwards (writes to one never affect the
-    /// other). Connection catalogs attached to the source are re-attached to
+    /// other). Catalogs attached to the source are re-attached to
     /// the fork; indexes are not carried over.
     Fork {
         /// Source database id, catalog, or name (defaults to the current database)
@@ -97,30 +97,30 @@ pub enum DatabasesCommands {
         output: String,
     },
 
-    /// Attach a connection as a queryable catalog on a managed database.
+    /// Attach a catalog to a managed database so its tables are queryable.
     ///
-    /// A `query` runs inside one managed database; attaching a connection makes
+    /// A `query` runs inside one managed database; attaching a catalog makes
     /// its live tables visible in that database's scope, so you can join across
-    /// sources in a single query without exporting data. Reachable in SQL as
-    /// `<alias>.<schema>.<table>`, or `<connection-name>.<schema>.<table>` when
+    /// catalogs in a single query without exporting data. Reachable in SQL as
+    /// `<alias>.<schema>.<table>`, or `<catalog-name>.<schema>.<table>` when
     /// `--alias` is omitted.
     Attach {
-        /// Connection name or id to attach (e.g. `github`)
-        connection: String,
+        /// Catalog name or id to attach (e.g. `github`)
+        catalog: String,
 
         /// Database id, catalog, or name to attach into (defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
-        /// Alias the catalog answers to in SQL. Defaults to the connection's name.
+        /// Alias the catalog answers to in SQL. Defaults to the catalog's name.
         #[arg(long)]
         alias: Option<String>,
     },
 
-    /// Detach a previously attached connection catalog from a managed database.
+    /// Detach a previously attached catalog from a managed database.
     Detach {
-        /// Connection name or id to detach
-        connection: String,
+        /// Catalog name or id to detach
+        catalog: String,
 
         /// Database id, catalog, or name to detach from (defaults to the current database)
         #[arg(long, short = 'd')]
@@ -138,7 +138,7 @@ pub enum DatabasesCommands {
 
     /// Delete a managed database and its tables
     Delete {
-        /// Database name or connection ID
+        /// Managed database id or name
         name_or_id: String,
     },
 
@@ -1029,7 +1029,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
             }
             println!(
                 "{}{}",
-                label("default_connection_id:"),
+                label("catalog id:"),
                 db.default_connection_id.clone().dark_cyan()
             );
             let catalog = db
@@ -1065,7 +1065,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
 /// Attach a connection as a queryable catalog on a managed database, so its
 /// live tables are visible inside that database's query scope (cross-source
 /// joins without exporting data). Defaults to the current database.
-pub fn attach(workspace_id: &str, connection: &str, database: Option<&str>, alias: Option<&str>) {
+pub fn attach(workspace_id: &str, catalog: &str, database: Option<&str>, alias: Option<&str>) {
     use crossterm::style::Stylize;
 
     let database = resolve_current_database(database, workspace_id);
@@ -1081,14 +1081,14 @@ pub fn attach(workspace_id: &str, connection: &str, database: Option<&str>, alia
     // exits with the resolver's message, and an API failure goes through
     // `ApiError::exit`, which upgrades a masked 401/403 into the re-auth hint.
     // (The non-fatal `create --attach` loop uses `attach_connection` instead.)
-    let connection_id = crate::commands::connections::resolve_connection_id(&api, connection);
+    let connection_id = crate::commands::connections::resolve_connection_id(&api, catalog);
     send_attach(&api, &db.id, connection_id, alias).unwrap_or_else(|e| e.exit());
 
     match alias {
         Some(a) => println!(
             "{}",
             format!(
-                "Attached '{connection}' to database '{where_}' as catalog '{a}'.\n\
+                "Attached '{catalog}' to database '{where_}' as catalog '{a}'.\n\
                  Query: hotdata query \"SELECT * FROM {a}.<schema>.<table> LIMIT 10\" -d {where_}"
             )
             .green()
@@ -1096,17 +1096,17 @@ pub fn attach(workspace_id: &str, connection: &str, database: Option<&str>, alia
         None => println!(
             "{}",
             format!(
-                "Attached '{connection}' to database '{where_}'. It is reachable by the \
-                 connection's name; run `hotdata databases {where_}` to see attached catalogs."
+                "Attached '{catalog}' to database '{where_}'. It is reachable by the \
+                 catalog's name; run `hotdata databases {where_}` to see attached catalogs."
             )
             .green()
         ),
     }
 }
 
-/// Detach a previously attached connection catalog from a managed database.
+/// Detach a previously attached catalog from a managed database.
 /// Defaults to the current database.
-pub fn detach(workspace_id: &str, connection: &str, database: Option<&str>) {
+pub fn detach(workspace_id: &str, catalog: &str, database: Option<&str>) {
     use crossterm::style::Stylize;
 
     let database = resolve_current_database(database, workspace_id);
@@ -1120,14 +1120,14 @@ pub fn detach(workspace_id: &str, connection: &str, database: Option<&str>) {
         .to_string();
     // Detach is keyed by the underlying connection id, but a user who attached
     // `github=gh` will naturally type `detach gh`. Resolve an attachment alias to
-    // its connection id first; otherwise treat the argument as a connection
+    // its connection id first; otherwise treat the argument as a catalog
     // name/id like everywhere else.
     let connection_id = db
         .attachments
         .iter()
-        .find(|a| a.alias.as_deref() == Some(connection))
+        .find(|a| a.alias.as_deref() == Some(catalog))
         .map(|a| a.connection_id.clone())
-        .unwrap_or_else(|| crate::commands::connections::resolve_connection_id(&api, connection));
+        .unwrap_or_else(|| crate::commands::connections::resolve_connection_id(&api, catalog));
 
     block(
         api.client()
@@ -1138,7 +1138,7 @@ pub fn detach(workspace_id: &str, connection: &str, database: Option<&str>) {
 
     println!(
         "{}",
-        format!("Detached '{connection}' from database '{where_}'.").green()
+        format!("Detached '{catalog}' from database '{where_}'.").green()
     );
 }
 
