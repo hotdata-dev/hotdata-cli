@@ -439,12 +439,23 @@ fn fail_run(error_msg: &str) -> ! {
     std::process::exit(1);
 }
 
+/// Resolve an explicit `--database` name/catalog/id to its id for the
+/// `X-Database-Id` scope, matching `databases delete`/`tables`. The header
+/// requires an id, so a bare name/catalog would otherwise 404 as
+/// "Database '<name>' not found". `None` (flag omitted) passes through with no
+/// lookup so the construction-time default database is kept.
+fn resolve_query_database(api: &Api, database: Option<&str>) -> Option<String> {
+    database.map(|d| crate::commands::databases::resolve_database(api, d).id)
+}
+
 pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &str) {
     // Scope to the explicit --database flag, else the active database resolved
     // at construction (HOTDATA_DATABASE / current database). The scoped `Api`
     // carries the database into submit_query's `X-Database-Id` header and into
     // the database-scoped follow-up fetches (query-run poll, Arrow result).
-    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
+    let api = Api::new(Some(workspace_id));
+    let resolved = resolve_query_database(&api, database);
+    let api = api.scoped_to_database_opt(resolved.as_deref());
     let database = api.database_id();
 
     let mut request = hotdata::models::QueryRequest::new(sql.to_string());
@@ -715,6 +726,46 @@ mod tests {
         );
         resp.result_id = Some(result_id.map(|s| s.to_string()));
         resp
+    }
+
+    #[test]
+    fn query_database_flag_resolves_name_to_id() {
+        // Regression: `hotdata query --database <name>` must resolve a name or
+        // catalog alias to its id before scoping the X-Database-Id header —
+        // otherwise the server 404s as "Database '<name>' not found".
+        let mut server = mockito::Server::new();
+        // name isn't a valid id → 404, then list matches by name → detail by id.
+        server
+            .mock("GET", "/v1/databases/warehouse")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[{"id":"db_xyz","name":"warehouse","default_catalog":"wh","default_schema":"main"}]}"#,
+            )
+            .create();
+        server
+            .mock("GET", "/v1/databases/db_xyz")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"db_xyz","name":"warehouse","default_catalog":"wh","default_schema":"main","default_connection_id":"conn_1","attachments":[]}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        assert_eq!(
+            resolve_query_database(&api, Some("warehouse")).as_deref(),
+            Some("db_xyz"),
+            "a --database name must resolve to its id"
+        );
+        // Flag omitted → no lookup, passes straight through as None so the
+        // construction-time default database is preserved.
+        assert_eq!(resolve_query_database(&api, None), None);
     }
 
     #[test]
