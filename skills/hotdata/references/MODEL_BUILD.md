@@ -8,24 +8,24 @@ Optional **deep pass** for a single authoritative markdown document stored as **
 
 ---
 
-## 1. Discover connections
+## 1. Discover datasources
 
 ```bash
-hotdata connections list
+hotdata ingest list-datasources
 ```
 
-For each connection, record `id`, `name`, and `source_type`.
+For each datasource, record `id`, `name`, and `source_type`.
 
 ---
 
 ## 2. Enumerate tables and columns
 
-If the catalog may be **stale** (recent DDL, new tables missing), run **`hotdata connections refresh <connection_id>`** for affected connections **before** relying on `tables list`.
+A datasource's schema is discovered when it is added. If the source schema may have changed (recent DDL, new tables), re-check the currently discovered tables/columns with **`hotdata ingest show-datasource <datasource_id>`** **before** relying on `tables list`.
 
-**Per connection:**
+**Workspace tables** (list all, narrow with filters):
 
 ```bash
-hotdata tables list --connection-id <connection_id>
+hotdata tables list --schema <schema> --table <table>
 ```
 
 **Managed databases:**
@@ -37,10 +37,10 @@ hotdata databases tables list
 
 Capture schema for each managed-database table (columns, types) from the table listing.
 
-You can also refresh after enumeration if you discover drift:
+You can also re-check a datasource's discovered schema after enumeration if you suspect drift:
 
 ```bash
-hotdata connections refresh <connection_id>
+hotdata ingest show-datasource <datasource_id>
 ```
 
 ---
@@ -79,20 +79,20 @@ For **small** schemas (e.g. ≤5 tables in a domain), a short **ASCII diagram** 
 
 ## 5. Search and index awareness
 
-Inventory indexes on connection tables (whole workspace or filtered):
+Inventory indexes (whole workspace or filtered):
 
 ```bash
 hotdata indexes list [-w <workspace_id>]
-hotdata indexes list -c <connection_id> [--schema <schema>] [--table <table>] [-w <workspace_id>]
+hotdata indexes list [--schema <schema>] [--table <table>] [-w <workspace_id>]
 ```
 
 Per table when you only need one:
 
 ```bash
-hotdata indexes list -c <connection_id> --schema <schema> --table <table> [-w <workspace_id>]
+hotdata indexes list --schema <schema> --table <table> [-w <workspace_id>]
 ```
 
-Managed-database indexes are included in the no-flag whole-workspace `indexes list` (shown under the internal `__db_<id>.<schema>.<table>` label); narrow to one with `--connection-id` (the database's `default_connection_id`) / `--schema` / `--table` as above.
+Managed-database indexes are included in the no-flag whole-workspace `indexes list` (shown under the internal `__db_<id>.<schema>.<table>` label); narrow to one with `--schema` / `--table` as above.
 
 Note:
 

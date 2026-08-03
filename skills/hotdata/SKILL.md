@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "managed database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. For full-text/vector search and retrieval indexes use hotdata-search; for OLAP analytics, query history, stored results, and Chain materializations use hotdata-analytics; for geospatial/GIS use hotdata-geospatial.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "managed database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. This skill bundles three specialized guides under subskills/, loaded on demand: read subskills/search/SKILL.md for full-text/vector search and retrieval indexes, subskills/analytics/SKILL.md for OLAP analytics, query history, stored results, and Chain materializations, and subskills/geospatial/SKILL.md for geospatial/GIS.
 version: 0.21.0
 ---
 
@@ -14,16 +14,17 @@ hotdata <command> [args]
 
 Or if installed on PATH: `hotdata <command> [args]`
 
-## Bundled sub-skills
+## Sub-skills (loaded on demand)
 
-Install all skills with **`hotdata skills install`**. Load specialized skills only when the task needs them:
+This is the only top-level hotdata skill. Three specialized guides ship **bundled inside it** under `subskills/` and are not separate skills — **`Read` the matching file only when the task needs it** (progressive disclosure), then follow it:
 
-| Skill | Use for |
-|-------|---------|
-| **`hotdata`** (this file) | Auth, workspaces, databases, tables, basic `query`, context, jobs, ingest |
-| **`hotdata-search`** | BM25, vector search, `hotdata search`, bm25/vector indexes, embedding providers |
-| **`hotdata-analytics`** | OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes |
-| **`hotdata-geospatial`** | PostGIS-style `ST_*`, WKB, spatial joins |
+| When the task involves | Read | Covers |
+|------------------------|------|--------|
+| BM25 / vector search, `hotdata search`, bm25/vector indexes, embedding providers | [`subskills/search/SKILL.md`](subskills/search/SKILL.md) | Search & retrieval indexes |
+| OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes | [`subskills/analytics/SKILL.md`](subskills/analytics/SKILL.md) | Analytics |
+| PostGIS-style `ST_*`, WKB geometry, spatial joins, GIS | [`subskills/geospatial/SKILL.md`](subskills/geospatial/SKILL.md) | Geospatial |
+
+Everything else — auth, workspaces, databases, tables, basic `query`, context, jobs, ingest — is in this file. The three sub-skills are referred to below by name (**`hotdata-search`**, **`hotdata-analytics`**, **`hotdata-geospatial`**); each name means the bundled file above, loaded on demand.
 
 ## Authentication
 
@@ -108,11 +109,11 @@ hotdata databases attach <connection_id|name> [--database <id>] [--alias <alias>
 hotdata databases detach <connection_id|name|alias> [--database <id>]
 
 # Preferred: load by catalog alias (auto-declares table if needed)
-hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
+hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--workspace-id <workspace_id>]
 
 # Also available via tables subcommand
 hotdata databases tables list [--database <id>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases tables load <table> [--database <id>] [--schema public] (--file <path> | --url <url> | --upload-id <id>) [--workspace-id <workspace_id>]
+hotdata databases tables load <table> [--database <id>] [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--workspace-id <workspace_id>]
 hotdata databases tables delete <table> [--database <id>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
@@ -123,9 +124,9 @@ hotdata databases tables delete <table> [--database <id>] [--schema public] [--w
 - `unset` — clears the active database from config.
 - `<id>` — inspect one database (returns id, catalog, name, expires_at).
 - `delete` — removes the managed database; clears the active-database config if it matched.
-- `load` (top-level shorthand) — loads parquet into `--catalog.--schema.--table`. Accepts `--file`, `--url`, or `--upload-id`. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
+- `load` (top-level shorthand) — loads parquet into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
-- `tables load` — uploads a local parquet file (`--file`), a remote parquet URL (`--url`), or a pre-staged upload (`--upload-id`) and publishes with **replace** mode.
+- `tables load` — publishes to a managed-database table (with **replace** mode) from a local parquet file (`--file`), a remote parquet URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`, must belong to the target database).
 - `tables delete` — drops a table from the managed database.
 - `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`) or via `--database <id>`; omit both to auto-create a scratch database using `--name` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, and `source:"database_token"` — read+write within the token's workspace, with that database as the default query scope. The child `hotdata` (or any tool) picks the token up from `HOTDATA_DATABASE_TOKEN`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
 - `attach` — attaches a **connection** as a queryable catalog on a managed database, so the connection's **live** tables become visible inside that database's query scope. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name the catalog answers to (defaults to the connection's name). This is how you query connection tables and **join across sources** — see [Querying across connections](#querying-across-connections-attach).
@@ -215,7 +216,7 @@ hotdata query status <query_run_id>
 - **A query runs inside one managed database** (active database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus any attached connection catalogs only**. To query a connection's tables or join across sources, attach the connection first — see [Querying across connections (attach)](#querying-across-connections-attach).
 - Use `hotdata tables list` and `hotdata tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes.
-- Async runs return `query_run_id` → poll with `query status` (do not re-run the same heavy SQL).
+- Async runs return `query_run_id` → poll with `query status <id>` (do not re-run the same heavy SQL). `query status` exit codes: `0` succeeded, `1` failed, `2` still running (poll again), `3` succeeded but the result is a truncated/incomplete preview.
 - **Large results are complete, not a preview.** The server returns inline rows only up to a bounded cap and persists the full set out-of-band; `hotdata query` transparently fetches the full result, so the printed rows and row count are the complete set. (If the full result can't be retrieved, the CLI prints the preview and a `warning:` to stderr.)
 - **Backpressure is handled.** Under heavy concurrent load the server may shed a query with HTTP 429 (`OVERLOADED`); the CLI auto-retries (honoring `Retry-After`) before surfacing an error — no manual retry needed.
 - **OLAP** (aggregations, history, Chain, sorted indexes): **`hotdata-analytics`** skill.
@@ -227,7 +228,7 @@ hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status 
 hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
-- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`.
+- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`, `managed_load`.
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 
@@ -303,7 +304,7 @@ Workspace usage for the current billing window (or since `--since`): `query_coun
 
 ### Agent skills (`skills`)
 
-Bundled Markdown skills (**`hotdata`**, **`hotdata-search`**, **`hotdata-analytics`**, **`hotdata-geospatial`**) ship with the CLI release tarball.
+A single top-level **`hotdata`** skill ships with the CLI release tarball; the specialized guides (`search`, `analytics`, `geospatial`) are bundled **inside it** under `subskills/` and load on demand, so only `hotdata` registers as an agent skill.
 
 ```
 hotdata skills install [--project]
@@ -311,7 +312,7 @@ hotdata skills status
 hotdata skills list
 ```
 
-- **`install`** — Downloads and installs skills to **`~/.hotdata/skills/<skill>`**, then symlinks into **`~/.agents/skills`** and into **`~/.claude/skills`** / **`~/.pi/skills`** when those directories exist. **`--project`** instead copies into **`./.agents/skills/<skill>`** in the current directory (and links `./.claude` / `./.pi` when present). The CLI may auto-refresh skills after an upgrade when appropriate.
+- **`install`** — Downloads and installs the skill to **`~/.hotdata/skills/hotdata`**, then symlinks it into **`~/.agents/skills`** and into **`~/.claude/skills`** / **`~/.pi/skills`** when those directories exist (the bundled sub-skills ride along inside the `hotdata` directory). **`--project`** instead copies into **`./.agents/skills/hotdata`** in the current directory (and links `./.claude` / `./.pi` when present). The CLI may auto-refresh skills after an upgrade when appropriate.
 - **`status`** — Reports installed vs current CLI version and where skills are linked.
 - **`list`** — Alias for `status`: lists installed skills, their versions, and where they are linked.
 

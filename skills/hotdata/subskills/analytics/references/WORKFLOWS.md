@@ -2,7 +2,7 @@
 
 OLAP-style SQL, **History** (query runs and stored results), and **Chain** (materialized follow-ups). Requires **`hotdata`** for auth, workspaces, and catalog commands.
 
-**Related:** **`hotdata-search`** for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../hotdata/references/WORKFLOWS.md) for managed databases.
+**Related:** **`hotdata-search`** ([`../../search/SKILL.md`](../../search/SKILL.md)) for BM25/vector indexes and `hotdata search`; **`hotdata`** [WORKFLOWS.md](../../../references/WORKFLOWS.md) for managed databases.
 
 ---
 
@@ -92,4 +92,4 @@ hotdata query "SELECT * FROM chain_db.public.revenue_slice WHERE ..."
 
 - Materialize when the base scan is large and the follow-up runs many times.
 - Keep Chain tables focused; avoid wide `SELECT *` materializations when a narrow projection suffices.
-- For managed-database uploads, see **`hotdata`** WORKFLOWS — [Managed databases](../../hotdata/references/WORKFLOWS.md#managed-databases).
+- For managed-database uploads, see **`hotdata`** WORKFLOWS — [Managed databases](../../../references/WORKFLOWS.md#managed-databases).

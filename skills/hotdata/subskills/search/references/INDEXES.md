@@ -14,7 +14,7 @@
 - **Columns** — confirm types:
 
   ```bash
-  hotdata tables list --connection-id <connection_id>
+  hotdata tables list --schema <schema> --table <table>
   ```
 
 High-cardinality **text** (`title`, `body`, …) → **bm25**. **Embedding** / float list columns → **vector** (+ `--metric`).
@@ -22,10 +22,10 @@ High-cardinality **text** (`title`, `body`, …) → **bm25**. **Embedding** / f
 ## 2. Compare to existing indexes
 
 ```bash
-hotdata indexes list [--connection-id <id>] [--schema <schema>] [--table <table>]
+hotdata indexes list [--schema <schema>] [--table <table>]
 ```
 
-With no `--connection-id`, this is a whole-workspace scan that **includes managed-database indexes** (shown under the internal `__db_<id>.<schema>.<table>` label). Skip duplicates (same table, column, and purpose).
+With no filters, this is a whole-workspace scan that **includes managed-database indexes** (shown under the internal `__db_<id>.<schema>.<table>` label). Skip duplicates (same table, column, and purpose).
 
 ## 3. Create indexes
 

@@ -6,22 +6,22 @@
 
 ## Which skill?
 
-Load **`hotdata`** first for auth and workspace setup. Add a sub-skill only when the task needs it.
+The `hotdata` skill is always loaded first (auth and workspace setup). The three specialized guides are **bundled inside it** under `subskills/` — `Read` one only when the task needs it.
 
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
-| Login, workspaces, connections, tables, context | **`hotdata`** | `auth`, `workspaces`, `connections`, `tables`, `context` |
+| Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `ingest` (datasources), `tables`, `context` |
 | Load parquet files into a managed database | **`hotdata`** | `databases create` + `databases load` |
-| SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** | `query`, `queries`, `results` |
-| BM25 / vector search, retrieval indexes | **`hotdata-search`** | `search`, `indexes create`, `embedding-providers` |
-| Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** | `query` with `ST_*`, WKB columns |
+| SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** (`subskills/analytics/SKILL.md`) | `query`, `queries`, `results` |
+| BM25 / vector search, retrieval indexes | **`hotdata-search`** (`subskills/search/SKILL.md`) | `search`, `indexes create`, `embedding-providers` |
+| Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** (`subskills/geospatial/SKILL.md`) | `query` with `ST_*`, WKB columns |
 
 | Concept | Where documented |
 |--------|------------------|
 | **Model** | This file — [Model](#model) |
 | **Upload path (managed databases)** | This file — [Managed databases](#managed-databases) |
-| **History / Chain** | **`hotdata-analytics`** — [WORKFLOWS.md](../../hotdata-analytics/references/WORKFLOWS.md) |
-| **Search indexes** | **`hotdata-search`** — [INDEXES.md](../../hotdata-search/references/INDEXES.md) |
+| **History / Chain** | **`hotdata-analytics`** — [WORKFLOWS.md](../subskills/analytics/references/WORKFLOWS.md) |
+| **Search indexes** | **`hotdata-search`** — [INDEXES.md](../subskills/search/references/INDEXES.md) |
 | **Epic flows** | This file — [Epic flows](#epic-flows) |
 
 ---
@@ -36,10 +36,10 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 1. [ ] `hotdata auth login`
 2. [ ] `hotdata workspaces list` → `hotdata workspaces set` if not on the right workspace
-3. [ ] `hotdata connections list` — note connection ids and names
-4. [ ] (Optional) `hotdata connections create …` — see **`hotdata`** skill **Create a Connection**
-5. [ ] `hotdata connections refresh <connection_id>` if catalog may be stale
-6. [ ] `hotdata tables list` and `hotdata tables list --connection-id <id>` for columns
+3. [ ] `hotdata ingest list-datasources` — note datasource ids and names
+4. [ ] (Optional) `hotdata ingest new-datasource --service <type>` — add a datasource (see **`hotdata`** skill → **Ingest external data**)
+5. [ ] `hotdata ingest show-datasource <datasource_id>` to re-check discovered tables/columns if the source schema may have changed
+6. [ ] `hotdata tables list` (add `--schema`/`--table` filters to narrow) and `hotdata tables show <table>` for columns
 7. [ ] (Optional) `hotdata context list` — if `DATAMODEL` is listed, `hotdata context show DATAMODEL`; else skip `show`
 8. [ ] (Optional) Bootstrap **context:DATAMODEL** — [Model](#model), [DATA_MODEL.template.md](DATA_MODEL.template.md)
 
@@ -55,13 +55,13 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 4. [ ] Chain: `hotdata query "SELECT … FROM <alias>.public.<name> WHERE …"`
 5. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
 
-**Detail:** [hotdata-analytics WORKFLOWS — Chain](../../hotdata-analytics/references/WORKFLOWS.md#chain)
+**Detail:** [hotdata-analytics WORKFLOWS — Chain](../subskills/analytics/references/WORKFLOWS.md#chain)
 
 ### Retrieval (index then search)
 
 **Skill:** **`hotdata-search`** (schema via **`hotdata`**)
 
-1. [ ] `hotdata tables list --connection-id <id>` — pick text column (BM25) or embedding/text column (vector)
+1. [ ] `hotdata tables list` (filter with `--schema`/`--table`) — pick text column (BM25) or embedding/text column (vector)
 2. [ ] `hotdata indexes list` — avoid duplicate bm25/vector indexes on the same column
 3. [ ] Create index:
    - [ ] **Managed DB:** `hotdata indexes create --catalog <alias> --table <tbl> --column <text_col> --type bm25|vector`
@@ -72,7 +72,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
    - [ ] `hotdata search "…" --table … --type bm25 --column <col>` (explicit)
 5. [ ] (Optional) Note indexes in **context:DATAMODEL → Search & index summary**
 
-**Detail:** [hotdata-search INDEXES.md](../../hotdata-search/references/INDEXES.md)
+**Detail:** [hotdata-search INDEXES.md](../subskills/search/references/INDEXES.md)
 
 ### Cross-source query (attach a connection)
 
@@ -163,14 +163,14 @@ Follow **[MODEL_BUILD.md](MODEL_BUILD.md)** for connector enrichment, per-table 
 
 ### Refresh catalog facts
 
-When metadata may be **stale**, run `connections refresh` before `tables list`. After **`databases tables load`**, refresh is not required for the new table—use `databases tables list` or `tables list`.
+A datasource's schema is discovered when it is added (`hotdata ingest new-datasource`); inspect the current discovered tables/columns with `hotdata ingest show-datasource <datasource_id>`. After **`databases tables load`**, no refresh is required for the new table—use `databases tables list` or `tables list`.
 
 ```bash
 hotdata workspaces list
-hotdata connections list
-hotdata connections refresh <connection_id>   # after DDL / stale remote metadata
+hotdata ingest list-datasources
+hotdata ingest show-datasource <datasource_id>   # re-check discovered schema after source DDL
 hotdata tables list
-hotdata tables list --connection-id <connection_id>
+hotdata tables list --schema <schema> --table <table>   # narrow the workspace-wide listing
 hotdata databases list
 ```
 

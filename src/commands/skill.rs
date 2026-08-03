@@ -21,12 +21,15 @@ pub enum SkillCommands {
 
 const REPO: &str = "hotdata-dev/hotdata-cli";
 const PRIMARY_SKILL_NAME: &str = "hotdata";
-const SKILL_NAMES: &[&str] = &[
-    "hotdata",
-    "hotdata-search",
-    "hotdata-analytics",
-    "hotdata-geospatial",
-];
+/// Skills registered as top-level agent skills (autocompletable). Only `hotdata`
+/// installs at the top level; the specialized skills (search, analytics,
+/// geospatial) are bundled *inside* `hotdata/subskills/` and loaded on demand by
+/// the `hotdata` skill, so they never appear as separate entries.
+const SKILL_NAMES: &[&str] = &["hotdata"];
+/// Skills that were previously installed as top-level entries and are now bundled
+/// under `hotdata/subskills/`. On install/update we remove any stale top-level
+/// copies so upgraders stop seeing them in the agent skill list.
+const RETIRED_SKILL_NAMES: &[&str] = &["hotdata-search", "hotdata-analytics", "hotdata-geospatial"];
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Agent root directories to check for symlink installation.
@@ -165,6 +168,7 @@ pub fn maybe_auto_update_after_cli_upgrade() {
     }
 
     let _symlinks = ensure_symlinks();
+    remove_retired_skills_global();
 
     let still_needed = match read_installed_version() {
         Some(v) if v >= current && all_skill_stores_present() => false,
@@ -281,6 +285,7 @@ pub fn install_for_version(version: &Version) {
         return;
     }
     let _symlinks = ensure_symlinks();
+    remove_retired_skills_global();
     clear_skill_auto_update_suppression();
     println!("{}", format!("Agent skills updated to v{version}.").green());
 }
@@ -353,6 +358,46 @@ fn ensure_symlinks() -> Vec<(String, PathBuf, Result<bool, String>)> {
     }
 
     results
+}
+
+/// Best-effort removal of a single skill directory or symlink at `path`.
+fn remove_skill_path(path: &PathBuf) {
+    if path.symlink_metadata().is_err() {
+        return;
+    }
+    let _ = if path.is_symlink() {
+        fs::remove_file(path)
+    } else {
+        fs::remove_dir_all(path)
+    };
+}
+
+/// Remove stale top-level copies of skills that are now bundled under
+/// `hotdata/subskills/` (see `RETIRED_SKILL_NAMES`). Cleans the store, the
+/// `~/.agents` layer, and every detected home agent root. Best-effort: a
+/// retired skill that isn't present is simply skipped.
+fn remove_retired_skills_global() {
+    for name in RETIRED_SKILL_NAMES {
+        remove_skill_path(&skill_store_path(name));
+        remove_skill_path(&agents_skill_path(name));
+        for (_root, link_path) in detected_agent_skill_paths(name) {
+            remove_skill_path(&link_path);
+        }
+    }
+}
+
+/// Project-scoped counterpart to `remove_retired_skills_global`: clears stale
+/// retired skills from `./.agents/skills` and each detected project agent root.
+fn remove_retired_skills_project(cwd: &std::path::Path, project_skills_root: &std::path::Path) {
+    for name in RETIRED_SKILL_NAMES {
+        remove_skill_path(&project_skills_root.join(name));
+        for root in AGENT_ROOTS {
+            let root_path = cwd.join(root);
+            if root_path.exists() {
+                remove_skill_path(&root_path.join("skills").join(name));
+            }
+        }
+    }
 }
 
 pub fn install_project() {
@@ -460,6 +505,8 @@ pub fn install_project() {
             }
         }
     }
+
+    remove_retired_skills_project(&cwd, &project_skills_root);
 }
 
 pub fn install() {
@@ -523,6 +570,7 @@ pub fn install() {
     }
 
     let symlinks = ensure_symlinks();
+    remove_retired_skills_global();
 
     println!(
         "{}",
@@ -670,6 +718,44 @@ mod tests {
         assert_eq!(
             parse_version_from_skill_md(s),
             Some(Version::parse("0.1.14").unwrap())
+        );
+    }
+
+    #[test]
+    fn remove_retired_skills_project_clears_stale_top_level_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        let project_skills_root = cwd.join(".agents").join("skills");
+
+        // A retired skill present as a real dir in the `.agents` layer and as a
+        // symlink in the `.claude` root (exercises both branches of
+        // `remove_skill_path`), plus the surviving `hotdata` skill.
+        let agents_retired = project_skills_root.join("hotdata-search");
+        fs::create_dir_all(&agents_retired).unwrap();
+        let agents_hotdata = project_skills_root.join("hotdata");
+        fs::create_dir_all(&agents_hotdata).unwrap();
+
+        let claude_skills = cwd.join(".claude").join("skills");
+        fs::create_dir_all(&claude_skills).unwrap();
+        let claude_retired = claude_skills.join("hotdata-search");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&agents_retired, &claude_retired).unwrap();
+        #[cfg(not(unix))]
+        fs::create_dir_all(&claude_retired).unwrap();
+
+        remove_retired_skills_project(cwd, &project_skills_root);
+
+        assert!(
+            !agents_retired.exists(),
+            "retired skill in .agents should be removed"
+        );
+        assert!(
+            claude_retired.symlink_metadata().is_err(),
+            "retired skill symlink in .claude should be removed"
+        );
+        assert!(
+            agents_hotdata.exists(),
+            "the surviving hotdata skill must be left in place"
         );
     }
 }
