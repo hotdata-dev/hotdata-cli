@@ -40,19 +40,19 @@ hotdata search "<query>" --table <schema.table> [--type bm25|vector] [--column <
 - **Custom embedding model, raw query vector, or no vector index?** Use `hotdata query` directly (e.g. `cosine_distance(col, [<vec>])`) — `search` only auto-embeds the query text via the index's own provider.
 - **Before search:** create the right index (`indexes create --type bm25` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
 - Default `--limit` is 10.
-- **Active database:** with `hotdata databases set <db>`, you can pass `schema.table` directly (e.g. `--table public.articles`) — the active database's catalog is resolved automatically. Or use the full `catalog.schema.table` form. Do **not** use the internal `__db_<id>` label or raw connection ID prefix — `bm25_search`/`vector_distance` resolve a catalog attached to the active database, so an `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
+- **Active database:** with `hotdata databases set <db>`, you can pass `schema.table` directly (e.g. `--table public.articles`) — the active database's catalog is resolved automatically. Or use the full `catalog.schema.table` form. Do **not** use the internal `__db_<id>` label or raw catalog ID prefix — `bm25_search`/`vector_distance` resolve a catalog attached to the active database, so an `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
 
 ---
 
 ## Indexes (BM25 and vector)
 
-Create attaches to a table via its `--catalog` alias (a managed-database catalog or a connection name). `list` narrows to the **active database** when one is set; without one it scans the whole workspace. Filter further with `--schema` / `--table`. `delete` **requires all of** `--catalog` + `--schema` + `--table` + `--name`.
+Create attaches to a table via its `--catalog` alias (a managed database or an attached catalog). `list` narrows to the **active database** when one is set; without one it scans the whole workspace. Filter further with `--schema` / `--table`. `delete` **requires all of** `--catalog` + `--schema` + `--table` + `--name`.
 
 ```bash
 # List — active-database scope when a DB is set, else whole-workspace scan
 hotdata indexes list [--schema <schema>] [--table <table>] [--workspace-id <ws>] [--output table|json|yaml]
 
-# Create — by catalog alias (resolves a managed-database catalog or a connection name)
+# Create — by catalog alias (resolves a managed database or an attached catalog)
 hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
   --column <col> --type bm25|vector \
   [--name <name>] [--metric l2|cosine|dot] [--async] \

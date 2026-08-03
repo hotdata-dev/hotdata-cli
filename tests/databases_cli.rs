@@ -30,8 +30,8 @@ fn databases_create_help_documents_attach_flag() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("--attach"), "help: {help}");
-    // The `connection=alias` form is the documented way to set the SQL alias.
-    assert!(help.contains("connection=alias"), "help: {help}");
+    // The `catalog=alias` form is the documented way to set the SQL alias.
+    assert!(help.contains("catalog=alias"), "help: {help}");
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn databases_attach_help_documents_connection_and_alias() {
 
 #[test]
 fn databases_attach_requires_a_connection_argument() {
-    // `connection` is a required positional — parsing must fail without it.
+    // `catalog` is a required positional — parsing must fail without it.
     let output = hotdata().args(["databases", "attach"]).output().unwrap();
     assert!(!output.status.success());
     let combined = format!(
@@ -57,7 +57,7 @@ fn databases_attach_requires_a_connection_argument() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("required") || combined.contains("CONNECTION"),
+        combined.contains("required") || combined.contains("CATALOG"),
         "output: {combined}"
     );
 }

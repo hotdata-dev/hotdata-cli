@@ -77,7 +77,7 @@ pub enum IndexesCommands {
 
     /// Delete an index from a table
     Delete {
-        /// SQL catalog alias of the target database or connection name (same flag as `indexes create`)
+        /// SQL catalog alias of the target database or catalog name (same flag as `indexes create`)
         #[arg(long)]
         catalog: String,
 

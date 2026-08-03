@@ -59,7 +59,7 @@ A workspace's query worker scales to zero after inactivity. The **first** comman
 
 **Agents — list before show.** Run `hotdata context list` (optionally `--prefix DATAMODEL`) first; run `hotdata context show DATAMODEL` *only if* the stem is listed. A missing stem makes `show` exit 1 — normal for a fresh database, not a failure: don't retry in a loop or run speculative `show` in parallel with other tools. Proceed without context:DATAMODEL until one exists.
 
-**context:DATAMODEL is the durable, shared store** — entities, keys, cross-connection joins, and the naming/query conventions the whole team relies on. Keep task-scoped exploration (scratch SQL, hypotheses, one-off join checks) in the conversation or local notes; **promote** to context:DATAMODEL only when findings should outlive the session and guide everyone — reconcile against `context show DATAMODEL` (if listed), write `./DATAMODEL.md`, then `hotdata context push DATAMODEL`. No need to update it after every ad-hoc query. What to write inside the document: [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
+**context:DATAMODEL is the durable, shared store** — entities, keys, cross-catalog joins, and the naming/query conventions the whole team relies on. Keep task-scoped exploration (scratch SQL, hypotheses, one-off join checks) in the conversation or local notes; **promote** to context:DATAMODEL only when findings should outlive the session and guide everyone — reconcile against `context show DATAMODEL` (if listed), write `./DATAMODEL.md`, then `hotdata context push DATAMODEL`. No need to update it after every ad-hoc query. What to write inside the document: [references/DATA_MODEL.template.md](references/DATA_MODEL.template.md) and [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
 
 ## Multi-step workflows
 
@@ -104,9 +104,9 @@ hotdata databases delete <id> [--workspace-id <workspace_id>]
 hotdata databases run [--database <id>] [--name <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] <cmd> [args...]
 hotdata databases <id> run <cmd> [args...]
 
-# Attach a connection as a queryable catalog (enables cross-source queries — see below)
-hotdata databases attach <connection_id|name> [--database <id>] [--alias <alias>]
-hotdata databases detach <connection_id|name|alias> [--database <id>]
+# Attach a catalog so its tables are queryable (enables cross-catalog queries — see below)
+hotdata databases attach <catalog|name> [--database <id>] [--alias <alias>]
+hotdata databases detach <catalog|name|alias> [--database <id>]
 
 # Preferred: load by catalog alias (auto-declares table if needed)
 hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--workspace-id <workspace_id>]
@@ -119,7 +119,7 @@ hotdata databases tables delete <table> [--database <id>] [--schema public] [--w
 
 - `list` — all managed databases in the workspace. Active database is marked with `*` under the DEFAULT column; CREATED shows when each database was made.
 - `create` — creates a new managed database. `--name` is an optional human-readable display name. `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`); must be `[a-z_][a-z0-9_]*`. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; omitting means no expiry. Repeat `--table` to declare tables up front.
-- `fork` — creates a new managed database that is an independent deep copy of an existing one (same schemas, tables, and data); the source is left unchanged and the two diverge freely afterwards. The source defaults to the active database; pass the database `<id>` to fork another. `--name` defaults to `<source>-fork` (so the two stay distinguishable in `list`); `--expires-at` accepts a relative duration or RFC 3339 timestamp, and when omitted a still-future source expiry is carried over. The fork becomes the active database on success. The fork answers to the **same catalog alias** as its source inside its own scope; connection catalogs attached to the source are **re-attached** to the fork, but indexes are **not** carried over. Only databases created with the current (DuckLake) storage engine can be forked — older parquet-backed databases return an error.
+- `fork` — creates a new managed database that is an independent deep copy of an existing one (same schemas, tables, and data); the source is left unchanged and the two diverge freely afterwards. The source defaults to the active database; pass the database `<id>` to fork another. `--name` defaults to `<source>-fork` (so the two stay distinguishable in `list`); `--expires-at` accepts a relative duration or RFC 3339 timestamp, and when omitted a still-future source expiry is carried over. The fork becomes the active database on success. The fork answers to the **same catalog alias** as its source inside its own scope; catalogs attached to the source are **re-attached** to the fork, but indexes are **not** carried over. Only databases created with the current (DuckLake) storage engine can be forked — older parquet-backed databases return an error.
 - `set` — saves the database **id** as the active database. Subsequent `databases tables` and `context` commands use it automatically. Note that a successful `fork` also updates this: the fork becomes the active database.
 - `unset` — clears the active database from config.
 - `<id>` — inspect one database (returns id, catalog, name, expires_at).
@@ -129,9 +129,9 @@ hotdata databases tables delete <table> [--database <id>] [--schema public] [--w
 - `tables load` — publishes to a managed-database table (with **replace** mode) from a local parquet file (`--file`), a remote parquet URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`, must belong to the target database).
 - `tables delete` — drops a table from the managed database.
 - `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`) or via `--database <id>`; omit both to auto-create a scratch database using `--name` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, and `source:"database_token"` — read+write within the token's workspace, with that database as the default query scope. The child `hotdata` (or any tool) picks the token up from `HOTDATA_DATABASE_TOKEN`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
-- `attach` — attaches a **connection** as a queryable catalog on a managed database, so the connection's **live** tables become visible inside that database's query scope. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name the catalog answers to (defaults to the connection's name). This is how you query connection tables and **join across sources** — see [Querying across connections](#querying-across-connections-attach).
-- `detach` — removes an attached connection catalog. Accepts the connection name/id **or** the alias you attached it under. Defaults to the active database.
-- `create --attach <connection>[=<alias>]` — attach one or more connections at creation time (repeatable), e.g. `--attach github --attach salesdb=sales`.
+- `attach` — attaches a **catalog** to a managed database, so the catalog's **live** tables become visible inside that database's query scope. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name the catalog answers to (defaults to the catalog's name). This is how you query an attached catalog's tables and **join across catalogs** — see [Querying across catalogs](#querying-across-catalogs-attach).
+- `detach` — removes an attached catalog. Accepts the catalog name/id **or** the alias you attached it under. Defaults to the active database.
+- `create --attach <catalog>[=<alias>]` — attach one or more catalogs at creation time (repeatable), e.g. `--attach github --attach salesdb=sales`.
 
 Example:
 
@@ -141,20 +141,20 @@ hotdata databases load --catalog airbnb --table listings --url https://example.c
 hotdata query "SELECT count(*) FROM airbnb.public.listings"
 ```
 
-#### Querying across connections (attach)
+#### Querying across catalogs (attach)
 
-**A `hotdata query` runs inside exactly one managed database** — the active database (`hotdata databases set <id>`) or the one named by `--database`. With none set, the query fails with *"a database is required."* That database's query scope sees **only its own catalog plus any connection catalogs explicitly attached to it** — a workspace connection is **not** visible just because it exists. Referencing an unattached connection fails with *"table '\<catalog\>.\<schema\>.\<table\>' not found."*
+**A `hotdata query` runs inside exactly one managed database** — the active database (`hotdata databases set <id>`) or the one named by `--database`. With none set, the query fails with *"a database is required."* That database's query scope sees **only its own catalog plus any catalogs explicitly attached to it** — a workspace catalog is **not** visible just because it exists. Referencing an unattached catalog fails with *"table '\<catalog\>.\<schema\>.\<table\>' not found."*
 
-To query a connection's tables, or **join a managed table against a connection table in one query**, attach the connection to the database first. The connection's data stays **live** (synced) — this is not a copy:
+To query an attached catalog's tables, or **join a managed table against an attached catalog's table in one query**, attach the catalog to the database first. The catalog's data stays **live** (synced) — this is not a copy:
 
 ```
-# Attach the 'github' connection (live) to the active database under alias 'gh'
+# Attach the 'github' catalog (live) to the active database under alias 'gh'
 hotdata databases attach github --alias gh
 
-# Now both the database's own tables and the attached connection are in scope:
+# Now both the database's own tables and the attached catalog are in scope:
 hotdata query "SELECT * FROM gh.github.issues WHERE state = 'OPEN' LIMIT 10"
 
-# Cross-source join: a managed table JOINed against the live connection table
+# Cross-catalog join: a managed table JOINed against the live attached-catalog table
 hotdata query "
   SELECT t.id, i.title
   FROM mycatalog.public.tickets t
@@ -164,7 +164,7 @@ hotdata query "
 hotdata databases detach gh   # when finished (optional)
 ```
 
-Without `--alias`, the catalog answers to the connection's own name (`github.github.issues`). Do **not** export a connection to parquet just to query it — attach is the live, sync-preserving path.
+Without `--alias`, the catalog answers to its own name (`github.github.issues`). Do **not** export a catalog to parquet just to query it — attach is the live, sync-preserving path.
 
 ### Tables
 
@@ -213,7 +213,7 @@ hotdata query status <query_run_id>
 ```
 
 - Default output is `table` (row count and execution time).
-- **A query runs inside one managed database** (active database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus any attached connection catalogs only**. To query a connection's tables or join across sources, attach the connection first — see [Querying across connections (attach)](#querying-across-connections-attach).
+- **A query runs inside one managed database** (active database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus any attached catalogs only**. To query an attached catalog's tables or join across catalogs, attach the catalog first — see [Querying across catalogs (attach)](#querying-across-catalogs-attach).
 - Use `hotdata tables list` and `hotdata tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes.
 - Async runs return `query_run_id` → poll with `query status <id>` (do not re-run the same heavy SQL). `query status` exit codes: `0` succeeded, `1` failed, `2` still running (poll again), `3` succeeded but the result is a truncated/incomplete preview.
@@ -291,7 +291,6 @@ Agent tips:
 - Tables print oldest→newest; `-o json` is newest-first (`[0]` = latest).
 - Once an import is `done`, its database is a regular managed DB: query it with `hotdata query --database <db-id> "SELECT … FROM public.<table>"`.
 - Table names per type: `buckets` datasources expose one table named `files` (`FROM <name>` or `FROM <name>.files`); iceberg tables are addressed by the exact onboarded name (`FROM ice."ns.orders"`), the underscored form (`FROM ice.ns_orders`), or the bare table name — `show-datasource` lists what was discovered.
-- The pre-0.14 `*-connection` verbs still work as hidden aliases of the `*-datasource` ones.
 
 ### Usage
 ```

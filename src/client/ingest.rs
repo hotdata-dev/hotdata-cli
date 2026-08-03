@@ -22,9 +22,9 @@
 //! When the ingest routes land in the public OpenAPI and the SDK regenerates,
 //! delete this module and move the commands onto `sdk::Api`.
 //!
-//! Surface: `create_source` (onboard, backs `new-connection`), `create_query`
+//! Surface: `create_source` (onboard, backs `new-datasource`), `create_query`
 //! (SQL front-door, backs `new-import`), `list_sources` / `list_queries` (the
-//! registries behind `list-connections` / `list-imports`), `rerun` (backs
+//! registries behind `list-datasources` / `list-imports`), `rerun` (backs
 //! `trigger-import`), `connectors` (the catalog), `drain` + `job_status` (the
 //! async run loop). The result-reading endpoints are intentionally absent —
 //! that path is the core `query`/`databases`/`results` commands.
@@ -326,7 +326,7 @@ impl IngestClient {
         )
     }
 
-    /// Remove a connection from the registry (`DELETE /sources/{id}`):
+    /// Remove a datasource from the registry (`DELETE /sources/{id}`):
     /// the request row (with its stored encrypted credentials) and any run
     /// row. The discovery database is untouched — the command layer decides
     /// its fate. The server 422s import rows and 409s while a drain is in
@@ -338,8 +338,8 @@ impl IngestClient {
         )
     }
 
-    /// The onboarded-source registry (`GET /sources`) — one row per connection,
-    /// newest first, each with its own ingest id (the connection id). The
+    /// The onboarded-source registry (`GET /sources`) — one row per datasource,
+    /// newest first, each with its own ingest id (the datasource id). The
     /// default view is the current set: the latest onboard per connector name
     /// plus unnamed onboards; `all` includes superseded onboards too.
     pub fn list_sources(&self, all: bool) -> Result<SourcesResponse, IngestError> {
@@ -528,8 +528,8 @@ pub struct SourcesResponse {
     pub sources: Vec<SourceRow>,
 }
 
-/// One connection in the onboarded-source registry. `ingest_id` is the
-/// connection's own id — the pin key `new-import --source` accepts. `active`
+/// One datasource in the onboarded-source registry. `ingest_id` is the
+/// datasource's own id — the pin key `new-import --source` accepts. `active`
 /// marks the row by-name resolution picks (always true in the default view;
 /// superseded onboards surface with `all=true`).
 #[derive(Debug, Deserialize, Serialize)]
@@ -563,7 +563,7 @@ pub struct QueriesResponse {
 }
 
 /// One import in the registry: the SQL that produced it (verbatim for new
-/// rows, server-reconstructed for older ones), the connection it drew from,
+/// rows, server-reconstructed for older ones), the datasource it drew from,
 /// and the managed DB it landed in.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct QueryRow {

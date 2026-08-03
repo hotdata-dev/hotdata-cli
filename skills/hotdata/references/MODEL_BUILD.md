@@ -8,13 +8,16 @@ Optional **deep pass** for a single authoritative markdown document stored as **
 
 ---
 
-## 1. Discover datasources
+## 1. Discover catalogs and tables
+
+List the catalogs you can query — managed databases you own and any attached catalogs — and the tables they expose:
 
 ```bash
-hotdata ingest list-datasources
+hotdata databases list       # managed databases (catalogs you own)
+hotdata tables list          # every workspace table, as <catalog>.<schema>.<table>
 ```
 
-For each datasource, record `id`, `name`, and `source_type`.
+For each catalog, record its name and the tables it exposes. (Pulling *new* external data into a managed database is a separate step — see the `ingest` datasource commands in the core skill.)
 
 ---
 
@@ -58,7 +61,7 @@ Use **connector and tooling docs** when `source_type` (or table shapes) match:
 Do **not** invent facts: if **context:DATAMODEL** (or needed facts) is missing, say so and suggest a small sample query:
 
 ```bash
-hotdata query "SELECT * FROM <connection>.<schema>.<table> LIMIT 5"
+hotdata query "SELECT * FROM <catalog>.<schema>.<table> LIMIT 5"
 ```
 
 ---
@@ -71,7 +74,7 @@ For each table, capture where reasonable:
 2. **Primary keys** — `id`, `<entity>_id`, or composite patterns from names + types.
 3. **Foreign keys** — `_id` / `_fk` / name matches to other tables; confirm with connector docs when possible.
 4. **Parent–child** — Flattened API/JSON tables (often nested names) and dlt parent keys.
-5. **Cross-connection** — Same logical entity in two connections (keys, type mismatches, caveats).
+5. **Cross-catalog** — Same logical entity in two catalogs (keys, type mismatches, caveats).
 
 For **small** schemas (e.g. ≤5 tables in a domain), a short **ASCII diagram** helps. For larger ones, group by domain in prose (e.g. billing, identity, product).
 
@@ -100,7 +103,7 @@ Note:
 - **Time** columns — event grain vs slowly changing dimensions.
 - **Facts vs dimensions** — for analytics-oriented workspaces.
 
-When suggesting a new index, use the same connection/schema/table/column names as in `tables list` and **`hotdata-search`** / **`hotdata-analytics`** `indexes create` examples (bm25/vector vs sorted).
+When suggesting a new index, use the same catalog/schema/table/column names as in `tables list` and **`hotdata-search`** / **`hotdata-analytics`** `indexes create` examples (bm25/vector vs sorted).
 
 ---
 
@@ -109,20 +112,20 @@ When suggesting a new index, use the same connection/schema/table/column names a
 This Markdown body is what you store as **context:DATAMODEL** (`hotdata context push DATAMODEL`). Start from [DATA_MODEL.template.md](DATA_MODEL.template.md) and extend as needed:
 
 - **Overview** — Domains and what the workspace is for.
-- **Per connection** — Optional subsection per source; for **deep** models, **repeat** one block per `connection.schema.table` (grain, column table with name/type/nullable/PK-FK/notes, relationships, queryability, caveats)—the template’s single `####` heading is a pattern to copy for each table.
-- **Managed databases** — Same treatment as connection tables where relevant.
-- **Cross-connection joins** — Keys, semantics, type caveats.
+- **Per catalog** — Optional subsection per source; for **deep** models, **repeat** one block per `catalog.schema.table` (grain, column table with name/type/nullable/PK-FK/notes, relationships, queryability, caveats)—the template’s single `####` heading is a pattern to copy for each table.
+- **Managed databases** — Same treatment as catalog tables where relevant.
+- **Cross-catalog joins** — Keys, semantics, type caveats.
 - **Search / index summary** — Table, column, index status, intended use.
 
-If the workspace has **many** tables (e.g. 50+), add a **table of contents** after the overview (connection → table counts).
+If the workspace has **many** tables (e.g. 50+), add a **table of contents** after the overview (catalog → table counts).
 
 ---
 
 ## Error handling
 
 - If a CLI command fails, record the error in the doc and **continue** when possible.
-- Unreachable connections or empty table lists: note in the connections table (e.g. unreachable / no tables).
-- Do not abort the whole model for one bad connection.
+- Unreachable catalogs or empty table lists: note in the catalogs table (e.g. unreachable / no tables).
+- Do not abort the whole model for one bad catalog.
 
 ---
 
@@ -133,4 +136,4 @@ If the workspace has **many** tables (e.g. 50+), add a **table of contents** aft
 - Flag **test/dev** tables (`test`, `tmp`, `dev`, `staging` in names) as non-production when applicable.
 - Note **Utf8-stored numbers** and cast requirements where relevant.
 - Do not leave column **Notes** empty when domain knowledge or docs apply; “—” is weak unless the column is opaque/internal.
-- Align table names with **`hotdata tables list`** output (`connection.schema.table`).
+- Align table names with **`hotdata tables list`** output (`catalog.schema.table`).

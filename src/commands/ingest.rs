@@ -93,7 +93,6 @@ pub enum IngestCommands {
     /// Interactive by default; pass `--service` with config flags to add
     /// non-interactively. Pull rows separately with `hotdata ingest
     /// new-import`; browse available types with `hotdata ingest datasources`.
-    #[command(alias = "new-connection")]
     NewDatasource {
         #[command(flatten)]
         create: CreateArgs,
@@ -103,7 +102,6 @@ pub enum IngestCommands {
     },
 
     /// Show a datasource's details: status and discovered tables + columns
-    #[command(alias = "show-connection")]
     ShowDatasource {
         /// Datasource id (from `list-datasources`)
         id: String,
@@ -113,7 +111,6 @@ pub enum IngestCommands {
     ///
     /// Imports you've already run keep working — each carries its own
     /// credential copy.
-    #[command(alias = "delete-connection")]
     DeleteDatasource {
         /// Datasource id (from `list-datasources`)
         id: String,
@@ -124,7 +121,6 @@ pub enum IngestCommands {
     },
 
     /// List the datasources you've added (each has its own datasource id)
-    #[command(alias = "list-connections")]
     ListDatasources {
         /// Include datasources replaced by a newer one of the same name
         #[arg(long)]

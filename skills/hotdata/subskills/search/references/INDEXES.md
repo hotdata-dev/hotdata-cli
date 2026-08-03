@@ -29,7 +29,7 @@ With no filters, this is a whole-workspace scan that **includes managed-database
 
 ## 3. Create indexes
 
-For managed databases (catalog alias — auto-selects the active database connection):
+For managed databases (catalog alias — auto-selects the active database catalog):
 
 ```bash
 hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
@@ -39,13 +39,13 @@ hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
   --column embedding --type vector --metric cosine
 ```
 
-For a regular connection, pass its name or ID to `--catalog`:
+For a regular catalog, pass its name or ID to `--catalog`:
 
 ```bash
-hotdata indexes create --catalog <connection-name-or-id> --schema <schema> --table <table> \
+hotdata indexes create --catalog <catalog-name-or-id> --schema <schema> --table <table> \
   --name idx_posts_body_bm25 --column body --type bm25
 
-hotdata indexes create --catalog <connection-name-or-id> --schema <schema> --table <table> \
+hotdata indexes create --catalog <catalog-name-or-id> --schema <schema> --table <table> \
   --name idx_chunks_embedding --column embedding --type vector --metric cosine
 ```
 
@@ -59,4 +59,4 @@ Re-run `hotdata search` or representative SQL. Update **context:DATAMODEL → Se
 
 - Prefer evidence (repeated search workloads) over speculative indexes.
 - Get approval before production `indexes create` when cost/impact is uncertain.
-- Align connection/schema/table with `hotdata tables list` output.
+- Align catalog/schema/table with `hotdata tables list` output.
