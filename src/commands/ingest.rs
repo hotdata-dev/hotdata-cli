@@ -1895,7 +1895,11 @@ mod tests {
         off.format = Some("jsonl".into());
         let req_off = build_create_request(&e, off, None).unwrap();
         assert!(!req_off.continuous);
-        assert!(!serde_json::to_string(&req_off).unwrap().contains("continuous"));
+        assert!(
+            !serde_json::to_string(&req_off)
+                .unwrap()
+                .contains("continuous")
+        );
     }
 
     #[test]
