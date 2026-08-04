@@ -693,6 +693,11 @@ pub struct CreateArgs {
     #[arg(long)]
     glob: Option<String>,
 
+    /// Keep this datasource continuously synced — refreshed incrementally on a
+    /// schedule, appending only newly-arrived objects (buckets only)
+    #[arg(long)]
+    continuous: bool,
+
     /// Catalog type, e.g. rest (iceberg)
     #[arg(long = "catalog-type")]
     catalog_type: Option<String>,
@@ -713,6 +718,7 @@ impl CreateArgs {
             || self.bucket_url.is_some()
             || self.format.is_some()
             || self.glob.is_some()
+            || self.continuous
             || self.catalog_type.is_some()
             || self.database_id.is_some()
     }
@@ -779,6 +785,7 @@ fn build_create_request(
             bucket_url: Some(args.bucket_url.ok_or("buckets connectors need --bucket-url")?),
             file_glob: args.glob,
             file_format: args.format,
+            continuous: args.continuous,
             ..Default::default()
         },
         "iceberg" => IngestRequest {
@@ -1837,6 +1844,7 @@ mod tests {
             bucket_url: None,
             format: None,
             glob: None,
+            continuous: false,
             catalog_type: None,
             database_id: None,
         }
@@ -1867,6 +1875,27 @@ mod tests {
         assert!(req.validate_only);
         assert_eq!(req.name.as_deref(), Some("prod_pg"));
         assert_eq!(req.database_id.as_deref(), Some("db_1"));
+    }
+
+    #[test]
+    fn create_request_filesystem_carries_continuous_flag() {
+        let e = entry("buckets", "filesystem");
+        let mut args = create_args();
+        args.bucket_url = Some("s3://b/prefix".into());
+        args.format = Some("jsonl".into());
+        args.continuous = true;
+        let req = build_create_request(&e, args, None).unwrap();
+        assert_eq!(req.family, "filesystem");
+        assert_eq!(req.bucket_url.as_deref(), Some("s3://b/prefix"));
+        assert!(req.continuous); // --continuous rides through to the request body
+
+        // Default is off, and it serializes only when true (skip_serializing_if).
+        let mut off = create_args();
+        off.bucket_url = Some("s3://b".into());
+        off.format = Some("jsonl".into());
+        let req_off = build_create_request(&e, off, None).unwrap();
+        assert!(!req_off.continuous);
+        assert!(!serde_json::to_string(&req_off).unwrap().contains("continuous"));
     }
 
     #[test]

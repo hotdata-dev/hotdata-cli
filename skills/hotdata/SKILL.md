@@ -256,6 +256,8 @@ hotdata ingest new-datasource --service buckets --bucket-url s3://bucket/prefix 
 # Files in S3/GCS/Azure buckets (csv, jsonl, parquet); --glob narrows the match.
 # Public buckets need no credentials; private ones take --config @creds.json
 # ({"aws_access_key_id": …, "aws_secret_access_key": …, "endpoint_url": …}).
+# --continuous keeps a bucket datasource synced: it's re-run incrementally on a
+# schedule, appending only newly-arrived objects (no re-read of the whole bucket).
 
 hotdata ingest new-datasource --service iceberg --config @catalog.json --table ns.orders
 # Iceberg via a REST catalog. --table is REQUIRED (repeatable, namespace.table).

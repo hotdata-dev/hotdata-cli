@@ -428,6 +428,10 @@ pub struct IngestRequest {
     pub tables: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub validate_only: bool,
+    /// filesystem only: keep this datasource continuously synced — the scheduler
+    /// re-runs it incrementally (append only new objects). Ignored otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub continuous: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_id: Option<String>,
 }
