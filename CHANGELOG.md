@@ -2,7 +2,6 @@
 
 ### 🚀 Features
 
-- *(ingest)* --continuous flag on new-datasource (buckets) (#248)
 - *(ingest)* --continuous flag on new-datasource (buckets) (#249)
 
 ### 🚜 Refactor
