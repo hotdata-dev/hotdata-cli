@@ -1,3 +1,17 @@
+## [0.22.0] - 2026-08-08
+
+### 🚀 Features
+
+- *(ingest)* --continuous flag on new-datasource (buckets) (#249)
+
+### 🚜 Refactor
+
+- *(skills)* Bundle search/analytics/geospatial under hotdata + fix CLI drift (#244)
+- Replace user-facing "connection" with "catalog" (keep wire contract) (#245)
+
+### 🧪 Testing
+
+- Retire stale connections scenario tests (command removed in #221) (#246)
 ## [0.21.0] - 2026-07-31
 
 ### 🚀 Features
