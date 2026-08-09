@@ -432,6 +432,11 @@ pub struct IngestRequest {
     /// re-runs it incrementally (append only new objects). Ignored otherwise.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub continuous: bool,
+    /// filesystem only: flatten each source record into table rows with a named
+    /// shape (e.g. `otel_traces`, `mqtt_observations`). Omitted → a record is a
+    /// row. The worker validates the name and rejects an unknown one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_shape: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_id: Option<String>,
 }

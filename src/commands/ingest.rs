@@ -698,6 +698,11 @@ pub struct CreateArgs {
     #[arg(long)]
     continuous: bool,
 
+    /// Flatten each source record into rows with a named shape, e.g.
+    /// otel_traces or mqtt_observations (buckets only)
+    #[arg(long = "record-shape")]
+    record_shape: Option<String>,
+
     /// Catalog type, e.g. rest (iceberg)
     #[arg(long = "catalog-type")]
     catalog_type: Option<String>,
@@ -719,6 +724,7 @@ impl CreateArgs {
             || self.format.is_some()
             || self.glob.is_some()
             || self.continuous
+            || self.record_shape.is_some()
             || self.catalog_type.is_some()
             || self.database_id.is_some()
     }
@@ -786,6 +792,7 @@ fn build_create_request(
             file_glob: args.glob,
             file_format: args.format,
             continuous: args.continuous,
+            record_shape: args.record_shape,
             ..Default::default()
         },
         "iceberg" => IngestRequest {
@@ -1845,6 +1852,7 @@ mod tests {
             format: None,
             glob: None,
             continuous: false,
+            record_shape: None,
             catalog_type: None,
             database_id: None,
         }
@@ -1899,6 +1907,34 @@ mod tests {
             !serde_json::to_string(&req_off)
                 .unwrap()
                 .contains("continuous")
+        );
+    }
+
+    #[test]
+    fn create_request_filesystem_carries_record_shape() {
+        let e = entry("buckets", "filesystem");
+        let mut args = create_args();
+        args.bucket_url = Some("s3://b/otel".into());
+        args.format = Some("jsonl".into());
+        args.record_shape = Some("otel_traces".into());
+        let req = build_create_request(&e, args, None).unwrap();
+        assert_eq!(req.record_shape.as_deref(), Some("otel_traces"));
+        assert!(
+            serde_json::to_string(&req)
+                .unwrap()
+                .contains("\"record_shape\":\"otel_traces\"")
+        );
+
+        // Omitted by default, and skipped from the body entirely (skip_serializing_if).
+        let mut off = create_args();
+        off.bucket_url = Some("s3://b".into());
+        off.format = Some("jsonl".into());
+        let req_off = build_create_request(&e, off, None).unwrap();
+        assert!(req_off.record_shape.is_none());
+        assert!(
+            !serde_json::to_string(&req_off)
+                .unwrap()
+                .contains("record_shape")
         );
     }
 
