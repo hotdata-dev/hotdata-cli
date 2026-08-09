@@ -828,8 +828,14 @@ fn build_create_request(
             }
         }
     };
-    // Adding a datasource discovers the schema only — never loads data.
-    req.validate_only = true;
+    // Adding a datasource discovers the schema only — never loads data — EXCEPT
+    // a continuous one, which is a persistent, self-loading datasource the
+    // scheduler keeps synced. Sending validate_only with continuous is
+    // contradictory (a one-off preview that is also permanently synced): the
+    // worker rejects the pair 422, and before it did, the datasource was
+    // re-run every tick but fell to the full-replace path — reloading the whole
+    // bucket forever. So continuous datasources are created ready to sync.
+    req.validate_only = !req.continuous;
     req.name = args.name;
     req.database_id = args.database_id;
     Ok(req)
@@ -1896,6 +1902,9 @@ mod tests {
         assert_eq!(req.family, "filesystem");
         assert_eq!(req.bucket_url.as_deref(), Some("s3://b/prefix"));
         assert!(req.continuous); // --continuous rides through to the request body
+        // A continuous datasource is self-loading, so it is NOT validate_only —
+        // the worker 422s the pair, and it was the original full-replace bug.
+        assert!(!req.validate_only);
 
         // Default is off, and it serializes only when true (skip_serializing_if).
         let mut off = create_args();
@@ -1903,6 +1912,7 @@ mod tests {
         off.format = Some("jsonl".into());
         let req_off = build_create_request(&e, off, None).unwrap();
         assert!(!req_off.continuous);
+        assert!(req_off.validate_only); // a non-continuous add still discovers schema only
         assert!(
             !serde_json::to_string(&req_off)
                 .unwrap()
