@@ -1,3 +1,8 @@
+## [0.23.0] - 2026-08-09
+
+### 🚀 Features
+
+- *(ingest)* --record-shape flag for new-datasource (#251)
 ## [0.22.0] - 2026-08-08
 
 ### 🚀 Features
