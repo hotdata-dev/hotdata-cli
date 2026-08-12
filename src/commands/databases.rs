@@ -21,6 +21,13 @@ pub enum DatabasesCommands {
         output: String,
     },
 
+    /// Count managed databases in the workspace
+    Count {
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
     /// Show details for a specific managed database
     Show {
         /// Database name or ID
@@ -440,9 +447,15 @@ fn list_all_databases(
             (true, Some(msg)) => block_with_wakeup(
                 api,
                 msg,
-                api.client().databases().list(None, cursor.as_deref()),
+                api.client()
+                    .databases()
+                    .list(None, cursor.as_deref(), None, None),
             )?,
-            _ => block(api.client().databases().list(None, cursor.as_deref()))?,
+            _ => block(
+                api.client()
+                    .databases()
+                    .list(None, cursor.as_deref(), None, None),
+            )?,
         };
         first = false;
         // Move the page rows out first (partial move), then read next_cursor —
@@ -938,7 +951,7 @@ pub fn list(workspace_id: &str, format: &str, limit: Option<u32>, cursor: Option
         "Loading databases...",
         api.client()
             .databases()
-            .list(limit.map(|l| l as i32), cursor),
+            .list(limit.map(|l| l as i32), cursor, None, None),
     )
     .unwrap_or_else(|e| e.exit());
     let has_more = resp.has_more.flatten().unwrap_or(false);
@@ -1000,6 +1013,54 @@ pub fn list(workspace_id: &str, format: &str, limit: Option<u32>, cursor: Option
             )
             .dark_grey()
         );
+    }
+}
+
+/// Serialized shape for `databases count -o json|yaml`.
+///
+/// The field stays `count` even though the endpoint answers with `total`: this
+/// is the CLI's own output contract, and `hotdata databases count` returning
+/// `{"count": N}` is what reads naturally at the command line. The API needs
+/// the other name because its list response already spends `count` on a page
+/// size.
+#[derive(Serialize)]
+struct DatabaseCount {
+    count: i64,
+}
+
+/// Total number of managed databases in the workspace.
+///
+/// One request. The list endpoint's `count` field is a page size, not a
+/// workspace total, so this used to drain every page and take the length —
+/// which cost a round trip per 100 databases and threw every row away on
+/// arrival. `GET /v1/databases/count` answers it in a single indexed query.
+fn count_databases(api: &Api) -> Result<i64, ApiError> {
+    block_with_wakeup(
+        api,
+        "Counting databases...",
+        api.client().databases().count(None, None),
+    )
+    .map(|resp| resp.total)
+}
+
+pub fn count(workspace_id: &str, format: &str) {
+    let api = Api::new(Some(workspace_id));
+    let count = count_databases(&api).unwrap_or_else(|e| e.exit());
+
+    match format {
+        "json" => println!(
+            "{}",
+            serde_json::to_string_pretty(&DatabaseCount { count }).unwrap()
+        ),
+        "yaml" => print!(
+            "{}",
+            serde_yaml::to_string(&DatabaseCount { count }).unwrap()
+        ),
+        // Bare integer, nothing else, so $(hotdata databases count) is directly
+        // usable in scripts. Zero is the answer for an empty workspace — no
+        // "No databases found." hint like `list` has.
+        "table" => println!("{count}"),
+        _ => unreachable!(),
     }
 }
 
@@ -2381,7 +2442,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
         let page0 = server
@@ -2393,7 +2454,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
             )
             .create();
 
@@ -2439,6 +2500,62 @@ mod tests {
     }
 
     #[test]
+    fn count_databases_reads_the_total_from_the_count_endpoint() {
+        let mut server = mockito::Server::new();
+        // The dedicated endpoint, hit exactly once — no paging. `expect(1)` is
+        // the assertion that matters: the old implementation drained
+        // /v1/databases page by page, and a regression back to that would show
+        // up here as the wrong request being made.
+        let count = server
+            .mock("GET", "/v1/databases/count")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"total":7}"#)
+            .expect(1)
+            .create();
+        // Registered but never expected to be called: counting must not touch
+        // the listing at all.
+        let listing = server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[],"count":0,"limit":100,"has_more":false,"next_cursor":null}"#,
+            )
+            .expect(0)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let n = count_databases(&api).unwrap();
+        count.assert();
+        listing.assert();
+        assert_eq!(n, 7);
+    }
+
+    #[test]
+    fn count_databases_empty_workspace_is_zero() {
+        let mut server = mockito::Server::new();
+        let count = server
+            .mock("GET", "/v1/databases/count")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"total":0}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let n = count_databases(&api).unwrap();
+        count.assert();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn database_count_serialization_shapes() {
+        let c = DatabaseCount { count: 7 };
+        assert_eq!(serde_json::to_string(&c).unwrap(), r#"{"count":7}"#);
+        assert_eq!(serde_yaml::to_string(&c).unwrap(), "count: 7\n");
+    }
+
+    #[test]
     fn collect_tables_with_limit_makes_single_request_and_returns_cursor() {
         let mut server = mockito::Server::new();
         // Only one mock — verifies we do NOT follow the cursor when limit is set.
@@ -2451,7 +2568,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
+                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
             )
             .expect(1)
             .create();
@@ -2477,7 +2594,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
 

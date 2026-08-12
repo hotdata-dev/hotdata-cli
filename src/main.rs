@@ -262,6 +262,9 @@ fn main() {
                             limit,
                             cursor,
                         }) => databases::list(&workspace_id, &output, limit, cursor.as_deref()),
+                        Some(DatabasesCommands::Count { output }) => {
+                            databases::count(&workspace_id, &output)
+                        }
                         Some(DatabasesCommands::Show { name_or_id, output }) => {
                             databases::get(&workspace_id, &name_or_id, &output)
                         }

@@ -14,11 +14,27 @@ fn databases_help_lists_subcommands() {
     );
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("list"));
+    assert!(help.contains("count"));
     assert!(help.contains("create"));
     assert!(help.contains("delete"));
     assert!(help.contains("tables"));
     assert!(help.contains("attach"));
     assert!(help.contains("detach"));
+}
+
+#[test]
+fn databases_count_help_documents_output_flag() {
+    let output = hotdata()
+        .args(["databases", "count", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--output"), "help: {help}");
 }
 
 #[test]
