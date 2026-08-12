@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "hotdata-cli"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "anstyle",
  "arrow",

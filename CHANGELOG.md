@@ -1,3 +1,8 @@
+## [0.24.0] - 2026-08-12
+
+### 🚀 Features
+
+- *(databases)* Count databases in the workspace
 ## [0.23.0] - 2026-08-09
 
 ### 🚀 Features
