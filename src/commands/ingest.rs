@@ -17,12 +17,24 @@
 //! whose contract is that later runs recover from the last committed state.
 //!
 //! **The shorthand flags are CLI sugar, not API concepts.** `--table`,
-//! `--schema`, `--format`, `--glob`, `--record-shape`, `--all`, `--raw-sql` and
-//! `--sql` all BUILD the one document `--selector` would have carried, and
-//! `--selector` stays the escape hatch for anything they cannot say. Nothing
-//! new goes on the wire: the request from `--table orders` is the request from
-//! the equivalent `--selector` JSON, byte for byte, which is what the contract
-//! tests at the bottom of this file hold still.
+//! `--table-path`, `--topic`, `--schema`, `--format`, `--glob`,
+//! `--record-shape`, `--all`, `--raw-sql` and `--sql` all BUILD the one
+//! document `--selector` would have carried, and `--selector` stays the escape
+//! hatch for anything they cannot say. Nothing new goes on the wire: the
+//! request from `--table orders` is the request from the equivalent
+//! `--selector` JSON, byte for byte, which is what the contract tests at the
+//! bottom of this file hold still.
+//!
+//! **There is deliberately no `--resource` for REST sources.** Every other
+//! shorthand names its subset in one word, so a flag can carry the whole
+//! selection. A REST resource is a name plus an endpoint — path, method, query
+//! and body parameters, which field of the response holds the rows, and how to
+//! page through them — and only the name would fit in a flag. Guessing the
+//! rest is not a smaller request, it is a different one: a read whose paging
+//! was guessed wrong returns the first page and reports success, which is a
+//! silent partial load, and one whose row selector was guessed wrong loads the
+//! envelope instead of the rows. Those are worth a `--selector` document, and
+//! `hotdata datasource fields rest` is what describes it.
 //!
 //! `--sql` and `--raw-sql` are the two that carry SQL, and neither sends any.
 //! `--sql`'s restricted `SELECT <cols> FROM [<schema>.]<table> [WHERE …]
@@ -92,8 +104,9 @@ pub enum IngestCommands {
         /// Field reference: `hotdata datasource fields <family>` (SELECTOR).
         #[arg(
             long,
-            conflicts_with_all = ["sql", "raw_sql", "all", "tables", "schema",
-                                  "format", "glob", "record_shape", "limit"]
+            conflicts_with_all = ["sql", "raw_sql", "all", "tables", "table_path",
+                                  "topics", "schema", "format", "glob",
+                                  "record_shape", "limit"]
         )]
         selector: Option<String>,
 
@@ -104,8 +117,8 @@ pub enum IngestCommands {
         /// table of the source's name, or of --dest-table-prefix plus it.
         #[arg(
             long,
-            conflicts_with_all = ["raw_sql", "all", "tables", "schema", "format",
-                                  "glob", "record_shape", "limit"]
+            conflicts_with_all = ["raw_sql", "all", "tables", "table_path", "topics",
+                                  "schema", "format", "glob", "record_shape", "limit"]
         )]
         sql: Option<String>,
 
@@ -117,12 +130,13 @@ pub enum IngestCommands {
         /// only the result transfers. The result lands in --table.
         #[arg(
             long = "raw-sql",
-            conflicts_with_all = ["all", "schema", "format", "glob", "record_shape"]
+            conflicts_with_all = ["all", "schema", "format", "glob", "record_shape",
+                                  "table_path", "topics"]
         )]
         raw_sql: Option<String>,
 
         /// Load everything the datasource exposes, with nothing narrowed
-        #[arg(long, conflicts_with_all = ["tables", "schema"])]
+        #[arg(long, conflicts_with_all = ["tables", "table_path", "topics", "schema"])]
         all: bool,
 
         /// Source table to load, repeatable (SQL, Iceberg, DuckLake sources).
@@ -131,6 +145,25 @@ pub enum IngestCommands {
         /// result table, since a query has no source table to take a name from.
         #[arg(long = "table")]
         tables: Vec<String>,
+
+        /// Which Delta table to load: its path under the datasource root, e.g.
+        /// warehouse/orders (Delta sources).
+        ///
+        /// The datasource is the storage ROOT, so one credential backs every
+        /// table beneath it and this picks one. It lands ONE table, so name it
+        /// with --dest-table.
+        #[arg(long = "table-path", conflicts_with_all = ["tables", "topics", "format", "glob"])]
+        table_path: Option<String>,
+
+        /// Kafka topic to read, repeatable (Kafka sources).
+        ///
+        /// The datasource is the CLUSTER — one credential opens it and each
+        /// ingest picks its own topics — which is why topics are named here
+        /// and not on the datasource. Each topic lands in a destination table
+        /// of its own name; put them under a common one with
+        /// --dest-table-prefix.
+        #[arg(long = "topic", conflicts_with_all = ["tables", "format", "glob"])]
+        topics: Vec<String>,
 
         /// Source schema the tables live in (SQL sources)
         #[arg(long)]
@@ -350,6 +383,8 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             raw_sql,
             all,
             tables,
+            table_path,
+            topics,
             schema,
             format,
             glob,
@@ -393,6 +428,8 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
                 raw_sql: raw_sql.as_deref(),
                 all,
                 tables: &tables,
+                table_path: table_path.as_deref(),
+                topics: &topics,
                 schema: schema.as_deref(),
                 format: format.as_deref(),
                 glob: glob.as_deref(),
@@ -482,6 +519,8 @@ struct CreatePlan<'a> {
     raw_sql: Option<&'a str>,
     all: bool,
     tables: &'a [String],
+    table_path: Option<&'a str>,
+    topics: &'a [String],
     schema: Option<&'a str>,
     format: Option<&'a str>,
     glob: Option<&'a str>,
@@ -722,6 +761,16 @@ fn build_selector(plan: &CreatePlan) -> Result<(serde_json::Value, Option<String
         }
         selector.insert("tables".into(), plan.tables.to_vec().into());
     }
+    // Delta selects ONE table by its path under the datasource root; Kafka
+    // selects topics out of the cluster the datasource is. Both are a single
+    // field, which is exactly why they were the two families a caller could
+    // not reach without writing --selector JSON by hand.
+    if let Some(p) = plan.table_path {
+        selector.insert("table_path".into(), p.into());
+    }
+    if !plan.topics.is_empty() {
+        selector.insert("topics".into(), plan.topics.to_vec().into());
+    }
     if let Some(f) = plan.format {
         selector.insert("file_format".into(), f.into());
     }
@@ -731,9 +780,11 @@ fn build_selector(plan: &CreatePlan) -> Result<(serde_json::Value, Option<String
     add_shape_and_limit(&mut selector, plan);
     if selector.is_empty() {
         return Err(
-            "nothing to read — pass --table <name> (SQL, Iceberg, DuckLake), --format \
-             with an optional --glob (buckets), --sql, --raw-sql, --all, or the whole \
-             --selector as JSON"
+            "nothing to read — pass --table <name> (SQL, Iceberg, DuckLake), --table-path \
+             <path> (Delta), --topic <name> (Kafka), --format with an optional --glob \
+             (buckets), --sql, --raw-sql, --all, or the whole --selector as JSON. A REST \
+             source is --selector only: its resources carry endpoints, not just names \
+             ('hotdata datasource fields rest')"
                 .into(),
         );
     }
@@ -1784,6 +1835,8 @@ mod tests {
             raw_sql: None,
             all: false,
             tables: NO_TABLES,
+            table_path: None,
+            topics: NO_TABLES,
             schema: None,
             format: None,
             glob: None,
@@ -2031,6 +2084,116 @@ mod tests {
                 "{tables:?}"
             );
         }
+    }
+
+    /// CONTRACT TEST — the selector `--table-path` builds, as the service's
+    /// Delta selector model accepts it. **Change it only with the service.**
+    ///
+    /// No `mode`, and no destination table inferred from the path: the last
+    /// segment of a storage path is not a table name, and the family that
+    /// requires one says so about the field it requires.
+    #[test]
+    fn table_path_builds_exactly_the_delta_selector_the_worker_accepts() {
+        let mut p = plan("ds_delta", "one-time");
+        p.family = Some("delta");
+        p.table_path = Some("warehouse/orders");
+        p.limit = Some(100);
+        p.database_id = Some("db_1");
+        p.dest_table = Some("orders");
+        let req = build_create(p).unwrap();
+        assert_eq!(
+            req.selector,
+            serde_json::json!({"table_path": "warehouse/orders", "limit": 100})
+        );
+        // The path named what to READ. Where it lands is --dest-table, and
+        // nothing here derived one from the other.
+        assert_eq!(req.destination["table"], "orders");
+
+        // The minimum form carries the one field and nothing else.
+        let mut p = plan("ds_delta", "one-time");
+        p.family = Some("delta");
+        p.table_path = Some("orders");
+        p.database_id = Some("db_1");
+        p.dest_table = Some("orders");
+        assert_eq!(
+            build_create(p).unwrap().selector,
+            serde_json::json!({"table_path": "orders"})
+        );
+    }
+
+    /// CONTRACT TEST — the selector `--topic` builds, as the service's Kafka
+    /// selector model accepts it. **Change it only with the service.**
+    ///
+    /// `start` is deliberately absent rather than sent as its default: the
+    /// model defaults it, and a CLI that repeated the value would be a second
+    /// place for that default to be decided.
+    #[test]
+    fn topic_builds_exactly_the_kafka_selector_the_worker_accepts() {
+        let topics = ["orders".to_string(), "shipments".to_string()];
+        let mut p = plan("ds_kafka", "scheduled");
+        p.family = Some("kafka");
+        p.topics = &topics;
+        p.limit = Some(500);
+        p.database_id = Some("db_1");
+        p.dest_table_prefix = Some("stream");
+        p.every = Some("5m");
+        let req = build_create(p).unwrap();
+        assert_eq!(
+            req.selector,
+            serde_json::json!({"topics": ["orders", "shipments"], "limit": 500})
+        );
+        // One topic is the same shape as several — a list of one, never a
+        // string — because the field is a list.
+        let one = ["orders".to_string()];
+        let mut p = plan("ds_kafka", "one-time");
+        p.family = Some("kafka");
+        p.topics = &one;
+        p.database_id = Some("db_1");
+        assert_eq!(
+            build_create(p).unwrap().selector,
+            serde_json::json!({"topics": ["orders"]})
+        );
+    }
+
+    /// A topic names its own destination table, the same way a source table
+    /// does — so the destination gets neither, and a caller who wants them
+    /// grouped passes a prefix.
+    #[test]
+    fn topics_name_their_own_destination_tables() {
+        let topics = ["orders".to_string()];
+        let mut p = plan("ds_kafka", "one-time");
+        p.family = Some("kafka");
+        p.topics = &topics;
+        p.database_id = Some("db_1");
+        assert_eq!(
+            build_create(p).unwrap().destination,
+            serde_json::json!({
+                "database_id": "db_1",
+                "schema": "public",
+                "write_mode": "replace",
+            })
+        );
+    }
+
+    /// The families whose selector a flag cannot honestly carry are named in
+    /// the error, with what to use instead. REST is the one: its resources are
+    /// a name plus an endpoint, and a flag could only carry the name.
+    #[test]
+    fn nothing_to_read_names_every_shorthand_and_the_rest_escape_hatch() {
+        let err = build_create(plan("ds_1", "one-time")).unwrap_err();
+        for flag in [
+            "--table ",
+            "--table-path",
+            "--topic",
+            "--format",
+            "--sql",
+            "--raw-sql",
+            "--all",
+            "--selector",
+        ] {
+            assert!(err.contains(flag), "{flag} missing: {err}");
+        }
+        assert!(err.contains("rest"), "{err}");
     }
 
     /// CONTRACT TEST — the selector `--format`, `--glob` and `--record-shape`

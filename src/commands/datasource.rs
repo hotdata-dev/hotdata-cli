@@ -31,8 +31,11 @@
 //! nothing a script does changed.
 //!
 //! **Presentation contract:** `validate` persists nothing and is the preflight
-//! path; `create` validates again regardless. Secrets are never echoed back by
-//! the server, never printed here, and never shown while being typed.
+//! path; `create` validates again regardless. `valid` and `probed` are printed
+//! as two lines because they are two answers — the config parsed, and the
+//! source was contacted — and only the second one is what "do these
+//! credentials work?" is asking. Secrets are never echoed back by the server,
+//! never printed here, and never shown while being typed.
 
 use crate::client::ingest::{
     Capabilities, ConfigUpdate, ConnectorEntry, Datasource, DatasourceConfig, FamilyReference,
@@ -52,6 +55,12 @@ pub enum DatasourceCommands {
     /// Persists no datasource, config version, managed database, or secret —
     /// run it before `create` to see what the credentials can reach. The
     /// response carries family-specific discovery (schemas/tables, topics, …).
+    ///
+    /// Two lines answer two questions. `valid` says the config and credentials
+    /// were accepted; `probed` says whether the source was actually contacted,
+    /// which is the one that means the credentials work. Some families have no
+    /// read-only probe and can only be checked for shape — they report `valid:
+    /// yes` with `probed: no` and a detail saying why.
     Validate {
         /// Source family — the shape of --config: sql, filesystem, iceberg,
         /// delta, ducklake, kafka, rest. Use `sql` for any SQL dialect (the
@@ -431,6 +440,7 @@ fn validate(workspace_id: &str, output: &str, family: &str, payload: ConfigArgs)
         } else {
             field("valid:", &"no".red().to_string());
         }
+        field("probed:", &probed_cell(resp.probed));
         field("family:", &cell(resp.family.as_deref()));
         if let Some(d) = resp.detail.as_deref().filter(|d| !d.trim().is_empty()) {
             field("detail:", d);
@@ -446,6 +456,32 @@ fn validate(workspace_id: &str, output: &str, family: &str, payload: ConfigArgs)
     });
     if !resp.valid {
         std::process::exit(1);
+    }
+}
+
+/// PROBED — whether the source was contacted, printed on its own line beside
+/// `valid`.
+///
+/// A command called `validate` answering `valid: yes` is read as "the
+/// credentials work", and for some families it does not mean that: one with no
+/// read-only probe, and a credential shape no client can be built from, both
+/// check the config's SHAPE and connect to nothing. The response has always
+/// distinguished the two, but only through a detail line that appears when the
+/// probe was skipped — so the reader had to infer a negative from the absence
+/// of an explanation, and the reading that requires noticing nothing is the
+/// reading nobody performs. Stating it is what makes a preflight worth running.
+///
+/// Absent is its own answer rather than a `no`: a response that does not carry
+/// the field says nothing about the probe, and printing "no" there would be
+/// this command inventing the very claim it exists to report.
+fn probed_cell(probed: Option<bool>) -> String {
+    use crossterm::style::{Color, Stylize};
+    match probed {
+        Some(true) => "yes — the source answered".with(Color::Green).to_string(),
+        Some(false) => "no — nothing connected; the config's shape was checked"
+            .with(Color::Yellow)
+            .to_string(),
+        None => "not reported".with(Color::DarkGrey).to_string(),
     }
 }
 
@@ -1427,6 +1463,51 @@ mod tests {
         };
         let (config, _) = split_payload(None, None, false, &shortcuts).unwrap();
         assert_eq!(config, serde_json::json!({"root_uri": "hdfs://nn/data"}));
+    }
+
+    /// `valid` and `probed` are two answers, and the second is the one a user
+    /// came for. A source that was never contacted must say so in words, not
+    /// by omitting a line somebody has to notice is missing.
+    #[test]
+    fn validate_states_whether_the_source_was_contacted() {
+        let connected = strip_ansi(&probed_cell(Some(true)));
+        assert!(connected.contains("yes"), "{connected}");
+        assert!(connected.contains("answered"), "{connected}");
+
+        // The case the line exists for: valid, and nothing reached.
+        let shape_only = strip_ansi(&probed_cell(Some(false)));
+        assert!(shape_only.starts_with("no"), "{shape_only}");
+        assert!(shape_only.contains("nothing connected"), "{shape_only}");
+        assert!(shape_only.contains("shape"), "{shape_only}");
+
+        // A response that does not carry the field is not a probe that failed.
+        let unknown = strip_ansi(&probed_cell(None));
+        assert!(unknown.contains("not reported"), "{unknown}");
+        assert!(!unknown.contains("no "), "{unknown}");
+    }
+
+    /// `-o json` is the struct serialized, so a field the struct drops is a
+    /// field a script cannot read however faithfully the service sends it.
+    #[test]
+    fn the_validate_response_carries_the_probe_through_to_json() {
+        let body = serde_json::json!({
+            "valid": true,
+            "family": "rest",
+            "normalized_config": {"base_url": "https://api.example.com"},
+            "discovered": null,
+            "probed": false,
+            "detail": "this family has no read-only probe",
+        });
+        let resp: crate::client::ingest::ValidateResponse = serde_json::from_value(body).unwrap();
+        assert!(resp.valid);
+        assert_eq!(resp.probed, Some(false));
+
+        let rendered = serde_json::to_value(&resp).unwrap();
+        assert_eq!(rendered["probed"], false);
+        assert_eq!(
+            strip_ansi(&probed_cell(resp.probed)),
+            "no — nothing connected; the config's shape was checked"
+        );
     }
 
     #[test]

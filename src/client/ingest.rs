@@ -154,16 +154,7 @@ impl IngestError {
         if let IngestError::Http { body, .. } = self {
             match util::error_code(body).as_deref() {
                 Some("destination_table_conflict") => {
-                    let conflicting = util::error_detail(body, "conflicting_ingest_id")
-                        .unwrap_or_else(|| "<ingest-id>".into());
-                    eprintln!(
-                        "{}",
-                        format!(
-                            "A continuous ingest already owns that table. Release it with: \
-                             hotdata ingest delete {conflicting}"
-                        )
-                        .dark_grey()
-                    );
+                    eprintln!("{}", table_conflict_hint(body).dark_grey());
                 }
                 // The destination is per-family, and the pair of flags that
                 // build it is the thing to re-read: a family lands one table
@@ -213,6 +204,46 @@ impl IngestError {
         }
         std::process::exit(1);
     }
+}
+
+/// What to DO about a destination-table conflict, chosen from what the service
+/// reported about the ingest already holding the reservation.
+///
+/// The server's message says what happened and which release rule applies; this
+/// only names the command. It has to read the reported holder rather than
+/// assume one, because the rule covers a saved load of any kind and the kinds
+/// release differently — a hint naming one kind unconditionally contradicts the
+/// message printed directly above it, and prescribing a delete for a holder
+/// that is about to release on its own tears down a live load for nothing.
+fn table_conflict_hint(body: &str) -> String {
+    let conflicting =
+        util::error_detail(body, "conflicting_ingest_id").unwrap_or_else(|| "<ingest-id>".into());
+    let releases_itself = matches!(
+        util::error_detail(body, "conflicting_ingest_type").as_deref(),
+        Some("one_time") | Some("scheduled")
+    );
+    // An empty reservation is the holder taking the source's own table names,
+    // and it is the one conflict the caller can settle without touching the
+    // holder: a prefix makes two loads unable to reach the same name. The
+    // server names the JSON field; this names the flag that fills it.
+    let unprefixed =
+        util::error_detail(body, "reserved_table").is_some_and(|reserved| reserved.is_empty());
+    let mut hint = if unprefixed {
+        "Give this ingest a --dest-table-prefix so the two cannot land the same table".to_string()
+    } else if releases_itself {
+        format!(
+            "That ingest frees the table when it finishes or is stopped — check it with: \
+             hotdata ingest show {conflicting}"
+        )
+    } else {
+        format!("Free the table with: hotdata ingest delete {conflicting}")
+    };
+    if unprefixed || releases_itself {
+        hint.push_str(&format!(
+            ", or take the table now with: hotdata ingest delete {conflicting}"
+        ));
+    }
+    hint
 }
 
 /// Ingest client bound to a workspace + a resolved bearer token.
@@ -650,6 +681,17 @@ pub struct ValidateResponse {
     pub normalized_config: Option<serde_json::Value>,
     #[serde(default)]
     pub discovered: Option<serde_json::Value>,
+    /// Whether anything actually connected to the source.
+    ///
+    /// `valid` answers the narrower question of whether the config and
+    /// credentials PARSE. A family with no read-only probe, and a credential
+    /// shape no client can be built from, are both `valid: true` having
+    /// reached nothing — so this is the field that separates a config that
+    /// checked out from a credential that works, and the reason it is decoded
+    /// rather than dropped is that `-o json` is this struct serialized.
+    #[serde(default)]
+    pub probed: Option<bool>,
+    /// Why the probe did not run, when it did not.
     #[serde(default)]
     pub detail: Option<String>,
 }
@@ -1143,6 +1185,64 @@ mod tests {
 
     fn jwt_client(server: &mockito::Server) -> IngestClient {
         IngestClient::from_parts(&server.url(), "eyJ.fake.jwt", false, "ws-1")
+    }
+
+    // --- the destination-conflict hint -------------------------------------
+
+    fn conflict_body(kind: &str, reserved: &str) -> String {
+        format!(
+            r#"{{"error":{{"code":"destination_table_conflict","message":"...",
+                "details":{{"conflicting_ingest_id":"ing_held",
+                            "conflicting_ingest_type":"{kind}",
+                            "reserved_table":"{reserved}"}}}}}}"#
+        )
+    }
+
+    /// The three cases differ in what the caller can do about them, and the
+    /// hint has to differ with them: a holder that never releases on its own,
+    /// one that does, and a reservation the caller can step around entirely.
+    #[test]
+    fn conflict_hint_prescribes_a_delete_only_where_nothing_else_frees_the_table() {
+        let hint = table_conflict_hint(&conflict_body("continuous", "orders_raw"));
+        assert_eq!(hint, "Free the table with: hotdata ingest delete ing_held");
+    }
+
+    #[test]
+    fn conflict_hint_says_a_finishing_holder_frees_the_table_itself() {
+        for kind in ["one_time", "scheduled"] {
+            let hint = table_conflict_hint(&conflict_body(kind, "orders_raw"));
+            assert!(
+                hint.starts_with("That ingest frees the table when it finishes or is stopped"),
+                "{kind}: {hint}"
+            );
+            // Delete stays reachable — it is the way to take the table NOW —
+            // but as the second option rather than the prescription.
+            assert!(hint.ends_with("hotdata ingest delete ing_held"), "{hint}");
+        }
+    }
+
+    /// An empty `reserved_table` is the holder taking the source's own table
+    /// names. It is the only conflict with a remedy that touches nothing else,
+    /// and the remedy is a flag this CLI owns the spelling of.
+    #[test]
+    fn conflict_hint_offers_a_prefix_when_the_reservation_is_the_raw_names() {
+        let hint = table_conflict_hint(&conflict_body("one_time", ""));
+        assert!(
+            hint.starts_with("Give this ingest a --dest-table-prefix"),
+            "{hint}"
+        );
+    }
+
+    /// A server that reports no holder type still gets a usable hint rather
+    /// than a claim about a type nobody reported.
+    #[test]
+    fn conflict_hint_falls_back_to_delete_when_the_holder_type_is_absent() {
+        let body = r#"{"error":{"code":"destination_table_conflict","message":"...",
+                       "details":{"conflicting_ingest_id":"ing_held"}}}"#;
+        assert_eq!(
+            table_conflict_hint(body),
+            "Free the table with: hotdata ingest delete ing_held"
+        );
     }
 
     // --- datasources -------------------------------------------------------

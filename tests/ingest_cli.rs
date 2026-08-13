@@ -359,6 +359,8 @@ fn the_selector_shorthands_live_on_ingest_create() {
     assert!(ok, "{help}");
     for flag in [
         "--table",
+        "--table-path",
+        "--topic",
         "--schema",
         "--format",
         "--glob",
@@ -375,6 +377,45 @@ fn the_selector_shorthands_live_on_ingest_create() {
     // so the help has to say which family's selector.
     assert!(help.contains("SQL, Iceberg, DuckLake"), "{help}");
     assert!(help.contains("bucket sources"), "{help}");
+    assert!(help.contains("Delta sources"), "{help}");
+    assert!(help.contains("Kafka sources"), "{help}");
+}
+
+/// Every family whose selection is ONE field has a flag for it. Without these
+/// two, a Delta or Kafka ingest — a single path, a single topic — could only
+/// be created by hand-writing the `--selector` document, which is the escape
+/// hatch and not the path.
+#[test]
+fn the_single_field_selectors_each_have_a_flag() {
+    let (ok, help) = combined(&["ingest", "create", "--help"]);
+    assert!(ok, "{help}");
+    let help = flat(&help);
+    // Delta's datasource is the storage ROOT, so the flag has to say the path
+    // is relative to it — otherwise it reads as a whole URI.
+    assert!(help.contains("--table-path"), "{help}");
+    assert!(help.contains("under the datasource root"), "{help}");
+    // Kafka's is the CLUSTER, which is why the topics are an ingest's choice
+    // and not part of the credential's boundary.
+    assert!(help.contains("--topic"), "{help}");
+    assert!(help.contains("repeatable"), "{help}");
+}
+
+/// A Delta path and a Kafka topic name different families' selectors, so
+/// asking for both is not a request any datasource has. clap says so without
+/// a round trip.
+#[test]
+fn the_single_field_selector_flags_exclude_each_other() {
+    for pair in [
+        vec!["--table-path", "warehouse/orders", "--topic", "events"],
+        vec!["--table-path", "warehouse/orders", "--table", "orders"],
+        vec!["--topic", "events", "--table", "orders"],
+    ] {
+        let mut args = vec!["ingest", "create", "--datasource-id", "ds_1"];
+        args.extend(pair.iter().copied());
+        let (ok, out) = combined(&args);
+        assert!(!ok, "{pair:?} should not parse: {out}");
+        assert!(out.contains("cannot be used with"), "{pair:?}: {out}");
+    }
 }
 
 /// Help text is wrapped to the terminal, so a phrase spanning a line break is
@@ -481,6 +522,8 @@ fn ingest_create_requires_a_datasource_by_either_flag() {
 fn the_selector_escape_hatch_excludes_the_shorthands_it_replaces() {
     for shorthand in [
         vec!["--table", "orders"],
+        vec!["--table-path", "warehouse/orders"],
+        vec!["--topic", "events"],
         vec!["--schema", "public"],
         vec!["--format", "parquet"],
         vec!["--glob", "**"],
