@@ -547,6 +547,16 @@ fn main() {
                 output,
                 command,
             } => {
+                // Answered BEFORE the workspace is resolved. That a verb no
+                // longer exists is a fact about the command surface, not about
+                // the caller's workspace — so gating it behind resolution
+                // replaces the explanation with an unrelated auth error, and
+                // the person most likely to type a retired verb is the one
+                // returning to the tool after a while, who may well not be
+                // logged in.
+                if let ingest::IngestCommands::Removed(argv) = &command {
+                    ingest::removed(argv);
+                }
                 let workspace_id = resolve_workspace(workspace_id);
                 ingest::dispatch(&workspace_id, &output, command);
             }

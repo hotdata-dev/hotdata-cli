@@ -973,7 +973,7 @@ fn removal_message(verb: &str) -> Option<String> {
     ))
 }
 
-fn removed(argv: &[String]) -> ! {
+pub fn removed(argv: &[String]) -> ! {
     use crossterm::style::Stylize;
     let verb = argv.first().map(String::as_str).unwrap_or("");
     match removal_message(verb) {

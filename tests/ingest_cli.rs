@@ -6,7 +6,27 @@
 use std::process::Command;
 
 fn hotdata() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hotdata"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hotdata"));
+    // ISOLATED FROM THE MACHINE RUNNING THE TEST. A spawned process inherits
+    // this one's environment, so without these two the assertions below run
+    // against whatever profile the developer happens to be logged into — and
+    // the failure that produces is invisible locally and only shows up in CI,
+    // which is the one place nobody is watching a test they just wrote.
+    //
+    // That is not hypothetical: three tests here asserted a retired verb's
+    // explanation and passed on a laptop with a default workspace, while CI
+    // had none and got an auth error instead.
+    cmd.env("HOTDATA_CONFIG_DIR", config_dir());
+    cmd.env_remove("HOTDATA_API_KEY");
+    cmd.env_remove("HOTDATA_WORKSPACE_ID");
+    cmd
+}
+
+/// One empty config directory for the whole file, kept alive for the run.
+fn config_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| tempfile::tempdir().expect("temp config dir"))
+        .path()
 }
 
 /// stdout + stderr together: clap writes usage errors to stderr, help to
