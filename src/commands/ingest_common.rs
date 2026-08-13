@@ -165,17 +165,24 @@ pub fn parse_next_run_at(s: &str) -> String {
     }
 }
 
-/// Compact one-line summary of a JSON destination for a listing cell:
+/// Compact one-line summary of an ingest's destination for a listing cell:
 /// `db_456.public.orders_raw`. Falls back to whatever parts exist.
-pub fn destination_cell(
-    database_id: Option<&str>,
-    schema: Option<&str>,
-    table: Option<&str>,
-) -> String {
-    let parts: Vec<&str> = [database_id, schema, table]
+///
+/// Takes the nested `destination` object, which is the only place the wire
+/// carries it: the service materialises database/schema/table into their own
+/// columns for the ownership index, but the ingest views return the document
+/// the create request sent. Reading top-level `destination_*` fields instead
+/// renders every real response as `-`.
+pub fn destination_cell(destination: Option<&serde_json::Value>) -> String {
+    let parts: Vec<String> = ["database_id", "schema", "table"]
         .into_iter()
-        .flatten()
-        .filter(|s| !s.is_empty())
+        .filter_map(|key| {
+            destination
+                .and_then(|d| d.get(key))
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+        })
         .collect();
     if parts.is_empty() {
         "-".into()
@@ -342,15 +349,16 @@ mod tests {
 
     #[test]
     fn destination_cell_joins_the_parts_it_has() {
-        assert_eq!(
-            destination_cell(Some("db_456"), Some("public"), Some("orders_raw")),
-            "db_456.public.orders_raw"
-        );
-        assert_eq!(
-            destination_cell(Some("db_456"), None, Some("t")),
-            "db_456.t"
-        );
-        assert_eq!(destination_cell(None, None, None), "-");
+        let full = serde_json::json!({
+            "database_id": "db_456", "schema": "public",
+            "table": "orders_raw", "write_mode": "replace"
+        });
+        assert_eq!(destination_cell(Some(&full)), "db_456.public.orders_raw");
+        // A destination the server defaulted the schema on still reads.
+        let partial = serde_json::json!({"database_id": "db_456", "table": "t"});
+        assert_eq!(destination_cell(Some(&partial)), "db_456.t");
+        assert_eq!(destination_cell(None), "-");
+        assert_eq!(destination_cell(Some(&serde_json::json!({}))), "-");
     }
 
     #[test]

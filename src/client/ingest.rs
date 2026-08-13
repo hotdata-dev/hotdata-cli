@@ -682,16 +682,15 @@ pub struct Ingest {
     pub stopped_reason: Option<String>,
     #[serde(default)]
     pub selector: Option<serde_json::Value>,
+    /// The logical write target as one object — `{database_id, schema, table,
+    /// write_mode}`, the same document `POST /ingests` sent. The service also
+    /// keeps those three in their own columns for the destination-ownership
+    /// index, but they are not on the wire: this object is the whole
+    /// destination a response carries.
     #[serde(default)]
     pub destination: Option<serde_json::Value>,
     #[serde(default)]
     pub schedule: Option<serde_json::Value>,
-    #[serde(default)]
-    pub destination_database_id: Option<String>,
-    #[serde(default)]
-    pub destination_schema: Option<String>,
-    #[serde(default)]
-    pub destination_table: Option<String>,
     #[serde(default)]
     pub next_attempt_at: Option<String>,
     /// Only on the `POST /ingests` response for a `one_time` ingest.
@@ -710,6 +709,27 @@ pub struct IngestsResponse {
     #[serde(default)]
     pub ingests: Vec<Ingest>,
 }
+
+/// A `GET /ingests` body in the service's own ingest-view shape, shared by the
+/// decode test here and the rendering test in `commands::ingest` so both read
+/// the same bytes a real response carries.
+///
+/// Pinned because the destination arrives ONLY as the nested object: a fixture
+/// invented with top-level `destination_*` fields decodes, renders, and passes
+/// green while every real response prints a blank destination.
+#[cfg(test)]
+pub const WORKER_INGEST_LIST_BODY: &str = r#"{"ingests":[
+    {"ingest_id":"ing_1","datasource_id":"ds_1","family":"sql","type":"continuous",
+     "state":"active",
+     "selector":{"mode":"tables","schema":"public","tables":["orders"]},
+     "destination":{"database_id":"db_1","schema":"public","table":"orders_raw",
+                    "write_mode":"replace"},
+     "schedule":{"interval_seconds":300},
+     "next_attempt_at":"2026-08-02T09:05:00+00:00","interval_seconds":300,
+     "consecutive_failures":0,"stopped_reason":null,"attempt":7,
+     "job_name":"drain-run-7","created_at":"2026-08-02T09:00:00+00:00",
+     "updated_at":"2026-08-02T09:04:00+00:00","deleted_at":null}
+]}"#;
 
 /// `POST /ingests/{id}/cancel` body. Cancel means both "stop the active run"
 /// and "stop future runs", so the ack reports the run it cancelled *and* the
@@ -1076,8 +1096,8 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "datasource_id": "ds_pg_prod",
                 "type": "one_time",
-                "selector": {"mode": "tables",
-                             "tables": [{"schema": "public", "table": "orders"}]},
+                "selector": {"mode": "tables", "schema": "public",
+                             "tables": ["orders"]},
                 "destination": {"database_id": "db_123", "schema": "public",
                                 "table": "orders", "write_mode": "replace"},
             })))
@@ -1094,7 +1114,7 @@ mod tests {
                 datasource_id: "ds_pg_prod".into(),
                 r#type: "one_time".into(),
                 selector: serde_json::json!({
-                    "mode": "tables", "tables": [{"schema": "public", "table": "orders"}]
+                    "mode": "tables", "schema": "public", "tables": ["orders"]
                 }),
                 destination: serde_json::json!({
                     "database_id": "db_123", "schema": "public",
@@ -1146,13 +1166,7 @@ mod tests {
             .mock("GET", "/ingest/ingests?datasource_id=ds_1")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"ingests":[{"ingest_id":"ing_1","datasource_id":"ds_1","type":"continuous",
-                    "state":"active","destination_database_id":"db_1",
-                    "destination_schema":"public","destination_table":"orders_raw",
-                    "schedule":{"interval_seconds":300},
-                    "created_at":"2026-08-02T09:00:00+00:00"}]}"#,
-            )
+            .with_body(WORKER_INGEST_LIST_BODY)
             .create();
 
         let resp = api_key_client(&server)
@@ -1162,7 +1176,7 @@ mod tests {
         let ing = &resp.ingests[0];
         assert_eq!(ing.ingest_id, "ing_1");
         assert_eq!(ing.r#type.as_deref(), Some("continuous"));
-        assert_eq!(ing.destination_table.as_deref(), Some("orders_raw"));
+        assert_eq!(ing.destination.as_ref().unwrap()["table"], "orders_raw");
     }
 
     #[test]

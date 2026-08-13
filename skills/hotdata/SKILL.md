@@ -308,7 +308,7 @@ Agent tips:
 - **There is no `trigger-import` / run-now verb, by design.** A one-time ingest runs when created; scheduled/continuous ones run on their schedule and each run recovers from the last committed state. To make the next scheduled run happen now: `hotdata ingest schedule <ingest-id> --next now`. To load again from scratch: create another one-time ingest.
 - **`cancel` means both halves** — stop the current run *and* stop future dispatch. `resume` is its inverse and is deliberately not a trigger.
 - **Selector and destination are immutable.** Changing what an ingest reads or where it lands means a new ingest; the server rejects edits with `immutable_ingest_definition`.
-- `--sql` is a **restricted grammar**: `SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n]` — no joins/GROUP BY/ORDER BY, and the FROM target names the **source table**, not a datasource. For anything richer, pass `--selector '{"mode":"query","query":{"sql":"…"}}'` (SQL family) so the query runs at the source.
+- `--sql` is a **restricted grammar**: `SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n]` — no joins/GROUP BY/ORDER BY, and the FROM target names the **source table**, not a datasource. For anything richer, pass `--selector '{"mode":"query","sql":"…"}'` (SQL family) so the query runs at the source.
 - Run `status` is a **closed set**: `queued` | `running` | `succeeded` | `failed` | `cancelled`. While running, the finer progress state (e.g. `extracting`, `loading`) appears in `stage` — informational only, never switch on it.
 - Prefer `-o json` plus the `run show` exit codes for scripting; poll `run show` rather than holding a terminal open.
 - Tables print oldest→newest; `-o json` is newest-first (`[0]` = latest).

@@ -527,7 +527,7 @@ fn parse_select(sql: &str) -> Result<ParsedSelect, String> {
             return Err(format!(
                 "--sql is a restricted grammar (SELECT … FROM … [WHERE …] [LIMIT n]) and cannot \
                  express{kw}— pass the full query as --selector \
-                 '{{\"mode\":\"query\",\"query\":{{\"sql\":\"…\"}}}}'"
+                 '{{\"mode\":\"query\",\"sql\":\"…\"}}'"
             ));
         }
     }
@@ -631,25 +631,34 @@ fn unquote(s: &str) -> &str {
 
 /// The `sql`-family selector a parsed SELECT desugars to. The service sees
 /// only this — the SQL text never leaves the CLI.
+///
+/// The shape is flat and `tables` is a list of bare table names, because that
+/// is what the service's selector model accepts: `schema`, `columns`, `where`,
+/// and `limit` sit beside `tables` and apply to all of them. The model forbids
+/// unknown keys, so a per-table object inside `tables` is a 422 rather than a
+/// tolerated variant — and the `--sql` grammar reads exactly one table, so one
+/// set of qualifiers is never a loss of expression.
+///
+/// A qualifier the SELECT did not give is omitted, not sent empty: `columns:
+/// []` would read as "project no columns", and the model has no meaning for a
+/// null `where`.
 fn sql_selector(p: &ParsedSelect) -> serde_json::Value {
-    let mut table = serde_json::Map::new();
+    let mut selector = serde_json::Map::new();
+    selector.insert("mode".into(), "tables".into());
     if let Some(s) = &p.schema {
-        table.insert("schema".into(), s.clone().into());
+        selector.insert("schema".into(), s.clone().into());
     }
-    table.insert("table".into(), p.table.clone().into());
+    selector.insert("tables".into(), vec![p.table.clone()].into());
     if !p.columns.is_empty() {
-        table.insert("columns".into(), p.columns.clone().into());
+        selector.insert("columns".into(), p.columns.clone().into());
     }
     if let Some(f) = &p.filter {
-        table.insert("where".into(), f.clone().into());
+        selector.insert("where".into(), f.clone().into());
     }
     if let Some(n) = p.limit {
-        table.insert("limit".into(), n.into());
+        selector.insert("limit".into(), n.into());
     }
-    serde_json::json!({
-        "mode": "tables",
-        "tables": [serde_json::Value::Object(table)],
-    })
+    serde_json::Value::Object(selector)
 }
 
 // --- list -------------------------------------------------------------------
@@ -700,11 +709,7 @@ fn list(
                     cell(i.datasource_id.as_deref()),
                     cell(i.r#type.as_deref()),
                     state_cell(i.state.as_deref()),
-                    destination_cell(
-                        i.destination_database_id.as_deref(),
-                        i.destination_schema.as_deref(),
-                        i.destination_table.as_deref(),
-                    ),
+                    destination_cell(i.destination.as_ref()),
                     schedule_cell(i.schedule.as_ref(), i.next_attempt_at.as_deref()),
                     date_cell(i.created_at.as_deref()),
                 ]
@@ -767,14 +772,7 @@ fn print_ingest_identity(ing: &Ingest) {
     {
         field("stopped by:", r);
     }
-    field(
-        "destination:",
-        &destination_cell(
-            ing.destination_database_id.as_deref(),
-            ing.destination_schema.as_deref(),
-            ing.destination_table.as_deref(),
-        ),
-    );
+    field("destination:", &destination_cell(ing.destination.as_ref()));
     field(
         "schedule:",
         &schedule_cell(ing.schedule.as_ref(), ing.next_attempt_at.as_deref()),
@@ -949,7 +947,7 @@ fn removal_message(verb: &str) -> Option<String> {
         "status" => "hotdata run show <run-id>  (or: hotdata ingest runs <ingest-id>)",
         "raw-sql" => {
             "hotdata ingest create --datasource-id <id> --selector \
-             '{\"mode\":\"query\",\"query\":{\"sql\":\"…\"}}' --database-id <db> --table <t>"
+             '{\"mode\":\"query\",\"sql\":\"…\"}' --database-id <db> --table <t>"
         }
         // The one verb with no replacement at all — say why, not just "gone".
         "trigger-import" | "rerun" | "run-now" => {
@@ -1068,6 +1066,29 @@ mod tests {
         );
     }
 
+    /// CONTRACT TEST — the literal below is the payload the worker's
+    /// `sql` selector model accepts, and the worker has a test pinning the
+    /// same literal on its side of the wire. **The two must be changed
+    /// together**, because neither suite can fail on its own when they
+    /// disagree: the CLI once emitted a per-table object here and every test
+    /// on both sides stayed green while `ingest create --sql` 422'd for every
+    /// user.
+    #[test]
+    fn sql_selector_emits_exactly_what_the_worker_accepts() {
+        let p = parse_select("SELECT id, status FROM public.orders WHERE x LIMIT 5").unwrap();
+        assert_eq!(
+            sql_selector(&p),
+            serde_json::json!({
+                "mode": "tables",
+                "schema": "public",
+                "tables": ["orders"],
+                "columns": ["id", "status"],
+                "where": "x",
+                "limit": 5,
+            })
+        );
+    }
+
     #[test]
     fn select_desugars_to_a_structured_sql_selector() {
         // The whole point: the SQL text never reaches the API.
@@ -1077,20 +1098,37 @@ mod tests {
             selector,
             serde_json::json!({
                 "mode": "tables",
-                "tables": [{
-                    "schema": "public",
-                    "table": "orders",
-                    "columns": ["id"],
-                    "where": "id > 5",
-                    "limit": 10,
-                }],
+                "schema": "public",
+                "tables": ["orders"],
+                "columns": ["id"],
+                "where": "id > 5",
+                "limit": 10,
             })
         );
-        // SELECT * omits `columns` entirely rather than sending an empty list.
+        // The minimum form: an unqualified SELECT * carries no `schema`, no
+        // `columns`, no `where`, no `limit` — an empty column list would mean
+        // "project nothing".
         let star = sql_selector(&parse_select("SELECT * FROM orders").unwrap());
         assert_eq!(
             star,
-            serde_json::json!({"mode": "tables", "tables": [{"table": "orders"}]})
+            serde_json::json!({"mode": "tables", "tables": ["orders"]})
+        );
+    }
+
+    // --- response rendering ---------------------------------------------------
+
+    /// The listing and detail views must show a destination for the body the
+    /// service actually returns, which carries it as one nested object.
+    /// Rendering from top-level `destination_*` fields printed `-` for every
+    /// real ingest while the mock fixtures — invented in that shape — passed.
+    #[test]
+    fn a_worker_shaped_ingest_response_renders_its_destination() {
+        let resp: crate::client::ingest::IngestsResponse =
+            serde_json::from_str(crate::client::ingest::WORKER_INGEST_LIST_BODY).unwrap();
+        let ing = &resp.ingests[0];
+        assert_eq!(
+            destination_cell(ing.destination.as_ref()),
+            "db_1.public.orders_raw"
         );
     }
 
@@ -1123,7 +1161,7 @@ mod tests {
         assert_eq!(req.datasource_id, "ds_pg");
         assert_eq!(req.r#type, "one_time"); // kebab in, snake out
         assert_eq!(req.selector["mode"], "tables");
-        assert_eq!(req.selector["tables"][0]["table"], "orders");
+        assert_eq!(req.selector["tables"][0], "orders");
         // The destination table defaults to the FROM table.
         assert_eq!(
             req.destination,
