@@ -13,6 +13,15 @@ use crate::util;
 /// `run show` line up with each other.
 const LABEL_WIDTH: usize = 16;
 
+/// Gap between polls on every `--wait` path.
+///
+/// **Every wait in this group is a WATCH, not a trigger.** The scheduler owns
+/// dispatch: nothing the CLI can send makes a queued run start, and no poll
+/// here tries. So the interval is chosen for how often a person wants the
+/// screen to change, not for how fast the work could be nudged along — and a
+/// caller who stops waiting has changed nothing about what happens next.
+pub const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Render a value for `-o json|yaml`, or fall through to the human branch.
 /// One definition so the json-println / yaml-print convention cannot drift
 /// between the (many) commands that support all three formats.
@@ -266,6 +275,81 @@ pub fn run_exit_code(status: &str) -> i32 {
         "failed" | "cancelled" => 1,
         _ => 2,
     }
+}
+
+/// Whether a run status is terminal — the condition every `--wait` stops on.
+pub fn is_terminal(status: &str) -> bool {
+    matches!(
+        normalize_run_status(status).0,
+        "succeeded" | "failed" | "cancelled"
+    )
+}
+
+// --- client-side waiting -----------------------------------------------------
+
+/// Re-read something until `done` says so, or the budget runs out.
+///
+/// Read-only, and idempotent by construction: `read` is a GET and `done` is a
+/// predicate over its result. A read that fails is retried rather than fatal —
+/// one gateway blip must not end a wait that is otherwise progressing — but the
+/// deadline outranks the retry budget, so a blip AT the deadline is reported as
+/// "still in flight" rather than as a failure of the thing being watched.
+///
+/// `Err` carries the last value read, when there was one: a wait that ran out
+/// of time still knows more than the caller did before it started.
+pub fn poll_until<T>(
+    message: &str,
+    timeout_secs: u64,
+    mut read: impl FnMut() -> Result<T, crate::client::ingest::IngestError>,
+    done: impl Fn(&T) -> bool,
+    describe: impl Fn(&T) -> Option<String>,
+) -> Result<T, Option<T>> {
+    let spinner = util::spinner(message);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let mut latest: Option<T> = None;
+    let mut consecutive_errors = 0u32;
+    loop {
+        match read() {
+            Ok(value) => {
+                consecutive_errors = 0;
+                if done(&value) {
+                    spinner.finish_and_clear();
+                    return Ok(value);
+                }
+                if let Some(d) = describe(&value) {
+                    spinner.set_message(format!("{message} {d}"));
+                }
+                latest = Some(value);
+            }
+            Err(e) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= 3 {
+                    spinner.finish_and_clear();
+                    e.exit();
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            spinner.finish_and_clear();
+            return Err(latest);
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// What to say, and what to exit with, when a wait runs out of time.
+///
+/// Exit 2, matching "still in flight" everywhere else in the CLI: the thing
+/// being watched has not failed, and one meaning per code is what lets a script
+/// branch on it.
+pub fn wait_timed_out(follow_up: &str) -> ! {
+    use crossterm::style::Stylize;
+    eprintln!("{}", "timed out waiting".red());
+    eprintln!(
+        "{}",
+        format!("Keep watching it with: {follow_up}").dark_grey()
+    );
+    std::process::exit(2);
 }
 
 #[cfg(test)]

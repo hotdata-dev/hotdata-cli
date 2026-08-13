@@ -23,16 +23,25 @@
 //! --no-credentials    no source credential (families with public sources)
 //! ```
 //!
+//! **`create` asks when there is someone to ask.** With no payload on a
+//! terminal it walks the catalog and then the chosen family's own fields, with
+//! every question — its label, its accepted values, and whether the answer is
+//! hidden — read off the service's generated field reference. `--config`,
+//! `--no-input`, CI and a piped stdin all take the flag path instead, so
+//! nothing a script does changed.
+//!
 //! **Presentation contract:** `validate` persists nothing and is the preflight
 //! path; `create` validates again regardless. Secrets are never echoed back by
-//! the server and never printed here.
+//! the server, never printed here, and never shown while being typed.
 
 use crate::client::ingest::{
     Capabilities, ConfigUpdate, ConnectorEntry, Datasource, DatasourceConfig, FamilyReference,
     IngestClient,
 };
+use crate::commands::datasource_wizard;
 use crate::commands::ingest_common::{
-    cell, date_cell, empty_notice, fail, field, hint, parse_json_arg, render, with_spinner,
+    POLL_INTERVAL, cell, date_cell, empty_notice, fail, field, hint, parse_json_arg, render,
+    with_spinner,
 };
 use crate::util;
 
@@ -60,6 +69,12 @@ pub enum DatasourceCommands {
 
     /// Create a datasource and its first config version
     ///
+    /// With no --config on a terminal, asks: which source type, then that
+    /// family's own fields — the questions, the accepted values and which
+    /// answers are hidden all come from the service. --no-input, CI, and a
+    /// piped stdin skip the questions entirely and require --config, so scripts
+    /// behave exactly as before.
+    ///
     /// Returns a stable `ds_…` id — the argument every ingest takes. Loads no
     /// data: pull rows with `hotdata ingest create --datasource-id <id>`.
     ///
@@ -70,11 +85,12 @@ pub enum DatasourceCommands {
         /// delta, ducklake, kafka, rest. Use `sql` for any SQL dialect (the
         /// dialect goes in the config) and `filesystem` for buckets.
         ///
-        /// Not validated here on purpose: the service decides which families
-        /// exist, so a new one is usable without waiting for a CLI release.
-        /// An unknown family comes back as a 422 naming it.
+        /// Omit it on a terminal to pick a source type from the catalog.
+        /// Otherwise not validated here on purpose: the service decides which
+        /// families exist, so a new one is usable without waiting for a CLI
+        /// release. An unknown family comes back as a 422 naming it.
         #[arg(long)]
-        family: String,
+        family: Option<String>,
 
         /// Human label shown in listings. Not identity: it need not be unique
         /// and nothing resolves against it.
@@ -83,6 +99,9 @@ pub enum DatasourceCommands {
 
         #[command(flatten)]
         payload: ConfigArgs,
+
+        #[command(flatten)]
+        wait: WaitArgs,
     },
 
     /// List the datasources in this workspace
@@ -158,8 +177,35 @@ pub enum DatasourceCommands {
     },
 }
 
+/// How long to watch a datasource settle. Client-side polling only — the CLI
+/// re-reads the datasource; nothing here makes the service work sooner.
+#[derive(clap::Args)]
+pub struct WaitArgs {
+    /// Watch the new datasource until it leaves `creating` (the default).
+    /// Polls `datasource show` — it cannot make anything happen sooner.
+    #[arg(long)]
+    wait: bool,
+
+    /// Print the datasource id and return without watching
+    #[arg(long = "no-wait", conflicts_with = "wait")]
+    no_wait: bool,
+
+    /// Seconds to watch before giving up (default 300)
+    #[arg(long = "wait-timeout", default_value = "300")]
+    wait_timeout: u64,
+}
+
 /// The config payload flags, shared by `validate`, `create`, and
 /// `update-config` so the accepted shapes cannot drift between them.
+///
+/// `--bucket-url` and `--catalog-type` are shorthand that BUILDS the JSON
+/// `--config` would have carried; `--config` stays the escape hatch for every
+/// other field, and the two merge (shortcut last) so a base document can be
+/// overridden on the command line.
+///
+/// The selector-side shorthands (`--glob`, `--format`, `--table`, `--schema`)
+/// live on `hotdata ingest create` instead: those fields choose a subset to
+/// read, which is an ingest's decision, not a datasource's.
 #[derive(clap::Args)]
 pub struct ConfigArgs {
     /// Source config as JSON (inline, @file.json, or @- for stdin). Either a
@@ -173,6 +219,50 @@ pub struct ConfigArgs {
     /// Field reference: `hotdata datasource fields <family>`.
     #[arg(long)]
     credentials: Option<String>,
+
+    /// Bucket root for a filesystem or delta source, e.g. s3://my-bucket.
+    /// Object keys are recorded relative to it, so moving it starts a fresh
+    /// read. The provider follows the scheme (s3://, gs://, az://, a path).
+    #[arg(long = "bucket-url")]
+    bucket_url: Option<String>,
+
+    /// Catalog flavour for an iceberg source: rest, glue, hive, or sql
+    #[arg(long = "catalog-type")]
+    catalog_type: Option<String>,
+}
+
+/// The config fields with a flag of their own, as parsed values.
+#[derive(Default)]
+struct Shortcuts {
+    bucket_url: Option<String>,
+    catalog_type: Option<String>,
+}
+
+impl Shortcuts {
+    fn any(&self) -> bool {
+        self.bucket_url.is_some() || self.catalog_type.is_some()
+    }
+
+    /// The config fragment these flags stand for.
+    ///
+    /// `provider` is derived rather than asked for a second time: a bucket URL
+    /// already spells out which object store it is, and a `--provider` flag
+    /// next to `--bucket-url s3://…` is a second chance to disagree with it.
+    /// A scheme with no mapping leaves `provider` out, so the service's own
+    /// error names the field rather than the CLI guessing `s3` at it.
+    fn fragment(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        if let Some(url) = &self.bucket_url {
+            if let Some(p) = crate::commands::datasource_wizard::provider_of(url) {
+                m.insert("provider".into(), p.into());
+            }
+            m.insert("root_uri".into(), url.clone().into());
+        }
+        if let Some(t) = &self.catalog_type {
+            m.insert("catalog_type".into(), t.clone().into());
+        }
+        m
+    }
 }
 
 /// Entry point from `main`. Keeps `main.rs` thin — one call per group.
@@ -185,7 +275,15 @@ pub fn dispatch(workspace_id: &str, output: &str, command: DatasourceCommands) {
             family,
             display_name,
             payload,
-        } => create(workspace_id, output, &family, display_name, payload),
+            wait,
+        } => create(
+            workspace_id,
+            output,
+            family.as_deref(),
+            display_name,
+            payload,
+            &wait,
+        ),
         DatasourceCommands::List {
             family,
             state,
@@ -213,11 +311,13 @@ pub fn dispatch(workspace_id: &str, output: &str, command: DatasourceCommands) {
 
 // --- payload construction --------------------------------------------------
 
-/// Split a `--config`/`--credentials` pair into the two wire fields.
+/// Split a `--config`/`--credentials` pair into the two wire fields, with the
+/// shortcut flags merged into the config.
 ///
-/// Pure (the JSON is pre-parsed, errors are returned) so the envelope handling
-/// and the three-valued credential semantics — the part a server-side 422 would
-/// otherwise be the first to catch — are unit-testable.
+/// Pure (the JSON is pre-parsed, errors are returned) so the envelope handling,
+/// the shortcut fragments, and the three-valued credential semantics — the
+/// parts a server-side 422 would otherwise be the first to catch — are
+/// unit-testable.
 ///
 /// `Ok((config, credentials))` where `credentials == None` means "omit the key"
 /// (inherit on update) and `Some({})` means "explicitly no credential".
@@ -225,13 +325,22 @@ fn split_payload(
     config: Option<serde_json::Value>,
     credentials: Option<serde_json::Value>,
     no_credentials: bool,
+    shortcuts: &Shortcuts,
 ) -> Result<(serde_json::Value, Option<serde_json::Value>), String> {
-    let Some(config) = config else {
-        return Err(
-            "--config is required (inline JSON, @file.json, or @-). The fields it takes: \
-             'hotdata datasource fields <family>'"
-                .into(),
-        );
+    let config = match config {
+        Some(c) => c,
+        // The shortcuts are a whole config on their own for the families they
+        // cover, so requiring an otherwise-empty --config beside them would be
+        // ceremony with nothing in it.
+        None if shortcuts.any() => serde_json::json!({}),
+        None => {
+            return Err(
+                "--config is required (inline JSON, @file.json, or @-), or --bucket-url / \
+                 --catalog-type for those fields. The fields a family takes: \
+                 'hotdata datasource fields <family>'"
+                    .into(),
+            );
+        }
     };
     if !config.is_object() {
         return Err("--config must be a JSON object".into());
@@ -239,10 +348,16 @@ fn split_payload(
     // The documented source.json is an envelope carrying both halves; a bare
     // config object is accepted too, so `--config '{"dialect":"postgres"}'`
     // works without ceremony.
-    let (config, enveloped_credentials) = match config.get("config") {
+    let (mut config, enveloped_credentials) = match config.get("config") {
         Some(inner) if inner.is_object() => (inner.clone(), config.get("credentials").cloned()),
         _ => (config, None),
     };
+    // Shortcut last: a flag on the command line is the more specific of the
+    // two, and overriding one field of a checked-in source.json is the reason
+    // to write them together at all.
+    if let Some(map) = config.as_object_mut() {
+        map.extend(shortcuts.fragment());
+    }
 
     let credentials = if no_credentials {
         // Explicitly empty ≠ omitted: this asks the service to create a config
@@ -260,7 +375,22 @@ fn split_payload(
 }
 
 impl ConfigArgs {
-    fn parse(self) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+    /// Whether any payload was given at all. False is what sends `create` to
+    /// the guided flow on a terminal.
+    fn is_empty(&self) -> bool {
+        self.config.is_none()
+            && self.credentials.is_none()
+            && self.bucket_url.is_none()
+            && self.catalog_type.is_none()
+    }
+
+    fn parse(
+        self,
+    ) -> (
+        Option<serde_json::Value>,
+        Option<serde_json::Value>,
+        Shortcuts,
+    ) {
         (
             self.config
                 .as_deref()
@@ -268,6 +398,10 @@ impl ConfigArgs {
             self.credentials
                 .as_deref()
                 .map(|a| parse_json_arg("--credentials", a)),
+            Shortcuts {
+                bucket_url: self.bucket_url,
+                catalog_type: self.catalog_type,
+            },
         )
     }
 }
@@ -275,9 +409,9 @@ impl ConfigArgs {
 // --- validate ---------------------------------------------------------------
 
 fn validate(workspace_id: &str, output: &str, family: &str, payload: ConfigArgs) {
-    let (config, credentials) = payload.parse();
+    let (config, credentials, shortcuts) = payload.parse();
     let (config, credentials) =
-        split_payload(config, credentials, false).unwrap_or_else(|m| fail(&m));
+        split_payload(config, credentials, false, &shortcuts).unwrap_or_else(|m| fail(&m));
     let req = DatasourceConfig {
         family: family.to_string(),
         display_name: None,
@@ -320,38 +454,109 @@ fn validate(workspace_id: &str, output: &str, family: &str, payload: ConfigArgs)
 fn create(
     workspace_id: &str,
     output: &str,
-    family: &str,
+    family: Option<&str>,
     display_name: Option<String>,
     payload: ConfigArgs,
+    wait: &WaitArgs,
 ) {
-    let (config, credentials) = payload.parse();
-    let (config, credentials) =
-        split_payload(config, credentials, false).unwrap_or_else(|m| fail(&m));
-    let req = DatasourceConfig {
-        family: family.to_string(),
-        display_name,
-        config,
-        credentials,
-    };
+    // THE ONE GATE on the guided flow. A payload given means the caller has
+    // already said what they want; no payload and no terminal means nobody is
+    // there to ask. Deciding it here, once, is what keeps `--no-input` and CI
+    // on exactly the path they were on before the flow existed.
+    //
+    // The flag path is built BEFORE the client, so a missing --family is
+    // answered as the argument error it is rather than behind an auth failure
+    // from resolving a workspace the command was never going to reach.
+    let from_flags = (!payload.is_empty() || !util::is_interactive()).then(|| {
+        let Some(family) = family else {
+            fail(
+                "--family is required (sql, filesystem, iceberg, delta, ducklake, kafka, rest). \
+                 Run 'hotdata datasource create' in a terminal to be asked instead.",
+            );
+        };
+        let (config, credentials, shortcuts) = payload.parse();
+        let (config, credentials) =
+            split_payload(config, credentials, false, &shortcuts).unwrap_or_else(|m| fail(&m));
+        DatasourceConfig {
+            family: family.to_string(),
+            display_name: display_name.clone(),
+            config,
+            credentials,
+        }
+    });
 
     let client = IngestClient::new(workspace_id);
+    let req = match from_flags {
+        Some(req) => req,
+        None => {
+            let answers = datasource_wizard::run(&client, family, display_name);
+            DatasourceConfig {
+                family: answers.family,
+                display_name: answers.display_name,
+                config: answers.config,
+                credentials: answers.credentials,
+            }
+        }
+    };
+
     // The first datasource in a workspace provisions the runtime (~15-30s);
     // later ones are quick. The HTTP client allows 300s.
     let ds = with_spinner(
         "creating datasource… (the first one in a workspace takes ~30s)",
         || client.create_datasource(&req),
     );
+    // Watching is the default because the answer this command exists to give —
+    // did the credentials reach the source? — is the state, and a datasource
+    // that is still `creating` has not given it yet. Usually the create
+    // response is already terminal and this returns without a single poll.
+    let ds = if wait.no_wait {
+        ds
+    } else {
+        settled(&client, ds, wait.wait_timeout)
+    };
 
     render(output, &ds, || {
         use crossterm::style::Stylize;
         println!("{}", "datasource created".green());
         print_datasource_identity(&ds);
         hint(&format!(
-            "Load data with: hotdata ingest create --datasource-id {} --type one-time \
-             --selector @selector.json --destination @destination.json",
+            "Load data with: hotdata ingest create --source {} --table <source-table> \
+             --database-id <db>",
             ds.datasource_id
         ));
     });
+}
+
+/// Re-read the datasource until it leaves `creating`, or the budget runs out.
+///
+/// Watching, not driving: nothing here asks the service to do anything, so a
+/// slow create is not made faster by waiting on it. A timeout returns the last
+/// view read rather than failing — the datasource exists either way, and its id
+/// is the thing the caller came for.
+fn settled(client: &IngestClient, ds: Datasource, timeout_secs: u64) -> Datasource {
+    if ds.state.as_deref() != Some("creating") {
+        return ds;
+    }
+    let spinner = crate::util::spinner("waiting for the datasource to settle…");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let mut latest = ds;
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(POLL_INTERVAL);
+        match client.get_datasource(&latest.datasource_id) {
+            Ok(next) => {
+                let settled = next.state.as_deref() != Some("creating");
+                latest = next;
+                if settled {
+                    break;
+                }
+            }
+            // A read that fails mid-wait is not a create that failed. Keep the
+            // view already in hand and let the deadline decide.
+            Err(_) => break,
+        }
+    }
+    spinner.finish_and_clear();
+    latest
 }
 
 // --- list -------------------------------------------------------------------
@@ -483,9 +688,9 @@ fn update_config(
     payload: ConfigArgs,
     no_credentials: bool,
 ) {
-    let (config, credentials) = payload.parse();
+    let (config, credentials, shortcuts) = payload.parse();
     let (config, credentials) =
-        split_payload(config, credentials, no_credentials).unwrap_or_else(|m| fail(&m));
+        split_payload(config, credentials, no_credentials, &shortcuts).unwrap_or_else(|m| fail(&m));
     let req = ConfigUpdate {
         config,
         credentials,
@@ -552,6 +757,7 @@ fn types(workspace_id: &str, output: &str, filter: Option<&str>) {
         entries.retain(|c| c.name.to_lowercase().contains(&f));
     }
     let entries = sorted_for_display(&entries);
+    let added = added_labels(&client);
 
     let projected: Vec<_> = entries
         .iter()
@@ -559,6 +765,7 @@ fn types(workspace_id: &str, output: &str, filter: Option<&str>) {
             serde_json::json!({
                 "name": c.name,
                 "family": c.family,
+                "added": is_added(&added, c),
                 "description": c.description,
                 "config_schema": c.config_schema,
             })
@@ -567,14 +774,56 @@ fn types(workspace_id: &str, output: &str, filter: Option<&str>) {
     render(output, &projected, || {
         let rows: Vec<Vec<String>> = entries
             .iter()
-            .map(|c| vec![c.name.clone(), c.family.clone(), c.description.clone()])
+            .map(|c| {
+                vec![
+                    c.name.clone(),
+                    c.family.clone(),
+                    if is_added(&added, c) { "added" } else { "" }.to_string(),
+                    c.description.clone(),
+                ]
+            })
             .collect();
-        crate::output::table::print(&["NAME", "FAMILY", "DESCRIPTION"], &rows);
+        crate::output::table::print(&["NAME", "FAMILY", "STATUS", "DESCRIPTION"], &rows);
         hint(
             "The FAMILY column is what --family takes. \
              The fields a family accepts: 'hotdata datasource fields <family>'.",
         );
     });
+}
+
+/// The display names this workspace's live datasources carry, lowercased.
+///
+/// Best-effort: a listing that fails leaves every entry unmarked rather than
+/// costing the caller the catalog. A login session is rejected on every
+/// workspace-scoped read, so on one there is no round trip to spend.
+fn added_labels(client: &IngestClient) -> std::collections::HashSet<String> {
+    if !client.has_api_key() {
+        return Default::default();
+    }
+    client
+        .list_datasources(&[])
+        .map(|r| {
+            r.datasources
+                .into_iter()
+                .filter_map(|d| d.display_name)
+                .map(|n| n.trim().to_lowercase())
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether this workspace already has a datasource for one catalog entry.
+///
+/// Matched on the LABEL, which `create` offers pre-filled with the entry name,
+/// and not on the family. The listing carries family and display name — not the
+/// config that would name the dialect — so a family match would mark all ten
+/// SQL engines on the strength of one Postgres datasource. This marker
+/// under-reports a datasource somebody renamed, which is a mark that is missing;
+/// the family match over-reports nine engines nobody has, which is a mark that
+/// is wrong.
+fn is_added(added: &std::collections::HashSet<String>, entry: &ConnectorEntry) -> bool {
+    added.contains(&entry.name.trim().to_lowercase())
 }
 
 // --- fields (the generated field reference) ---------------------------------
@@ -877,7 +1126,10 @@ fn family_rank(family: &str) -> u8 {
 /// Sort the catalog for display: generic families first, then the REST
 /// services, each group alphabetical. Redundant SQL dialect aliases are
 /// collapsed at the source (the catalog), not here.
-fn sorted_for_display(entries: &[ConnectorEntry]) -> Vec<ConnectorEntry> {
+///
+/// Shared with the guided create flow so the menu and the table offer the
+/// ~170 entries in one order.
+pub fn sorted_for_display(entries: &[ConnectorEntry]) -> Vec<ConnectorEntry> {
     let mut sorted = entries.to_vec();
     sorted.sort_by(|a, b| {
         family_rank(&a.family)
@@ -970,6 +1222,11 @@ fn compact_json(v: &serde_json::Value) -> String {
 mod tests {
     use super::*;
 
+    /// No shortcut flags — the plain `--config`/`--credentials` path.
+    fn plain() -> Shortcuts {
+        Shortcuts::default()
+    }
+
     #[test]
     fn payload_accepts_the_documented_envelope() {
         // source.json with both halves in one file: config and credentials.
@@ -977,7 +1234,7 @@ mod tests {
             "config": {"dialect": "postgres", "host": "pg.example.com"},
             "credentials": {"username": "reader", "password": "s3cret"},
         });
-        let (config, credentials) = split_payload(Some(source), None, false).unwrap();
+        let (config, credentials) = split_payload(Some(source), None, false, &plain()).unwrap();
         assert_eq!(config["dialect"], "postgres");
         assert!(
             config.get("credentials").is_none(),
@@ -989,7 +1246,7 @@ mod tests {
     #[test]
     fn payload_accepts_a_bare_config_object() {
         let bare = serde_json::json!({"provider": "s3", "root_uri": "s3://events"});
-        let (config, credentials) = split_payload(Some(bare), None, false).unwrap();
+        let (config, credentials) = split_payload(Some(bare), None, false, &plain()).unwrap();
         assert_eq!(config["root_uri"], "s3://events");
         // Omitted, not empty — the two mean different things on the wire.
         assert!(credentials.is_none());
@@ -1002,7 +1259,7 @@ mod tests {
             "credentials": {"password": "old"},
         });
         let flag = serde_json::json!({"password": "new"});
-        let (_, credentials) = split_payload(Some(source), Some(flag), false).unwrap();
+        let (_, credentials) = split_payload(Some(source), Some(flag), false, &plain()).unwrap();
         assert_eq!(credentials.unwrap()["password"], "new");
     }
 
@@ -1011,19 +1268,19 @@ mod tests {
         // Three-valued: omitted inherits, `{}` drops the credential. A truthy
         // check would collapse the two.
         let bare = serde_json::json!({"provider": "s3", "root_uri": "s3://public"});
-        let (_, credentials) = split_payload(Some(bare), None, true).unwrap();
+        let (_, credentials) = split_payload(Some(bare), None, true, &plain()).unwrap();
         assert_eq!(credentials, Some(serde_json::json!({})));
     }
 
     #[test]
     fn payload_requires_config_and_rejects_non_objects() {
         assert!(
-            split_payload(None, None, false)
+            split_payload(None, None, false, &plain())
                 .unwrap_err()
                 .contains("--config")
         );
         assert!(
-            split_payload(Some(serde_json::json!("nope")), None, false)
+            split_payload(Some(serde_json::json!("nope")), None, false, &plain())
                 .unwrap_err()
                 .contains("JSON object")
         );
@@ -1031,11 +1288,80 @@ mod tests {
             split_payload(
                 Some(serde_json::json!({"a": 1})),
                 Some(serde_json::json!([])),
-                false
+                false,
+                &plain(),
             )
             .unwrap_err()
             .contains("--credentials")
         );
+    }
+
+    // --- the config shorthands -----------------------------------------------
+
+    /// CONTRACT TEST — the literal below is the `config` a `--bucket-url`
+    /// builds, and it is what the service's filesystem/delta config model
+    /// accepts. A shorthand that emitted a different shape would leave every
+    /// test on both sides green while the flag 422'd for every user, which is
+    /// exactly how the sql selector went wrong once already.
+    #[test]
+    fn bucket_url_builds_the_config_the_worker_accepts() {
+        let shortcuts = Shortcuts {
+            bucket_url: Some("s3://events-prod".into()),
+            ..Default::default()
+        };
+        let (config, credentials) = split_payload(None, None, false, &shortcuts).unwrap();
+        assert_eq!(
+            config,
+            serde_json::json!({"provider": "s3", "root_uri": "s3://events-prod"})
+        );
+        // No --config is needed beside it: the two fields ARE a filesystem
+        // config. Credentials stay omitted, which is a public bucket.
+        assert!(credentials.is_none());
+    }
+
+    /// CONTRACT TEST — the `config` a `--catalog-type` builds.
+    #[test]
+    fn catalog_type_builds_the_config_the_worker_accepts() {
+        let shortcuts = Shortcuts {
+            catalog_type: Some("glue".into()),
+            ..Default::default()
+        };
+        let (config, _) = split_payload(None, None, false, &shortcuts).unwrap();
+        assert_eq!(config, serde_json::json!({"catalog_type": "glue"}));
+    }
+
+    #[test]
+    fn a_shortcut_overrides_the_same_field_in_config() {
+        // Both together: the file is the base, the flag is the more specific
+        // of the two, and overriding one field of a checked-in source.json is
+        // the reason to write them in one command at all.
+        let base = serde_json::json!({
+            "config": {"provider": "s3", "root_uri": "s3://old"},
+            "credentials": {"aws_access_key_id": "AKIA"},
+        });
+        let shortcuts = Shortcuts {
+            bucket_url: Some("gs://new".into()),
+            ..Default::default()
+        };
+        let (config, credentials) = split_payload(Some(base), None, false, &shortcuts).unwrap();
+        assert_eq!(
+            config,
+            serde_json::json!({"provider": "gs", "root_uri": "gs://new"})
+        );
+        assert_eq!(credentials.unwrap()["aws_access_key_id"], "AKIA");
+    }
+
+    #[test]
+    fn an_unrecognized_scheme_leaves_the_provider_to_the_service() {
+        // Guessing `s3` at an unknown scheme would send a config that connects
+        // to the wrong store; leaving the field out makes the service's own
+        // error name it.
+        let shortcuts = Shortcuts {
+            bucket_url: Some("hdfs://nn/data".into()),
+            ..Default::default()
+        };
+        let (config, _) = split_payload(None, None, false, &shortcuts).unwrap();
+        assert_eq!(config, serde_json::json!({"root_uri": "hdfs://nn/data"}));
     }
 
     #[test]
@@ -1273,11 +1599,26 @@ mod tests {
         ConnectorEntry {
             name: name.into(),
             family: family.into(),
-            description: String::new(),
-            auth: None,
-            template: None,
-            config_schema: None,
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_added_mark_follows_the_label_and_not_the_family() {
+        // One Postgres datasource must not mark all ten SQL engines. The
+        // listing carries family and display name, not the config that would
+        // name the dialect — so a family match would be wrong for nine rows,
+        // while matching the label is merely absent for a renamed datasource.
+        let added: std::collections::HashSet<String> =
+            ["postgres".to_string(), "buckets".to_string()]
+                .into_iter()
+                .collect();
+        assert!(is_added(&added, &entry("postgres", "sql")));
+        assert!(!is_added(&added, &entry("oracle", "sql")));
+        assert!(is_added(&added, &entry("buckets", "filesystem")));
+        assert!(!is_added(&added, &entry("parquet", "filesystem")));
+        // Nothing listed marks nothing.
+        assert!(!is_added(&Default::default(), &entry("postgres", "sql")));
     }
 
     /// The rendering helpers colorize; assertions care about the text.

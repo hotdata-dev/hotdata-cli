@@ -31,6 +31,11 @@ fn config_dir() -> &'static std::path::Path {
 
 /// stdout + stderr together: clap writes usage errors to stderr, help to
 /// stdout, and the removed-verb notices to stderr.
+///
+/// `output()` gives the child an EMPTY stdin, which is also what makes the
+/// guided-flow tests below safe to run from a developer's terminal: the CLI
+/// treats a non-TTY stdin as "nobody is there to ask", so a test that reached
+/// a prompt would hang on the terminal the test runner is attached to.
 fn combined(args: &[&str]) -> (bool, String) {
     let out = hotdata().args(args).output().unwrap();
     (
@@ -284,6 +289,214 @@ fn ingest_schedule_documents_every_and_next() {
     assert!(help.contains("--every"), "{help}");
     assert!(help.contains("--next"), "{help}");
     assert!(help.contains("5m") || help.contains("30s"), "{help}");
+}
+
+// --- the guided create flow, and the gate on it ------------------------------
+
+#[test]
+fn create_without_a_terminal_asks_for_flags_instead_of_prompting() {
+    // The whole contract for scripts: no TTY means no questions, and the
+    // arguments are demanded in the order a caller can act on them — the family
+    // first, since it decides what the config even contains.
+    let (ok, out) = combined(&["datasource", "create", "-w", "ws_test"]);
+    assert!(!ok, "should fail: {out}");
+    assert!(out.contains("--family is required"), "{out}");
+    // And it says where the questions ARE, so the gate is discoverable.
+    assert!(out.contains("terminal"), "{out}");
+
+    let (ok, out) = combined(&["datasource", "create", "-w", "ws_test", "--family", "sql"]);
+    assert!(!ok, "should fail: {out}");
+    assert!(out.contains("--config is required"), "{out}");
+}
+
+#[test]
+fn no_input_takes_the_flag_path_even_on_a_terminal() {
+    let (ok, out) = combined(&[
+        "datasource",
+        "create",
+        "-w",
+        "ws_test",
+        "--no-input",
+        "--family",
+        "sql",
+    ]);
+    assert!(!ok, "should fail: {out}");
+    assert!(out.contains("--config is required"), "{out}");
+}
+
+#[test]
+fn create_help_describes_the_guided_flow_and_what_turns_it_off() {
+    let (ok, help) = combined(&["datasource", "create", "--help"]);
+    assert!(ok, "{help}");
+    assert!(help.contains("--no-input"), "{help}");
+    // The two things someone automating needs to know: it asks, and it does
+    // not ask when there is nobody there.
+    assert!(help.contains("terminal"), "{help}");
+    assert!(help.contains("service"), "{help}");
+}
+
+// --- the shorthand flags ------------------------------------------------------
+
+#[test]
+fn the_datasource_shorthands_live_on_datasource_create() {
+    let (ok, help) = combined(&["datasource", "create", "--help"]);
+    assert!(ok, "{help}");
+    for flag in ["--bucket-url", "--catalog-type"] {
+        assert!(help.contains(flag), "{flag} missing: {help}");
+    }
+    // Each says which family it is for, so the flag list reads as a map of the
+    // families rather than a pile of options.
+    assert!(
+        help.contains("filesystem") || help.contains("bucket"),
+        "{help}"
+    );
+    assert!(help.contains("iceberg"), "{help}");
+}
+
+#[test]
+fn the_selector_shorthands_live_on_ingest_create() {
+    let (ok, help) = combined(&["ingest", "create", "--help"]);
+    assert!(ok, "{help}");
+    for flag in [
+        "--table",
+        "--schema",
+        "--format",
+        "--glob",
+        "--record-shape",
+        "--raw-sql",
+        "--all",
+        "--limit",
+        "--source",
+        "--dest-table",
+    ] {
+        assert!(help.contains(flag), "{flag} missing: {help}");
+    }
+    // Each names the sources it applies to — the fields moved to the selector,
+    // so the help has to say which family's selector.
+    assert!(help.contains("SQL, Iceberg, DuckLake"), "{help}");
+    assert!(help.contains("bucket sources"), "{help}");
+}
+
+#[test]
+fn record_shape_help_lists_the_shapes() {
+    let (ok, help) = combined(&["ingest", "create", "--help"]);
+    assert!(ok, "{help}");
+    assert!(help.contains("otel_traces"), "{help}");
+    assert!(help.contains("mqtt_observations"), "{help}");
+}
+
+#[test]
+fn source_accepts_a_name_or_an_id_and_is_not_doubled_up() {
+    let (ok, help) = combined(&["ingest", "create", "--help"]);
+    assert!(ok, "{help}");
+    assert!(help.contains("display name"), "{help}");
+    // Two matches must be an error, and the help says so before it happens.
+    assert!(help.contains("Two datasources"), "{help}");
+
+    let (ok, out) = combined(&[
+        "ingest",
+        "create",
+        "--datasource-id",
+        "ds_1",
+        "--source",
+        "prod",
+        "--table",
+        "orders",
+    ]);
+    assert!(!ok, "should not parse: {out}");
+    assert!(out.contains("cannot be used with"), "{out}");
+}
+
+#[test]
+fn ingest_create_requires_a_datasource_by_either_flag() {
+    let (ok, out) = combined(&["ingest", "create", "--table", "orders"]);
+    assert!(!ok, "should not parse: {out}");
+    assert!(out.contains("--datasource-id"), "{out}");
+}
+
+#[test]
+fn the_selector_escape_hatch_excludes_the_shorthands_it_replaces() {
+    for shorthand in [
+        vec!["--table", "orders"],
+        vec!["--schema", "public"],
+        vec!["--format", "parquet"],
+        vec!["--glob", "**"],
+        vec!["--raw-sql", "SELECT 1"],
+        vec!["--all"],
+    ] {
+        let mut args = vec![
+            "ingest",
+            "create",
+            "--datasource-id",
+            "ds_1",
+            "--selector",
+            "{}",
+        ];
+        args.extend(shorthand.iter().copied());
+        let (ok, out) = combined(&args);
+        assert!(!ok, "{shorthand:?} should not parse: {out}");
+        assert!(out.contains("cannot be used with"), "{shorthand:?}: {out}");
+    }
+}
+
+#[test]
+fn all_and_an_explicit_table_are_different_requests() {
+    let (ok, out) = combined(&[
+        "ingest",
+        "create",
+        "--datasource-id",
+        "ds_1",
+        "--all",
+        "--table",
+        "orders",
+    ]);
+    assert!(!ok, "should not parse: {out}");
+    assert!(out.contains("cannot be used with"), "{out}");
+}
+
+// --- waiting is watching ------------------------------------------------------
+
+#[test]
+fn every_wait_flag_says_it_cannot_make_a_run_start_sooner() {
+    // The one thing a user must not conclude from a --wait on a scheduler-driven
+    // model. Each of the three surfaces has to say it where it is read.
+    for (args, needle) in [
+        (vec!["run", "show", "--help"], "does not make it start"),
+        (vec!["ingest", "runs", "--help"], "cannot bring one forward"),
+        (
+            vec!["datasource", "create", "--help"],
+            "cannot make anything happen sooner",
+        ),
+    ] {
+        let (ok, help) = combined(&args);
+        assert!(ok, "{help}");
+        assert!(help.contains("--wait"), "{args:?}: {help}");
+        assert!(
+            help.contains(needle),
+            "{args:?} must say '{needle}': {help}"
+        );
+    }
+}
+
+#[test]
+fn datasource_create_offers_both_halves_of_the_wait() {
+    let (ok, help) = combined(&["datasource", "create", "--help"]);
+    assert!(ok, "{help}");
+    assert!(help.contains("--wait"), "{help}");
+    assert!(help.contains("--no-wait"), "{help}");
+    // They are opposite answers to one question, not two switches.
+    let (ok, out) = combined(&[
+        "datasource",
+        "create",
+        "--family",
+        "sql",
+        "--config",
+        "{}",
+        "--wait",
+        "--no-wait",
+    ]);
+    assert!(!ok, "should not parse: {out}");
+    assert!(out.contains("cannot be used with"), "{out}");
 }
 
 // --- removed verbs -----------------------------------------------------------

@@ -13,9 +13,10 @@
 //! 1 failed or cancelled, 2 still in flight. `-o json` still lands on stdout in
 //! every case, so a non-zero exit never costs the caller the detail.
 
-use crate::client::ingest::IngestClient;
+use crate::client::ingest::{IngestClient, Run};
 use crate::commands::ingest_common::{
-    cell, field, hint, presented_run_status, render, run_exit_code, run_status_cell,
+    cell, field, hint, is_terminal, poll_until, presented_run_status, render, run_exit_code,
+    run_status_cell, wait_timed_out,
 };
 use crate::util;
 
@@ -28,19 +29,38 @@ pub enum RunCommands {
     Show {
         /// Run id (from `hotdata ingest runs <ingest-id>`)
         run_id: String,
+
+        /// Watch until the run finishes.
+        ///
+        /// Polling only: the scheduler owns dispatch, so watching a queued run
+        /// does not make it start — it reports when it does.
+        #[arg(long)]
+        wait: bool,
+
+        /// Seconds to watch with --wait (default 300)
+        #[arg(long = "wait-timeout", default_value = "300")]
+        wait_timeout: u64,
     },
 }
 
 /// Entry point from `main`. Keeps `main.rs` thin — one call per group.
 pub fn dispatch(workspace_id: &str, output: &str, command: RunCommands) {
     match command {
-        RunCommands::Show { run_id } => show(workspace_id, output, &run_id),
+        RunCommands::Show {
+            run_id,
+            wait,
+            wait_timeout,
+        } => show(workspace_id, output, &run_id, wait, wait_timeout),
     }
 }
 
-fn show(workspace_id: &str, output: &str, run_id: &str) {
+fn show(workspace_id: &str, output: &str, run_id: &str, wait: bool, wait_timeout: u64) {
     let client = IngestClient::new(workspace_id);
-    let run = client.get_run(run_id).unwrap_or_else(|e| e.exit());
+    let run = if wait {
+        watch(&client, run_id, wait_timeout)
+    } else {
+        client.get_run(run_id).unwrap_or_else(|e| e.exit())
+    };
 
     render(output, &run, || {
         field("run id:", &run.run_id);
@@ -91,6 +111,29 @@ fn show(workspace_id: &str, output: &str, run_id: &str) {
         }
     });
     std::process::exit(run_exit_code(&run.status));
+}
+
+/// Re-read the run until it reaches a terminal status.
+///
+/// Watching, not driving: a queued run is waiting on the scheduler, and no
+/// request the CLI can send moves it up the queue. The live stage goes into the
+/// spinner so a long load shows what it is doing rather than only that it is
+/// still going.
+fn watch(client: &IngestClient, run_id: &str, timeout_secs: u64) -> Run {
+    let outcome = poll_until(
+        "watching the run…",
+        timeout_secs,
+        || client.get_run(run_id),
+        |run| is_terminal(&run.status),
+        |run| {
+            let (status, stage) = presented_run_status(&run.status, run.stage.as_deref());
+            Some(stage.unwrap_or(status))
+        },
+    );
+    match outcome {
+        Ok(run) => run,
+        Err(_) => wait_timed_out(&format!("hotdata run show {run_id} --wait")),
+    }
 }
 
 fn compact_json(v: &serde_json::Value) -> String {

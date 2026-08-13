@@ -264,6 +264,13 @@ hotdata datasource validate --family sql --config @source.json
 # Persists NOTHING: checks the credentials and returns family-specific discovery
 # (schemas/tables/…). Run it before create.
 
+hotdata datasource create
+# WITH NO --config ON A TERMINAL this asks: which source type, then that family's
+# own fields — labels, accepted values and which answers are hidden all come from
+# the service's field reference. --no-input, CI and a piped stdin skip it entirely
+# and require --config, so agent/script invocations are unaffected. As an agent
+# you are non-interactive: use the flag form below.
+
 hotdata datasource create --family sql --config @source.json --display-name "prod postgres"
 # source.json is family-specific and carries both halves:
 #   {"config": {"dialect": "postgres", "host": …, "database": …},
@@ -272,6 +279,12 @@ hotdata datasource create --family sql --config @source.json --display-name "pro
 # --credentials takes the secret half separately. Keep secrets out of argv.
 # Families: sql, filesystem (buckets), kafka, iceberg, delta, ducklake, rest.
 # The fields each half takes: hotdata datasource fields <family>.
+# Two config fields have a flag of their own, which BUILDS that JSON:
+hotdata datasource create --family filesystem --bucket-url s3://events-prod
+#   --bucket-url <uri>     config.root_uri (+ provider, read off the scheme)
+#   --catalog-type <t>     config.catalog_type (iceberg)
+# They merge with --config, flag last. --no-wait returns without watching the
+# new datasource settle; the wait is a poll and starts nothing.
 
 hotdata datasource list [--family sql] [--state active]   # ids, families, states
 hotdata datasource show <datasource-id>                   # state, config version, discovery
@@ -289,19 +302,42 @@ hotdata ingest create --datasource-id ds_01J --type one-time \
 # selector.json is family-specific (what subset to read) — its fields, and the
 #   write modes this family accepts: hotdata datasource fields <family>.
 # destination.json is {"database_id", "schema", "table", "write_mode"} —
-#   write_mode: replace | append | upsert. Both are IMMUTABLE after creation.
+#   write_mode: replace | upsert (upsert needs a continuous bucket ingest).
+#   Selector and destination are both IMMUTABLE after creation.
 # A one-time ingest runs immediately and reports its initial run id.
 
 hotdata ingest create --datasource-id ds_01J --type continuous \
   --selector @selector.json --destination @destination.json --every 5m [--next now]
 # scheduled/continuous need --every (30s, 5m, 2h, 1d) or --schedule @schedule.json.
 
+# SHORTHAND FLAGS build that same selector JSON, client-side. --selector stays
+# the escape hatch; the two never produce different requests.
+hotdata ingest create --source "prod postgres" --table orders --schema public \
+  --database-id db_123
+#   --source <name-or-id>  the datasource, BY DISPLAY NAME or ds_… id. A name is
+#                          resolved here to an id; two matches is an error listing
+#                          both, never a guess. --datasource-id takes ids only.
+#   --table <name>         source table, REPEATABLE (sql, iceberg, ducklake)
+#   --schema <name>        source schema (sql)
+#   --format csv|jsonl|parquet, --glob "**/*.parquet"   (bucket sources)
+#   --record-shape otel_traces|mqtt_observations        (bucket sources)
+#   --all                  everything under a bucket root (needs --format)
+#   --limit N              stop after N source rows
+# Destination flags instead of --destination:
+#   --database-id (required)  --dest-table (defaults to the single --table)
+#   --dest-schema (default public)  --write-mode (default replace)
+
 hotdata ingest create --datasource-id ds_01J --database-id db_123 \
   --sql "SELECT id, status FROM public.orders WHERE status = 'open' LIMIT 1000"
-# CLI shorthand for SQL sources: parsed CLIENT-side into the same structured
-# selector + destination. Destination flags instead of --destination:
-#   --database-id (required) --table (defaults to the FROM table)
-#   --schema (default public) --write-mode (default replace)
+# Restricted SQL grammar, parsed CLIENT-side into the same structured selector +
+# destination. The FROM table also names the destination table.
+
+hotdata ingest create --datasource-id ds_01J --database-id db_123 \
+  --raw-sql "SELECT customer_id, sum(amount) FROM orders GROUP BY 1" \
+  --table order_totals [--limit 1000]
+# The source engine's OWN dialect, run verbatim at the source: joins, aggregates,
+# CTEs, window functions. Only the result set transfers, into --table. (A query
+# has no source table, so --table names where the result lands.)
 
 hotdata ingest list [--datasource-id ds_01J] [--type continuous] [--state active]
 hotdata ingest show <ingest-id>
@@ -313,13 +349,17 @@ hotdata ingest delete <ingest-id>    # releases the destination table; data unto
 # --- runs --------------------------------------------------------------------
 hotdata ingest runs <ingest-id> [--status failed]   # every attempt, newest first
 hotdata run show <run-id>            # exits 0 succeeded / 1 failed|cancelled / 2 in flight
+# --wait on either polls to a terminal status (--wait-timeout, default 300s;
+# exit 2 on timeout). It WATCHES: the scheduler owns dispatch, so waiting cannot
+# make a queued run start. `ingest schedule <id> --next now` is what does that.
 ```
 
 Agent tips:
 - **There is no `trigger-import` / run-now verb, by design.** A one-time ingest runs when created; scheduled/continuous ones run on their schedule and each run recovers from the last committed state. To make the next scheduled run happen now: `hotdata ingest schedule <ingest-id> --next now`. To load again from scratch: create another one-time ingest.
 - **`cancel` means both halves** — stop the current run *and* stop future dispatch. `resume` is its inverse and is deliberately not a trigger.
 - **Selector and destination are immutable.** Changing what an ingest reads or where it lands means a new ingest; the server rejects edits with `immutable_ingest_definition`.
-- `--sql` is a **restricted grammar**: `SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n]` — no joins/GROUP BY/ORDER BY, and the FROM target names the **source table**, not a datasource. For anything richer, pass `--selector '{"mode":"query","sql":"…"}'` (SQL family) so the query runs at the source.
+- `--sql` is a **restricted grammar**: `SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n]` — no joins/GROUP BY/ORDER BY, and the FROM target names the **source table**, not a datasource. For anything richer use `--raw-sql`, which runs the statement verbatim at the source in its own dialect.
+- **Every shorthand flag builds the same JSON `--selector`/`--destination` carry.** Nothing new reaches the API through them, so mixing a shorthand with the JSON for the same half is rejected rather than merged.
 - Run `status` is a **closed set**: `queued` | `running` | `succeeded` | `failed` | `cancelled`. While running, the finer progress state (e.g. `extracting`, `loading`) appears in `stage` — informational only, never switch on it.
 - Prefer `-o json` plus the `run show` exit codes for scripting; poll `run show` rather than holding a terminal open.
 - Tables print oldest→newest; `-o json` is newest-first (`[0]` = latest).

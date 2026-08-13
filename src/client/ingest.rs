@@ -832,7 +832,12 @@ pub struct ConnectorsResponse {
 /// are family templates. REST entries additionally carry `auth` (the method
 /// name, e.g. `bearer`, `oauth_client_credentials`, `none`) and a `template`
 /// dlt config with `<PLACEHOLDER>` secrets to fill in.
-#[derive(Clone, Deserialize)]
+///
+/// An entry carries only what its family does not already say: which dialect,
+/// which catalog type, which file format — the presets that turn a family into
+/// a named connector. The field lists themselves travel once per family, not
+/// once per entry (see [`ConnectorsResponse::families`]).
+#[derive(Clone, Default, Deserialize)]
 pub struct ConnectorEntry {
     pub name: String,
     #[serde(default)]
@@ -843,9 +848,37 @@ pub struct ConnectorEntry {
     pub auth: Option<String>,
     #[serde(default)]
     pub template: Option<serde_json::Value>,
+    /// Iceberg entries: which catalog flavour this one is (`rest`, `glue`, …).
+    #[serde(default)]
+    pub catalog_type: Option<String>,
+    /// Kafka entries: `kafka` or `debezium`.
+    #[serde(default)]
+    pub connector_type: Option<String>,
+    /// Filesystem entries: the file format the entry is named for.
+    #[serde(default)]
+    pub file_format: Option<String>,
+    /// Which keys belong in this entry's deliberately free-form config map.
+    #[serde(default)]
+    pub options_hint: Option<OptionsHint>,
     /// JSON Schema for the entry's `--config` payload (generic families).
     #[serde(default)]
     pub config_schema: Option<serde_json::Value>,
+}
+
+/// The keys one catalog entry wants inside a free-form config map.
+///
+/// Those maps (`options` on sql, `catalog_config` on iceberg, `storage` on
+/// ducklake) are unmodelled on purpose — what goes in them differs per engine,
+/// not per family, so the generated schema says `object` and stops. This is the
+/// service's own answer to "which keys, for THIS entry", which is why a client
+/// can prompt for them without keeping a list of dialect knowledge of its own.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OptionsHint {
+    /// The config field the keys go under.
+    pub config_field: String,
+    /// Key name -> what it is for.
+    #[serde(default)]
+    pub keys: std::collections::BTreeMap<String, String>,
 }
 
 /// One family's field reference, as `GET /families/{family}` returns it.
@@ -925,6 +958,10 @@ pub struct FamiliesResponse {
 /// enums carry their members, and a family with several selector forms sends a
 /// `oneOf` + `discriminator` instead of one object. A fixture that flattened
 /// any of those renders green here and blank against the service.
+///
+/// `format: password` sits BESIDE the `anyOf`, not inside one of its members —
+/// which is what makes an optional secret's marker easy to miss, and a secret
+/// whose marker is missed is one the guided flow echoes to the terminal.
 #[cfg(test)]
 pub const FAMILY_REFERENCE_BODY: &str = r#"{
   "family": "sql",
@@ -949,7 +986,7 @@ pub const FAMILY_REFERENCE_BODY: &str = r#"{
       "username": {"anyOf": [{"type": "string"}, {"type": "null"}],
                    "default": null, "title": "Username"},
       "password": {"anyOf": [{"type": "string"}, {"type": "null"}],
-                   "default": null, "title": "Password"}
+                   "default": null, "format": "password", "title": "Password"}
     },
     "title": "SqlCredentials",
     "type": "object"

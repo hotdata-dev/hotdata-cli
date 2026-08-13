@@ -101,26 +101,38 @@ hotdata datasource fields sql               # the fields --config, --credentials
 hotdata datasource validate --family sql --config @source.json
 
 # 2. Create the datasource. Loads no data; returns a ds_… id.
-#    Keep secrets out of argv with --config @file.json or @- (stdin):
+#    On a terminal, with no --config, it asks: which source type, then that
+#    family's own fields. The questions come from the service, and secrets are
+#    never echoed. --no-input, CI and a piped stdin skip the questions.
+hotdata datasource create
+
+#    Non-interactively — keep secrets out of argv with @file.json or @- (stdin):
 hotdata datasource create --family sql --config @source.json \
   --display-name "prod postgres"
+hotdata datasource create --family filesystem --bucket-url s3://events-prod
 hotdata datasource list                     # ids, families, states
 
 # 3. Ingest — what to load, and where it lands. Once:
+hotdata ingest create --source "prod postgres" --table orders --database-id db_123
+
+#    …or on a schedule, kept fresh:
+hotdata ingest create --source ds_01J --type continuous --database-id db_123 \
+  --format parquet --glob "orders/**/*.parquet" --dest-table orders_raw --every 5m
+
+#    Anything the shorthands cannot say goes as JSON:
 hotdata ingest create --datasource-id ds_01J --type one-time \
   --selector @selector.json --destination @destination.json
 
-#    …or on a schedule, kept fresh:
-hotdata ingest create --datasource-id ds_01J --type continuous \
-  --selector @selector.json --destination @destination.json --every 5m
-
-#    SQL sources take a shorthand the CLI parses into that structured JSON:
+#    SQL sources take two shorthands the CLI parses into that structured JSON:
 hotdata ingest create --datasource-id ds_01J --database-id db_123 \
   --sql "SELECT * FROM public.orders WHERE status = 'open'"
+hotdata ingest create --datasource-id ds_01J --database-id db_123 \
+  --raw-sql "SELECT customer_id, sum(amount) FROM orders GROUP BY 1" \
+  --table order_totals             # runs at the source, in its own dialect
 
-# 4. Watch it:
+# 4. Watch it. --wait polls; the scheduler decides when a run starts:
 hotdata ingest runs ing_01J                 # every attempt, newest first
-hotdata run show run_01J                    # one attempt; exits 0 succeeded /
+hotdata run show run_01J --wait             # one attempt; exits 0 succeeded /
                                             # 1 failed / 2 in flight
 
 # The data lands in a managed database — query it like any other:
