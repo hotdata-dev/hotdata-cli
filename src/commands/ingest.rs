@@ -512,10 +512,25 @@ struct ParsedSelect {
 /// datasource is `--datasource-id`), so `FROM prod_pg.orders` means schema
 /// `prod_pg`, table `orders`.
 fn parse_select(sql: &str) -> Result<ParsedSelect, String> {
-    let trimmed = sql.trim().trim_end_matches(';').trim();
-    if trimmed.contains(';') {
+    let raw = sql.trim().trim_end_matches(';').trim();
+    if raw.contains(';') {
         return Err("--sql takes a single SELECT statement".into());
     }
+    // Whitespace is collapsed to single spaces before anything is matched.
+    // The keyword searches below look for literal " FROM " and "SELECT ", so
+    // without this a newline or a tab between clauses reads as a missing
+    // clause -- and SQL pasted out of a script or a heredoc is normally
+    // indented across several lines. Reporting "needs a FROM clause" about a
+    // query whose second line is FROM is the kind of error that sends someone
+    // looking for a typo that is not there.
+    //
+    // A multi-space run inside a string literal is normalised too. That is
+    // accepted: the predicate is passed through to the source engine, which
+    // parses it, and no engine distinguishes `a = 'x  y'` on whitespace inside
+    // a quoted literal differently from how it would after this -- the far
+    // more common case is indentation, which this fixes.
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.as_str();
     // ASCII uppercasing is byte-length preserving, so indices found in `upper`
     // are valid in `trimmed`.
     let upper = trimmed.to_ascii_uppercase();

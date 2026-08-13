@@ -35,19 +35,6 @@ use crate::commands::ingest_common::{
 };
 use crate::util;
 
-/// The families the API discriminates config and selector shapes on. SQL
-/// dialects (postgres, mysql, …) are `--family sql` with `config.dialect`;
-/// buckets are `--family filesystem`; named API services are `--family rest`.
-const FAMILIES: [&str; 7] = [
-    "sql",
-    "filesystem",
-    "kafka",
-    "iceberg",
-    "delta",
-    "ducklake",
-    "rest",
-];
-
 #[derive(clap::Subcommand)]
 pub enum DatasourceCommands {
     /// Check a config and credentials without creating anything
@@ -56,9 +43,14 @@ pub enum DatasourceCommands {
     /// run it before `create` to see what the credentials can reach. The
     /// response carries family-specific discovery (schemas/tables, topics, …).
     Validate {
-        /// Source family — the shape of --config. Use `sql` for any SQL
-        /// dialect (the dialect goes in the config), `filesystem` for buckets.
-        #[arg(long, value_parser = FAMILIES)]
+        /// Source family — the shape of --config: sql, filesystem, iceberg,
+        /// delta, ducklake, kafka, rest. Use `sql` for any SQL dialect (the
+        /// dialect goes in the config) and `filesystem` for buckets.
+        ///
+        /// Not validated here on purpose: the service decides which families
+        /// exist, so a new one is usable without waiting for a CLI release.
+        /// An unknown family comes back as a 422 naming it.
+        #[arg(long)]
         family: String,
 
         #[command(flatten)]
@@ -70,9 +62,14 @@ pub enum DatasourceCommands {
     /// Returns a stable `ds_…` id — the argument every ingest takes. Loads no
     /// data: pull rows with `hotdata ingest create --datasource-id <id>`.
     Create {
-        /// Source family — the shape of --config. Use `sql` for any SQL
-        /// dialect (the dialect goes in the config), `filesystem` for buckets.
-        #[arg(long, value_parser = FAMILIES)]
+        /// Source family — the shape of --config: sql, filesystem, iceberg,
+        /// delta, ducklake, kafka, rest. Use `sql` for any SQL dialect (the
+        /// dialect goes in the config) and `filesystem` for buckets.
+        ///
+        /// Not validated here on purpose: the service decides which families
+        /// exist, so a new one is usable without waiting for a CLI release.
+        /// An unknown family comes back as a 422 naming it.
+        #[arg(long)]
         family: String,
 
         /// Human label shown in listings. Not identity: it need not be unique
@@ -87,7 +84,7 @@ pub enum DatasourceCommands {
     /// List the datasources in this workspace
     List {
         /// Only this family
-        #[arg(long, value_parser = FAMILIES)]
+        #[arg(long)]
         family: Option<String>,
 
         /// Only this lifecycle state
