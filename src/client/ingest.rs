@@ -628,8 +628,39 @@ pub struct ValidateResponse {
     pub detail: Option<String>,
 }
 
-/// A datasource row. `POST /datasources` returns the same shape with only the
-/// identity fields populated, so one struct serves create, list, and show.
+/// One config version of a datasource: the immutable row a run snapshots.
+///
+/// `config` is the non-secret half only — a credential is a reference the
+/// service holds, and `has_source_credential` is how the wire answers "was
+/// this version authenticated?" without handing back the reference.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ConfigVersion {
+    pub config_version_id: String,
+    #[serde(default)]
+    pub version: Option<i64>,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+    #[serde(default)]
+    pub has_source_credential: bool,
+    #[serde(default)]
+    pub validation_status: Option<String>,
+    /// Why the status is what it is — including the case where the family
+    /// could not reach the source at all and only the config's shape was
+    /// checked. A `valid` version can still carry one.
+    #[serde(default)]
+    pub validation_detail: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// A datasource row, as create, list and show all return it.
+///
+/// **The current config is NESTED, and only show sends it.** A flat `config`
+/// or `version` beside the identity fields decodes to nothing from every real
+/// response, and an absent nested object is indistinguishable from a
+/// datasource that has no config — which is the reading `-o json` then prints.
+/// `discovered` is the mirror case: create reports what the probe saw, and no
+/// other response carries it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Datasource {
     pub datasource_id: String,
@@ -644,14 +675,23 @@ pub struct Datasource {
     pub detail: Option<String>,
     #[serde(default)]
     pub current_config_version_id: Option<String>,
+    /// The version `current_config_version_id` points at (show only).
     #[serde(default)]
-    pub version: Option<i64>,
-    /// Current non-secret config (show only). Secret refs are never returned
-    /// as values.
+    pub current_config: Option<ConfigVersion>,
+    /// The ingests loading from this datasource — what a delete would refuse
+    /// over, answered before it is asked (show only).
     #[serde(default)]
-    pub config: Option<serde_json::Value>,
+    pub ingest_ids: Option<Vec<String>>,
+    /// What the probe listed at the source: schemas and tables, object keys,
+    /// topics, … (create only).
     #[serde(default)]
     pub discovered: Option<serde_json::Value>,
+    /// Whether that probe ran at all. A family with no read-only probe, or a
+    /// credential shape it cannot build a client from, creates the datasource
+    /// with `probed: false` — so this, not the 201, is what says the
+    /// credentials were exercised.
+    #[serde(default)]
+    pub probed: Option<bool>,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
@@ -1300,6 +1340,87 @@ mod tests {
         filtered.assert();
     }
 
+    /// Bodies captured verbatim from a running service, not written by hand.
+    ///
+    /// The bug they exist to prevent is not a wrong value but a wrong SHAPE:
+    /// a field the service never sends at the level the struct looks for it
+    /// decodes to `None` in silence, the human view omits the row, and
+    /// `-o json` prints `null` — a positive claim that the datasource has no
+    /// config. Only a real body catches that, so these are refreshed by
+    /// re-capturing a response, never by editing.
+    const DATASOURCE_SHOW: &str = include_str!("testdata/datasource_show.json");
+    const DATASOURCE_SHOW_UNPROBED: &str = include_str!("testdata/datasource_show_unprobed.json");
+
+    #[test]
+    fn get_datasource_decodes_the_nested_current_config() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/datasources/ds_01KZXYA24DEP1KD5DN9PERC1H9")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(DATASOURCE_SHOW)
+            .create();
+
+        let ds = api_key_client(&server)
+            .get_datasource("ds_01KZXYA24DEP1KD5DN9PERC1H9")
+            .unwrap();
+        m.assert();
+
+        let current = ds
+            .current_config
+            .as_ref()
+            .expect("the current config is on the wire and must decode");
+        assert_eq!(current.version, Some(1));
+        assert_eq!(
+            current.config_version_id,
+            ds.current_config_version_id.clone().unwrap()
+        );
+        assert_eq!(current.config.as_ref().unwrap()["dialect"], "postgres");
+        assert!(current.has_source_credential);
+        assert_eq!(current.validation_status.as_deref(), Some("valid"));
+        assert_eq!(ds.ingest_ids.as_deref().map(<[String]>::len), Some(2));
+
+        // What `-o json` prints is this struct serialized, so the round trip
+        // is the assertion that matters: a config on the wire must still be a
+        // config in the output.
+        let rendered = serde_json::to_value(&ds).unwrap();
+        assert_eq!(rendered["current_config"]["config"]["database"], "control");
+        assert!(
+            !rendered["current_config"].is_null(),
+            "-o json would assert this datasource has no config: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_valid_config_version_can_still_carry_a_validation_note() {
+        // A family with no read-only probe validates the config's shape and
+        // says so. Dropping that note is how "valid" comes to read as
+        // "connected", which it is not.
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/datasources/ds_01KZXYKGC8MC9SQJ6EC4856Y37")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(DATASOURCE_SHOW_UNPROBED)
+            .create();
+
+        let ds = api_key_client(&server)
+            .get_datasource("ds_01KZXYKGC8MC9SQJ6EC4856Y37")
+            .unwrap();
+        m.assert();
+        let current = ds.current_config.unwrap();
+        assert_eq!(current.validation_status.as_deref(), Some("valid"));
+        assert!(
+            current
+                .validation_detail
+                .as_deref()
+                .unwrap()
+                .contains("checked for shape only"),
+            "{:?}",
+            current.validation_detail
+        );
+    }
+
     #[test]
     fn delete_datasource_409s_while_ingests_reference_it() {
         let mut server = mockito::Server::new();
@@ -1545,18 +1666,53 @@ mod tests {
 
     #[test]
     fn list_runs_filters_by_status() {
+        // The two mocks are the same endpoint with and without the filter, and
+        // they answer differently — so this fails if the query stops being
+        // sent AND if a filtered listing comes back carrying the other status.
+        // Asserting only that the request carried `?status=failed` is what let
+        // a flag ship that every layer below it ignored: the URL was right and
+        // every run came back.
         let mut server = mockito::Server::new();
-        let m = server
+        let unfiltered = server
+            .mock("GET", "/ingest/ingests/ing_1/runs")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"runs":[
+                    {"run_id":"run_2","ingest_id":"ing_1","status":"succeeded","attempt":2},
+                    {"run_id":"run_1","ingest_id":"ing_1","status":"failed",
+                     "detail":"boom","attempt":1}
+                ]}"#,
+            )
+            .create();
+        let filtered = server
             .mock("GET", "/ingest/ingests/ing_1/runs?status=failed")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"runs":[]}"#)
+            .with_body(
+                r#"{"runs":[
+                    {"run_id":"run_1","ingest_id":"ing_1","status":"failed",
+                     "detail":"boom","attempt":1}
+                ]}"#,
+            )
             .create();
 
-        api_key_client(&server)
+        let client = api_key_client(&server);
+        let all = client.list_runs("ing_1", &[]).unwrap();
+        assert_eq!(all.runs.len(), 2, "the unfiltered listing carries both");
+
+        let resp = client
             .list_runs("ing_1", &[("status", "failed".into())])
             .unwrap();
-        m.assert();
+        unfiltered.assert();
+        filtered.assert();
+        let statuses: Vec<&str> = resp.runs.iter().map(|r| r.status.as_str()).collect();
+        assert_eq!(
+            statuses,
+            vec!["failed"],
+            "--status failed must return only failed runs, not every run"
+        );
+        assert_eq!(resp.runs[0].run_id, "run_1");
     }
 
     #[test]

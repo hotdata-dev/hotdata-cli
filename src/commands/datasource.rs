@@ -607,18 +607,21 @@ fn list(
                         .as_deref()
                         .map(util::color_status)
                         .unwrap_or_else(|| "-".into()),
-                    date_cell(d.created_at.as_deref()),
                     d.datasource_id.clone(),
+                    date_cell(d.created_at.as_deref()),
                 ]
             })
             .collect();
+        // Human-readable first, but the id ahead of CREATED: a narrow terminal
+        // takes columns from the right, and the id is what the next command
+        // takes as an argument.
         crate::output::table::print(
             &[
                 "DISPLAY NAME",
                 "FAMILY",
                 "STATE",
-                "CREATED",
                 "DATASOURCE ID",
+                "CREATED",
             ],
             &rows,
         );
@@ -644,8 +647,33 @@ fn show(workspace_id: &str, output: &str, datasource_id: &str) {
         if let Some(t) = ds.updated_at.as_deref() {
             field("updated:", &util::format_date(t));
         }
-        if let Some(c) = ds.config.as_ref() {
-            field("config:", &compact_json(c));
+        if let Some(current) = ds.current_config.as_ref() {
+            if let Some(c) = current.config.as_ref() {
+                field("config:", &compact_json(c));
+            }
+            field(
+                "credential:",
+                if current.has_source_credential {
+                    "held by the service"
+                } else {
+                    "none"
+                },
+            );
+            // A version can be `valid` and still have something to say: a
+            // family with no read-only probe, and a credential shape a family
+            // cannot build a client from, both check the config's shape and
+            // record that that is all they did. That note is the difference
+            // between a credential that WORKS and one that merely parsed.
+            if let Some(d) = current
+                .validation_detail
+                .as_deref()
+                .filter(|d| !d.trim().is_empty())
+            {
+                field("validation:", d);
+            }
+        }
+        if let Some(ids) = ds.ingest_ids.as_deref().filter(|i| !i.is_empty()) {
+            field("ingests:", &ids.len().to_string());
         }
         for line in discovered_lines(ds.discovered.as_ref()) {
             println!("{line}");
@@ -671,7 +699,9 @@ fn print_datasource_identity(ds: &Datasource) {
             .unwrap_or_else(|| "-".into()),
     );
     if let Some(v) = ds.current_config_version_id.as_deref() {
-        let versioned = match ds.version {
+        // The version NUMBER only travels with the nested current config, so a
+        // create ack shows the id alone and `show` shows both.
+        let versioned = match ds.current_config.as_ref().and_then(|c| c.version) {
             Some(n) => format!("{v} (v{n})"),
             None => v.to_string(),
         };

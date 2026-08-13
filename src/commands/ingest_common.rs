@@ -248,12 +248,21 @@ pub fn normalize_run_status(raw: &str) -> (&'static str, Option<&str>) {
 
 /// The (status, stage) pair for a run row: the server's `stage` field wins, a
 /// stage-shaped `status` is the fallback.
+///
+/// **A stage is only ever reported for a run still in one.** A finished run
+/// keeps the stage it stopped at — deliberately, so the step that ended it
+/// stays attributable — and pairing that with the outcome produces
+/// `succeeded (loading)`, which reads as a run still going. Suppressing the
+/// stage at the render site instead of here would leave `-o json` asserting
+/// the same thing, so the rule lives on the one function that decides what a
+/// run's status IS.
 pub fn presented_run_status(status: &str, stage: Option<&str>) -> (String, Option<String>) {
     let (normalized, fallback) = normalize_run_status(status);
-    (
-        normalized.to_string(),
-        stage.map(str::to_string).or(fallback.map(str::to_string)),
-    )
+    let in_flight = matches!(normalized, "queued" | "running");
+    let stage = in_flight
+        .then(|| stage.map(str::to_string).or(fallback.map(str::to_string)))
+        .flatten();
+    (normalized.to_string(), stage)
 }
 
 /// STATUS cell for the run tables/details: the normalized status, with the
@@ -466,6 +475,34 @@ mod tests {
         assert_eq!(
             presented_run_status("running", Some("loading")),
             ("running".into(), Some("loading".into()))
+        );
+    }
+
+    #[test]
+    fn a_finished_run_reports_no_stage() {
+        // The service leaves the last stage on a terminal run on purpose, so
+        // every terminal status arrives here carrying one.
+        for status in ["succeeded", "failed", "cancelled"] {
+            assert_eq!(
+                presented_run_status(status, Some("loading")),
+                (status.to_string(), None),
+                "{status} must not read as still loading"
+            );
+            // The cell is the coloured status and nothing else.
+            assert_eq!(
+                run_status_cell(status, Some("loading")),
+                util::color_status(status)
+            );
+        }
+        // A run still in one still says which.
+        let running = util::color_status("running");
+        assert_eq!(
+            run_status_cell("running", Some("loading")),
+            format!("{running} (loading)")
+        );
+        assert_eq!(
+            run_status_cell("extracting", None),
+            format!("{running} (extracting)")
         );
     }
 

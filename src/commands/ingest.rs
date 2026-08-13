@@ -1046,26 +1046,32 @@ fn list(
             .map(|i| {
                 vec![
                     i.ingest_id.clone(),
-                    cell(i.datasource_id.as_deref()),
                     cell(i.r#type.as_deref()),
                     state_cell(i.state.as_deref()),
-                    selector_cell(i.selector.as_ref()),
                     destination_cell(i.destination.as_ref()),
                     schedule_cell(i.schedule.as_ref(), i.next_attempt_at.as_deref()),
+                    selector_cell(i.selector.as_ref()),
                     date_cell(i.created_at.as_deref()),
+                    cell(i.datasource_id.as_deref()),
                 ]
             })
             .collect();
+        // Most important first: a narrow terminal takes columns from the right.
+        // What an ingest IS — its id, what it writes, whether it is running —
+        // outranks where it reads from. The datasource id is a 30-character
+        // token that this listing takes as a FILTER (`--datasource-id`) rather
+        // than something a reader picks a row by, so it goes last: shown when
+        // the width is there, and one `hotdata ingest show` away when it is not.
         crate::output::table::print(
             &[
                 "INGEST ID",
-                "DATASOURCE ID",
                 "TYPE",
                 "STATE",
-                "READS",
                 "DESTINATION",
                 "SCHEDULE",
+                "READS",
                 "CREATED",
+                "DATASOURCE ID",
             ],
             &rows,
         );
@@ -1155,6 +1161,21 @@ fn truncated(s: &str) -> String {
         return s.to_string();
     }
     format!("{}…", s.chars().take(WIDTH - 1).collect::<String>())
+}
+
+/// DETAIL for a run listing.
+///
+/// A failure detail is free text from the pipeline — hundreds of characters
+/// over several lines — and a table renders every one of those lines as a row
+/// of its own, so one failed run is what turns a listing into a screenful of
+/// fragments. Collapsing the whitespace first is what makes the truncation
+/// hold: cutting to 40 characters does nothing if the first newline arrives at
+/// character 12. `hotdata run show <run-id>` and `-o json` carry all of it.
+fn detail_cell(detail: Option<&str>) -> String {
+    match detail.filter(|d| !d.trim().is_empty()) {
+        Some(d) => truncated(&d.split_whitespace().collect::<Vec<_>>().join(" ")),
+        None => "-".into(),
+    }
 }
 
 // --- show -------------------------------------------------------------------
@@ -1346,18 +1367,23 @@ fn runs(
                 vec![
                     r.run_id.clone(),
                     run_status_cell(&r.status, r.stage.as_deref()),
+                    detail_cell(r.detail.as_deref()),
+                    date_cell(r.started_at.as_deref().or(r.queued_at.as_deref())),
+                    date_cell(r.finished_at.as_deref()),
                     r.attempt
                         .map(|a| a.to_string())
                         .unwrap_or_else(|| "-".into()),
-                    date_cell(r.started_at.as_deref().or(r.queued_at.as_deref())),
-                    date_cell(r.finished_at.as_deref()),
-                    cell(r.detail.as_deref()),
                 ]
             })
             .collect();
+        // Most important first; a narrow terminal takes columns from the right.
+        // DETAIL sits next to STATUS because it is why a run has the status it
+        // has, and dropping it would leave a failed listing saying only that
+        // something failed. ATTEMPT is last: it repeats what a listing of
+        // several attempts already shows by having several rows.
         crate::output::table::print(
             &[
-                "RUN ID", "STATUS", "ATTEMPT", "STARTED", "FINISHED", "DETAIL",
+                "RUN ID", "STATUS", "DETAIL", "STARTED", "FINISHED", "ATTEMPT",
             ],
             &rows,
         );
@@ -1669,6 +1695,27 @@ mod tests {
         );
         assert!(!rendered.contains('\n'), "{rendered}");
         assert!(rendered.chars().count() <= 40, "{rendered}");
+    }
+
+    #[test]
+    fn a_run_detail_is_one_cell_not_a_screenful() {
+        // The shape a failed load reports: a sentence, a blank line, then an
+        // indented trace. Untreated, every one of those lines is a table row.
+        let detail = "Pipeline orders load step failed\n\n  \
+                      LoadClientJobRetry: could not set lock on file\n  \
+                      at /var/lib/pipelines/orders/load/completed_jobs/x.parquet\n";
+        let rendered = detail_cell(Some(detail));
+        assert!(!rendered.contains('\n'), "{rendered}");
+        assert!(rendered.chars().count() <= 40, "{rendered}");
+        assert!(
+            rendered.starts_with("Pipeline orders load step"),
+            "{rendered}"
+        );
+        // Short details are untouched, and a run with nothing to say gets a
+        // dash rather than a blank cell.
+        assert_eq!(detail_cell(Some("6 rows loaded")), "6 rows loaded");
+        assert_eq!(detail_cell(None), "-");
+        assert_eq!(detail_cell(Some("   ")), "-");
     }
 
     // --- request construction -------------------------------------------------
