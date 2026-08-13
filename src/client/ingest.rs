@@ -1141,6 +1141,67 @@ pub const FAMILY_REFERENCE_BODY: &str = r#"{
   }
 }"#;
 
+/// The same family, with its selector encoded the other legal way: the `oneOf`
+/// branches hoisted into `$defs` and referenced instead of written inline.
+///
+/// Both encodings describe the identical pair of forms, and which one arrives
+/// is the schema generator's choice — a discriminated union is hoisted by
+/// default and only inlined when something asks it to be. The body above is
+/// inlined, so on its own it cannot tell "the service inlines" apart from "the
+/// renderer only handles inline", and a renderer that reads `properties`
+/// straight off a branch passes it while printing the `sql` family — the one
+/// whose two selector forms are the reason the field reference exists — as a
+/// family that takes no fields at all.
+///
+/// Trimmed to the selector: the other schemas are exercised above, and what is
+/// being pinned here is the indirection, including the discriminator `const`
+/// living a hop away from the `discriminator` that names it.
+///
+/// `r##` rather than the `r#` the other bodies use: a JSON pointer is written
+/// `"#/$defs/…"`, and that `"#` would close an `r#` string mid-literal.
+#[cfg(test)]
+pub const FAMILY_REFERENCE_REF_SELECTOR_BODY: &str = r##"{
+  "family": "sql",
+  "config_schema": {"properties": {}, "type": "object"},
+  "credentials_schema": {"properties": {}, "type": "object"},
+  "selector_schema": {
+    "$defs": {
+      "SqlTableSelector": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {"const": "tables", "default": "tables", "title": "Mode",
+                   "type": "string"},
+          "schema": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                     "default": null, "title": "Schema"},
+          "tables": {"items": {"type": "string"}, "minItems": 1,
+                     "title": "Tables", "type": "array",
+                     "description": "Source tables to read. Each lands in a destination table of the same name."}
+        },
+        "required": ["tables"], "title": "SqlTableSelector", "type": "object"},
+      "SqlQuerySelector": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {"const": "query", "title": "Mode", "type": "string"},
+          "sql": {"minLength": 1, "title": "Sql", "type": "string"}
+        },
+        "required": ["mode", "sql"], "title": "SqlQuerySelector", "type": "object"}
+    },
+    "discriminator": {"propertyName": "mode",
+                      "mapping": {"tables": "#/$defs/SqlTableSelector",
+                                  "query": "#/$defs/SqlQuerySelector"}},
+    "oneOf": [{"$ref": "#/$defs/SqlTableSelector"},
+              {"$ref": "#/$defs/SqlQuerySelector"}]
+  },
+  "capabilities": {
+    "write_modes": ["replace", "append"],
+    "continuous": false,
+    "recoverable": true,
+    "supports_where": true,
+    "multi_table": true,
+    "immutable_config_fields": []
+  }
+}"##;
+
 /// A `GET /families` body: the same shape, several families, trimmed to the
 /// parts the index table reads.
 #[cfg(test)]

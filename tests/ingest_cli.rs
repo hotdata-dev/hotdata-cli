@@ -8,17 +8,32 @@ use std::process::Command;
 fn hotdata() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_hotdata"));
     // ISOLATED FROM THE MACHINE RUNNING THE TEST. A spawned process inherits
-    // this one's environment, so without these two the assertions below run
-    // against whatever profile the developer happens to be logged into — and
-    // the failure that produces is invisible locally and only shows up in CI,
-    // which is the one place nobody is watching a test they just wrote.
+    // this one's environment, so without the four lines below the assertions
+    // run against whatever profile the developer happens to be logged into —
+    // and the failure that produces is invisible locally and only shows up in
+    // CI, which is the one place nobody is watching a test they just wrote.
     //
     // That is not hypothetical: three tests here asserted a retired verb's
     // explanation and passed on a laptop with a default workspace, while CI
     // had none and got an auth error instead.
+    //
+    // HOTDATA_WORKSPACE is the variable that locks a workspace, and it locks
+    // it hard: it outranks an explicit --workspace-id rather than merely
+    // supplying a default, so a developer with it exported would drive every
+    // command here past the resolution these tests exist to observe. A name
+    // that is nearly it clears nothing while looking like it clears
+    // everything, which is the worst of the three outcomes.
+    //
+    // The working directory is isolation too, not housekeeping. The binary
+    // loads a .env from its own cwd and the directories above it at startup,
+    // which is after this env_remove — so under `cargo test`, where the cwd is
+    // the crate root, a .env there would hand the key straight back. The empty
+    // config dir is a directory no .env is in, so pointing the child at it
+    // closes that and any stray file further up.
     cmd.env("HOTDATA_CONFIG_DIR", config_dir());
     cmd.env_remove("HOTDATA_API_KEY");
-    cmd.env_remove("HOTDATA_WORKSPACE_ID");
+    cmd.env_remove("HOTDATA_WORKSPACE");
+    cmd.current_dir(config_dir());
     cmd
 }
 

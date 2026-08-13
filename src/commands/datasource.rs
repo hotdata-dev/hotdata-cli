@@ -1034,18 +1034,58 @@ fn print_schema(schema: &serde_json::Value) {
 /// a complete alternative with its own required set, so rendering one of them
 /// (or merging them into a single table) would describe a request the service
 /// does not accept.
+///
+/// The root and every branch are followed through a local `$ref` first. A
+/// schema generator may write a form inline or hoist it into `$defs` and point
+/// at it, and the two say the same thing — but everything downstream reads
+/// `properties`, which a `$ref` object does not have. An unfollowed branch
+/// therefore renders as a form with no fields and no label: the field
+/// reference answering "what does this family take?" with nothing, for exactly
+/// the multi-form families whose fields are hardest to guess.
+///
+/// Branches resolve against the ORIGINAL root, not the resolved one, because
+/// `$defs` sits on the document — a root that was itself a `$ref` resolves to
+/// a definition that does not carry it.
 fn schema_variants(schema: &serde_json::Value) -> Vec<(Option<String>, &serde_json::Value)> {
-    let Some(branches) = schema.get("oneOf").and_then(|b| b.as_array()) else {
-        return vec![(None, schema)];
+    let root = resolve_local_ref(schema, schema);
+    let Some(branches) = root.get("oneOf").and_then(|b| b.as_array()) else {
+        return vec![(None, root)];
     };
-    let discriminator = schema
+    let discriminator = root
         .get("discriminator")
         .and_then(|d| d.get("propertyName"))
         .and_then(|p| p.as_str());
     branches
         .iter()
+        .map(|b| resolve_local_ref(schema, b))
         .map(|b| (variant_label(b, discriminator), b))
         .collect()
+}
+
+/// Follow a `$ref` pointing inside this document. Anything else is returned as
+/// it stands.
+///
+/// Resolved with `Value::pointer`, so `#/$defs/X` and the older
+/// `#/definitions/X` both work without either spelling being written here —
+/// which of the two arrives is the generator's business, not this command's.
+///
+/// A `$ref` to another document is left unresolved rather than fetched: this
+/// renders one response, and reaching the network mid-render would make
+/// `datasource fields` fail for a reason that has nothing to do with the
+/// family being asked about. A pointer that resolves to nothing falls back the
+/// same way, so an unfamiliar schema degrades to the previous rendering
+/// instead of panicking on a family the CLI has never seen.
+fn resolve_local_ref<'a>(
+    root: &'a serde_json::Value,
+    node: &'a serde_json::Value,
+) -> &'a serde_json::Value {
+    let Some(reference) = node.get("$ref").and_then(|r| r.as_str()) else {
+        return node;
+    };
+    let Some(pointer) = reference.strip_prefix('#') else {
+        return node;
+    };
+    root.pointer(pointer).unwrap_or(node)
 }
 
 /// How to ask for one variant: the discriminator field and the value that
@@ -1664,6 +1704,77 @@ mod tests {
         let rows = field_rows(query);
         assert_eq!(row(&rows, "sql"), ["sql", "string", "yes", "-", "-"]);
         assert_eq!(row(&rows, "mode"), ["mode", "query", "yes", "-", "-"]);
+    }
+
+    /// The same two forms, hoisted into `$defs` and referenced — the encoding
+    /// a discriminated union gets by default, and the one the test above
+    /// cannot distinguish from an inlined response because its body has no
+    /// `$defs` at all.
+    ///
+    /// Left unfollowed, a `$ref` branch has no `properties`: `field_rows`
+    /// returns nothing, `variant_label` finds neither a `const` nor a title,
+    /// and the section prints as two unlabelled empty forms while the family
+    /// index shows a dash for required — the field reference reporting that
+    /// the family with the most to explain takes no fields.
+    #[test]
+    fn a_selector_whose_forms_are_refs_renders_like_one_whose_forms_are_inline() {
+        let reference: FamilyReference =
+            serde_json::from_str(crate::client::ingest::FAMILY_REFERENCE_REF_SELECTOR_BODY)
+                .expect("the pinned family reference decodes");
+        let variants = schema_variants(&reference.selector_schema);
+        assert_eq!(variants.len(), 2, "both forms must be described");
+
+        // The `discriminator` is on the root and the `const` answering it is a
+        // hop away in `$defs`, so a label at all means the branch was followed.
+        let (tables_label, tables) = &variants[0];
+        assert_eq!(tables_label.as_deref(), Some("mode = tables"));
+        let rows = field_rows(tables);
+        assert_eq!(
+            row(&rows, "tables"),
+            [
+                "tables",
+                "string[]",
+                "yes",
+                "-",
+                "Source tables to read. Each lands in a destination table of the same name."
+            ]
+        );
+        assert_eq!(row(&rows, "mode"), ["mode", "tables", "no", "tables", "-"]);
+
+        let (query_label, query) = &variants[1];
+        assert_eq!(query_label.as_deref(), Some("mode = query"));
+        assert_eq!(
+            row(&field_rows(query), "sql"),
+            ["sql", "string", "yes", "-", "-"]
+        );
+
+        // Each form keeps its own required set through the indirection, which
+        // is the cell the family index prints for the whole family.
+        assert_eq!(
+            required_cell(&reference.selector_schema),
+            "tables, mode, sql"
+        );
+    }
+
+    #[test]
+    fn a_ref_this_document_cannot_answer_leaves_the_branch_alone() {
+        // Resolution is best effort by design: a pointer into a `$defs` that
+        // is not there, and a `$ref` to another document, both render the way
+        // they did before any ref was followed rather than failing the whole
+        // command. An unfamiliar schema costs the section, not the process.
+        for unresolvable in [
+            serde_json::json!({"oneOf": [{"$ref": "#/$defs/Absent"}]}),
+            serde_json::json!({"oneOf": [{"$ref": "https://example.invalid/s.json"}]}),
+        ] {
+            let variants = schema_variants(&unresolvable);
+            assert_eq!(variants.len(), 1);
+            assert!(variants[0].0.is_none());
+            assert!(field_rows(variants[0].1).is_empty());
+        }
+        // A schema carrying no `$ref` is returned untouched, so the ordinary
+        // path is not paying for any of this.
+        let plain = serde_json::json!({"properties": {"a": {"type": "string"}}});
+        assert_eq!(field_rows(schema_variants(&plain)[0].1).len(), 1);
     }
 
     /// The destination is per-family, and a family that describes one is

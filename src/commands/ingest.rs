@@ -1632,6 +1632,58 @@ mod tests {
     }
 
     #[test]
+    fn select_reads_the_same_query_laid_out_across_lines() {
+        // SQL pasted out of a script or a heredoc arrives across lines, and
+        // every keyword match in `parse_select` looks for a literal
+        // single-space form — "SELECT ", " FROM ", " LIMIT ". They see any of
+        // this only because whitespace is collapsed BEFORE the first of them
+        // runs.
+        //
+        // The two layouts below are the ones that pin that, and the obvious
+        // pretty-printed query is not among them: an INDENTED continuation
+        // parses even uncollapsed, because the indent happens to supply the
+        // space the search wanted — "\n  FROM " contains " FROM ". A test
+        // written the natural way would stay green with the collapse deleted.
+        // What actually breaks is a line break with nothing after it: a
+        // keyword at column zero, and a break straight after SELECT.
+        //
+        // Each assertion is equality with the single-line form rather than a
+        // bare `is_ok`, so it also pins that layout moves no clause boundary —
+        // a `WHERE` predicate silently gaining or losing its last word would
+        // pass an `is_ok` and reach the source engine.
+        let across_lines =
+            parse_select("SELECT id, status\nFROM public.orders\nWHERE status = 'open'\nLIMIT 5")
+                .unwrap();
+        assert_eq!(
+            across_lines,
+            parse_select("SELECT id, status FROM public.orders WHERE status = 'open' LIMIT 5")
+                .unwrap()
+        );
+        // Uncollapsed this one fails the `starts_with("SELECT ")` prefix
+        // rather than the FROM search, so it covers the other keyword match
+        // and the other error message.
+        assert_eq!(
+            parse_select("SELECT\n\t*\n\tFROM orders").unwrap(),
+            parse_select("SELECT * FROM orders").unwrap()
+        );
+        // Tabs and ragged indentation land on the same parse, which is the
+        // form someone actually pastes.
+        assert_eq!(
+            parse_select(
+                "SELECT id,\n\tstatus\n  FROM public.orders\n  WHERE status = 'open'\n  LIMIT 5"
+            )
+            .unwrap(),
+            across_lines
+        );
+        // Collapsing is not a licence to accept more: a query genuinely
+        // missing a clause is still rejected, and for the right reason.
+        assert!(
+            parse_select("SELECT\n  1\n").unwrap_err().contains("FROM"),
+            "a multi-line SELECT with no FROM must still be rejected as such"
+        );
+    }
+
+    #[test]
     fn select_does_not_mistake_the_word_limit_inside_a_predicate() {
         // "LIMIT" in a string literal is not a LIMIT clause: only a trailing
         // bare number counts.

@@ -236,11 +236,13 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 
 ### Ingest external data (`datasource`, `ingest`, `run`)
 
-Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceberg catalogs, Kafka) into managed databases. **Three nouns, three ids, and the id is always the argument** — display names are shown but never resolved against:
+Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceberg catalogs, Kafka) into managed databases. **Three nouns, three ids, and an id is always what goes on the wire** — the service has no name lookup, because a display name is a label and nothing stops two rows sharing one:
 
 - **datasource** (`ds_…`) — what a credential opens: a server, a bucket root, a catalog, a cluster. Holds config + credentials, loads no data.
 - **ingest** (`ing_…`) — a saved load definition: `datasource + selector + destination + type/schedule`. One datasource can back many ingests.
 - **run** (`run_…`) — one execution attempt, with snapshots of the config version, selector, and destination it used.
+
+One flag softens that for typing, and only for typing: `ingest create --source` accepts a display name and resolves it to an id **client-side, before the request**, erroring with both ids if the name matches two datasources rather than picking one. Every other argument, and every request the CLI sends, takes ids only.
 
 Read commands (`datasource list|show|types|fields`, `ingest list|show|runs`, `run show`) work with a login session JWT. Commands that persist a credential (`datasource create`, `datasource update-config`, `ingest create`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — the run outlives the 5-minute JWT.
 
