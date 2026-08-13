@@ -169,6 +169,19 @@ impl IngestError {
                             .dark_grey()
                     );
                 }
+                // Raised both for a family that does not exist and for one
+                // asked to do something it cannot. The same command answers
+                // either question, and the likely mistake behind the first is
+                // a catalog entry name (`postgres`) used where its family
+                // (`sql`) belongs.
+                Some("unsupported_family_feature") => {
+                    eprintln!(
+                        "{}",
+                        "The families, and what each one supports: \
+                         hotdata datasource fields."
+                            .dark_grey()
+                    );
+                }
                 _ => {}
             }
         }
@@ -498,6 +511,24 @@ impl IngestClient {
     pub fn connectors(&self) -> Result<ConnectorsResponse, IngestError> {
         self.send(self.authed(reqwest::Method::GET, "/connectors"), None)
     }
+
+    // --- family reference -------------------------------------------------
+
+    /// Every family's field reference: what `config`, `credentials` and
+    /// `selector` may contain, plus what the family can do.
+    pub fn families(&self) -> Result<FamiliesResponse, IngestError> {
+        self.send(self.authed(reqwest::Method::GET, "/families"), None)
+    }
+
+    /// One family's field reference. An unknown family comes back 422 with the
+    /// families that do exist in `error.details.families`, so the CLI never
+    /// needs its own list of legal names.
+    pub fn family(&self, family: &str) -> Result<FamilyReference, IngestError> {
+        self.send(
+            self.authed(reqwest::Method::GET, &format!("/families/{family}")),
+            None,
+        )
+    }
 }
 
 /// Request fields that can carry source secrets. `credentials` is secrets by
@@ -816,6 +847,179 @@ pub struct ConnectorEntry {
     #[serde(default)]
     pub config_schema: Option<serde_json::Value>,
 }
+
+/// One family's field reference, as `GET /families/{family}` returns it.
+///
+/// The three schemas are plain JSON Schema and are kept as raw values on
+/// purpose. Reshaping them into CLI-side types would put a second, quieter
+/// answer next to the service's — and the answer this endpoint exists to give
+/// is precisely "what does the API accept", which only the API can be right
+/// about. The CLI reads them for its table; `-o json` hands them on untouched.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FamilyReference {
+    pub family: String,
+    /// Shape of `--config` on `datasource create` / `update-config`.
+    #[serde(default)]
+    pub config_schema: serde_json::Value,
+    /// Shape of `--credentials` on the same commands.
+    #[serde(default)]
+    pub credentials_schema: serde_json::Value,
+    /// Shape of `--selector` on `ingest create`. A family whose selector has
+    /// several forms describes them as a `oneOf` with a `discriminator`.
+    #[serde(default)]
+    pub selector_schema: serde_json::Value,
+    #[serde(default)]
+    pub capabilities: Capabilities,
+    /// Keys this build does not know about, carried through verbatim.
+    ///
+    /// Without the flatten, `-o json` would silently emit a reference *less*
+    /// complete than the one on the wire: a field the service started
+    /// describing would vanish on the way to the UI or script consuming it,
+    /// which is the failure mode this endpoint exists to end.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What a family can do, as the service reports it. Read, never assumed: a CLI
+/// that hardcoded these would go on offering a write mode a family had stopped
+/// accepting, and the user would find out from a 422.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Capabilities {
+    /// Write modes a `POST /ingests` destination may name for this family.
+    #[serde(default)]
+    pub write_modes: Vec<String>,
+    /// Whether `--type continuous` is accepted.
+    #[serde(default)]
+    pub continuous: bool,
+    /// Whether a later run resumes from the position the last one committed
+    /// (rather than re-reading the source from the start).
+    #[serde(default)]
+    pub recoverable: bool,
+    /// Whether the selector accepts a row filter.
+    #[serde(default)]
+    pub supports_where: bool,
+    /// Whether one selector may name several source tables.
+    #[serde(default)]
+    pub multi_table: bool,
+    /// Config fields that are fixed once an ingest references the datasource.
+    /// Changing one is a 409, not a new config version.
+    #[serde(default)]
+    pub immutable_config_fields: Vec<String>,
+    /// See [`FamilyReference::extra`].
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FamiliesResponse {
+    #[serde(default)]
+    pub families: Vec<FamilyReference>,
+}
+
+/// A `GET /families/{family}` body, shared by the decode test here and the
+/// rendering tests in `commands::datasource` so both read the bytes a real
+/// response carries.
+///
+/// Pinned on the parts a hand-written fixture gets wrong: optional fields
+/// arrive as an `anyOf` against `null` rather than an absent `required` entry,
+/// enums carry their members, and a family with several selector forms sends a
+/// `oneOf` + `discriminator` instead of one object. A fixture that flattened
+/// any of those renders green here and blank against the service.
+#[cfg(test)]
+pub const FAMILY_REFERENCE_BODY: &str = r#"{
+  "family": "sql",
+  "config_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "dialect": {"enum": ["postgres", "mysql", "duckdb"], "title": "Dialect",
+                  "type": "string"},
+      "host": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null,
+               "title": "Host"},
+      "port": {"anyOf": [{"maximum": 65535, "minimum": 1, "type": "integer"},
+                         {"type": "null"}], "default": null, "title": "Port"},
+      "options": {"additionalProperties": true, "title": "Options", "type": "object"}
+    },
+    "required": ["dialect"],
+    "title": "SqlDatasourceConfig",
+    "type": "object"
+  },
+  "credentials_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "username": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                   "default": null, "title": "Username"},
+      "password": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                   "default": null, "title": "Password"}
+    },
+    "title": "SqlCredentials",
+    "type": "object"
+  },
+  "selector_schema": {
+    "oneOf": [
+      {"additionalProperties": false,
+       "properties": {
+         "mode": {"const": "tables", "default": "tables", "title": "Mode",
+                  "type": "string"},
+         "schema": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": null, "title": "Schema"},
+         "tables": {"items": {"type": "string"}, "minItems": 1,
+                    "title": "Tables", "type": "array"},
+         "limit": {"anyOf": [{"minimum": 1, "type": "integer"}, {"type": "null"}],
+                   "default": null, "title": "Limit"}
+       },
+       "required": ["tables"], "title": "SqlTableSelector", "type": "object"},
+      {"additionalProperties": false,
+       "properties": {
+         "mode": {"const": "query", "title": "Mode", "type": "string"},
+         "sql": {"minLength": 1, "title": "Sql", "type": "string"}
+       },
+       "required": ["mode", "sql"], "title": "SqlQuerySelector", "type": "object"}
+    ],
+    "discriminator": {"propertyName": "mode"}
+  },
+  "capabilities": {
+    "write_modes": ["replace", "append"],
+    "continuous": false,
+    "recoverable": true,
+    "supports_where": true,
+    "multi_table": true,
+    "immutable_config_fields": ["dialect", "host", "port"]
+  }
+}"#;
+
+/// A `GET /families` body: the same shape, several families, trimmed to the
+/// parts the index table reads.
+#[cfg(test)]
+pub const FAMILIES_LIST_BODY: &str = r#"{"families": [
+  {"family": "filesystem",
+   "config_schema": {
+     "properties": {
+       "provider": {"enum": ["s3", "gs", "az", "file"], "type": "string"},
+       "root_uri": {"minLength": 1, "type": "string"}
+     },
+     "required": ["provider", "root_uri"], "type": "object"},
+   "credentials_schema": {"properties": {}, "type": "object"},
+   "selector_schema": {
+     "properties": {"prefix": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                               "default": null}},
+     "type": "object"},
+   "capabilities": {"write_modes": ["replace", "append"], "continuous": true,
+                    "recoverable": true, "supports_where": false,
+                    "multi_table": false,
+                    "immutable_config_fields": ["provider", "root_uri"]}},
+  {"family": "kafka",
+   "config_schema": {
+     "properties": {"bootstrap_servers": {"minLength": 1, "type": "string"}},
+     "required": ["bootstrap_servers"], "type": "object"},
+   "credentials_schema": {"properties": {}, "type": "object"},
+   "selector_schema": {
+     "properties": {"topics": {"items": {"type": "string"}, "type": "array"}},
+     "required": ["topics"], "type": "object"},
+   "capabilities": {"write_modes": ["append"], "continuous": true,
+                    "recoverable": false, "supports_where": false,
+                    "multi_table": true,
+                    "immutable_config_fields": ["bootstrap_servers"]}}
+]}"#;
 
 #[cfg(test)]
 mod tests {
@@ -1216,7 +1420,7 @@ mod tests {
         let ing = api_key_client(&server).resume_ingest("ing_1").unwrap();
         m.assert();
         assert_eq!(ing.state.as_deref(), Some("active"));
-        // No run id anywhere in the resume ack — DR-12.
+        // No run id anywhere in the resume ack: resuming starts nothing.
         assert!(ing.initial_run_id.is_none());
     }
 
@@ -1395,6 +1599,115 @@ mod tests {
             aikido.template.as_ref().unwrap()["client"]["base_url"],
             "https://app.aikido.dev/api/public/v1/"
         );
+    }
+
+    // --- family reference ----------------------------------------------------
+
+    #[test]
+    fn family_reference_decodes_the_generated_schemas_and_capabilities() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/families/sql")
+            .match_header("x-workspace-id", "ws-1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(FAMILY_REFERENCE_BODY)
+            .create();
+
+        let reference = api_key_client(&server).family("sql").unwrap();
+        m.assert();
+        assert_eq!(reference.family, "sql");
+        // The schemas arrive whole, nested constraints included.
+        assert_eq!(
+            reference.config_schema["properties"]["dialect"]["enum"][0],
+            "postgres"
+        );
+        assert_eq!(reference.config_schema["required"][0], "dialect");
+        assert_eq!(
+            reference.credentials_schema["properties"]["password"]["anyOf"][1]["type"],
+            "null"
+        );
+        // A multi-form selector keeps both forms and the key that tells them
+        // apart; picking one member would document half the API.
+        assert_eq!(
+            reference.selector_schema["discriminator"]["propertyName"],
+            "mode"
+        );
+        assert_eq!(
+            reference.selector_schema["oneOf"][1]["properties"]["mode"]["const"],
+            "query"
+        );
+        assert_eq!(reference.capabilities.write_modes, ["replace", "append"]);
+        assert!(!reference.capabilities.continuous);
+        assert!(reference.capabilities.recoverable);
+        assert_eq!(
+            reference.capabilities.immutable_config_fields,
+            ["dialect", "host", "port"]
+        );
+    }
+
+    #[test]
+    fn families_list_decodes_every_entry() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/families")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(FAMILIES_LIST_BODY)
+            .create();
+
+        let resp = api_key_client(&server).families().unwrap();
+        m.assert();
+        let names: Vec<&str> = resp.families.iter().map(|f| f.family.as_str()).collect();
+        assert_eq!(names, ["filesystem", "kafka"]);
+        assert!(resp.families[1].capabilities.continuous);
+        assert_eq!(resp.families[1].capabilities.write_modes, ["append"]);
+    }
+
+    #[test]
+    fn an_unknown_family_reports_the_families_that_exist() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/families/postgres")
+            .with_status(422)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"error":{"code":"unsupported_family_feature",
+                    "message":"unknown family 'postgres'",
+                    "details":{"families":["filesystem","kafka","sql"]}}}"#,
+            )
+            .create();
+
+        // `postgres` is a catalog entry name, not a family — the mistake this
+        // error has to survive, since both columns sit in `datasource types`.
+        let err = api_key_client(&server).family("postgres").unwrap_err();
+        m.assert();
+        assert!(
+            err.message().contains("unknown family"),
+            "{}",
+            err.message()
+        );
+        assert!(
+            err.message().contains("unsupported_family_feature"),
+            "{}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn a_reference_survives_the_round_trip_to_json_output() {
+        // `-o json` re-serializes what was decoded, so a key this build does
+        // not model must still reach the consumer.
+        let body = r#"{"family":"sql","config_schema":{"type":"object"},
+                       "credentials_schema":{},"selector_schema":{},
+                       "capabilities":{"write_modes":["replace"],
+                                       "streaming_offsets":true},
+                       "docs_url":"https://example.test/sql"}"#;
+        let reference: FamilyReference = serde_json::from_str(body).unwrap();
+        let out = serde_json::to_value(&reference).unwrap();
+        assert_eq!(out["docs_url"], "https://example.test/sql");
+        assert_eq!(out["capabilities"]["streaming_offsets"], true);
+        assert_eq!(out["capabilities"]["write_modes"][0], "replace");
     }
 
     // --- debug-log redaction -------------------------------------------------

@@ -92,6 +92,10 @@ Three nouns, and each one has a stable id:
 ```sh
 hotdata datasource types                    # browse: SQL dialects, ~150 API services,
                                             # buckets, iceberg, kafka, api
+hotdata datasource fields sql               # the fields --config, --credentials and
+                                            # --selector take for one family, and
+                                            # what that family can do (-o json for
+                                            # the JSON Schema)
 
 # 1. Check credentials without creating anything — nothing is persisted:
 hotdata datasource validate --family sql --config @source.json

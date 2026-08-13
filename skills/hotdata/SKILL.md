@@ -242,13 +242,22 @@ Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceb
 - **ingest** (`ing_…`) — a saved load definition: `datasource + selector + destination + type/schedule`. One datasource can back many ingests.
 - **run** (`run_…`) — one execution attempt, with snapshots of the config version, selector, and destination it used.
 
-Read commands (`datasource list|show|types`, `ingest list|show|runs`, `run show`) work with a login session JWT. Commands that persist a credential (`datasource create`, `datasource update-config`, `ingest create`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — the run outlives the 5-minute JWT.
+Read commands (`datasource list|show|types|fields`, `ingest list|show|runs`, `run show`) work with a login session JWT. Commands that persist a credential (`datasource create`, `datasource update-config`, `ingest create`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — the run outlives the 5-minute JWT.
 
 ```bash
 hotdata datasource types [filter]      # browse available source types. The FAMILY
-                                       # column is what --family takes. -o json
-                                       # includes each entry's config_schema —
-                                       # the exact fields --config takes.
+                                       # column is what --family takes.
+
+hotdata datasource fields [family]     # THE FIELD REFERENCE. With a family: the
+                                       # fields --config, --credentials and
+                                       # --selector take, with types, which are
+                                       # required, and what the family supports
+                                       # (write modes, continuous, row filter).
+                                       # With none: every family, one row each.
+                                       # -o json returns the JSON Schema itself.
+# The service generates it from the models that validate the request, so it
+# cannot name a field the API rejects. Read it before writing source.json or a
+# selector — do not guess field names, and do not carry your own list.
 
 # --- datasources -------------------------------------------------------------
 hotdata datasource validate --family sql --config @source.json
@@ -262,6 +271,7 @@ hotdata datasource create --family sql --config @source.json --display-name "pro
 # --config also accepts a bare config object, @- (stdin), or inline JSON.
 # --credentials takes the secret half separately. Keep secrets out of argv.
 # Families: sql, filesystem (buckets), kafka, iceberg, delta, ducklake, rest.
+# The fields each half takes: hotdata datasource fields <family>.
 
 hotdata datasource list [--family sql] [--state active]   # ids, families, states
 hotdata datasource show <datasource-id>                   # state, config version, discovery
@@ -276,7 +286,8 @@ hotdata datasource delete <datasource-id>   # 409 while any ingest references it
 # --- ingests -----------------------------------------------------------------
 hotdata ingest create --datasource-id ds_01J --type one-time \
   --selector @selector.json --destination @destination.json
-# selector.json is family-specific (what subset to read).
+# selector.json is family-specific (what subset to read) — its fields, and the
+#   write modes this family accepts: hotdata datasource fields <family>.
 # destination.json is {"database_id", "schema", "table", "write_mode"} —
 #   write_mode: replace | append | upsert. Both are IMMUTABLE after creation.
 # A one-time ingest runs immediately and reports its initial run id.

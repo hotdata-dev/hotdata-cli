@@ -47,6 +47,9 @@ pub enum IngestCommands {
     /// new ingest. A one-time ingest runs immediately and reports its
     /// `initial_run_id`; scheduled/continuous ones start on the next scheduler
     /// tick.
+    ///
+    /// The fields --selector takes, and which write modes and types the
+    /// datasource's family supports: `hotdata datasource fields <family>`.
     Create {
         /// Datasource to read from (from `hotdata datasource list`)
         #[arg(long = "datasource-id")]
@@ -57,7 +60,8 @@ pub enum IngestCommands {
         #[arg(long = "type", value_parser = TYPES, default_value = "one-time")]
         kind: String,
 
-        /// What to read, as family-specific JSON (inline, @file.json, or @-)
+        /// What to read, as family-specific JSON (inline, @file.json, or @-).
+        /// Field reference: `hotdata datasource fields <family>` (SELECTOR).
         #[arg(long, conflicts_with = "sql")]
         selector: Option<String>,
 
@@ -831,7 +835,7 @@ fn resume(workspace_id: &str, output: &str, ingest_id: &str) {
 
     render(output, &ing, || {
         print_ingest_identity(&ing);
-        // DR-12: resume is not a run trigger, and saying so here is cheaper
+        // Resume is not a run trigger, and saying so here is cheaper
         // than a support question.
         hint(&format!(
             "No run was started — the next one follows the schedule. To bring it forward: \

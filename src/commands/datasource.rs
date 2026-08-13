@@ -28,7 +28,8 @@
 //! the server and never printed here.
 
 use crate::client::ingest::{
-    ConfigUpdate, ConnectorEntry, Datasource, DatasourceConfig, IngestClient,
+    Capabilities, ConfigUpdate, ConnectorEntry, Datasource, DatasourceConfig, FamilyReference,
+    IngestClient,
 };
 use crate::commands::ingest_common::{
     cell, date_cell, empty_notice, fail, field, hint, parse_json_arg, render, with_spinner,
@@ -61,6 +62,9 @@ pub enum DatasourceCommands {
     ///
     /// Returns a stable `ds_…` id — the argument every ingest takes. Loads no
     /// data: pull rows with `hotdata ingest create --datasource-id <id>`.
+    ///
+    /// The fields --config and --credentials take, for one family:
+    /// `hotdata datasource fields <family>`.
     Create {
         /// Source family — the shape of --config: sql, filesystem, iceberg,
         /// delta, ducklake, kafka, rest. Use `sql` for any SQL dialect (the
@@ -130,11 +134,27 @@ pub enum DatasourceCommands {
         datasource_id: String,
     },
 
-    /// Browse the catalog of source types and their config fields
+    /// Browse the catalog of source types: their names and families
+    ///
+    /// The FAMILY column is what `--family` takes; the field reference for one
+    /// of them is `hotdata datasource fields <family>`.
     #[command(alias = "connectors")]
     Types {
         /// Filter to entries whose name contains this text
         name: Option<String>,
+    },
+
+    /// Show the fields a family accepts: config, credentials, and selector
+    ///
+    /// The service generates this from the models that validate the request,
+    /// so it names exactly what the API accepts — nothing here can be a field
+    /// that comes back 422. With no FAMILY, lists the families and what each
+    /// one can do. `-o json` prints the JSON Schema itself, for a UI or a
+    /// script to build a form from.
+    Fields {
+        /// Family to describe — the FAMILY column of `hotdata datasource
+        /// types`, e.g. sql, filesystem, iceberg, kafka, rest
+        family: Option<String>,
     },
 }
 
@@ -144,12 +164,13 @@ pub enum DatasourceCommands {
 pub struct ConfigArgs {
     /// Source config as JSON (inline, @file.json, or @- for stdin). Either a
     /// bare config object, or the envelope {"config": …, "credentials": …}.
-    /// Field reference: `hotdata datasource types -o json` (config_schema).
+    /// Field reference: `hotdata datasource fields <family>`.
     #[arg(long)]
     config: Option<String>,
 
     /// Source credentials as JSON (inline, @file.json, or @-). Wins over any
     /// `credentials` inside --config. Keep secrets out of argv with @file.
+    /// Field reference: `hotdata datasource fields <family>`.
     #[arg(long)]
     credentials: Option<String>,
 }
@@ -186,6 +207,7 @@ pub fn dispatch(workspace_id: &str, output: &str, command: DatasourceCommands) {
             delete(workspace_id, output, &datasource_id)
         }
         DatasourceCommands::Types { name } => types(workspace_id, output, name.as_deref()),
+        DatasourceCommands::Fields { family } => fields(workspace_id, output, family.as_deref()),
     }
 }
 
@@ -206,8 +228,8 @@ fn split_payload(
 ) -> Result<(serde_json::Value, Option<serde_json::Value>), String> {
     let Some(config) = config else {
         return Err(
-            "--config is required (inline JSON, @file.json, or @-). See the family's \
-             config_schema in 'hotdata datasource types -o json'"
+            "--config is required (inline JSON, @file.json, or @-). The fields it takes: \
+             'hotdata datasource fields <family>'"
                 .into(),
         );
     };
@@ -550,9 +572,294 @@ fn types(workspace_id: &str, output: &str, filter: Option<&str>) {
         crate::output::table::print(&["NAME", "FAMILY", "DESCRIPTION"], &rows);
         hint(
             "The FAMILY column is what --family takes. \
-             'hotdata datasource types -o json' shows each entry's config_schema.",
+             The fields a family accepts: 'hotdata datasource fields <family>'.",
         );
     });
+}
+
+// --- fields (the generated field reference) ---------------------------------
+
+/// What `--config`, `--credentials` and `--selector` may contain for a family.
+///
+/// Everything printed here comes from the service, which generates it from the
+/// models that validate the request. The CLI deliberately holds no copy: a
+/// second, hand-maintained field list is one that eventually describes fields
+/// the API has started rejecting, and a caller who builds against a reference
+/// that is wrong is worse off than one who had none.
+fn fields(workspace_id: &str, output: &str, family: Option<&str>) {
+    let client = IngestClient::new(workspace_id);
+    match family {
+        Some(f) => {
+            let reference = with_spinner("loading the field reference…", || client.family(f));
+            render(output, &reference, || print_family_reference(&reference));
+        }
+        None => {
+            let resp = with_spinner("loading the field reference…", || client.families());
+            // The array, not the {"families": …} envelope — the same shape
+            // every other `-o json` listing in the CLI emits.
+            render(output, &resp.families, || {
+                print_family_index(&resp.families)
+            });
+        }
+    }
+}
+
+fn print_family_index(families: &[FamilyReference]) {
+    if families.is_empty() {
+        empty_notice("The service reported no source families.");
+        return;
+    }
+    let rows: Vec<Vec<String>> = families
+        .iter()
+        .map(|f| {
+            vec![
+                f.family.clone(),
+                required_cell(&f.config_schema),
+                list_cell(&f.capabilities.write_modes),
+                yes_no(f.capabilities.continuous),
+            ]
+        })
+        .collect();
+    crate::output::table::print(
+        &["FAMILY", "REQUIRED CONFIG", "WRITE MODES", "CONTINUOUS"],
+        &rows,
+    );
+    hint("Every field of one family: hotdata datasource fields <family>.");
+}
+
+fn print_family_reference(r: &FamilyReference) {
+    field("family:", &r.family);
+    for (label, value) in capability_lines(&r.capabilities) {
+        field(label, &value);
+    }
+    // Each section is titled with the flag it is the reference FOR, because
+    // the three schemas are spent on two different commands: config and
+    // credentials build a datasource, the selector builds an ingest against it.
+    section("CONFIG", "hotdata datasource create --config");
+    print_schema(&r.config_schema);
+    section("CREDENTIALS", "hotdata datasource create --credentials");
+    print_schema(&r.credentials_schema);
+    section("SELECTOR", "hotdata ingest create --selector");
+    print_schema(&r.selector_schema);
+    println!();
+    hint(&format!(
+        "'hotdata datasource fields {} -o json' prints the JSON Schema itself, \
+         including any nested definitions.",
+        r.family
+    ));
+}
+
+/// A section heading: the payload it describes, then the flag that carries it.
+fn section(title: &str, command: &str) {
+    use crossterm::style::Stylize;
+    println!();
+    println!("{}  {}", title.bold(), command.dark_grey());
+}
+
+/// The capability block, as (label, value) pairs. Pure so the vocabulary is
+/// pinned by a test rather than by whatever renders last.
+///
+/// Every line is read off the response. A CLI that hardcoded them would keep
+/// offering a write mode the family had stopped taking, and the user would
+/// learn about it from a 422 on a load they had already scheduled.
+fn capability_lines(c: &Capabilities) -> Vec<(&'static str, String)> {
+    let mut lines = vec![
+        ("write modes:", list_cell(&c.write_modes)),
+        ("continuous:", yes_no(c.continuous)),
+        ("recoverable:", yes_no(c.recoverable)),
+        ("row filter:", yes_no(c.supports_where)),
+        ("multi-table:", yes_no(c.multi_table)),
+    ];
+    if !c.immutable_config_fields.is_empty() {
+        // Named for what a caller does about it. The bare list reads as
+        // "important fields" — the useful half is that changing one is not an
+        // edit the datasource can absorb.
+        lines.push((
+            "fixed config:",
+            format!(
+                "{}  (changing one needs a new datasource, not an edit)",
+                c.immutable_config_fields.join(", ")
+            ),
+        ));
+    }
+    lines
+}
+
+fn print_schema(schema: &serde_json::Value) {
+    for (label, variant) in schema_variants(schema) {
+        if let Some(l) = label {
+            use crossterm::style::Stylize;
+            println!("{}", format!("  {l}").dark_grey());
+        }
+        let rows = field_rows(variant);
+        if rows.is_empty() {
+            hint("  (no fields)");
+            continue;
+        }
+        crate::output::table::print(&["FIELD", "TYPE", "REQUIRED", "DEFAULT"], &rows);
+    }
+}
+
+/// The object schemas to print, one per accepted shape.
+///
+/// A family whose payload has several forms sends them as a `oneOf` — each is
+/// a complete alternative with its own required set, so rendering one of them
+/// (or merging them into a single table) would describe a request the service
+/// does not accept.
+fn schema_variants(schema: &serde_json::Value) -> Vec<(Option<String>, &serde_json::Value)> {
+    let Some(branches) = schema.get("oneOf").and_then(|b| b.as_array()) else {
+        return vec![(None, schema)];
+    };
+    let discriminator = schema
+        .get("discriminator")
+        .and_then(|d| d.get("propertyName"))
+        .and_then(|p| p.as_str());
+    branches
+        .iter()
+        .map(|b| (variant_label(b, discriminator), b))
+        .collect()
+}
+
+/// How to ask for one variant: the discriminator field and the value that
+/// selects it (`mode = query`), since that key is what the caller must send.
+fn variant_label(branch: &serde_json::Value, discriminator: Option<&str>) -> Option<String> {
+    if let Some(key) = discriminator
+        && let Some(v) = branch
+            .get("properties")
+            .and_then(|p| p.get(key))
+            .and_then(|p| p.get("const"))
+    {
+        return Some(format!("{key} = {}", json_scalar(v)));
+    }
+    // No discriminator: the schema's own title is all there is to tell the
+    // alternatives apart, and an unlabelled second table is a table nobody can
+    // place.
+    branch
+        .get("title")
+        .and_then(|t| t.as_str())
+        .map(str::to_string)
+}
+
+/// One table row per property. Pure, so the shapes it understands are pinned by
+/// tests rather than by the last response someone happened to look at.
+fn field_rows(schema: &serde_json::Value) -> Vec<Vec<String>> {
+    let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else {
+        return Vec::new();
+    };
+    let required = required_names(schema);
+    props
+        .iter()
+        .map(|(name, prop)| {
+            vec![
+                name.clone(),
+                type_label(prop),
+                yes_no(required.iter().any(|r| r == name)),
+                default_cell(prop),
+            ]
+        })
+        .collect()
+}
+
+fn required_names(schema: &serde_json::Value) -> Vec<String> {
+    schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|r| {
+            r.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The required fields of a schema as one cell, for the family index.
+fn required_cell(schema: &serde_json::Value) -> String {
+    let names: Vec<String> = schema_variants(schema)
+        .iter()
+        .flat_map(|(_, v)| required_names(v))
+        .collect();
+    list_cell(&names)
+}
+
+/// A property's type in the shortest form that stays true to the schema.
+///
+/// Enum members and `const` values are spelled out rather than reduced to
+/// "string": which values a field accepts is the half of "what type is this?"
+/// that a caller actually gets wrong.
+fn type_label(prop: &serde_json::Value) -> String {
+    if let Some(c) = prop.get("const") {
+        return json_scalar(c);
+    }
+    if let Some(members) = prop.get("enum").and_then(|e| e.as_array()) {
+        return members
+            .iter()
+            .map(json_scalar)
+            .collect::<Vec<_>>()
+            .join(" | ");
+    }
+    if let Some(members) = prop.get("anyOf").and_then(|a| a.as_array()) {
+        // An optional field is written as `anyOf: [T, {"type": "null"}]`. That
+        // null member is what the REQUIRED column already says, so listing it
+        // here would only make every optional field's type read as a union.
+        let named: Vec<String> = members
+            .iter()
+            .filter(|m| m.get("type").and_then(|t| t.as_str()) != Some("null"))
+            .map(type_label)
+            .collect();
+        return if named.is_empty() {
+            "null".into()
+        } else {
+            named.join(" | ")
+        };
+    }
+    if let Some(reference) = prop.get("$ref").and_then(|r| r.as_str()) {
+        // "#/$defs/Resource" -> "Resource": the key the nested object is
+        // defined under, which is how to find its own fields in `-o json`.
+        return reference
+            .rsplit('/')
+            .next()
+            .unwrap_or(reference)
+            .to_string();
+    }
+    match prop.get("type") {
+        Some(serde_json::Value::String(t)) if t == "array" => match prop.get("items") {
+            Some(items) => format!("{}[]", type_label(items)),
+            None => "array".into(),
+        },
+        Some(serde_json::Value::String(t)) => t.clone(),
+        Some(serde_json::Value::Array(types)) => types
+            .iter()
+            .map(json_scalar)
+            .collect::<Vec<_>>()
+            .join(" | "),
+        // A schema with no `type` accepts anything of that shape — say so
+        // rather than leave the column blank, which reads as a rendering bug.
+        _ => "any".into(),
+    }
+}
+
+/// The value the service applies when the field is omitted.
+fn default_cell(prop: &serde_json::Value) -> String {
+    match prop.get("default") {
+        // An explicit null default means "absent unless you send it", which is
+        // what a missing default already says. Printing `null` in a column of
+        // real values reads as a value the field takes.
+        None | Some(serde_json::Value::Null) => "-".into(),
+        Some(v) => json_scalar(v),
+    }
+}
+
+fn yes_no(b: bool) -> String {
+    if b { "yes" } else { "no" }.to_string()
+}
+
+fn list_cell(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".into()
+    } else {
+        values.join(", ")
+    }
 }
 
 fn family_rank(family: &str) -> u8 {
@@ -665,7 +972,7 @@ mod tests {
 
     #[test]
     fn payload_accepts_the_documented_envelope() {
-        // source.json as the design doc writes it: both halves in one file.
+        // source.json with both halves in one file: config and credentials.
         let source = serde_json::json!({
             "config": {"dialect": "postgres", "host": "pg.example.com"},
             "credentials": {"username": "reader", "password": "s3cret"},
@@ -777,6 +1084,189 @@ mod tests {
             names,
             vec!["postgres", "buckets", "iceberg", "aikido", "stripe"]
         );
+    }
+
+    // --- the field reference -------------------------------------------------
+
+    /// The pinned `GET /families/{family}` body, decoded — the same bytes the
+    /// client test asserts against, so the renderer is exercised on a response
+    /// shape rather than on values convenient for it.
+    fn sql_reference() -> FamilyReference {
+        serde_json::from_str(crate::client::ingest::FAMILY_REFERENCE_BODY)
+            .expect("the pinned family reference decodes")
+    }
+
+    /// One rendered row by field name. Property order is the serializer's, not
+    /// the schema's, so indexing by position would pin the wrong thing.
+    fn row<'a>(rows: &'a [Vec<String>], name: &str) -> &'a [String] {
+        rows.iter()
+            .find(|r| r[0] == name)
+            .unwrap_or_else(|| panic!("no row for {name}: {rows:?}"))
+    }
+
+    #[test]
+    fn field_rows_carry_the_type_the_requirement_and_the_default() {
+        let reference = sql_reference();
+        let rows = field_rows(&reference.config_schema);
+
+        // An enum's members ARE the type: "string" would leave the caller
+        // guessing at the one thing a 422 will be about.
+        assert_eq!(
+            row(&rows, "dialect"),
+            ["dialect", "postgres | mysql | duckdb", "yes", "-"]
+        );
+        // Optional fields arrive as a union against null. The null member is
+        // the REQUIRED column's job and must not reach the type.
+        assert_eq!(row(&rows, "host"), ["host", "string", "no", "-"]);
+        assert_eq!(row(&rows, "port"), ["port", "integer", "no", "-"]);
+        assert_eq!(row(&rows, "options"), ["options", "object", "no", "-"]);
+    }
+
+    #[test]
+    fn a_multi_form_selector_renders_one_table_per_form() {
+        let reference = sql_reference();
+        let variants = schema_variants(&reference.selector_schema);
+        assert_eq!(variants.len(), 2, "both forms must be described");
+
+        // Labelled by the key that selects the form, because that key is what
+        // the caller has to send.
+        let (tables_label, tables) = &variants[0];
+        assert_eq!(tables_label.as_deref(), Some("mode = tables"));
+        let rows = field_rows(tables);
+        assert_eq!(row(&rows, "tables"), ["tables", "string[]", "yes", "-"]);
+        assert_eq!(row(&rows, "mode"), ["mode", "tables", "no", "tables"]);
+        assert_eq!(row(&rows, "schema"), ["schema", "string", "no", "-"]);
+
+        // Each form has its own required set: `sql` is required in the query
+        // form and absent from the other, which merging them would hide.
+        let (query_label, query) = &variants[1];
+        assert_eq!(query_label.as_deref(), Some("mode = query"));
+        let rows = field_rows(query);
+        assert_eq!(row(&rows, "sql"), ["sql", "string", "yes", "-"]);
+        assert_eq!(row(&rows, "mode"), ["mode", "query", "yes", "-"]);
+    }
+
+    #[test]
+    fn a_single_form_schema_renders_as_one_unlabelled_table() {
+        let reference = sql_reference();
+        let variants = schema_variants(&reference.credentials_schema);
+        assert_eq!(variants.len(), 1);
+        assert!(variants[0].0.is_none());
+        assert_eq!(field_rows(variants[0].1).len(), 2);
+        // Nothing to describe is not a rendering failure.
+        assert!(field_rows(&serde_json::json!({"type": "object"})).is_empty());
+    }
+
+    #[test]
+    fn type_label_survives_the_shapes_json_schema_uses() {
+        // A nested object is named by its definition key, which is how to find
+        // its own fields under -o json.
+        assert_eq!(
+            type_label(&serde_json::json!({
+                "items": {"$ref": "#/$defs/Resource"}, "type": "array"
+            })),
+            "Resource[]"
+        );
+        // A genuine union keeps every member.
+        assert_eq!(
+            type_label(&serde_json::json!({
+                "anyOf": [{"type": "string"},
+                          {"items": {"type": "string"}, "type": "array"},
+                          {"type": "null"}]
+            })),
+            "string | string[]"
+        );
+        // Nullable-only, and a schema that constrains nothing, still say
+        // something rather than render blank.
+        assert_eq!(
+            type_label(&serde_json::json!({"anyOf": [{"type": "null"}]})),
+            "null"
+        );
+        assert_eq!(type_label(&serde_json::json!({})), "any");
+        assert_eq!(
+            type_label(&serde_json::json!({"type": ["string", "integer"]})),
+            "string | integer"
+        );
+    }
+
+    #[test]
+    fn defaults_distinguish_a_value_from_an_absence() {
+        assert_eq!(
+            default_cell(&serde_json::json!({"default": "tables"})),
+            "tables"
+        );
+        assert_eq!(
+            default_cell(&serde_json::json!({"default": false})),
+            "false"
+        );
+        assert_eq!(default_cell(&serde_json::json!({"default": 100})), "100");
+        // `null` and "no default at all" both mean the field is simply absent
+        // unless sent; printing `null` would read as a value it takes.
+        assert_eq!(default_cell(&serde_json::json!({"default": null})), "-");
+        assert_eq!(default_cell(&serde_json::json!({"type": "string"})), "-");
+    }
+
+    #[test]
+    fn capability_lines_report_what_the_service_said() {
+        let lines = capability_lines(&sql_reference().capabilities);
+        let rendered: Vec<String> = lines.iter().map(|(l, v)| format!("{l} {v}")).collect();
+        assert!(
+            rendered.contains(&"write modes: replace, append".to_string()),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered.contains(&"continuous: no".to_string()),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered.contains(&"recoverable: yes".to_string()),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered.contains(&"row filter: yes".to_string()),
+            "{rendered:?}"
+        );
+        // The fields an edit cannot change — a 409 the caller can avoid, but
+        // only if the line says what the list is FOR.
+        let fixed = rendered
+            .iter()
+            .find(|l| l.starts_with("fixed config:"))
+            .unwrap_or_else(|| panic!("{rendered:?}"));
+        assert!(fixed.contains("dialect, host, port"), "{fixed}");
+        assert!(fixed.contains("new datasource"), "{fixed}");
+        // Every label fits the detail-view label column the group shares.
+        for (label, _) in &lines {
+            assert!(
+                label.len() <= 16,
+                "{label} is too wide for the label column"
+            );
+        }
+    }
+
+    #[test]
+    fn a_family_with_no_capabilities_reported_still_renders() {
+        // Absent flags decode as false rather than failing the whole reference:
+        // a missing capability must not cost the caller the field lists.
+        let lines = capability_lines(&Capabilities::default());
+        assert_eq!(lines[0], ("write modes:", "-".to_string()));
+        assert!(lines.iter().all(|(l, _)| *l != "fixed config:"));
+    }
+
+    #[test]
+    fn the_family_index_names_the_config_a_family_cannot_do_without() {
+        let resp: crate::client::ingest::FamiliesResponse =
+            serde_json::from_str(crate::client::ingest::FAMILIES_LIST_BODY).unwrap();
+        let filesystem = &resp.families[0];
+        assert_eq!(
+            required_cell(&filesystem.config_schema),
+            "provider, root_uri"
+        );
+        assert_eq!(
+            list_cell(&filesystem.capabilities.write_modes),
+            "replace, append"
+        );
+        // A schema with nothing required says so, rather than rendering blank.
+        assert_eq!(required_cell(&serde_json::json!({"type": "object"})), "-");
     }
 
     fn entry(name: &str, family: &str) -> ConnectorEntry {

@@ -76,6 +76,47 @@ fn ingest_help_lists_the_lifecycle_verbs_and_no_run_now() {
 }
 
 #[test]
+fn datasource_help_offers_the_field_reference_verb() {
+    let (ok, help) = combined(&["datasource", "--help"]);
+    assert!(ok, "{help}");
+    assert!(help.contains("fields"), "{help}");
+}
+
+#[test]
+fn datasource_fields_takes_an_optional_family_and_documents_json_output() {
+    let (ok, help) = combined(&["datasource", "fields", "--help"]);
+    assert!(ok, "{help}");
+    // Optional: with no family it lists them, so clap must not require one.
+    assert!(help.contains("[FAMILY]"), "{help}");
+    // The three payloads it is the reference for.
+    for word in ["config", "credentials", "selector"] {
+        assert!(help.contains(word), "missing {word}: {help}");
+    }
+    assert!(
+        help.contains("-o json") || help.contains("JSON Schema"),
+        "{help}"
+    );
+}
+
+#[test]
+fn the_payload_flags_point_at_the_field_reference_by_name() {
+    // The one thing this command exists for: a caller who needs field names
+    // must be sent to the generated reference, from the flags that take them.
+    for (args, flag) in [
+        (["datasource", "create", "--help"], "--config"),
+        (["ingest", "create", "--help"], "--selector"),
+    ] {
+        let (ok, help) = combined(&args);
+        assert!(ok, "{help}");
+        assert!(help.contains(flag), "{flag} missing: {help}");
+        assert!(
+            help.contains("datasource fields"),
+            "{args:?} must name the field reference: {help}"
+        );
+    }
+}
+
+#[test]
 fn run_help_lists_show_and_disambiguates_the_noun() {
     let (ok, help) = combined(&["run", "--help"]);
     assert!(ok, "{help}");
@@ -203,7 +244,7 @@ fn datasource_update_config_rejects_both_credential_flags() {
     assert!(out.contains("cannot be used with"), "{out}");
 }
 
-// --- filters the design doc calls out ----------------------------------------
+// --- the documented list filters ---------------------------------------------
 
 #[test]
 fn ingest_list_accepts_the_datasource_id_filter() {
@@ -229,7 +270,7 @@ fn ingest_create_documents_the_type_values_and_payload_flags() {
     assert!(help.contains("one-time"), "{help}");
     assert!(help.contains("scheduled"), "{help}");
     assert!(help.contains("continuous"), "{help}");
-    // Both payload styles from the design doc's CLI section.
+    // Both documented payload styles.
     assert!(help.contains("@file.json"), "{help}");
     assert!(help.contains("--selector"), "{help}");
     assert!(help.contains("--destination"), "{help}");
