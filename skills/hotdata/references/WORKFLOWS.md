@@ -10,7 +10,7 @@ The `hotdata` skill is always loaded first (auth and workspace setup). The three
 
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
-| Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `ingest` (datasources), `tables`, `context` |
+| Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `datasource`, `ingest`, `run`, `tables`, `context` |
 | Load parquet files into a managed database | **`hotdata`** | `databases create` + `databases load` |
 | SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** (`subskills/analytics/SKILL.md`) | `query`, `queries`, `results` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** (`subskills/search/SKILL.md`) | `search`, `indexes create`, `embedding-providers` |
@@ -38,7 +38,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 2. [ ] `hotdata workspaces list` → `hotdata workspaces set` if not on the right workspace
 3. [ ] `hotdata databases list` and `hotdata tables list` — see the catalogs and tables you can query (tables print as `<catalog>.<schema>.<table>`)
 4. [ ] `hotdata tables show <table>` for columns (add `--schema`/`--table` filters to `tables list` to narrow)
-5. [ ] (Optional, to pull external data) `hotdata ingest list-datasources`; add one with `hotdata ingest new-datasource --service <type>`, then re-check its discovered schema with `hotdata ingest show-datasource <datasource_id>` — see **`hotdata`** skill → **Ingest external data**
+5. [ ] (Optional, to pull external data) `hotdata datasource list`; add one with `hotdata datasource create --family <f> --config @source.json`, then re-check its discovered schema with `hotdata datasource show <datasource_id>`. Load rows with `hotdata ingest create --datasource-id <id>` — see **`hotdata`** skill → **Ingest external data**
 6. [ ] (Optional) `hotdata context list` — if `DATAMODEL` is listed, `hotdata context show DATAMODEL`; else skip `show`
 7. [ ] (Optional) Bootstrap **context:DATAMODEL** — [Model](#model), [DATA_MODEL.template.md](DATA_MODEL.template.md)
 
@@ -162,12 +162,12 @@ Follow **[MODEL_BUILD.md](MODEL_BUILD.md)** for connector enrichment, per-table 
 
 ### Refresh catalog facts
 
-A datasource's schema is discovered when it is added (`hotdata ingest new-datasource`); inspect the current discovered tables/columns with `hotdata ingest show-datasource <datasource_id>`. After **`databases tables load`**, no refresh is required for the new table—use `databases tables list` or `tables list`.
+A datasource's schema is discovered when it is added (`hotdata datasource create`); inspect the current discovered tables/columns with `hotdata datasource show <datasource_id>`. After **`databases tables load`**, no refresh is required for the new table—use `databases tables list` or `tables list`.
 
 ```bash
 hotdata workspaces list
-hotdata ingest list-datasources
-hotdata ingest show-datasource <datasource_id>   # re-check discovered schema after source DDL
+hotdata datasource list
+hotdata datasource show <datasource_id>   # re-check discovered schema after source DDL
 hotdata tables list
 hotdata tables list --schema <schema> --table <table>   # narrow the workspace-wide listing
 hotdata databases list

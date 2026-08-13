@@ -8,7 +8,7 @@ version: 0.24.0
 
 **OLAP-style analytics** in Hotdata: PostgreSQL-dialect SQL, query execution, run history, stored results, **Chain** materializations, and **sorted** indexes for filters and joins.
 
-**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`ingest` datasources, `tables`, `databases`).
+**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`datasource`/`ingest`, `tables`, `databases`).
 
 **Related sub-skills** (bundled alongside this one — `Read` on demand): **`hotdata-search`** ([`../search/SKILL.md`](../search/SKILL.md) — BM25, vector, retrieval indexes), **`hotdata-geospatial`** ([`../geospatial/SKILL.md`](../geospatial/SKILL.md) — spatial SQL).
 

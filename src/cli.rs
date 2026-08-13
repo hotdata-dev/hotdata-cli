@@ -1,6 +1,7 @@
 use crate::commands::auth::AuthCommands;
 use crate::commands::context::ContextCommands;
 use crate::commands::databases::DatabasesCommands;
+use crate::commands::datasource::DatasourceCommands;
 use crate::commands::embedding_providers::EmbeddingProvidersCommands;
 use crate::commands::indexes::IndexesCommands;
 use crate::commands::ingest::IngestCommands;
@@ -8,6 +9,7 @@ use crate::commands::jobs::JobsCommands;
 use crate::commands::queries::QueriesCommands;
 use crate::commands::query::QueryCommands;
 use crate::commands::results::ResultsCommands;
+use crate::commands::run::RunCommands;
 use crate::commands::skill::SkillCommands;
 use crate::commands::tables::TablesCommands;
 use crate::commands::workspace::WorkspaceCommands;
@@ -115,8 +117,32 @@ pub enum Commands {
         command: Option<JobsCommands>,
     },
 
-    /// Pull data from external sources (databases, APIs, buckets, Iceberg)
-    /// into managed databases: datasources + imports
+    /// Reusable external sources (databases, APIs, buckets, Iceberg, Kafka):
+    /// the connection config and credentials an ingest reads through
+    ///
+    /// A datasource is what a credential opens, not what to load — pair it with
+    /// `hotdata ingest create` to pull data. Its `ds_…` id is the identity;
+    /// display names are labels and are never resolved against.
+    Datasource {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w', global = true)]
+        workspace_id: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"], global = true)]
+        output: String,
+
+        #[command(subcommand)]
+        command: DatasourceCommands,
+    },
+
+    /// Saved load definitions: which subset of a datasource lands in which
+    /// managed database table, once or on a schedule
+    ///
+    /// Add the datasource first (`hotdata datasource create`). Selector and
+    /// destination are fixed at creation; `cancel` stops the current run AND
+    /// future ones; `resume` never runs anything immediately. There is no
+    /// `trigger-import`/`run-now` verb — use `ingest schedule <id> --next now`.
     Ingest {
         /// Workspace ID (defaults to first workspace from login)
         #[arg(long, short = 'w', global = true)]
@@ -128,6 +154,24 @@ pub enum Commands {
 
         #[command(subcommand)]
         command: IngestCommands,
+    },
+
+    /// Ingest runs: one execution attempt, with the config version, selector,
+    /// and destination it used
+    ///
+    /// Unrelated to `hotdata databases run <cmd>` (a scoped child process) and
+    /// to `hotdata jobs` (platform background jobs).
+    Run {
+        /// Workspace ID (defaults to first workspace from login)
+        #[arg(long, short = 'w', global = true)]
+        workspace_id: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"], global = true)]
+        output: String,
+
+        #[command(subcommand)]
+        command: RunCommands,
     },
 
     /// Manage indexes on a table

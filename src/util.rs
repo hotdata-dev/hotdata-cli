@@ -364,14 +364,29 @@ pub fn format_date(s: &str) -> String {
 
 pub fn api_error(body: String) -> String {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-        // Two shapes in the wild:
-        //   {"error": {"message": "..."}}   — RuntimeDB-style
-        //   {"error": "snake_case_code"}    — Django-style (e.g. workspace endpoints)
+        // Three shapes in the wild:
+        //   {"error": {"code", "message", "details"}} — RuntimeDB / ingest-style
+        //   {"error": "snake_case_code"}              — Django-style (e.g. workspace endpoints)
+        //   {"detail": "..."}                         — FastAPI's framework-level rejections
+        //                                               (malformed body, unhandled 422)
         if let Some(m) = v["error"]["message"].as_str() {
             return m.to_string();
         }
         if let Some(code) = v["error"].as_str() {
             return humanize_error_code(code);
+        }
+        if let Some(d) = v["detail"].as_str() {
+            return d.to_string();
+        }
+        // Pydantic validation errors: [{"loc": [...], "msg": "..."}, …].
+        if let Some(items) = v["detail"].as_array() {
+            let msgs: Vec<String> = items
+                .iter()
+                .filter_map(|i| i["msg"].as_str().map(str::to_string))
+                .collect();
+            if !msgs.is_empty() {
+                return msgs.join("; ");
+            }
         }
     }
     if body.trim_start().starts_with('<') {
@@ -385,22 +400,30 @@ pub fn api_error(body: String) -> String {
     body
 }
 
-/// Turn a snake_case error code into a human-friendly sentence:
-/// ``workspace_not_found`` → ``Workspace not found``. Cheap heuristic — if
-/// a code reads badly after this, the server should be the one to fix
-/// it by returning a real message.
+/// The stable machine code from an error envelope
+/// (`{"error": {"code", "message", "details"}}`).
+///
+/// [`api_error`] returns the human half; this returns the half a script — or a
+/// follow-up hint — can branch on, so callers that want both print both.
+pub fn error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["code"].as_str().map(str::to_string))
+}
+
+/// One string field out of an error envelope's `details` object, e.g.
+/// `conflicting_ingest_id` on a `destination_table_conflict`.
+pub fn error_detail(body: &str, key: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["details"][key].as_str().map(str::to_string))
+}
+
 /// True when an error response body carries `error.code == "ACCESS_DENIED"` —
 /// the gateway/runtimedb signal that the credential's allow-list forbids the
 /// operation (e.g. a database API token calling a non-allowed endpoint).
 pub fn is_access_denied(body: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| {
-            v["error"]["code"]
-                .as_str()
-                .map(|code| code == "ACCESS_DENIED")
-        })
-        .unwrap_or(false)
+    error_code(body).as_deref() == Some("ACCESS_DENIED")
 }
 
 /// Human-readable byte count in binary units, keeping the exact value in
@@ -421,6 +444,10 @@ pub fn human_bytes(n: u64) -> String {
     format!("{v:.1} {} ({n} B)", UNITS[u])
 }
 
+/// Turn a snake_case error code into a human-friendly sentence:
+/// ``workspace_not_found`` → ``Workspace not found``. Cheap heuristic — if
+/// a code reads badly after this, the server should be the one to fix
+/// it by returning a real message.
 fn humanize_error_code(code: &str) -> String {
     let spaced = code.replace('_', " ");
     let mut chars = spaced.chars();
@@ -475,6 +502,43 @@ mod tests {
         // RuntimeDB-style nested shape — use the human message verbatim.
         let body = r#"{"error": {"message": "Query qrun_x not found"}}"#.to_string();
         assert_eq!(api_error(body), "Query qrun_x not found");
+    }
+
+    #[test]
+    fn api_error_reads_fastapi_detail_shapes() {
+        // Framework-level rejections (malformed body, unhandled 422) never
+        // reach the service's own error envelope.
+        let body = r#"{"detail": "a drain appears to be running"}"#.to_string();
+        assert_eq!(api_error(body), "a drain appears to be running");
+        // Pydantic validation errors arrive as a list of {loc, msg, type}.
+        let body = r#"{"detail": [{"loc": ["body", "selector"], "msg": "field required"},
+                                  {"loc": ["body", "type"], "msg": "unexpected value"}]}"#
+            .to_string();
+        assert_eq!(api_error(body), "field required; unexpected value");
+    }
+
+    #[test]
+    fn error_code_and_detail_read_the_envelope() {
+        let body = r#"{"error": {"code": "destination_table_conflict",
+                       "message": "already owns db_456.public.orders_raw",
+                       "details": {"conflicting_ingest_id": "ing_old"}}}"#;
+        assert_eq!(
+            error_code(body).as_deref(),
+            Some("destination_table_conflict")
+        );
+        assert_eq!(
+            error_detail(body, "conflicting_ingest_id").as_deref(),
+            Some("ing_old")
+        );
+        assert_eq!(error_detail(body, "missing"), None);
+        // The message half stays with api_error — the two are complements.
+        assert_eq!(
+            api_error(body.to_string()),
+            "already owns db_456.public.orders_raw"
+        );
+        // Shapes with no code yield none rather than a guess.
+        assert_eq!(error_code(r#"{"detail": "nope"}"#), None);
+        assert_eq!(error_code("not json"), None);
     }
 
     #[test]

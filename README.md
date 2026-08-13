@@ -61,7 +61,7 @@ There are two ways to make your data queryable, and they compose:
 - **Connect** — a live, synced view of an external source. The data stays
   where it is; Hotdata keeps the schema and cache fresh.
 - **Import** — copy data *into* a managed database, either from a file you
-  have or from an external source via `hotdata ingest`.
+  have or from an external source via `hotdata datasource` + `hotdata ingest`.
 
 ### Connect a live database
 
@@ -78,37 +78,68 @@ hotdata tables list                         # see what's now queryable
 `hotdata connections create list <type> -o json` prints the exact config
 fields it takes.
 
-### Import from external sources (`ingest`)
+### Import from external sources (`datasource` + `ingest`)
 
-Pull data from SQL databases, APIs, S3/GCS/Azure buckets, or Iceberg catalogs
-into a managed database:
+Three nouns, and each one has a stable id:
+
+- **datasource** (`ds_…`) — a reusable external source: what a credential
+  opens. A Postgres server, a bucket root, an Iceberg catalog, a Kafka cluster.
+- **ingest** (`ing_…`) — a saved load definition: which subset of a datasource
+  lands in which managed-database table, once or on a schedule.
+- **run** (`run_…`) — one execution attempt, recording the config version,
+  selector, and destination it used.
 
 ```sh
-hotdata ingest datasources                  # browse: SQL dialects, ~150 API services,
-                                            # buckets, iceberg, api (bring-your-own)
+hotdata datasource types                    # browse: SQL dialects, ~150 API services,
+                                            # buckets, iceberg, kafka, api
 
-# Add a datasource — validates credentials and discovers the schema, loads no data.
-# Keep secrets out of argv with --config @file.json or @- (stdin):
-hotdata ingest new-datasource --service postgres --config @conn.json --schema public
-hotdata ingest new-datasource --service buckets --bucket-url s3://bucket/prefix --format parquet
-hotdata ingest new-datasource --service iceberg --config @catalog.json --table ns.orders
+# 1. Check credentials without creating anything — nothing is persisted:
+hotdata datasource validate --family sql --config @source.json
 
-# --name sets the FROM target (default: the connector name), so several
-# datasources of one connector can coexist:
-hotdata ingest new-datasource --service postgres --name prod_pg --config @conn.json
+# 2. Create the datasource. Loads no data; returns a ds_… id.
+#    Keep secrets out of argv with --config @file.json or @- (stdin):
+hotdata datasource create --family sql --config @source.json \
+  --display-name "prod postgres"
+hotdata datasource list                     # ids, families, states
 
-# Import — a plain SELECT against the datasource; returns immediately:
-hotdata ingest new-import "SELECT * FROM prod_pg.orders WHERE status = 'open'"
-hotdata ingest new-import --source prod_pg --all
-hotdata ingest status <import-id> --wait    # or one-shot: exits 0 done / 1 failed / 2 running
+# 3. Ingest — what to load, and where it lands. Once:
+hotdata ingest create --datasource-id ds_01J --type one-time \
+  --selector @selector.json --destination @destination.json
 
-# The import lands in a managed database — query it like any other:
-hotdata query --database <db-id> "SELECT count(*) FROM public.orders"
+#    …or on a schedule, kept fresh:
+hotdata ingest create --datasource-id ds_01J --type continuous \
+  --selector @selector.json --destination @destination.json --every 5m
+
+#    SQL sources take a shorthand the CLI parses into that structured JSON:
+hotdata ingest create --datasource-id ds_01J --database-id db_123 \
+  --sql "SELECT * FROM public.orders WHERE status = 'open'"
+
+# 4. Watch it:
+hotdata ingest runs ing_01J                 # every attempt, newest first
+hotdata run show run_01J                    # one attempt; exits 0 succeeded /
+                                            # 1 failed / 2 in flight
+
+# The data lands in a managed database — query it like any other:
+hotdata query --database db_123 "SELECT count(*) FROM public.orders"
 ```
 
-Public buckets need no credentials. Re-run an import any time with
-`hotdata ingest trigger-import <import-id>` — it refreshes the same database
-from the source.
+`source.json` is family-specific and carries both halves:
+
+```json
+{
+  "config": {"dialect": "postgres", "host": "pg.example.com", "database": "prod"},
+  "credentials": {"username": "reader", "password": "…"}
+}
+```
+
+Public buckets need no credentials. Config edits and credential rotation are
+`hotdata datasource update-config <ds-id>`, which appends an immutable config
+version under the same id — runs in flight keep the version they started with.
+
+`hotdata ingest cancel <ing-id>` stops the current run **and** future ones;
+`hotdata ingest resume <ing-id>` clears the stop but starts nothing
+immediately. To make the next scheduled run happen now:
+`hotdata ingest schedule <ing-id> --next now`.
 
 ### Upload files
 
@@ -172,7 +203,7 @@ System embedding providers come pre-configured; bring your own with
 The CLI is built to be driven programmatically:
 
 - Every listing command takes `-o json|yaml`; long-running commands expose
-  script-friendly exit codes (`query status`, `ingest status`).
+  script-friendly exit codes (`query status`, `run show`).
 - Authenticate non-interactively with an API key: `--api-key`, or
   `HOTDATA_API_KEY` in the environment or a `.env` file.
 - `hotdata databases run <cmd>` launches a child process (an agent, a script)
@@ -198,7 +229,9 @@ Run `hotdata <command> --help` for full flags on any command.
 | `search` | BM25 and vector search over indexed columns |
 | `indexes` | Create/list/delete `sorted`, `bm25`, `vector` indexes |
 | `embedding-providers` | Manage embedding providers for vector indexes |
-| `ingest` | Import from databases, APIs, buckets, Iceberg |
+| `datasource` | External sources: validate, create, list, update-config, delete |
+| `ingest` | Saved load definitions: create, list, cancel, resume, schedule, runs |
+| `run` | One ingest execution attempt and the snapshots it used |
 | `context` | Shared server-side Markdown (`DATAMODEL`, glossaries) |
 | `jobs` | Background jobs (refreshes, index builds) |
 | `skills` | Install/inspect the bundled agent skills |

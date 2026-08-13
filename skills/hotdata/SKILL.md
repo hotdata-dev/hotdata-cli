@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, ingest (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "managed database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. This skill bundles three specialized guides under subskills/, loaded on demand: read subskills/search/SKILL.md for full-text/vector search and retrieval indexes, subskills/analytics/SKILL.md for OLAP analytics, query history, stored results, and Chain materializations, and subskills/geospatial/SKILL.md for geospatial/GIS.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, datasources/ingests/runs (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "managed database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "ingest run", "run show", "schedule an ingest", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. This skill bundles three specialized guides under subskills/, loaded on demand: read subskills/search/SKILL.md for full-text/vector search and retrieval indexes, subskills/analytics/SKILL.md for OLAP analytics, query history, stored results, and Chain materializations, and subskills/geospatial/SKILL.md for geospatial/GIS.
 version: 0.24.0
 ---
 
@@ -24,7 +24,7 @@ This is the only top-level hotdata skill. Three specialized guides ship **bundle
 | OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes | [`subskills/analytics/SKILL.md`](subskills/analytics/SKILL.md) | Analytics |
 | PostGIS-style `ST_*`, WKB geometry, spatial joins, GIS | [`subskills/geospatial/SKILL.md`](subskills/geospatial/SKILL.md) | Geospatial |
 
-Everything else — auth, workspaces, databases, tables, basic `query`, context, jobs, ingest — is in this file. The three sub-skills are referred to below by name (**`hotdata-search`**, **`hotdata-analytics`**, **`hotdata-geospatial`**); each name means the bundled file above, loaded on demand.
+Everything else — auth, workspaces, databases, tables, basic `query`, context, jobs, datasource/ingest/run — is in this file. The three sub-skills are referred to below by name (**`hotdata-search`**, **`hotdata-analytics`**, **`hotdata-geospatial`**); each name means the bundled file above, loaded on demand.
 
 ## Authentication
 
@@ -73,7 +73,7 @@ Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and manage
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`ingest`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`datasource`**, **`ingest`**, **`run`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -234,67 +234,86 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 
-### Ingest external data (`ingest`)
+### Ingest external data (`datasource`, `ingest`, `run`)
 
-Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceberg catalogs) into managed databases. Two nouns: **datasources** (added, credentialed sources — schema discovered, no data loaded; each has its own id) and **imports** (managed databases materialized from a datasource). A datasource answers to its **name** — `--name` if you chose one, otherwise the connector name (`postgres`, `buckets`, …) — and that name is the `FROM` target for imports.
+Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceberg catalogs, Kafka) into managed databases. **Three nouns, three ids, and the id is always the argument** — display names are shown but never resolved against:
 
-Read commands (`list-datasources`, `list-imports`, `status`, `show-datasource`, `datasources`) work with a login session JWT. Commands that create or change things (`new-datasource`, `new-import`, `trigger-import`, `delete-datasource`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — drain jobs outlive the 5-minute JWT.
+- **datasource** (`ds_…`) — what a credential opens: a server, a bucket root, a catalog, a cluster. Holds config + credentials, loads no data.
+- **ingest** (`ing_…`) — a saved load definition: `datasource + selector + destination + type/schedule`. One datasource can back many ingests.
+- **run** (`run_…`) — one execution attempt, with snapshots of the config version, selector, and destination it used.
+
+Read commands (`datasource list|show|types`, `ingest list|show|runs`, `run show`) work with a login session JWT. Commands that persist a credential (`datasource create`, `datasource update-config`, `ingest create`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — the run outlives the 5-minute JWT.
 
 ```bash
-hotdata ingest datasources [filter]    # browse available datasource types; "added" =
-                                       # you already have one. SQL dialects + ~150 named
-                                       # API services + generic buckets / iceberg / api.
-                                       # -o json includes each entry's config_schema —
+hotdata datasource types [filter]      # browse available source types. The FAMILY
+                                       # column is what --family takes. -o json
+                                       # includes each entry's config_schema —
                                        # the exact fields --config takes.
-hotdata ingest new-datasource --service postgres --config @conn.json --schema public
-# conn.json holds {"connection_string": "postgresql://user:pass@host/db"}
-# --config accepts @file.json, @- (stdin), or inline JSON — keep secrets out of argv.
-# Validates credentials + discovers the schema; loads NO data. Blocks until done
-# and prints the discovered tables (--no-wait to return immediately).
-# --name prod_pg names the datasource (identifier-shaped; default = connector name),
-# so several datasources of one connector can coexist: FROM prod_pg.
 
-hotdata ingest new-datasource --service buckets --bucket-url s3://bucket/prefix --format parquet
-# Files in S3/GCS/Azure buckets (csv, jsonl, parquet); --glob narrows the match.
-# Public buckets need no credentials; private ones take --config @creds.json
-# ({"aws_access_key_id": …, "aws_secret_access_key": …, "endpoint_url": …}).
-# --continuous keeps a bucket datasource synced: it's re-run incrementally on a
-# schedule, appending only newly-arrived objects (no re-read of the whole bucket).
+# --- datasources -------------------------------------------------------------
+hotdata datasource validate --family sql --config @source.json
+# Persists NOTHING: checks the credentials and returns family-specific discovery
+# (schemas/tables/…). Run it before create.
 
-hotdata ingest new-datasource --service iceberg --config @catalog.json --table ns.orders
-# Iceberg via a REST catalog. --table is REQUIRED (repeatable, namespace.table).
-# catalog.json fields: {"uri": …, "warehouse": …, "token": …} or "credential" +
-# "scope" for an OAuth exchange — see the iceberg config_schema in `datasources -o json`.
+hotdata datasource create --family sql --config @source.json --display-name "prod postgres"
+# source.json is family-specific and carries both halves:
+#   {"config": {"dialect": "postgres", "host": …, "database": …},
+#    "credentials": {"username": …, "password": …}}
+# --config also accepts a bare config object, @- (stdin), or inline JSON.
+# --credentials takes the secret half separately. Keep secrets out of argv.
+# Families: sql, filesystem (buckets), kafka, iceberg, delta, ducklake, rest.
 
-hotdata ingest list-datasources               # names, ids, statuses; --all includes replaced ones
-hotdata ingest show-datasource <id>           # status + discovered tables/columns
-hotdata ingest delete-datasource <id>         # removes it (stored credentials included);
-                                              # existing imports keep working
+hotdata datasource list [--family sql] [--state active]   # ids, families, states
+hotdata datasource show <datasource-id>                   # state, config version, discovery
+hotdata datasource update-config <datasource-id> --config @source.json
+# Appends an immutable config version under the SAME id and moves the pointer.
+# This is also how source credentials are rotated. Credential semantics:
+#   (neither flag)   inherit the previous secret refs
+#   --credentials …  replace them
+#   --no-credentials drop them (public/no-auth sources)
+hotdata datasource delete <datasource-id>   # 409 while any ingest references it
 
-# Imports return IMMEDIATELY (non-blocking). Track with `status`:
-hotdata ingest new-import "SELECT * FROM prod_pg.orders LIMIT 1000"
-hotdata ingest new-import --source prod_pg --all        # everything, no LIMIT
-hotdata ingest status <import-id>             # one-shot; exits 0 done / 1 failed / 2 in flight
-hotdata ingest status <import-id> --wait      # attach and poll to done/failed
+# --- ingests -----------------------------------------------------------------
+hotdata ingest create --datasource-id ds_01J --type one-time \
+  --selector @selector.json --destination @destination.json
+# selector.json is family-specific (what subset to read).
+# destination.json is {"database_id", "schema", "table", "write_mode"} —
+#   write_mode: replace | append | upsert. Both are IMMUTABLE after creation.
+# A one-time ingest runs immediately and reports its initial run id.
 
-hotdata ingest list-imports                   # the SQL behind each import + its database
-hotdata ingest trigger-import <import-id>     # re-run: refresh the same DB from source
+hotdata ingest create --datasource-id ds_01J --type continuous \
+  --selector @selector.json --destination @destination.json --every 5m [--next now]
+# scheduled/continuous need --every (30s, 5m, 2h, 1d) or --schedule @schedule.json.
 
-# raw-sql (SQL datasources only): run a source-native query VERBATIM in the
-# source dialect and ingest its result — joins, GROUP BY, window functions, CTEs,
-# engine-specific functions all run at the source. Single read-only statement.
-hotdata ingest raw-sql --source prod_pg --table rev_by_seg \
-  "SELECT c_mktsegment, SUM(o_totalprice) AS rev FROM customer c JOIN orders o ON o.o_custkey=c.c_custkey GROUP BY 1"
+hotdata ingest create --datasource-id ds_01J --database-id db_123 \
+  --sql "SELECT id, status FROM public.orders WHERE status = 'open' LIMIT 1000"
+# CLI shorthand for SQL sources: parsed CLIENT-side into the same structured
+# selector + destination. Destination flags instead of --destination:
+#   --database-id (required) --table (defaults to the FROM table)
+#   --schema (default public) --write-mode (default replace)
+
+hotdata ingest list [--datasource-id ds_01J] [--type continuous] [--state active]
+hotdata ingest show <ingest-id>
+hotdata ingest cancel <ingest-id>    # stops the active run AND future runs
+hotdata ingest resume <ingest-id>    # clears the stop; starts NOTHING immediately
+hotdata ingest schedule <ingest-id> --every 5m [--next now]
+hotdata ingest delete <ingest-id>    # releases the destination table; data untouched
+
+# --- runs --------------------------------------------------------------------
+hotdata ingest runs <ingest-id> [--status failed]   # every attempt, newest first
+hotdata run show <run-id>            # exits 0 succeeded / 1 failed|cancelled / 2 in flight
 ```
 
 Agent tips:
-- `new-import` SQL is a **restricted grammar**: `SELECT <cols|*> FROM <datasource>[.<table>] [WHERE …] [LIMIT n]` — no joins/GROUP BY. For those, either use `raw-sql` (pushes the full query down to a SQL source) or run `hotdata query` against the imported database afterward.
-- `raw-sql` is SQL-datasources-only and read-only (a single SELECT; writes/DDL are refused). Prefer a **read-only source credential**. Cast ambiguous/mixed-precision decimal columns explicitly in the query.
-- Prefer `-o json` + the `status` exit codes for scripting; poll one-shot `status` rather than holding `--wait` when doing other work in between.
-- `status` is a **closed set**: `pending` | `running` | `done` | `failed`. While running, the finer progress state (e.g. `extracting`, `loading`) appears in `stage` — informational only, never switch on it.
+- **There is no `trigger-import` / run-now verb, by design.** A one-time ingest runs when created; scheduled/continuous ones run on their schedule and each run recovers from the last committed state. To make the next scheduled run happen now: `hotdata ingest schedule <ingest-id> --next now`. To load again from scratch: create another one-time ingest.
+- **`cancel` means both halves** — stop the current run *and* stop future dispatch. `resume` is its inverse and is deliberately not a trigger.
+- **Selector and destination are immutable.** Changing what an ingest reads or where it lands means a new ingest; the server rejects edits with `immutable_ingest_definition`.
+- `--sql` is a **restricted grammar**: `SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n]` — no joins/GROUP BY/ORDER BY, and the FROM target names the **source table**, not a datasource. For anything richer, pass `--selector '{"mode":"query","query":{"sql":"…"}}'` (SQL family) so the query runs at the source.
+- Run `status` is a **closed set**: `queued` | `running` | `succeeded` | `failed` | `cancelled`. While running, the finer progress state (e.g. `extracting`, `loading`) appears in `stage` — informational only, never switch on it.
+- Prefer `-o json` plus the `run show` exit codes for scripting; poll `run show` rather than holding a terminal open.
 - Tables print oldest→newest; `-o json` is newest-first (`[0]` = latest).
-- Once an import is `done`, its database is a regular managed DB: query it with `hotdata query --database <db-id> "SELECT … FROM public.<table>"`.
-- Table names per type: `buckets` datasources expose one table named `files` (`FROM <name>` or `FROM <name>.files`); iceberg tables are addressed by the exact onboarded name (`FROM ice."ns.orders"`), the underscored form (`FROM ice.ns_orders`), or the bare table name — `show-datasource` lists what was discovered.
+- Errors carry a stable code alongside the message, e.g. `HTTP 409: … (destination_table_conflict)`. Branch on the code, not the sentence.
+- Once a run has succeeded, the destination is a regular managed DB: query it with `hotdata query --database <db-id> "SELECT … FROM public.<table>"`.
 
 ### Usage
 ```
