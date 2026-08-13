@@ -174,8 +174,24 @@ pub fn parse_next_run_at(s: &str) -> String {
     }
 }
 
-/// Compact one-line summary of an ingest's destination for a listing cell:
-/// `db_456.public.orders_raw`. Falls back to whatever parts exist.
+/// Stands in for the source table name a destination does not fix.
+///
+/// It is a placeholder on purpose, and it is never a name any table has: a
+/// destination that names no table names a *set* of them, one per source table,
+/// and a cell that printed the prefix alone would send a reader looking for a
+/// table called `fam` in a database holding `fam_orders` and `fam_customers`.
+const SOURCE_PLACEHOLDER: &str = "<source>";
+
+/// Compact one-line summary of an ingest's destination for a listing cell.
+///
+/// Three shapes, because a destination names its tables in one of three ways
+/// and a cell that read only the first would print half a name for the others:
+///
+/// ```text
+/// db_456.public.orders_raw      one table, named exactly
+/// db_456.public.fam_<source>    one per source table, under a common prefix
+/// db_456.public.<source>        one per source table, source names unchanged
+/// ```
 ///
 /// Takes the nested `destination` object, which is the only place the wire
 /// carries it: the service materialises database/schema/table into their own
@@ -183,20 +199,41 @@ pub fn parse_next_run_at(s: &str) -> String {
 /// the create request sent. Reading top-level `destination_*` fields instead
 /// renders every real response as `-`.
 pub fn destination_cell(destination: Option<&serde_json::Value>) -> String {
-    let parts: Vec<String> = ["database_id", "schema", "table"]
+    let Some(d) = destination.filter(|d| d.as_object().is_some_and(|o| !o.is_empty())) else {
+        return "-".into();
+    };
+    let at = |key: &str| {
+        d.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let table = match (at("table"), at("table_prefix")) {
+        (Some(t), _) => t.to_string(),
+        (None, Some(prefix)) => format!("{prefix}_{SOURCE_PLACEHOLDER}"),
+        (None, None) => SOURCE_PLACEHOLDER.to_string(),
+    };
+    let mut parts: Vec<String> = ["database_id", "schema"]
         .into_iter()
-        .filter_map(|key| {
-            destination
-                .and_then(|d| d.get(key))
-                .and_then(serde_json::Value::as_str)
-                .filter(|s| !s.trim().is_empty())
-                .map(str::to_string)
-        })
+        .filter_map(|key| at(key).map(str::to_string))
         .collect();
-    if parts.is_empty() {
-        "-".into()
+    parts.push(table);
+    parts.join(".")
+}
+
+/// The destination line for a detail view: the cell, plus what the placeholder
+/// in it stands for.
+///
+/// A detail view has the room a listing column does not, and "one table per
+/// source table" is the half a reader cannot infer from a name that is not a
+/// name — it is also the half that says why two such ingests cannot share a
+/// schema without a prefix between them.
+pub fn destination_detail(destination: Option<&serde_json::Value>) -> String {
+    let cell = destination_cell(destination);
+    if cell.contains(SOURCE_PLACEHOLDER) {
+        format!("{cell}  (one destination table per source table)")
     } else {
-        parts.join(".")
+        cell
     }
 }
 
@@ -452,6 +489,40 @@ mod tests {
         assert_eq!(destination_cell(Some(&partial)), "db_456.t");
         assert_eq!(destination_cell(None), "-");
         assert_eq!(destination_cell(Some(&serde_json::json!({}))), "-");
+    }
+
+    /// A prefix is not a table, and a destination that names neither is not a
+    /// destination with a missing field — both stand for a SET of tables the
+    /// load names after the source. Rendering either one where a table goes
+    /// puts a name in front of the reader that no table in the database has.
+    #[test]
+    fn a_destination_that_names_no_table_does_not_read_as_one() {
+        let prefixed = serde_json::json!({
+            "database_id": "db_456", "schema": "public",
+            "table_prefix": "fam", "write_mode": "replace"
+        });
+        assert_eq!(
+            destination_cell(Some(&prefixed)),
+            "db_456.public.fam_<source>"
+        );
+        assert_eq!(
+            destination_detail(Some(&prefixed)),
+            "db_456.public.fam_<source>  (one destination table per source table)"
+        );
+
+        let raw = serde_json::json!({
+            "database_id": "db_456", "schema": "public", "write_mode": "replace"
+        });
+        assert_eq!(destination_cell(Some(&raw)), "db_456.public.<source>");
+        assert!(destination_detail(Some(&raw)).contains("per source table"));
+
+        // An exact table is exactly itself, with nothing appended to explain
+        // a placeholder it does not contain.
+        let exact = serde_json::json!({
+            "database_id": "db_456", "schema": "public", "table": "orders_raw"
+        });
+        assert_eq!(destination_detail(Some(&exact)), "db_456.public.orders_raw");
+        assert_eq!(destination_detail(None), "-");
     }
 
     #[test]

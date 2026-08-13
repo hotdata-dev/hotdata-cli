@@ -115,7 +115,13 @@ hotdata datasource list                     # ids, families, states
 # 3. Ingest — what to load, and where it lands. Once:
 hotdata ingest create --source "prod postgres" --table orders --database-id db_123
 
-#    …or on a schedule, kept fresh:
+#    Source tables keep their own names. Put several under a common prefix —
+#    orders lands as raw_orders, customers as raw_customers:
+hotdata ingest create --source "prod postgres" --database-id db_123 \
+  --table orders --table customers --dest-table-prefix raw
+
+#    A source that lands ONE table is told that table's name instead, and can
+#    be kept fresh on a schedule:
 hotdata ingest create --source ds_01J --type continuous --database-id db_123 \
   --format parquet --glob "orders/**/*.parquet" --dest-table orders_raw --every 5m
 

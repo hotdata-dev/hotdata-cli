@@ -377,6 +377,69 @@ fn the_selector_shorthands_live_on_ingest_create() {
     assert!(help.contains("bucket sources"), "{help}");
 }
 
+/// Help text is wrapped to the terminal, so a phrase spanning a line break is
+/// two lines with an indent between them. Asserting on the flattened form
+/// pins what the sentence SAYS rather than where clap happened to break it.
+fn flat(help: &str) -> String {
+    help.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The two destination flags are two different fields, and which one applies
+/// is a property of the SOURCE: one that lands a single table can be told that
+/// table's name, one that lands a table per source table can be given at most
+/// a common prefix. A flag that did not say which sources it was for would be
+/// a flag whose 422 is the first thing that explains it.
+#[test]
+fn each_destination_flag_says_which_sources_it_is_for() {
+    let (ok, help) = combined(&["ingest", "create", "--help"]);
+    assert!(ok, "{help}");
+    let help = flat(&help);
+    assert!(help.contains("--dest-table-prefix"), "{help}");
+    // The single-table flag names the sources that land one …
+    assert!(help.contains("land ONE table"), "{help}");
+    assert!(help.contains("Delta"), "{help}");
+    // … and the prefix flag names the ones that land several, plus what
+    // omitting it does — the common case, and it is not "error".
+    assert!(help.contains("lands SEVERAL"), "{help}");
+    assert!(help.contains("Kafka"), "{help}");
+    assert!(help.contains("used unchanged"), "{help}");
+}
+
+#[test]
+fn a_table_and_a_table_prefix_are_not_both_askable() {
+    // A destination names one table or names a rule for naming several. Both
+    // at once is not a request the service has, and clap says so without a
+    // round trip.
+    let (ok, out) = combined(&[
+        "ingest",
+        "create",
+        "--datasource-id",
+        "ds_1",
+        "--table",
+        "orders",
+        "--dest-table",
+        "t",
+        "--dest-table-prefix",
+        "fam",
+    ]);
+    assert!(!ok, "should not parse: {out}");
+    assert!(out.contains("cannot be used with"), "{out}");
+}
+
+/// `create` starts nothing. The scheduler dispatches every run, including the
+/// single run of a one-time ingest — so help that promised a run id back
+/// promised a field that is null by design.
+#[test]
+fn create_help_does_not_promise_a_run_id() {
+    let (ok, help) = combined(&["ingest", "create", "--help"]);
+    assert!(ok, "{help}");
+    let help = flat(&help);
+    assert!(!help.contains("initial_run_id"), "{help}");
+    assert!(!help.contains("runs immediately"), "{help}");
+    assert!(help.contains("scheduler dispatches every run"), "{help}");
+    assert!(help.contains("hotdata ingest runs"), "{help}");
+}
+
 #[test]
 fn record_shape_help_lists_the_shapes() {
     let (ok, help) = combined(&["ingest", "create", "--help"]);

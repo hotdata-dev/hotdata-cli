@@ -920,6 +920,16 @@ fn print_family_reference(r: &FamilyReference) {
     print_schema(&r.credentials_schema);
     section("SELECTOR", "hotdata ingest create --selector");
     print_schema(&r.selector_schema);
+    // The destination is per-family too — one family names a table, another
+    // takes at most a prefix for the tables it lands. Read out of the
+    // passthrough map rather than a field of our own: this section exists
+    // BECAUSE the service is the only thing that can be right about which,
+    // and a family whose reference does not describe it gets no section
+    // rather than a CLI-side answer.
+    if let Some(schema) = r.extra.get("destination_schema") {
+        section("DESTINATION", "hotdata ingest create --destination");
+        print_schema(schema);
+    }
     println!();
     hint(&format!(
         "'hotdata datasource fields {} -o json' prints the JSON Schema itself, \
@@ -975,7 +985,10 @@ fn print_schema(schema: &serde_json::Value) {
             hint("  (no fields)");
             continue;
         }
-        crate::output::table::print(&["FIELD", "TYPE", "REQUIRED", "DEFAULT"], &rows);
+        crate::output::table::print(
+            &["FIELD", "TYPE", "REQUIRED", "DEFAULT", "DESCRIPTION"],
+            &rows,
+        );
     }
 }
 
@@ -1034,9 +1047,31 @@ fn field_rows(schema: &serde_json::Value) -> Vec<Vec<String>> {
                 type_label(prop),
                 yes_no(required.iter().any(|r| r == name)),
                 default_cell(prop),
+                description_cell(prop),
             ]
         })
         .collect()
+}
+
+/// What the field is FOR, as the service describes it.
+///
+/// Whole, not summarised: these sentences are written on the models that
+/// validate the request and they carry the part no type or default can — which
+/// engines want a host, what a root uri does to object keys, what a prefix is
+/// relative to. Trimming them to a column width would drop the second sentence,
+/// which is where that usually lives. The table wraps this cell instead, and a
+/// terminal too narrow to hold it says so and points at `-o json`.
+///
+/// Newlines are collapsed because a description written across source lines is
+/// one sentence, and a cell that kept the breaks would set its own row height
+/// rather than wrap to the width it was given.
+fn description_cell(prop: &serde_json::Value) -> String {
+    match prop.get("description").and_then(|d| d.as_str()) {
+        Some(text) if !text.trim().is_empty() => {
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+        _ => "-".into(),
+    }
 }
 
 fn required_names(schema: &serde_json::Value) -> Vec<String> {
@@ -1461,21 +1496,60 @@ mod tests {
     }
 
     #[test]
-    fn field_rows_carry_the_type_the_requirement_and_the_default() {
+    fn field_rows_carry_the_type_the_requirement_the_default_and_the_description() {
         let reference = sql_reference();
         let rows = field_rows(&reference.config_schema);
 
         // An enum's members ARE the type: "string" would leave the caller
-        // guessing at the one thing a 422 will be about.
+        // guessing at the one thing a 422 will be about. The description is
+        // the service's own sentence about the field, and it is the half of
+        // the row that says what the field is FOR — it used to reach `-o json`
+        // and nothing else.
         assert_eq!(
             row(&rows, "dialect"),
-            ["dialect", "postgres | mysql | duckdb", "yes", "-"]
+            [
+                "dialect",
+                "postgres | mysql | duckdb",
+                "yes",
+                "-",
+                "Which SQL engine this is. The rest of `config` is read in its terms."
+            ]
         );
         // Optional fields arrive as a union against null. The null member is
         // the REQUIRED column's job and must not reach the type.
-        assert_eq!(row(&rows, "host"), ["host", "string", "no", "-"]);
-        assert_eq!(row(&rows, "port"), ["port", "integer", "no", "-"]);
-        assert_eq!(row(&rows, "options"), ["options", "object", "no", "-"]);
+        assert_eq!(
+            row(&rows, "host"),
+            [
+                "host",
+                "string",
+                "no",
+                "-",
+                "Server hostname. Omit for engines addressed by account or path."
+            ]
+        );
+        // A field the service describes with nothing gets a dash, like every
+        // other empty cell in the CLI — never a blank column.
+        assert_eq!(row(&rows, "port"), ["port", "integer", "no", "-", "-"]);
+        assert_eq!(row(&rows, "options"), ["options", "object", "no", "-", "-"]);
+    }
+
+    #[test]
+    fn a_description_written_across_lines_is_one_cell() {
+        // Pydantic descriptions are written as adjacent source strings and
+        // arrive with the breaks in them. A cell keeping those breaks sets its
+        // own row height instead of wrapping to the width the table gave it.
+        let prop = serde_json::json!({
+            "type": "string",
+            "description": "Full DSN, e.g. postgresql://user@host/db.\nReplaces the\n  fields above."
+        });
+        assert_eq!(
+            description_cell(&prop),
+            "Full DSN, e.g. postgresql://user@host/db. Replaces the fields above."
+        );
+        assert_eq!(
+            description_cell(&serde_json::json!({"type": "string"})),
+            "-"
+        );
     }
 
     #[test]
@@ -1489,17 +1563,60 @@ mod tests {
         let (tables_label, tables) = &variants[0];
         assert_eq!(tables_label.as_deref(), Some("mode = tables"));
         let rows = field_rows(tables);
-        assert_eq!(row(&rows, "tables"), ["tables", "string[]", "yes", "-"]);
-        assert_eq!(row(&rows, "mode"), ["mode", "tables", "no", "tables"]);
-        assert_eq!(row(&rows, "schema"), ["schema", "string", "no", "-"]);
+        assert_eq!(
+            row(&rows, "tables"),
+            [
+                "tables",
+                "string[]",
+                "yes",
+                "-",
+                "Source tables to read. Each lands in a destination table of the same name."
+            ]
+        );
+        assert_eq!(row(&rows, "mode"), ["mode", "tables", "no", "tables", "-"]);
+        assert_eq!(row(&rows, "schema"), ["schema", "string", "no", "-", "-"]);
 
         // Each form has its own required set: `sql` is required in the query
         // form and absent from the other, which merging them would hide.
         let (query_label, query) = &variants[1];
         assert_eq!(query_label.as_deref(), Some("mode = query"));
         let rows = field_rows(query);
-        assert_eq!(row(&rows, "sql"), ["sql", "string", "yes", "-"]);
-        assert_eq!(row(&rows, "mode"), ["mode", "query", "yes", "-"]);
+        assert_eq!(row(&rows, "sql"), ["sql", "string", "yes", "-", "-"]);
+        assert_eq!(row(&rows, "mode"), ["mode", "query", "yes", "-", "-"]);
+    }
+
+    /// The destination is per-family, and a family that describes one is
+    /// carried through the passthrough map rather than a field of the CLI's:
+    /// which of `table` / `table_prefix` a family takes is the service's
+    /// answer, and a CLI-side copy of it is the thing this command replaces.
+    #[test]
+    fn a_family_that_describes_its_destination_is_carried_through() {
+        let reference = sql_reference();
+        assert!(
+            reference.extra.get("destination_schema").is_none(),
+            "the pinned body describes no destination; the section must not invent one"
+        );
+
+        let described: FamilyReference = serde_json::from_str(
+            r#"{"family": "iceberg", "destination_schema": {
+                 "properties": {"table_prefix": {"type": "string"}},
+                 "additionalProperties": false, "type": "object"}}"#,
+        )
+        .unwrap();
+        let schema = described
+            .extra
+            .get("destination_schema")
+            .expect("carried through untyped");
+        assert_eq!(
+            field_rows(schema),
+            vec![vec![
+                "table_prefix".to_string(),
+                "string".into(),
+                "no".into(),
+                "-".into(),
+                "-".into()
+            ]]
+        );
     }
 
     #[test]

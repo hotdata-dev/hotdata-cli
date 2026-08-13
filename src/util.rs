@@ -411,6 +411,35 @@ pub fn error_code(body: &str) -> Option<String> {
         .and_then(|v| v["error"]["code"].as_str().map(str::to_string))
 }
 
+/// The per-field rejections an envelope carries in `details.errors`, as
+/// (field path, message) pairs — `[{"field": "table", "message": "…"}]` on the
+/// wire, with an empty path for an error about the payload as a whole.
+///
+/// **The message half of a field-level 422 does not name the field.** It names
+/// the payload and the family ("invalid destination for family 'iceberg'"),
+/// because which field is wrong is exactly what `details` is for. A caller
+/// shown only the message has to guess between every field the payload has —
+/// and the guess this is here to prevent is between two fields that differ by
+/// one word.
+pub fn error_fields(body: &str) -> Vec<(String, String)> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    v["error"]["details"]["errors"]
+        .as_array()
+        .map(|errors| {
+            errors
+                .iter()
+                .filter_map(|e| {
+                    let message = e["message"].as_str()?;
+                    let field = e["field"].as_str().unwrap_or("").to_string();
+                    Some((field, message.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// One string field out of an error envelope's `details` object, e.g.
 /// `conflicting_ingest_id` on a `destination_table_conflict`.
 pub fn error_detail(body: &str, key: &str) -> Option<String> {
@@ -539,6 +568,40 @@ mod tests {
         // Shapes with no code yield none rather than a guess.
         assert_eq!(error_code(r#"{"detail": "nope"}"#), None);
         assert_eq!(error_code("not json"), None);
+    }
+
+    /// A field-level rejection: the message names the payload and the family,
+    /// the details name the field. Reading only the first is how "invalid
+    /// destination for family 'iceberg'" reaches a user who sent `table` and
+    /// has to guess which of four fields the service meant.
+    #[test]
+    fn error_fields_read_the_per_field_rejections() {
+        let body = r#"{"error": {"code": "invalid_destination",
+                       "message": "invalid destination for family 'iceberg'",
+                       "details": {"errors": [
+                         {"field": "table", "message": "Extra inputs are not permitted"},
+                         {"field": "database_id", "message": "Field required"}]}}}"#;
+        assert_eq!(
+            error_fields(body),
+            vec![
+                (
+                    "table".to_string(),
+                    "Extra inputs are not permitted".to_string()
+                ),
+                ("database_id".to_string(), "Field required".to_string()),
+            ]
+        );
+        // An error about the payload as a whole has no field path; it is still
+        // an error worth printing.
+        let whole = r#"{"error": {"code": "invalid_destination", "message": "invalid",
+                        "details": {"errors": [{"field": "", "message": "not an object"}]}}}"#;
+        assert_eq!(
+            error_fields(whole),
+            vec![(String::new(), "not an object".to_string())]
+        );
+        // Envelopes with no details, and bodies that are not JSON at all.
+        assert!(error_fields(r#"{"error": {"code": "x", "message": "y"}}"#).is_empty());
+        assert!(error_fields("not json").is_empty());
     }
 
     #[test]

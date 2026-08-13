@@ -26,10 +26,17 @@
 //!
 //! `--sql` and `--raw-sql` are the two that carry SQL, and neither sends any.
 //! `--sql`'s restricted `SELECT <cols> FROM [<schema>.]<table> [WHERE …]
-//! [LIMIT n]` grammar is parsed HERE into a structured selector plus a
-//! destination; `--raw-sql` sends the statement as the `sql` field of a
-//! query-mode selector, for the source engine to run in its own dialect. The
-//! service has no SQL front-door either way.
+//! [LIMIT n]` grammar is parsed HERE into a structured selector; `--raw-sql`
+//! sends the statement as the `sql` field of a query-mode selector, for the
+//! source engine to run in its own dialect. The service has no SQL front-door
+//! either way.
+//!
+//! **The destination is per-family, and the CLI does not decide which shape a
+//! family has.** `--dest-table` sends a table, `--dest-table-prefix` sends a
+//! prefix, and a family that has no such field answers with a 422 naming it.
+//! Only `--raw-sql` fills one in unasked, because its single result set has no
+//! source table to be named after — every other shorthand reads source tables,
+//! and those keep their own names.
 //!
 //! **Waiting is watching.** `--wait` polls; the scheduler owns dispatch, so
 //! nothing here can make a queued run start. `ingest schedule <id> --next now`
@@ -42,9 +49,9 @@
 
 use crate::client::ingest::{Ingest, IngestClient, IngestCreate, SchedulePatch};
 use crate::commands::ingest_common::{
-    cell, date_cell, destination_cell, empty_notice, fail, field, hint, is_terminal,
-    parse_duration, parse_json_arg, parse_next_run_at, poll_until, presented_run_status, render,
-    run_status_cell, schedule_cell, wait_timed_out, with_spinner,
+    cell, date_cell, destination_cell, destination_detail, empty_notice, fail, field, hint,
+    is_terminal, parse_duration, parse_json_arg, parse_next_run_at, poll_until,
+    presented_run_status, render, run_status_cell, schedule_cell, wait_timed_out, with_spinner,
 };
 use crate::util;
 
@@ -53,12 +60,12 @@ const TYPES: [&str; 3] = ["one-time", "scheduled", "continuous"];
 
 #[derive(clap::Subcommand)]
 pub enum IngestCommands {
-    /// Create a load definition (and, for --type one-time, run it once)
+    /// Create a load definition
     ///
     /// Selector and destination are fixed at creation — changing either means a
-    /// new ingest. A one-time ingest runs immediately and reports its
-    /// `initial_run_id`; scheduled/continuous ones start on the next scheduler
-    /// tick.
+    /// new ingest. Creating one starts nothing: the scheduler dispatches every
+    /// run, including the single run of a one-time ingest, so watch it with
+    /// `hotdata ingest runs <id>` rather than expecting a run id back.
     ///
     /// The fields --selector takes, and which write modes and types the
     /// datasource's family supports: `hotdata datasource fields <family>`.
@@ -75,8 +82,8 @@ pub enum IngestCommands {
         #[arg(long, conflicts_with = "datasource_id")]
         source: Option<String>,
 
-        /// one-time runs once now; scheduled and continuous need --every or
-        /// --schedule
+        /// one-time is dispatched once; scheduled and continuous need --every
+        /// or --schedule
         #[arg(long = "type", value_parser = TYPES, default_value = "one-time")]
         kind: String,
 
@@ -90,10 +97,11 @@ pub enum IngestCommands {
         )]
         selector: Option<String>,
 
-        /// SQL-family shorthand for --selector + --destination:
+        /// SQL-family shorthand for --selector:
         /// SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n].
         /// Parsed here into structured JSON — the FROM target names the SOURCE
-        /// table, never a datasource (that is --source).
+        /// table, never a datasource (that is --source). The rows land in a
+        /// table of the source's name, or of --dest-table-prefix plus it.
         #[arg(
             long,
             conflicts_with_all = ["raw_sql", "all", "tables", "schema", "format",
@@ -118,9 +126,9 @@ pub enum IngestCommands {
         all: bool,
 
         /// Source table to load, repeatable (SQL, Iceberg, DuckLake sources).
-        /// The destination table follows the single one named, unless
-        /// --dest-table says otherwise. With --raw-sql it names the result
-        /// table, since a query has no source table to take a name from.
+        /// Each lands in a destination table of the same name — put them under
+        /// a common name with --dest-table-prefix. With --raw-sql it names the
+        /// result table, since a query has no source table to take a name from.
         #[arg(long = "table")]
         tables: Vec<String>,
 
@@ -151,10 +159,12 @@ pub enum IngestCommands {
         limit: Option<u64>,
 
         /// Where it lands, as JSON (inline, @file.json, or @-):
-        /// {"database_id", "schema", "table", "write_mode"}
+        /// {"database_id", "schema", "write_mode"} plus either "table" or
+        /// "table_prefix", whichever the family takes.
         #[arg(
             long,
-            conflicts_with_all = ["database_id", "dest_table", "dest_schema", "write_mode"]
+            conflicts_with_all = ["database_id", "dest_table", "dest_table_prefix",
+                                  "dest_schema", "write_mode"]
         )]
         destination: Option<String>,
 
@@ -162,10 +172,26 @@ pub enum IngestCommands {
         #[arg(long = "database-id")]
         database_id: Option<String>,
 
-        /// Destination table name. Defaults to the single --table, or to the
-        /// FROM table of --sql.
-        #[arg(long = "dest-table")]
+        /// Destination table name, for the sources that land ONE table:
+        /// buckets (filesystem), Delta, and a SQL --raw-sql result set, which
+        /// takes the name from --table if this is not given.
+        ///
+        /// A source that loads several tables does not take it — it has a
+        /// table per source table, so there is no one name to give. Use
+        /// --dest-table-prefix there.
+        #[arg(long = "dest-table", conflicts_with = "dest_table_prefix")]
         dest_table: Option<String>,
+
+        /// Common prefix for the destination tables of a source that lands
+        /// SEVERAL: SQL --table/--sql, Iceberg, DuckLake, Kafka, REST. Each
+        /// source table `orders` lands as `<prefix>_orders`.
+        ///
+        /// Optional. Without it the source names are used unchanged, which is
+        /// what a raw mirror of a schema or a catalog wants — but only one
+        /// prefix-less ingest can own a given database and schema, so a second
+        /// one has to choose a prefix rather than overwrite the first's tables.
+        #[arg(long = "dest-table-prefix")]
+        dest_table_prefix: Option<String>,
 
         /// Destination schema (default: public)
         #[arg(long = "dest-schema")]
@@ -332,6 +358,7 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             destination,
             database_id,
             dest_table,
+            dest_table_prefix,
             dest_schema,
             write_mode,
             schedule,
@@ -378,6 +405,7 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
                 database_id: database_id.as_deref(),
                 dest_schema: dest_schema.as_deref(),
                 dest_table: dest_table.as_deref(),
+                dest_table_prefix: dest_table_prefix.as_deref(),
                 write_mode: write_mode.as_deref(),
                 schedule: schedule.as_deref().map(|a| parse_json_arg("--schedule", a)),
                 every: every.as_deref(),
@@ -464,6 +492,7 @@ struct CreatePlan<'a> {
     database_id: Option<&'a str>,
     dest_schema: Option<&'a str>,
     dest_table: Option<&'a str>,
+    dest_table_prefix: Option<&'a str>,
     write_mode: Option<&'a str>,
     schedule: Option<serde_json::Value>,
     every: Option<&'a str>,
@@ -541,13 +570,22 @@ fn create(client: &IngestClient, output: &str, plan: CreatePlan) {
         field("datasource id:", &cell(ing.datasource_id.as_deref()));
         field("type:", &cell(ing.r#type.as_deref()));
         field("state:", &state_cell(ing.state.as_deref()));
+        field(
+            "destination:",
+            &destination_detail(ing.destination.as_ref()),
+        );
+        // No run is started here — the scheduler dispatches every one, so the
+        // create response carries a run id only if the service ever starts
+        // reporting one. Saying "watch it" is the honest instruction either
+        // way, and it is the one that does not send someone looking for a run
+        // that does not exist yet.
         match ing.initial_run_id.as_deref() {
             Some(run_id) => {
                 field("run id:", run_id);
                 hint(&format!("Track it with: hotdata run show {run_id}"));
             }
             None => hint(&format!(
-                "It runs on its schedule. Watch it with: hotdata ingest runs {}",
+                "The scheduler dispatches it. Watch it with: hotdata ingest runs {}",
                 ing.ingest_id
             )),
         }
@@ -560,14 +598,15 @@ fn create(client: &IngestClient, output: &str, plan: CreatePlan) {
 /// 422 would otherwise be the first to catch — are unit-testable.
 fn build_create(plan: CreatePlan) -> Result<IngestCreate, String> {
     let wire_type = wire_type(plan.kind)?;
-    let (selector, source_table) = build_selector(&plan)?;
+    let (selector, result_table) = build_selector(&plan)?;
     let destination = build_destination(
         plan.destination,
         plan.database_id,
         plan.dest_schema,
         plan.dest_table,
+        plan.dest_table_prefix,
         plan.write_mode,
-        source_table.as_deref(),
+        result_table.as_deref(),
     )?;
 
     let schedule = build_schedule(plan.schedule, plan.every, plan.next)?;
@@ -598,8 +637,9 @@ fn build_create(plan: CreatePlan) -> Result<IngestCreate, String> {
     })
 }
 
-/// The selector, plus the table name the destination should inherit when the
-/// caller did not name one.
+/// The selector, plus the name of the one table this load produces — when it
+/// produces exactly one and nothing else names it. See [`build_destination`]:
+/// only the query shorthand is in that position.
 ///
 /// Every branch here BUILDS the JSON `--selector` would have carried; the
 /// shorthands are sugar over one document, never a second request shape. Which
@@ -622,12 +662,11 @@ fn build_selector(plan: &CreatePlan) -> Result<(serde_json::Value, Option<String
         return Ok((s.clone(), None));
     }
 
-    // --sql desugars into BOTH halves: a structured sql-family selector and a
-    // default destination table. The service never sees the SQL.
+    // --sql desugars into a structured sql-family selector; the service never
+    // sees the SQL. It names no destination table: the shape it builds reads
+    // source tables, and those land under their own names.
     if let Some(sql) = plan.sql {
-        let parsed = parse_select(sql)?;
-        let table = parsed.table.clone();
-        return Ok((sql_selector(&parsed), Some(table)));
+        return Ok((sql_selector(&parse_select(sql)?), None));
     }
 
     if let Some(sql) = plan.raw_sql {
@@ -698,12 +737,11 @@ fn build_selector(plan: &CreatePlan) -> Result<(serde_json::Value, Option<String
                 .into(),
         );
     }
-    // A single named table is the destination's name too, unless overridden.
-    let source_table = match plan.tables {
-        [one] => Some(one.clone()),
-        _ => None,
-    };
-    Ok((serde_json::Value::Object(selector), source_table))
+    // Named source tables keep their names on the way in, so nothing here
+    // chooses a destination table — not even when only one is named. The
+    // families that read source tables have no `table` field to send it to;
+    // the most a caller can say about where they land is a common prefix.
+    Ok((serde_json::Value::Object(selector), None))
 }
 
 /// The two qualifiers that ride along with any shorthand shape.
@@ -736,17 +774,28 @@ fn wire_type(kind: &str) -> Result<&'static str, String> {
 /// validates it by family); otherwise it is assembled from the convenience
 /// flags.
 ///
-/// `source_table` is the name the selector already implies — the single
-/// `--table`, or the `--sql` FROM table — and it is the default so that loading
-/// one table does not mean typing its name twice. `--dest-table` wins, which is
-/// how a table lands under a different name.
+/// **`table` and `table_prefix` are two different fields, and which one a
+/// family has is the service's answer to give.** A source that lands one table
+/// names it; a source that lands one table per source table has no single name
+/// to be given, takes at most a prefix, and refuses `table` outright — so
+/// whichever flag was passed is sent, and the wrong one comes back as a 422
+/// naming the field. Deciding it here would be a second copy of that mapping,
+/// wrong from the first family that moves between the two, and wrong quietly:
+/// the request it withholds is one the service would have accepted.
+///
+/// Nothing else fills in a table. `result_table` is the one exception, and it
+/// is narrow: `--raw-sql` produces a single result set that no source table
+/// names, so the `--table` it was given IS the destination table. A selector
+/// that names source tables leaves them named after the source, which is what
+/// those families do whether or not the destination says so.
 fn build_destination(
     destination: Option<serde_json::Value>,
     database_id: Option<&str>,
     schema: Option<&str>,
     table: Option<&str>,
+    table_prefix: Option<&str>,
     write_mode: Option<&str>,
-    source_table: Option<&str>,
+    result_table: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     if let Some(d) = destination {
         // Accept the file either bare or wrapped, so @destination.json can be
@@ -764,23 +813,21 @@ fn build_destination(
     let Some(database_id) = database_id else {
         return Err(
             "a destination is required: --destination @destination.json, or --database-id \
-             <db> (the table follows --table)"
+             <db> with --dest-table or --dest-table-prefix"
                 .into(),
         );
     };
-    let Some(table) = table.or(source_table) else {
-        return Err(
-            "a destination table is required: --dest-table <name>, or a single --table \
-             whose name it takes"
-                .into(),
-        );
-    };
-    Ok(serde_json::json!({
-        "database_id": database_id,
-        "schema": schema.unwrap_or("public"),
-        "table": table,
-        "write_mode": write_mode.unwrap_or("replace"),
-    }))
+    let mut d = serde_json::Map::new();
+    d.insert("database_id".into(), database_id.into());
+    d.insert("schema".into(), schema.unwrap_or("public").into());
+    if let Some(t) = table.or(result_table) {
+        d.insert("table".into(), t.into());
+    }
+    if let Some(p) = table_prefix {
+        d.insert("table_prefix".into(), p.into());
+    }
+    d.insert("write_mode".into(), write_mode.unwrap_or("replace").into());
+    Ok(serde_json::Value::Object(d))
 }
 
 /// `None` means "no schedule at all" — a one-time ingest. `--schedule` is
@@ -1220,7 +1267,10 @@ fn print_ingest_identity(ing: &Ingest) {
     {
         field("stopped by:", r);
     }
-    field("destination:", &destination_cell(ing.destination.as_ref()));
+    field(
+        "destination:",
+        &destination_detail(ing.destination.as_ref()),
+    );
     field(
         "schedule:",
         &schedule_cell(ing.schedule.as_ref(), ing.next_attempt_at.as_deref()),
@@ -1451,9 +1501,10 @@ fn removal_message(verb: &str) -> Option<String> {
         "trigger-import" | "rerun" | "run-now" => {
             return Some(format!(
                 "'hotdata ingest {verb}' was removed and has no replacement.\n\
-                 A one-time ingest runs when it is created, and a scheduled or continuous one \
-                 runs on its schedule — each run recovers from the last committed state, so an \
-                 out-of-band re-run would race the pipeline rather than repair it.\n\
+                 The scheduler dispatches every run — the single run of a one-time ingest, and \
+                 each run of a scheduled or continuous one — and every run recovers from the \
+                 last committed state, so an out-of-band re-run would race the pipeline rather \
+                 than repair it.\n\
                  \n\
                  To make the next scheduled run happen now:\n    \
                  hotdata ingest schedule <ingest-id> --next now\n\
@@ -1743,6 +1794,7 @@ mod tests {
             database_id: None,
             dest_schema: None,
             dest_table: None,
+            dest_table_prefix: None,
             write_mode: None,
             schedule: None,
             every: None,
@@ -1761,17 +1813,50 @@ mod tests {
         assert_eq!(req.r#type, "one_time"); // kebab in, snake out
         assert_eq!(req.selector["mode"], "tables");
         assert_eq!(req.selector["tables"][0], "orders");
-        // The destination table defaults to the FROM table.
+        // The FROM table is a SOURCE table, and a source table names its own
+        // destination — so nothing is sent for it. Sending `table` here named
+        // a table the load would not write, and the family it goes to has no
+        // such field to send it to.
         assert_eq!(
             req.destination,
             serde_json::json!({
                 "database_id": "db_123",
                 "schema": "public",
-                "table": "orders",
                 "write_mode": "replace",
             })
         );
         assert!(req.schedule.is_none());
+    }
+
+    /// The two destination fields are two different requests, and the CLI
+    /// sends whichever was asked for: which one a family accepts is the
+    /// service's question to answer, and a wrong one is a 422 naming the field.
+    #[test]
+    fn the_two_destination_flags_send_two_different_fields() {
+        let orders = ["orders".to_string()];
+        let mut p = plan("ds_cat", "one-time");
+        p.tables = &orders;
+        p.database_id = Some("db_1");
+        p.dest_table_prefix = Some("fam");
+        assert_eq!(
+            build_create(p).unwrap().destination,
+            serde_json::json!({
+                "database_id": "db_1",
+                "schema": "public",
+                "table_prefix": "fam",
+                "write_mode": "replace",
+            })
+        );
+
+        // The exact-table flag names `table`, whatever the selector reads —
+        // the CLI does not withhold a request the service might accept.
+        let mut p = plan("ds_cat", "one-time");
+        p.tables = &orders;
+        p.database_id = Some("db_1");
+        p.dest_table = Some("orders_raw");
+        let d = build_create(p).unwrap().destination;
+        assert_eq!(d["table"], "orders_raw");
+        assert!(d.get("table_prefix").is_none());
     }
 
     #[test]
@@ -1818,17 +1903,24 @@ mod tests {
         let mut p = plan("ds_1", "one-time");
         assert!(build_create(p).unwrap_err().contains("--table"));
 
-        // Selector but no destination.
+        // Selector but no destination. The database is the one half the CLI
+        // still insists on: there is no default for where rows go, and no 422
+        // can suggest which database was meant.
         p = plan("ds_1", "one-time");
         p.selector = Some(serde_json::json!({"mode": "tables"}));
         assert!(build_create(p).unwrap_err().contains("--destination"));
 
-        // A database with no table for it to land in, and no selector naming
-        // one for it to inherit.
+        // A database and nothing else is a complete request now: the families
+        // that name their own tables take a destination with no table field,
+        // and the ones that require one say so themselves, about the field
+        // they require. Guessing here refused requests the service accepts.
         p = plan("ds_1", "one-time");
         p.selector = Some(serde_json::json!({"mode": "tables"}));
         p.database_id = Some("db_1");
-        assert!(build_create(p).unwrap_err().contains("--dest-table"));
+        let d = build_create(p).unwrap().destination;
+        assert_eq!(d["database_id"], "db_1");
+        assert!(d.get("table").is_none(), "{d}");
+        assert!(d.get("table_prefix").is_none(), "{d}");
     }
 
     #[test]
@@ -1914,33 +2006,31 @@ mod tests {
     }
 
     #[test]
-    fn a_single_source_table_names_the_destination_table() {
-        // Loading one table must not mean typing its name twice.
-        let orders = ["orders".to_string()];
-        let mut p = plan("ds_pg", "one-time");
-        p.family = Some("sql");
-        p.tables = &orders;
-        p.database_id = Some("db_1");
-        let req = build_create(p).unwrap();
-        assert_eq!(
-            req.selector,
-            serde_json::json!({"mode": "tables", "tables": ["orders"]})
-        );
-        assert_eq!(
-            req.destination,
-            serde_json::json!({
-                "database_id": "db_1",
-                "schema": "public",
-                "table": "orders",
-                "write_mode": "replace",
-            })
-        );
-        // Several tables name no single destination, so one must be given.
-        let two = ["orders".to_string(), "customers".to_string()];
-        let mut p = plan("ds_pg", "one-time");
-        p.tables = &two;
-        p.database_id = Some("db_1");
-        assert!(build_create(p).unwrap_err().contains("--dest-table"));
+    fn source_tables_name_their_own_destination_tables() {
+        // One source table or several, the answer is the same: the load names
+        // them, so the destination names none of them. The single-table case
+        // is the one that used to differ, and it is the one that made a
+        // reserved name and a written name look interchangeable.
+        for tables in [
+            vec!["orders".to_string()],
+            vec!["orders".to_string(), "customers".to_string()],
+        ] {
+            let mut p = plan("ds_pg", "one-time");
+            p.family = Some("sql");
+            p.tables = &tables;
+            p.database_id = Some("db_1");
+            let req = build_create(p).unwrap();
+            assert_eq!(req.selector["tables"], serde_json::json!(tables));
+            assert_eq!(
+                req.destination,
+                serde_json::json!({
+                    "database_id": "db_1",
+                    "schema": "public",
+                    "write_mode": "replace",
+                }),
+                "{tables:?}"
+            );
+        }
     }
 
     /// CONTRACT TEST — the selector `--format`, `--glob` and `--record-shape`
@@ -2032,7 +2122,7 @@ mod tests {
 
     #[test]
     fn destination_flags_default_schema_and_write_mode() {
-        let d = build_destination(None, Some("db_1"), None, Some("t"), None, None).unwrap();
+        let d = build_destination(None, Some("db_1"), None, Some("t"), None, None, None).unwrap();
         assert_eq!(d["schema"], "public");
         assert_eq!(d["write_mode"], "replace");
         // Explicit values win.
@@ -2041,20 +2131,22 @@ mod tests {
             Some("db_1"),
             Some("staging"),
             Some("t"),
+            None,
             Some("upsert"),
             None,
         )
         .unwrap();
         assert_eq!(d["schema"], "staging");
         assert_eq!(d["write_mode"], "upsert");
-        // --table beats the FROM table when both are present.
+        // --dest-table beats the result table --raw-sql implied.
         let d = build_destination(
             None,
             Some("db_1"),
             None,
             Some("renamed"),
             None,
-            Some("orders"),
+            None,
+            Some("query_result"),
         )
         .unwrap();
         assert_eq!(d["table"], "renamed");

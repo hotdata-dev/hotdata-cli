@@ -65,10 +65,22 @@ impl IngestError {
             // or a follow-up hint should branch on — so print both.
             IngestError::Http { status, body } => {
                 let message = util::api_error(body.clone());
-                match util::error_code(body) {
+                let mut rendered = match util::error_code(body) {
                     Some(code) => format!("HTTP {status}: {message} ({code})"),
                     None => format!("HTTP {status}: {message}"),
+                };
+                // The message says which payload was rejected; the details say
+                // which field, and only together are they an instruction. One
+                // line each, indented under it, because a rejected body can
+                // name several fields and a joined sentence hides all but the
+                // first.
+                for (field, msg) in util::error_fields(body) {
+                    rendered.push_str(&match field.as_str() {
+                        "" => format!("\n  {msg}"),
+                        f => format!("\n  {f}: {msg}"),
+                    });
                 }
+                rendered
             }
             IngestError::Connection(e) => format!("connection error: {e}"),
             IngestError::Decode(e) => format!("malformed response: {e}"),
@@ -151,6 +163,20 @@ impl IngestError {
                              hotdata ingest delete {conflicting}"
                         )
                         .dark_grey()
+                    );
+                }
+                // The destination is per-family, and the pair of flags that
+                // build it is the thing to re-read: a family lands one table
+                // or a table per source table, never both, so a rejected
+                // `table`/`table_prefix` is the other flag's job.
+                Some("invalid_destination") => {
+                    eprintln!(
+                        "{}",
+                        "--dest-table names ONE table (buckets, Delta, a --raw-sql result); \
+                         --dest-table-prefix prefixes the tables a source that lands several \
+                         produces (SQL --table/--sql, Iceberg, DuckLake, Kafka, REST). The \
+                         family's own field reference: hotdata datasource fields <family>."
+                            .dark_grey()
                     );
                 }
                 Some("immutable_ingest_definition") => {
@@ -1002,6 +1028,12 @@ pub struct FamiliesResponse {
 /// `format: password` sits BESIDE the `anyOf`, not inside one of its members —
 /// which is what makes an optional secret's marker easy to miss, and a secret
 /// whose marker is missed is one the guided flow echoes to the terminal.
+///
+/// The `description` on a property is the service's own sentence about the
+/// field, written on the model that validates it. Some properties have one and
+/// some do not, which is the pair of cases the reference has to render — a
+/// fixture where none did is how the field reference came to drop all of them
+/// from its table and keep them only under `-o json`.
 #[cfg(test)]
 pub const FAMILY_REFERENCE_BODY: &str = r#"{
   "family": "sql",
@@ -1009,9 +1041,11 @@ pub const FAMILY_REFERENCE_BODY: &str = r#"{
     "additionalProperties": false,
     "properties": {
       "dialect": {"enum": ["postgres", "mysql", "duckdb"], "title": "Dialect",
-                  "type": "string"},
+                  "type": "string",
+                  "description": "Which SQL engine this is. The rest of `config` is read in its terms."},
       "host": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null,
-               "title": "Host"},
+               "title": "Host",
+               "description": "Server hostname. Omit for engines addressed by account or path."},
       "port": {"anyOf": [{"maximum": 65535, "minimum": 1, "type": "integer"},
                          {"type": "null"}], "default": null, "title": "Port"},
       "options": {"additionalProperties": true, "title": "Options", "type": "object"}
@@ -1040,7 +1074,8 @@ pub const FAMILY_REFERENCE_BODY: &str = r#"{
          "schema": {"anyOf": [{"type": "string"}, {"type": "null"}],
                     "default": null, "title": "Schema"},
          "tables": {"items": {"type": "string"}, "minItems": 1,
-                    "title": "Tables", "type": "array"},
+                    "title": "Tables", "type": "array",
+                    "description": "Source tables to read. Each lands in a destination table of the same name."},
          "limit": {"anyOf": [{"minimum": 1, "type": "integer"}, {"type": "null"}],
                    "default": null, "title": "Limit"}
        },
@@ -1758,6 +1793,37 @@ mod tests {
             }
             other => panic!("expected Http, got: {}", other.message()),
         }
+    }
+
+    /// A 422 about ONE field must say which field.
+    ///
+    /// The message half names the payload and the family and stops there — by
+    /// design, since `details` is where the field paths are. Printing only the
+    /// message left a caller who sent a destination field the family does not
+    /// have with "invalid destination for family 'iceberg'" and nothing to act
+    /// on, which is the same amount of information as no error text at all.
+    #[test]
+    fn a_field_level_rejection_names_the_field_it_rejected() {
+        let err = IngestError::Http {
+            status: 422,
+            body: r#"{"error": {"code": "invalid_destination",
+                      "message": "invalid destination for family 'iceberg'",
+                      "details": {"errors": [
+                        {"field": "table", "message": "Extra inputs are not permitted"}]}}}"#
+                .into(),
+        };
+        let rendered = err.message();
+        assert!(rendered.contains("invalid_destination"), "{rendered}");
+        assert!(
+            rendered.contains("\n  table: Extra inputs are not permitted"),
+            "{rendered}"
+        );
+        // An envelope with no field errors is unchanged — one line, as before.
+        let plain = IngestError::Http {
+            status: 404,
+            body: r#"{"error":{"code":"run_not_found","message":"no run 'nope'"}}"#.into(),
+        };
+        assert_eq!(plain.message(), "HTTP 404: no run 'nope' (run_not_found)");
     }
 
     // --- catalog -----------------------------------------------------------
