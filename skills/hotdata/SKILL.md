@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, datasources/ingests/runs (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "managed database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "ingest run", "run show", "schedule an ingest", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. This skill bundles three specialized guides under subskills/, loaded on demand: read subskills/search/SKILL.md for full-text/vector search and retrieval indexes, subskills/analytics/SKILL.md for OLAP analytics, query history, stored results, and Chain materializations, and subskills/geospatial/SKILL.md for geospatial/GIS.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, managed databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, datasources/ingests/runs (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "managed database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "ingest run", "show a run", "schedule an ingest", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. This skill bundles three specialized guides under subskills/, loaded on demand: read subskills/search/SKILL.md for full-text/vector search and retrieval indexes, subskills/analytics/SKILL.md for OLAP analytics, query history, stored results, and Chain materializations, and subskills/geospatial/SKILL.md for geospatial/GIS.
 version: 0.24.0
 ---
 
@@ -73,7 +73,7 @@ Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and manage
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`datasource`**, **`ingest`**, **`run`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`databases`**, **`tables`**, **`skills`**, **`results`**, **`jobs`**, **`datasource`**, **`ingest`**, **`indexes`**, **`embedding-providers`**, **`search`**, **`queries`**, **`context`**, **`usage`**, **`completions`**, **`upgrade`**. Search, indexes (bm25/vector), and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -234,17 +234,17 @@ hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 
-### Ingest external data (`datasource`, `ingest`, `run`)
+### Ingest external data (`datasource`, `ingest`)
 
 Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceberg catalogs, Kafka) into managed databases. **Three nouns, three ids, and an id is always what goes on the wire** — the service has no name lookup, because a display name is a label and nothing stops two rows sharing one:
 
 - **datasource** (`ds_…`) — what a credential opens: a server, a bucket root, a catalog, a cluster. Holds config + credentials, loads no data.
 - **ingest** (`ing_…`) — a saved load definition: `datasource + selector + destination + type/schedule`. One datasource can back many ingests.
-- **run** (`run_…`) — one execution attempt, with snapshots of the config version, selector, and destination it used.
+- **run** (`run_…`) — one execution attempt, with snapshots of the config version, selector, and destination it used. Addressed under its ingest: `ingest runs <ing_…>` lists them, `ingest run <run_…>` shows one. There is no top-level `run` command — that word belongs to `databases run`, `jobs`, and `queries`.
 
 One flag softens that for typing, and only for typing: `ingest create --source` accepts a display name and resolves it to an id **client-side, before the request**, erroring with both ids if the name matches two datasources rather than picking one. Every other argument, and every request the CLI sends, takes ids only.
 
-Read commands (`datasource list|show|types|fields`, `ingest list|show|runs`, `run show`) work with a login session JWT. Commands that persist a credential (`datasource create`, `datasource update-config`, `ingest create`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — the run outlives the 5-minute JWT.
+Read commands (`datasource list|show|types|fields`, `ingest list|show|runs|run`) work with a login session JWT. Commands that persist a credential (`datasource create`, `datasource update-config`, `ingest create`) **require a workspace API key** (`HOTDATA_API_KEY` / `--api-key`, `hd_...`) — the run outlives the 5-minute JWT.
 
 ```bash
 hotdata datasource types [filter]      # browse available source types. The FAMILY
@@ -350,7 +350,7 @@ hotdata ingest delete <ingest-id>    # releases the destination table; data unto
 
 # --- runs --------------------------------------------------------------------
 hotdata ingest runs <ingest-id> [--status failed]   # every attempt, newest first
-hotdata run show <run-id>            # exits 0 succeeded / 1 failed|cancelled / 2 in flight
+hotdata ingest run <run-id>          # exits 0 succeeded / 1 failed|cancelled / 2 in flight
 # --wait on either polls to a terminal status (--wait-timeout, default 300s;
 # exit 2 on timeout). It WATCHES: the scheduler owns dispatch, so waiting cannot
 # make a queued run start. `ingest schedule <id> --next now` is what does that.
@@ -363,7 +363,7 @@ Agent tips:
 - `--sql` is a **restricted grammar**: `SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n]` — no joins/GROUP BY/ORDER BY, and the FROM target names the **source table**, not a datasource. For anything richer use `--raw-sql`, which runs the statement verbatim at the source in its own dialect.
 - **Every shorthand flag builds the same JSON `--selector`/`--destination` carry.** Nothing new reaches the API through them, so mixing a shorthand with the JSON for the same half is rejected rather than merged.
 - Run `status` is a **closed set**: `queued` | `running` | `succeeded` | `failed` | `cancelled`. While running, the finer progress state (e.g. `extracting`, `loading`) appears in `stage` — informational only, never switch on it.
-- Prefer `-o json` plus the `run show` exit codes for scripting; poll `run show` rather than holding a terminal open.
+- Prefer `-o json` plus the `ingest run` exit codes for scripting; poll `ingest run` rather than holding a terminal open.
 - Tables print oldest→newest; `-o json` is newest-first (`[0]` = latest).
 - Errors carry a stable code alongside the message, e.g. `HTTP 409: … (destination_table_conflict)`. Branch on the code, not the sentence.
 - Once a run has succeeded, the destination is a regular managed DB: query it with `hotdata query --database <db-id> "SELECT … FROM public.<table>"`.

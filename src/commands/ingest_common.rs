@@ -1,8 +1,9 @@
-//! Presentation and argument helpers shared by the three ingest-side command
-//! groups: `hotdata datasource`, `hotdata ingest`, and `hotdata run`.
+//! Presentation and argument helpers shared by the two ingest-side command
+//! groups: `hotdata datasource` and `hotdata ingest` (which is where a run is
+//! shown, as `ingest run <run-id>`).
 //!
 //! They were one group before the datasource/ingest/run split, and the output
-//! conventions must not drift now that they are three: one `render`, one
+//! conventions must not drift now that they are separate: one `render`, one
 //! spinner wrapper, one detail-view label width, one `@file.json` parser, one
 //! date cell. Each group keeps its own request-building logic.
 
@@ -10,7 +11,7 @@ use crate::util;
 
 /// Detail-view label column. Wide enough for the longest label in the group
 /// (`config version:`), so the values in `datasource show` / `ingest show` /
-/// `run show` line up with each other.
+/// `ingest run` line up with each other.
 const LABEL_WIDTH: usize = 16;
 
 /// Gap between polls on every `--wait` path.
@@ -313,7 +314,7 @@ pub fn run_status_cell(status: &str, stage: Option<&str>) -> String {
     }
 }
 
-/// Exit code for `hotdata run show`, mirroring `query status`: 0 succeeded,
+/// Exit code for `hotdata ingest run`, mirroring `query status`: 0 succeeded,
 /// 1 failed/cancelled, 2 still in flight (queued/running).
 pub fn run_exit_code(status: &str) -> i32 {
     match normalize_run_status(status).0 {

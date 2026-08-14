@@ -137,12 +137,17 @@ fn the_payload_flags_point_at_the_field_reference_by_name() {
 }
 
 #[test]
-fn run_help_lists_show_and_disambiguates_the_noun() {
-    let (ok, help) = combined(&["run", "--help"]);
+fn a_run_is_shown_under_ingest_and_the_bare_noun_stays_unclaimed() {
+    let (ok, help) = combined(&["ingest", "run", "--help"]);
     assert!(ok, "{help}");
-    assert!(help.contains("show"), "{help}");
-    // `hotdata run` sits next to `hotdata databases run` and `hotdata jobs`.
-    assert!(help.contains("databases run"), "{help}");
+    assert!(help.contains("RUN_ID") || help.contains("run-id"), "{help}");
+    // `run` on its own is deliberately NOT a top-level command. Three other
+    // groups already have a claim on the word — `databases run` launches a
+    // child process, `jobs` is platform background jobs, `queries` is query run
+    // history — and the obvious eventual meaning of a bare `hotdata run` is
+    // runs of every kind, which ingest should not spend on its own.
+    let (taken, out) = combined(&["run", "run_01JZZZ"]);
+    assert!(!taken, "top-level `run` should not exist: {out}");
 }
 
 // --- ids are the canonical arguments -----------------------------------------
@@ -191,8 +196,8 @@ fn datasource_show_requires_a_datasource_id() {
 }
 
 #[test]
-fn run_show_requires_a_run_id() {
-    let (ok, out) = combined(&["run", "show"]);
+fn ingest_run_requires_a_run_id() {
+    let (ok, out) = combined(&["ingest", "run"]);
     assert!(!ok, "should not parse: {out}");
     assert!(out.contains("required") || out.contains("RUN_ID"), "{out}");
 }
@@ -582,7 +587,7 @@ fn every_wait_flag_says_it_cannot_make_a_run_start_sooner() {
     // The one thing a user must not conclude from a --wait on a scheduler-driven
     // model. Each of the three surfaces has to say it where it is read.
     for (args, needle) in [
-        (vec!["run", "show", "--help"], "does not make it start"),
+        (vec!["ingest", "run", "--help"], "does not make it start"),
         (vec!["ingest", "runs", "--help"], "cannot bring one forward"),
         (
             vec!["datasource", "create", "--help"],
@@ -633,6 +638,63 @@ fn trigger_import_explains_its_removal_instead_of_vanishing() {
 }
 
 #[test]
+fn the_fallback_hint_lists_every_verb_clap_accepts() {
+    // The `None` arm of `removed()` — what an unrecognized verb with no
+    // specific removal message prints. It is a hand-maintained list beside a
+    // clap enum, so it drifts silently: when `run` moved under `ingest` the
+    // hint kept naming the old top-level spelling and omitted the new verb,
+    // and nothing failed.
+    //
+    // Compared as exact tokens, not with `contains`. A substring check passes
+    // while `run` is missing, because the hint still says `runs` — which is
+    // how a first attempt at this test passed against the very drift it was
+    // written to catch.
+    let (_, hint) = combined(&["ingest", "definitely-not-a-verb"]);
+    let (ok, help) = combined(&["ingest", "--help"]);
+    assert!(ok, "{help}");
+
+    let listed: Vec<String> = hint
+        .split("Verbs:")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no verb list in the hint: {hint}"))
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .split(',')
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect();
+
+    let from_clap: Vec<String> = help
+        .lines()
+        .skip_while(|l| !l.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  ") && !l.trim().is_empty())
+        // Verbs sit at a fixed indent; clap wraps a long about-line and aligns
+        // the continuation further right. Nothing wraps at today's help width,
+        // but a stray sentence fragment in this list would read as a drift
+        // failure when it is nothing of the kind — so keep the verb column
+        // only, rather than every indented line.
+        .filter(|l| !l.starts_with("   "))
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|v| *v != "help")
+        .map(str::to_string)
+        .collect();
+    assert!(from_clap.len() > 5, "parsed too few verbs: {from_clap:?}");
+
+    let mut a = listed.clone();
+    let mut b = from_clap.clone();
+    a.sort();
+    b.sort();
+    assert_eq!(
+        a, b,
+        "the hint's verb list and clap's disagree\n  hint: {listed:?}\n  clap: {from_clap:?}"
+    );
+    // And it must not send anyone to a command that no longer parses.
+    assert!(!hint.contains("hotdata run'"), "{hint}");
+}
+
+#[test]
 fn renamed_verbs_point_at_their_replacements() {
     for (old, expected) in [
         ("new-datasource", "hotdata datasource create"),
@@ -641,7 +703,7 @@ fn renamed_verbs_point_at_their_replacements() {
         ("delete-datasource", "hotdata datasource delete"),
         ("new-import", "hotdata ingest create"),
         ("list-imports", "hotdata ingest list"),
-        ("status", "hotdata run show"),
+        ("status", "hotdata ingest run"),
     ] {
         let (ok, out) = combined(&["ingest", old]);
         assert!(!ok, "{old} should fail: {out}");

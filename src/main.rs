@@ -21,7 +21,6 @@ use commands::jobs::{self, JobsCommands};
 use commands::queries::{self, QueriesCommands};
 use commands::query::{self, QueryCommands};
 use commands::results::{self, ResultsCommands};
-use commands::run;
 use commands::skill::{self, SkillCommands};
 use commands::tables::{self, TablesCommands};
 use commands::workspace::{self, WorkspaceCommands};
@@ -559,14 +558,6 @@ fn main() {
                 }
                 let workspace_id = resolve_workspace(workspace_id);
                 ingest::dispatch(&workspace_id, &output, command);
-            }
-            Commands::Run {
-                workspace_id,
-                output,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                run::dispatch(&workspace_id, &output, command);
             }
             Commands::Indexes {
                 workspace_id,

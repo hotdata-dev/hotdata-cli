@@ -87,7 +87,8 @@ Three nouns, and each one has a stable id:
 - **ingest** (`ing_…`) — a saved load definition: which subset of a datasource
   lands in which managed-database table, once or on a schedule.
 - **run** (`run_…`) — one execution attempt, recording the config version,
-  selector, and destination it used.
+  selector, and destination it used. Addressed under its ingest —
+  `ingest runs <ing_…>` lists them, `ingest run <run_…>` shows one.
 
 ```sh
 hotdata datasource types                    # browse: SQL dialects, ~150 API services,
@@ -138,7 +139,7 @@ hotdata ingest create --datasource-id ds_01J --database-id db_123 \
 
 # 4. Watch it. --wait polls; the scheduler decides when a run starts:
 hotdata ingest runs ing_01J                 # every attempt, newest first
-hotdata run show run_01J --wait             # one attempt; exits 0 succeeded /
+hotdata ingest run run_01J --wait           # one attempt; exits 0 succeeded /
                                             # 1 failed / 2 in flight
 
 # The data lands in a managed database — query it like any other:
@@ -225,7 +226,7 @@ System embedding providers come pre-configured; bring your own with
 The CLI is built to be driven programmatically:
 
 - Every listing command takes `-o json|yaml`; long-running commands expose
-  script-friendly exit codes (`query status`, `run show`).
+  script-friendly exit codes (`query status`, `ingest run`).
 - Authenticate non-interactively with an API key: `--api-key`, or
   `HOTDATA_API_KEY` in the environment or a `.env` file.
 - `hotdata databases run <cmd>` launches a child process (an agent, a script)
@@ -252,8 +253,7 @@ Run `hotdata <command> --help` for full flags on any command.
 | `indexes` | Create/list/delete `sorted`, `bm25`, `vector` indexes |
 | `embedding-providers` | Manage embedding providers for vector indexes |
 | `datasource` | External sources: validate, create, list, update-config, delete |
-| `ingest` | Saved load definitions: create, list, cancel, resume, schedule, runs |
-| `run` | One ingest execution attempt and the snapshots it used |
+| `ingest` | Saved load definitions: create, list, cancel, resume, schedule, `runs` (list), `run` (show one) |
 | `context` | Shared server-side Markdown (`DATAMODEL`, glossaries) |
 | `jobs` | Background jobs (refreshes, index builds) |
 | `skills` | Install/inspect the bundled agent skills |

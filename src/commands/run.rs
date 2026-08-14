@@ -1,13 +1,18 @@
-//! `hotdata run` — one execution attempt of an ingest.
+//! `hotdata ingest run` — one execution attempt of an ingest.
 //!
 //! Runs are append-only: a scheduled ingest accumulates them, and each one
 //! records the datasource config version, selector, destination, and schedule
 //! it used — so a run stays explainable after the datasource has been
-//! reconfigured or the schedule changed. That is what `run show` prints.
+//! reconfigured or the schedule changed. That is what this prints.
 //!
-//! Not to be confused with `hotdata databases run <cmd>` (which launches a
-//! child process with database-scoped credentials) or `hotdata jobs` (platform
-//! background jobs). This noun is ingest execution only.
+//! It sits under `ingest` rather than at the top level because "run" on its own
+//! is not this subsystem's word to take: `hotdata databases run <cmd>` launches
+//! a child process, `hotdata jobs` is platform background jobs, and
+//! `hotdata queries` is query run history. A bare `hotdata run` would have to
+//! be read as "which of those four?" — and it would spend a name whose obvious
+//! eventual meaning is runs of every kind, not ingest's alone.
+//!
+//! `ingest runs <ingest-id>` lists; `ingest run <run-id>` shows one.
 //!
 //! **Script-friendly exit codes**, matching `query status`: 0 succeeded,
 //! 1 failed or cancelled, 2 still in flight. `-o json` still lands on stdout in
@@ -20,41 +25,8 @@ use crate::commands::ingest_common::{
 };
 use crate::util;
 
-#[derive(clap::Subcommand)]
-pub enum RunCommands {
-    /// Show one run: status, the snapshots it used, and its timings
-    ///
-    /// Exits 0 when the run succeeded, 1 when it failed or was cancelled, and
-    /// 2 while it is still queued or running.
-    Show {
-        /// Run id (from `hotdata ingest runs <ingest-id>`)
-        run_id: String,
-
-        /// Watch until the run finishes.
-        ///
-        /// Polling only: the scheduler owns dispatch, so watching a queued run
-        /// does not make it start — it reports when it does.
-        #[arg(long)]
-        wait: bool,
-
-        /// Seconds to watch with --wait (default 300)
-        #[arg(long = "wait-timeout", default_value = "300")]
-        wait_timeout: u64,
-    },
-}
-
-/// Entry point from `main`. Keeps `main.rs` thin — one call per group.
-pub fn dispatch(workspace_id: &str, output: &str, command: RunCommands) {
-    match command {
-        RunCommands::Show {
-            run_id,
-            wait,
-            wait_timeout,
-        } => show(workspace_id, output, &run_id, wait, wait_timeout),
-    }
-}
-
-fn show(workspace_id: &str, output: &str, run_id: &str, wait: bool, wait_timeout: u64) {
+/// Called from `ingest::dispatch` for `IngestCommands::Run`.
+pub fn show(workspace_id: &str, output: &str, run_id: &str, wait: bool, wait_timeout: u64) {
     let client = IngestClient::new(workspace_id);
     let run = if wait {
         watch(&client, run_id, wait_timeout)
@@ -132,7 +104,7 @@ fn watch(client: &IngestClient, run_id: &str, timeout_secs: u64) -> Run {
     );
     match outcome {
         Ok(run) => run,
-        Err(_) => wait_timed_out(&format!("hotdata run show {run_id} --wait")),
+        Err(_) => wait_timed_out(&format!("hotdata ingest run {run_id} --wait")),
     }
 }
 

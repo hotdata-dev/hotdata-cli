@@ -9,7 +9,6 @@ use crate::commands::jobs::JobsCommands;
 use crate::commands::queries::QueriesCommands;
 use crate::commands::query::QueryCommands;
 use crate::commands::results::ResultsCommands;
-use crate::commands::run::RunCommands;
 use crate::commands::skill::SkillCommands;
 use crate::commands::tables::TablesCommands;
 use crate::commands::workspace::WorkspaceCommands;
@@ -154,24 +153,6 @@ pub enum Commands {
 
         #[command(subcommand)]
         command: IngestCommands,
-    },
-
-    /// Ingest runs: one execution attempt, with the config version, selector,
-    /// and destination it used
-    ///
-    /// Unrelated to `hotdata databases run <cmd>` (a scoped child process) and
-    /// to `hotdata jobs` (platform background jobs).
-    Run {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, short = 'w', global = true)]
-        workspace_id: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"], global = true)]
-        output: String,
-
-        #[command(subcommand)]
-        command: RunCommands,
     },
 
     /// Manage indexes on a table
