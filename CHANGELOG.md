@@ -1,3 +1,48 @@
+## [0.25.0] - 2026-08-14
+
+### 🚀 Features
+
+- *(ingest)* [**breaking**] Split ingest into datasource, ingest, and run (#256)
+
+### ⚠️ Breaking: every `ingest` command moved
+
+`ingest` had grown to mean four things — a stored connection, a one-time
+import, a recurring sync, and the job you asked about — so `ingest status <id>`
+took an id that could be any of them and answered differently depending which.
+They are now three nouns with three command groups.
+
+| Was | Now |
+|---|---|
+| `ingest new-datasource` | `datasource create` |
+| `ingest list-datasources` / `show-datasource` / `delete-datasource` | `datasource list` / `show` / `delete` |
+| `ingest new-import` | `ingest create --type one-time` |
+| `ingest list-imports` | `ingest list` |
+| `ingest status <id>` | `ingest run <run_id>` / `ingest runs <ingest_id>` |
+| `ingest raw-sql "…"` | `ingest create --raw-sql "…"` |
+| `ingest trigger-import` | **removed, no replacement** |
+
+Every retired verb still runs and tells you what to use instead, so the change
+is discoverable rather than an unrecognised-subcommand error.
+
+`trigger-import` is gone because a recurring load resumes from its last
+committed position — re-running by hand is not the recovery it looks like. To
+bring the next scheduled run forward: `ingest schedule <id> --next now`. For a
+one-off, create another one-time ingest.
+
+A run is addressed under its ingest — `ingest runs <ingest_id>` lists them,
+`ingest run <run_id>` shows one. There is no top-level `run` command: that word
+already belongs to `databases run`, `jobs`, and `queries`.
+
+Two smaller changes worth knowing:
+
+- `--sql "SELECT … FROM a.b"` now reads `a.b` as `schema.table`. The datasource
+  is named by `--source` (a display name or an id) or `--datasource-id`.
+- Loads no longer start the moment you create them; the scheduler dispatches
+  them. `--wait` polls rather than driving, so it watches instead of making
+  anything happen sooner.
+
+**Requires the matching service release.** These commands call endpoints that
+do not exist in earlier versions.
 ## [0.24.0] - 2026-08-12
 
 ### 🚀 Features
