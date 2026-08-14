@@ -10,7 +10,7 @@ The `hotdata` skill is always loaded first (auth and workspace setup). The three
 
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
-| Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `datasource`, `ingest`, `run`, `tables`, `context` |
+| Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `datasource`, `ingest`, `tables`, `context` |
 | Load parquet files into a managed database | **`hotdata`** | `databases create` + `databases load` |
 | SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** (`subskills/analytics/SKILL.md`) | `query`, `queries`, `results` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** (`subskills/search/SKILL.md`) | `search`, `indexes create`, `embedding-providers` |

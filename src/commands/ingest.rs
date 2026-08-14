@@ -3,7 +3,7 @@
 //! An ingest is `datasource + selector + destination + type/schedule`. One
 //! datasource can back many ingests; the ingest decides *what subset* to read
 //! and *where it lands*. Every execution attempt is a run
-//! (`hotdata ingest runs`, `hotdata run show`).
+//! (`hotdata ingest runs`, `hotdata ingest run`).
 //!
 //! **The definition is immutable.** Selector and destination are fixed at
 //! creation — changing either means a new ingest. Only the schedule and the
@@ -354,6 +354,28 @@ pub enum IngestCommands {
         wait_timeout: u64,
     },
 
+    /// Show one run: status, the snapshots it used, and its timings
+    ///
+    /// `runs` lists an ingest's attempts; this shows one of them by id.
+    ///
+    /// Exits 0 when the run succeeded, 1 when it failed or was cancelled, and
+    /// 2 while it is still queued or running.
+    Run {
+        /// Run id (from `hotdata ingest runs <ingest-id>`)
+        run_id: String,
+
+        /// Watch until the run finishes.
+        ///
+        /// Polling only: the scheduler owns dispatch, so watching a queued run
+        /// does not make it start — it reports when it does.
+        #[arg(long)]
+        wait: bool,
+
+        /// Seconds to watch with --wait (default 300)
+        #[arg(long = "wait-timeout", default_value = "300")]
+        wait_timeout: u64,
+    },
+
     /// Delete an ingest and release its destination table
     ///
     /// Soft-delete: cancels an active run first, then releases destination
@@ -496,6 +518,11 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
                 .unwrap_or_else(|| fail("an ingest id is required (positional or --ingest-id)"));
             runs(workspace_id, output, &id, status, wait, wait_timeout)
         }
+        IngestCommands::Run {
+            run_id,
+            wait,
+            wait_timeout,
+        } => super::run::show(workspace_id, output, &run_id, wait, wait_timeout),
         IngestCommands::Delete { ingest_id } => delete(workspace_id, output, &ingest_id),
         IngestCommands::Removed(argv) => removed(&argv),
     }
@@ -621,7 +648,7 @@ fn create(client: &IngestClient, output: &str, plan: CreatePlan) {
         match ing.initial_run_id.as_deref() {
             Some(run_id) => {
                 field("run id:", run_id);
-                hint(&format!("Track it with: hotdata run show {run_id}"));
+                hint(&format!("Track it with: hotdata ingest run {run_id}"));
             }
             None => hint(&format!(
                 "The scheduler dispatches it. Watch it with: hotdata ingest runs {}",
@@ -1268,7 +1295,7 @@ fn truncated(s: &str) -> String {
 /// of its own, so one failed run is what turns a listing into a screenful of
 /// fragments. Collapsing the whitespace first is what makes the truncation
 /// hold: cutting to 40 characters does nothing if the first newline arrives at
-/// character 12. `hotdata run show <run-id>` and `-o json` carry all of it.
+/// character 12. `hotdata ingest run <run-id>` and `-o json` carry all of it.
 fn detail_cell(detail: Option<&str>) -> String {
     match detail.filter(|d| !d.trim().is_empty()) {
         Some(d) => truncated(&d.split_whitespace().collect::<Vec<_>>().join(" ")),
@@ -1543,7 +1570,7 @@ fn removal_message(verb: &str) -> Option<String> {
             "hotdata ingest create --source <name-or-id> --table <table> --database-id <db>"
         }
         "list-imports" => "hotdata ingest list",
-        "status" => "hotdata run show <run-id>  (or: hotdata ingest runs <ingest-id>)",
+        "status" => "hotdata ingest run <run-id>  (or: hotdata ingest runs <ingest-id>)",
         "raw-sql" => {
             "hotdata ingest create --source <name-or-id> --raw-sql \"SELECT …\" \
              --table <result-table> --database-id <db>"
@@ -2410,7 +2437,7 @@ mod tests {
             ("datasources", "hotdata datasource types"),
             ("new-import", "hotdata ingest create"),
             ("list-imports", "hotdata ingest list"),
-            ("status", "hotdata run show"),
+            ("status", "hotdata ingest run"),
             // Not "--selector" any more: the capability has its own flag back,
             // and a pointer at the escape hatch would be the long way round.
             ("raw-sql", "--raw-sql"),

@@ -137,12 +137,17 @@ fn the_payload_flags_point_at_the_field_reference_by_name() {
 }
 
 #[test]
-fn run_help_lists_show_and_disambiguates_the_noun() {
-    let (ok, help) = combined(&["run", "--help"]);
+fn a_run_is_shown_under_ingest_and_the_bare_noun_stays_unclaimed() {
+    let (ok, help) = combined(&["ingest", "run", "--help"]);
     assert!(ok, "{help}");
-    assert!(help.contains("show"), "{help}");
-    // `hotdata run` sits next to `hotdata databases run` and `hotdata jobs`.
-    assert!(help.contains("databases run"), "{help}");
+    assert!(help.contains("RUN_ID") || help.contains("run-id"), "{help}");
+    // `run` on its own is deliberately NOT a top-level command. Three other
+    // groups already have a claim on the word — `databases run` launches a
+    // child process, `jobs` is platform background jobs, `queries` is query run
+    // history — and the obvious eventual meaning of a bare `hotdata run` is
+    // runs of every kind, which ingest should not spend on its own.
+    let (taken, out) = combined(&["run", "run_01JZZZ"]);
+    assert!(!taken, "top-level `run` should not exist: {out}");
 }
 
 // --- ids are the canonical arguments -----------------------------------------
@@ -191,8 +196,8 @@ fn datasource_show_requires_a_datasource_id() {
 }
 
 #[test]
-fn run_show_requires_a_run_id() {
-    let (ok, out) = combined(&["run", "show"]);
+fn ingest_run_requires_a_run_id() {
+    let (ok, out) = combined(&["ingest", "run"]);
     assert!(!ok, "should not parse: {out}");
     assert!(out.contains("required") || out.contains("RUN_ID"), "{out}");
 }
@@ -582,7 +587,7 @@ fn every_wait_flag_says_it_cannot_make_a_run_start_sooner() {
     // The one thing a user must not conclude from a --wait on a scheduler-driven
     // model. Each of the three surfaces has to say it where it is read.
     for (args, needle) in [
-        (vec!["run", "show", "--help"], "does not make it start"),
+        (vec!["ingest", "run", "--help"], "does not make it start"),
         (vec!["ingest", "runs", "--help"], "cannot bring one forward"),
         (
             vec!["datasource", "create", "--help"],
@@ -641,7 +646,7 @@ fn renamed_verbs_point_at_their_replacements() {
         ("delete-datasource", "hotdata datasource delete"),
         ("new-import", "hotdata ingest create"),
         ("list-imports", "hotdata ingest list"),
-        ("status", "hotdata run show"),
+        ("status", "hotdata ingest run"),
     ] {
         let (ok, out) = combined(&["ingest", old]);
         assert!(!ok, "{old} should fail: {out}");
