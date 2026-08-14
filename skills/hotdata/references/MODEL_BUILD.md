@@ -17,13 +17,13 @@ hotdata databases list       # managed databases (catalogs you own)
 hotdata tables list          # every workspace table, as <catalog>.<schema>.<table>
 ```
 
-For each catalog, record its name and the tables it exposes. (Pulling *new* external data into a managed database is a separate step — see the `ingest` datasource commands in the core skill.)
+For each catalog, record its name and the tables it exposes. (Pulling *new* external data into a managed database is a separate step — see the `datasource` and `ingest` commands in the core skill.)
 
 ---
 
 ## 2. Enumerate tables and columns
 
-A datasource's schema is discovered when it is added. If the source schema may have changed (recent DDL, new tables), re-check the currently discovered tables/columns with **`hotdata ingest show-datasource <datasource_id>`** **before** relying on `tables list`.
+A datasource's schema is discovered when it is added. If the source schema may have changed (recent DDL, new tables), re-check the currently discovered tables/columns with **`hotdata datasource show <datasource_id>`** **before** relying on `tables list`.
 
 **Workspace tables** (list all, narrow with filters):
 
@@ -43,7 +43,7 @@ Capture schema for each managed-database table (columns, types) from the table l
 You can also re-check a datasource's discovered schema after enumeration if you suspect drift:
 
 ```bash
-hotdata ingest show-datasource <datasource_id>
+hotdata datasource show <datasource_id>
 ```
 
 ---

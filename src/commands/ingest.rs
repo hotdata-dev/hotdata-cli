@@ -1,1749 +1,1596 @@
-//! `hotdata ingest` — pull data from external sources into a managed database.
+//! `hotdata ingest` — saved load definitions.
 //!
-//! Two nouns, named explicitly in every command: **datasources** (added,
-//! credentialed sources — schema discovered, no data loaded) and **imports**
-//! (managed DBs materialized from a datasource). Commands: `new-datasource`,
-//! `list-datasources`, `datasources` (the catalog of available types),
-//! `new-import` (--all or
-//! SQL), `list-imports`, `trigger-import` (re-run: refresh an import's DB
-//! from source), `status` (one-shot or `--wait` attach). The 0.13
-//! `*-connection` verbs survive as hidden aliases (the noun collided with
-//! the federated `hotdata connections` store).
+//! An ingest is `datasource + selector + destination + type/schedule`. One
+//! datasource can back many ingests; the ingest decides *what subset* to read
+//! and *where it lands*. Every execution attempt is a run
+//! (`hotdata ingest runs`, `hotdata run show`).
 //!
-//! **Imports don't block.** `new-import` and `trigger-import` submit, print
-//! the import id, and return; progress is tracked with `status <id>
-//! [--wait]` or `list-imports`. `--wait` opts into the old blocking poll.
-//! `new-datasource` is the deliberate exception — it blocks by default
-//! because its output IS the feedback (credentials validated, schema
-//! discovered); `--no-wait` opts out.
+//! **The definition is immutable.** Selector and destination are fixed at
+//! creation — changing either means a new ingest. Only the schedule and the
+//! lifecycle state (`cancel` / `resume` / `delete`) can move.
 //!
-//! `new-datasource` **adds a datasource and discovers its schema — it loads
-//! no data**. It runs the guided wizard when no `--service` is given on a
-//! terminal, and is flag-driven otherwise (`--service` given, a non-TTY, or
-//! `--no-input`) — one command, two front doors. Pulling rows is the
-//! separate, explicit `new-import` step, read back through the core
-//! `query`/`databases`/`results` commands.
+//! **Cancel means both halves.** `cancel` stops the active run *and* stops
+//! future scheduled dispatch; `resume` clears the stop and the backoff but
+//! deliberately does **not** run anything immediately. Bringing the next run
+//! forward is `ingest schedule <id> --next now`, which is also why there is no
+//! `trigger-import` / `run-now` verb: a manual re-run would surprise a pipeline
+//! whose contract is that later runs recover from the last committed state.
 //!
-//! The wizard is catalog-driven: the `/ingest/connectors` catalog returns a
-//! `template` per REST service with everything but the `<PLACEHOLDER>`
-//! secrets filled in, so the user only supplies those. Submitting needs a
-//! durable `hd_` API key (`--api-key`/`HOTDATA_API_KEY`); results land in
-//! the authenticated workspace — there is no destination flag by design.
+//! **The shorthand flags are CLI sugar, not API concepts.** `--table`,
+//! `--table-path`, `--topic`, `--schema`, `--format`, `--glob`,
+//! `--record-shape`, `--all`, `--raw-sql` and `--sql` all BUILD the one
+//! document `--selector` would have carried, and `--selector` stays the escape
+//! hatch for anything they cannot say. Nothing new goes on the wire: the
+//! request from `--table orders` is the request from the equivalent
+//! `--selector` JSON, byte for byte, which is what the contract tests at the
+//! bottom of this file hold still.
 //!
-//! **Presentation contract:** user-facing output speaks datasource / import
-//! / database, never the service's job vocabulary. `status` is a closed set
-//! (pending | running | done | failed); the service's finer progress states
-//! ride in `stage`. JSON output projects the same user-facing fields (`id`,
-//! `name`, `type`, `status`, `stage`, …), not the wire rows.
+//! **There is deliberately no `--resource` for REST sources.** Every other
+//! shorthand names its subset in one word, so a flag can carry the whole
+//! selection. A REST resource is a name plus an endpoint — path, method, query
+//! and body parameters, which field of the response holds the rows, and how to
+//! page through them — and only the name would fit in a flag. Guessing the
+//! rest is not a smaller request, it is a different one: a read whose paging
+//! was guessed wrong returns the first page and reports success, which is a
+//! silent partial load, and one whose row selector was guessed wrong loads the
+//! envelope instead of the rows. Those are worth a `--selector` document, and
+//! `hotdata datasource fields rest` is what describes it.
+//!
+//! `--sql` and `--raw-sql` are the two that carry SQL, and neither sends any.
+//! `--sql`'s restricted `SELECT <cols> FROM [<schema>.]<table> [WHERE …]
+//! [LIMIT n]` grammar is parsed HERE into a structured selector; `--raw-sql`
+//! sends the statement as the `sql` field of a query-mode selector, for the
+//! source engine to run in its own dialect. The service has no SQL front-door
+//! either way.
+//!
+//! **The destination is per-family, and the CLI does not decide which shape a
+//! family has.** `--dest-table` sends a table, `--dest-table-prefix` sends a
+//! prefix, and a family that has no such field answers with a 422 naming it.
+//! Only `--raw-sql` fills one in unasked, because its single result set has no
+//! source table to be named after — every other shorthand reads source tables,
+//! and those keep their own names.
+//!
+//! **Waiting is watching.** `--wait` polls; the scheduler owns dispatch, so
+//! nothing here can make a queued run start. `ingest schedule <id> --next now`
+//! is what moves the next one forward.
+//!
+//! **Presentation contract:** ids are canonical everywhere (`ds_…`, `ing_…`,
+//! `run_…`); display names are shown, never resolved against. Run status is a
+//! closed set (queued | running | succeeded | failed | cancelled) with finer
+//! progress demoted to `stage` — see `ingest_common`.
 
-use crate::client::ingest::{
-    ConnectorEntry, IngestAck, IngestClient, IngestRequest, JobStatus, QueryToIngest, RawSqlIngest,
-};
-use crate::commands::prompt::{
-    ask_secret, ask_text, optional, optional_default, prompt_list, select_optional,
+use crate::client::ingest::{Ingest, IngestClient, IngestCreate, SchedulePatch};
+use crate::commands::ingest_common::{
+    cell, date_cell, destination_cell, destination_detail, empty_notice, fail, field, hint,
+    is_terminal, parse_duration, parse_json_arg, parse_next_run_at, poll_until,
+    presented_run_status, render, run_status_cell, schedule_cell, wait_timed_out, with_spinner,
 };
 use crate::util;
-use inquire::{Select, Text};
-use std::time::{Duration, Instant};
 
-/// Status-poll cadence (what the hotdlt UI uses). Each poll is a service-side
-/// read, so this is deliberately not sub-second.
-const POLL_INTERVAL: Duration = Duration::from_millis(2_500);
-
-/// A run kicked immediately after submitting can miss the new row (the
-/// service's reads lag writes briefly). If a job sits pending this long,
-/// kick processing again.
-const DRAIN_REKICK_AFTER: Duration = Duration::from_secs(30);
-
-/// Render a value for `-o json|yaml`, or fall through to the human branch.
-/// One definition so the json-println / yaml-print convention cannot drift
-/// between the (many) commands that support all three formats.
-fn render<T: serde::Serialize>(output: &str, value: &T, human: impl FnOnce()) {
-    match output {
-        "json" => println!("{}", serde_json::to_string_pretty(value).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(value).unwrap()),
-        _ => human(),
-    }
-}
-
-/// Run `f` under a spinner, clearing it before either returning the value or
-/// printing the error — the clear-before-exit invariant lives here instead of
-/// being copy-discipline at every call site.
-fn with_spinner<T>(
-    msg: &str,
-    f: impl FnOnce() -> Result<T, crate::client::ingest::IngestError>,
-) -> T {
-    let spinner = util::spinner(msg);
-    match f() {
-        Ok(v) => {
-            spinner.finish_and_clear();
-            v
-        }
-        Err(e) => {
-            spinner.finish_and_clear();
-            e.exit()
-        }
-    }
-}
+/// Wire values for the ingest type; the CLI spells the first one `one-time`.
+const TYPES: [&str; 3] = ["one-time", "scheduled", "continuous"];
 
 #[derive(clap::Subcommand)]
 pub enum IngestCommands {
-    /// Add a datasource and discover its schema (loads no data)
+    /// Create a load definition
     ///
-    /// Interactive by default; pass `--service` with config flags to add
-    /// non-interactively. Pull rows separately with `hotdata ingest
-    /// new-import`; browse available types with `hotdata ingest datasources`.
-    NewDatasource {
-        #[command(flatten)]
-        create: CreateArgs,
-
-        #[command(flatten)]
-        wait: WaitArgs,
-    },
-
-    /// Show a datasource's details: status and discovered tables + columns
-    ShowDatasource {
-        /// Datasource id (from `list-datasources`)
-        id: String,
-    },
-
-    /// Delete a datasource: its stored credentials and discovered schema
+    /// Selector and destination are fixed at creation — changing either means a
+    /// new ingest. Creating one starts nothing: the scheduler dispatches every
+    /// run, including the single run of a one-time ingest, so watch it with
+    /// `hotdata ingest runs <id>` rather than expecting a run id back.
     ///
-    /// Imports you've already run keep working — each carries its own
-    /// credential copy.
-    DeleteDatasource {
-        /// Datasource id (from `list-datasources`)
-        id: String,
+    /// The fields --selector takes, and which write modes and types the
+    /// datasource's family supports: `hotdata datasource fields <family>`.
+    Create {
+        /// Datasource to read from, by `ds_…` id (from `hotdata datasource
+        /// list`). --source takes a display name too.
+        #[arg(long = "datasource-id", required_unless_present = "source")]
+        datasource_id: Option<String>,
 
-        /// Keep the datasource's schema-preview database
-        #[arg(long = "keep-database", hide = true)]
-        keep_database: bool,
-    },
-
-    /// List the datasources you've added (each has its own datasource id)
-    ListDatasources {
-        /// Include datasources replaced by a newer one of the same name
-        #[arg(long)]
-        all: bool,
-    },
-
-    /// Browse the catalog of available datasource types
-    #[command(alias = "connectors")]
-    Datasources {
-        /// Filter to entries whose name contains this text
-        name: Option<String>,
-    },
-
-    /// Import data from a datasource into a managed database (--all or SQL)
-    NewImport {
-        /// SELECT <cols|*> FROM <datasource>[.<table>] [WHERE …] [LIMIT n]
-        sql: Option<String>,
-
-        /// Import everything from --source (SELECT * with no LIMIT)
-        #[arg(long, conflicts_with = "sql")]
-        all: bool,
-
-        /// Datasource to import from: a name (used in FROM) or a datasource
-        /// id from `list-datasources` (pins resolution)
-        #[arg(long)]
+        /// Datasource to read from: a `ds_…` id, or a display name resolved
+        /// here against `hotdata datasource list`. Two datasources sharing a
+        /// name is an error listing both — names are labels, not identity, so
+        /// nothing picks between them for you.
+        #[arg(long, conflicts_with = "datasource_id")]
         source: Option<String>,
 
-        /// Reuse an existing managed database (by id) instead of minting one
-        #[arg(long = "database-id", hide = true)]
-        database_id: Option<String>,
+        /// one-time is dispatched once; scheduled and continuous need --every
+        /// or --schedule
+        #[arg(long = "type", value_parser = TYPES, default_value = "one-time")]
+        kind: String,
 
-        #[command(flatten)]
-        poll: PollArgs,
-    },
+        /// What to read, as family-specific JSON (inline, @file.json, or @-).
+        /// The escape hatch the shorthand flags below build for you.
+        /// Field reference: `hotdata datasource fields <family>` (SELECTOR).
+        #[arg(
+            long,
+            conflicts_with_all = ["sql", "raw_sql", "all", "tables", "table_path",
+                                  "topics", "schema", "format", "glob",
+                                  "record_shape", "limit"]
+        )]
+        selector: Option<String>,
 
-    /// Ingest the result of a source-native SQL query (SQL datasources only)
-    ///
-    /// Unlike `new-import` (SELECT <cols|*> FROM <ds>[.<table>] [WHERE] [LIMIT]),
-    /// the SQL runs verbatim against the source engine in its OWN dialect —
-    /// joins, aggregation, GROUP BY, CTEs, window functions, and engine-specific
-    /// functions all execute at the source; only the result set transfers. It
-    /// must be a single read-only statement; the result lands in `--table` in a
-    /// fresh managed database.
-    RawSql {
-        /// A single read-only SQL statement, in the SOURCE engine's dialect
-        sql: String,
+        /// SQL-family shorthand for --selector:
+        /// SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n].
+        /// Parsed here into structured JSON — the FROM target names the SOURCE
+        /// table, never a datasource (that is --source). The rows land in a
+        /// table of the source's name, or of --dest-table-prefix plus it.
+        #[arg(
+            long,
+            conflicts_with_all = ["raw_sql", "all", "tables", "table_path", "topics",
+                                  "schema", "format", "glob", "record_shape", "limit"]
+        )]
+        sql: Option<String>,
 
-        /// SQL datasource to run against: a name or a datasource id
+        /// Run one read-only statement in the SOURCE engine's own dialect and
+        /// load its result set (SQL sources).
+        ///
+        /// Unlike --sql's restricted grammar, this runs verbatim at the source:
+        /// joins, aggregates, CTEs and window functions all execute there and
+        /// only the result transfers. The result lands in --table.
+        #[arg(
+            long = "raw-sql",
+            conflicts_with_all = ["all", "schema", "format", "glob", "record_shape",
+                                  "table_path", "topics"]
+        )]
+        raw_sql: Option<String>,
+
+        /// Load everything the datasource exposes, with nothing narrowed
+        #[arg(long, conflicts_with_all = ["tables", "table_path", "topics", "schema"])]
+        all: bool,
+
+        /// Source table to load, repeatable (SQL, Iceberg, DuckLake sources).
+        /// Each lands in a destination table of the same name — put them under
+        /// a common name with --dest-table-prefix. With --raw-sql it names the
+        /// result table, since a query has no source table to take a name from.
+        #[arg(long = "table")]
+        tables: Vec<String>,
+
+        /// Which Delta table to load: its path under the datasource root, e.g.
+        /// warehouse/orders (Delta sources).
+        ///
+        /// The datasource is the storage ROOT, so one credential backs every
+        /// table beneath it and this picks one. It lands ONE table, so name it
+        /// with --dest-table.
+        #[arg(long = "table-path", conflicts_with_all = ["tables", "topics", "format", "glob"])]
+        table_path: Option<String>,
+
+        /// Kafka topic to read, repeatable (Kafka sources).
+        ///
+        /// The datasource is the CLUSTER — one credential opens it and each
+        /// ingest picks its own topics — which is why topics are named here
+        /// and not on the datasource. Each topic lands in a destination table
+        /// of its own name; put them under a common one with
+        /// --dest-table-prefix.
+        #[arg(long = "topic", conflicts_with_all = ["tables", "format", "glob"])]
+        topics: Vec<String>,
+
+        /// Source schema the tables live in (SQL sources)
         #[arg(long)]
-        source: String,
+        schema: Option<String>,
 
-        /// Result table name in the new managed database
-        #[arg(long)]
-        table: String,
+        /// File format to read (bucket sources): csv, jsonl, or parquet
+        #[arg(long, value_parser = ["csv", "jsonl", "parquet"])]
+        format: Option<String>,
 
-        /// Cap the result at N rows
+        /// Which keys under the datasource root to read (bucket sources),
+        /// e.g. **/*.parquet
         #[arg(long)]
+        glob: Option<String>,
+
+        /// Flatten each source record into rows with a named shape (bucket
+        /// sources). The shapes: otel_traces, mqtt_observations.
+        ///
+        /// Not checked here: the service owns the list, so a shape added there
+        /// is usable without a CLI release, and an unknown one comes back as a
+        /// 422 naming the shapes that exist.
+        #[arg(long = "record-shape")]
+        record_shape: Option<String>,
+
+        /// Stop after N source rows
+        #[arg(long, conflicts_with = "sql")]
         limit: Option<u64>,
 
-        #[command(flatten)]
-        poll: PollArgs,
+        /// Where it lands, as JSON (inline, @file.json, or @-):
+        /// {"database_id", "schema", "write_mode"} plus either "table" or
+        /// "table_prefix", whichever the family takes.
+        #[arg(
+            long,
+            conflicts_with_all = ["database_id", "dest_table", "dest_table_prefix",
+                                  "dest_schema", "write_mode"]
+        )]
+        destination: Option<String>,
+
+        /// Destination managed database id
+        #[arg(long = "database-id")]
+        database_id: Option<String>,
+
+        /// Destination table name, for the sources that land ONE table:
+        /// buckets (filesystem), Delta, and a SQL --raw-sql result set, which
+        /// takes the name from --table if this is not given.
+        ///
+        /// A source that loads several tables does not take it — it has a
+        /// table per source table, so there is no one name to give. Use
+        /// --dest-table-prefix there.
+        #[arg(long = "dest-table", conflicts_with = "dest_table_prefix")]
+        dest_table: Option<String>,
+
+        /// Common prefix for the destination tables of a source that lands
+        /// SEVERAL: SQL --table/--sql, Iceberg, DuckLake, Kafka, REST. Each
+        /// source table `orders` lands as `<prefix>_orders`.
+        ///
+        /// Optional. Without it the source names are used unchanged, which is
+        /// what a raw mirror of a schema or a catalog wants — but only one
+        /// prefix-less ingest can own a given database and schema, so a second
+        /// one has to choose a prefix rather than overwrite the first's tables.
+        #[arg(long = "dest-table-prefix")]
+        dest_table_prefix: Option<String>,
+
+        /// Destination schema (default: public)
+        #[arg(long = "dest-schema")]
+        dest_schema: Option<String>,
+
+        /// How each run writes (default: replace). `upsert` needs a family
+        /// whose load path stamps a row key — today that is a continuous bucket
+        /// ingest, and `hotdata datasource fields <family>` reports which modes
+        /// a family accepts for which type.
+        ///
+        /// The two listed are the two the destination accepts anywhere. Offering
+        /// a third would be offering a request that is refused on arrival, which
+        /// costs the user a round trip to learn what `--help` could have said.
+        #[arg(long = "write-mode", value_parser = ["replace", "upsert"])]
+        write_mode: Option<String>,
+
+        /// Schedule as JSON (inline, @file.json, or @-):
+        /// {"interval_seconds", "next_run_at"}
+        #[arg(long, conflicts_with_all = ["every", "next"])]
+        schedule: Option<String>,
+
+        /// Run interval for scheduled/continuous ingests, e.g. 30s, 5m, 2h, 1d
+        #[arg(long)]
+        every: Option<String>,
+
+        /// When the first run may be dispatched: `now` or an RFC 3339 timestamp
+        #[arg(long)]
+        next: Option<String>,
     },
 
-    /// List your imports: the SQL behind each and the database it landed in
-    ListImports,
+    /// List the ingests in this workspace
+    List {
+        /// Only ingests reading from this datasource
+        #[arg(long = "datasource-id")]
+        datasource_id: Option<String>,
 
-    /// Re-run an import: refresh its database from the source
-    ///
-    /// The same managed database is refreshed using the stored credentials —
-    /// nothing is re-entered. Also accepts a datasource id: re-checks the
-    /// credentials and refreshes the discovered schema.
-    TriggerImport {
-        /// Import id from `list-imports`, or a datasource id from
-        /// `list-datasources`
-        id: String,
+        /// Only this type
+        #[arg(long = "type", value_parser = TYPES)]
+        kind: Option<String>,
 
-        #[command(flatten)]
-        poll: PollArgs,
+        /// Only this lifecycle state
+        #[arg(long, value_parser = ["creating", "active", "stopped", "completed", "failed", "deleted"])]
+        state: Option<String>,
+
+        /// Include soft-deleted ingests
+        #[arg(long = "include-deleted")]
+        include_deleted: bool,
     },
 
-    /// Show an import's or datasource's status
-    ///
-    /// One-shot by default with script-friendly exit codes: 0 done,
-    /// 1 failed, 2 still in flight. `--wait` attaches and polls to a
-    /// terminal state instead.
-    Status {
-        /// Import or datasource id (from `new-import`, `list-imports`, or
-        /// `list-datasources`)
-        id: String,
-
-        #[command(flatten)]
-        poll: PollArgs,
+    /// Show one ingest: state, selector, destination, schedule, latest run
+    Show {
+        /// Ingest id (from `hotdata ingest list`)
+        ingest_id: String,
     },
 
-    /// Cancel a running or pending import
+    /// Stop an ingest: cancel the active run AND stop future runs
     ///
-    /// Marks the import cancelled immediately. The dltHub drain may still be
-    /// running and will finish on its own — use `status <id> --wait` to see
-    /// when it settles. To retry after cancellation, use `trigger-import <id>`
-    /// once the status reaches `failed`.
+    /// Both halves, deliberately — an ingest you cancelled must not come back
+    /// on the next scheduler tick. Idempotent. Start it again with
+    /// `hotdata ingest resume`.
     Cancel {
-        /// Import or datasource id to cancel
-        id: String,
+        /// Ingest id (from `hotdata ingest list`)
+        ingest_id: String,
     },
-}
 
-/// Wait flags shared by the non-blocking commands (`new-import`,
-/// `trigger-import`, `status`): one definition so the default timeout and
-/// help text cannot drift between them.
-#[derive(clap::Args)]
-pub struct PollArgs {
-    /// Block until completion (default: return immediately; track with
-    /// `hotdata ingest status <id> --wait`)
-    #[arg(long)]
-    wait: bool,
+    /// Clear a stop and let the schedule dispatch again
+    ///
+    /// Does NOT run anything immediately: the next run follows the schedule.
+    /// To bring it forward, `hotdata ingest schedule <id> --next now`.
+    /// Rejected for one-time ingests — create a new one instead.
+    Resume {
+        /// Ingest id (from `hotdata ingest list`)
+        ingest_id: String,
+    },
 
-    /// Seconds to wait for completion with --wait (default 300)
-    #[arg(long = "wait-timeout", default_value = "300")]
-    wait_timeout: u64,
-}
+    /// Change when a scheduled or continuous ingest runs next
+    ///
+    /// Never creates an extra run. `--next now` is the supported way to make
+    /// the scheduler pick an ingest up on its next tick.
+    Schedule {
+        /// Ingest id (from `hotdata ingest list`)
+        ingest_id: String,
 
-/// Wait flags for `new-datasource` — the one submit command that still
-/// blocks by default, because its output IS the feedback: did the
-/// credentials work, and what schema was discovered. The import commands
-/// return immediately and are tracked with `ingest status`.
-#[derive(clap::Args)]
-pub struct WaitArgs {
-    /// Submit only; print the datasource id and return without waiting
-    #[arg(long = "no-wait")]
-    no_wait: bool,
+        /// Run interval, e.g. 30s, 5m, 2h, 1d
+        #[arg(long)]
+        every: Option<String>,
 
-    /// Seconds to wait for completion before giving up (default 300)
-    #[arg(long = "wait-timeout", default_value = "300")]
-    wait_timeout: u64,
+        /// When the next run may be dispatched: `now` or an RFC 3339 timestamp
+        #[arg(long)]
+        next: Option<String>,
+
+        /// Whole schedule as JSON (inline, @file.json, or @-), instead of
+        /// --every/--next
+        #[arg(long, conflicts_with_all = ["every", "next"])]
+        schedule: Option<String>,
+    },
+
+    /// List the runs of one ingest, newest first
+    Runs {
+        /// Ingest id (or pass --ingest-id)
+        #[arg(required_unless_present = "ingest_id_flag")]
+        ingest_id: Option<String>,
+
+        /// Ingest id, as a flag instead of the positional
+        #[arg(
+            long = "ingest-id",
+            value_name = "INGEST_ID",
+            conflicts_with = "ingest_id"
+        )]
+        ingest_id_flag: Option<String>,
+
+        /// Only runs in this status
+        #[arg(long, value_parser = ["queued", "running", "succeeded", "failed", "cancelled"])]
+        status: Option<String>,
+
+        /// Watch until the newest run finishes.
+        ///
+        /// Polling only: the scheduler decides when a run starts, so this
+        /// cannot bring one forward (`ingest schedule <id> --next now` can). A
+        /// recurring ingest keeps producing runs, so it returns on the first
+        /// one to reach a terminal status.
+        #[arg(long)]
+        wait: bool,
+
+        /// Seconds to watch with --wait (default 300)
+        #[arg(long = "wait-timeout", default_value = "300")]
+        wait_timeout: u64,
+    },
+
+    /// Delete an ingest and release its destination table
+    ///
+    /// Soft-delete: cancels an active run first, then releases destination
+    /// table ownership. The destination table and its data are never deleted,
+    /// and neither is the datasource.
+    Delete {
+        /// Ingest id (from `hotdata ingest list`)
+        ingest_id: String,
+    },
+
+    /// Verbs removed in the datasource/ingest/run split. clap's own
+    /// "unrecognized subcommand" cannot say *why* `trigger-import` is gone or
+    /// where `new-import` went, so catch them and answer properly.
+    #[command(external_subcommand)]
+    Removed(Vec<String>),
 }
 
 /// Entry point from `main`. Keeps `main.rs` thin — one call per group.
 pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
     match command {
-        IngestCommands::NewDatasource { create, wait } => {
-            add_datasource(workspace_id, output, create, &wait)
-        }
-        IngestCommands::ShowDatasource { id } => show_datasource(workspace_id, output, &id),
-        IngestCommands::DeleteDatasource { id, keep_database } => {
-            delete_datasource(workspace_id, output, &id, keep_database)
-        }
-        IngestCommands::ListDatasources { all } => list_datasources(workspace_id, output, all),
-        IngestCommands::Datasources { name } => catalog_list(workspace_id, name.as_deref(), output),
-        IngestCommands::NewImport {
+        IngestCommands::Create {
+            datasource_id,
+            source,
+            kind,
+            selector,
             sql,
+            raw_sql,
             all,
-            source,
-            database_id,
-            poll,
-        } => new_import(workspace_id, output, sql, all, source, database_id, &poll),
-        IngestCommands::RawSql {
-            sql,
-            source,
-            table,
+            tables,
+            table_path,
+            topics,
+            schema,
+            format,
+            glob,
+            record_shape,
             limit,
-            poll,
-        } => raw_sql(workspace_id, output, sql, source, table, limit, &poll),
-        IngestCommands::ListImports => list_imports(workspace_id, output),
-        IngestCommands::TriggerImport { id, poll } => {
-            trigger_import(workspace_id, output, &id, &poll)
+            destination,
+            database_id,
+            dest_table,
+            dest_table_prefix,
+            dest_schema,
+            write_mode,
+            schedule,
+            every,
+            next,
+        } => {
+            let client = IngestClient::new(workspace_id);
+            // clap's required_unless_present already rejects "neither".
+            let named = datasource_id
+                .or(source)
+                .unwrap_or_else(|| fail("a datasource is required: --source or --datasource-id"));
+            let resolved = resolve_datasource(&client, &named);
+            // Only the --table shorthand needs the family, and only to decide
+            // one key, so the lookup is paid for only when it is used: an
+            // explicit --selector, --sql, --raw-sql or a bucket shorthand all
+            // say enough on their own.
+            let family = if tables.is_empty() || selector.is_some() || sql.is_some() {
+                resolved.family
+            } else {
+                resolved.family.or_else(|| {
+                    with_spinner("reading the datasource…", || {
+                        client.get_datasource(&resolved.id)
+                    })
+                    .family
+                })
+            };
+            let plan = CreatePlan {
+                datasource_id: &resolved.id,
+                family: family.as_deref(),
+                kind: &kind,
+                sql: sql.as_deref(),
+                raw_sql: raw_sql.as_deref(),
+                all,
+                tables: &tables,
+                table_path: table_path.as_deref(),
+                topics: &topics,
+                schema: schema.as_deref(),
+                format: format.as_deref(),
+                glob: glob.as_deref(),
+                record_shape: record_shape.as_deref(),
+                limit,
+                selector: selector.as_deref().map(|a| parse_json_arg("--selector", a)),
+                destination: destination
+                    .as_deref()
+                    .map(|a| parse_json_arg("--destination", a)),
+                database_id: database_id.as_deref(),
+                dest_schema: dest_schema.as_deref(),
+                dest_table: dest_table.as_deref(),
+                dest_table_prefix: dest_table_prefix.as_deref(),
+                write_mode: write_mode.as_deref(),
+                schedule: schedule.as_deref().map(|a| parse_json_arg("--schedule", a)),
+                every: every.as_deref(),
+                next: next.as_deref(),
+            };
+            create(&client, output, plan)
         }
-        IngestCommands::Status { id, poll } => status(workspace_id, output, &id, &poll),
-        IngestCommands::Cancel { id } => cancel_import(workspace_id, output, &id),
+        IngestCommands::List {
+            datasource_id,
+            kind,
+            state,
+            include_deleted,
+        } => list(
+            workspace_id,
+            output,
+            datasource_id,
+            kind,
+            state,
+            include_deleted,
+        ),
+        IngestCommands::Show { ingest_id } => show(workspace_id, output, &ingest_id),
+        IngestCommands::Cancel { ingest_id } => cancel(workspace_id, output, &ingest_id),
+        IngestCommands::Resume { ingest_id } => resume(workspace_id, output, &ingest_id),
+        IngestCommands::Schedule {
+            ingest_id,
+            every,
+            next,
+            schedule,
+        } => {
+            let parsed = schedule.as_deref().map(|a| parse_json_arg("--schedule", a));
+            reschedule(
+                workspace_id,
+                output,
+                &ingest_id,
+                parsed,
+                every.as_deref(),
+                next.as_deref(),
+            )
+        }
+        IngestCommands::Runs {
+            ingest_id,
+            ingest_id_flag,
+            status,
+            wait,
+            wait_timeout,
+        } => {
+            // clap's required_unless_present already rejects "neither", so the
+            // only way here is with one of them set.
+            let id = ingest_id
+                .or(ingest_id_flag)
+                .unwrap_or_else(|| fail("an ingest id is required (positional or --ingest-id)"));
+            runs(workspace_id, output, &id, status, wait, wait_timeout)
+        }
+        IngestCommands::Delete { ingest_id } => delete(workspace_id, output, &ingest_id),
+        IngestCommands::Removed(argv) => removed(&argv),
     }
 }
 
-// --- presentation helpers --------------------------------------------------
+// --- create -----------------------------------------------------------------
 
-/// `status` as shown to users is a CLOSED set: pending | running | done |
-/// failed. Anything else the service reports is a finer in-flight stage —
-/// presented as `running` with the raw value demoted to the stage slot.
-/// (New servers already split status/stage; this also covers older ones.)
-fn normalize_status(raw: &str) -> (&'static str, Option<&str>) {
-    match raw {
-        "pending" => ("pending", None),
-        "running" => ("running", None),
-        "done" => ("done", None),
-        "failed" => ("failed", None),
-        "cancelled" => ("cancelled", None),
-        stage => ("running", Some(stage)),
+/// Everything `ingest create` was given, with the JSON flags already parsed.
+/// Grouped so the request builder can stay pure and unit-tested.
+struct CreatePlan<'a> {
+    /// Already resolved to a `ds_…` id: a display name is turned into one
+    /// here, client-side, because the API resolves ids and nothing else.
+    datasource_id: &'a str,
+    /// The datasource's family, when the shorthand being used needs it. Read
+    /// only by the `--table` path, and only to decide one key — see
+    /// [`build_selector`].
+    family: Option<&'a str>,
+    /// CLI spelling: `one-time` | `scheduled` | `continuous`.
+    kind: &'a str,
+    sql: Option<&'a str>,
+    raw_sql: Option<&'a str>,
+    all: bool,
+    tables: &'a [String],
+    table_path: Option<&'a str>,
+    topics: &'a [String],
+    schema: Option<&'a str>,
+    format: Option<&'a str>,
+    glob: Option<&'a str>,
+    record_shape: Option<&'a str>,
+    limit: Option<u64>,
+    selector: Option<serde_json::Value>,
+    destination: Option<serde_json::Value>,
+    database_id: Option<&'a str>,
+    dest_schema: Option<&'a str>,
+    dest_table: Option<&'a str>,
+    dest_table_prefix: Option<&'a str>,
+    write_mode: Option<&'a str>,
+    schedule: Option<serde_json::Value>,
+    every: Option<&'a str>,
+    next: Option<&'a str>,
+}
+
+/// A datasource the caller named, as the two things a create needs to know
+/// about it.
+struct Resolved {
+    id: String,
+    /// Known for free when the datasource was resolved by name, since the
+    /// listing carries it; looked up on demand otherwise.
+    family: Option<String>,
+}
+
+/// A `ds_…` id for whatever the caller named.
+///
+/// A display name is resolved HERE, against the listing, and the id is what
+/// goes on the wire: the API deliberately has no name lookup, because a label
+/// that is not unique cannot decide which datasource a load reads from. That
+/// is also why two matches is an error rather than the newest one — the CLI
+/// knows the name is ambiguous and the user does not, so guessing would put a
+/// load on a source they never chose.
+fn resolve_datasource(client: &IngestClient, named: &str) -> Resolved {
+    if named.starts_with("ds_") {
+        return Resolved {
+            id: named.to_string(),
+            family: None,
+        };
+    }
+    let resp = with_spinner("resolving the datasource…", || {
+        client.list_datasources(&[])
+    });
+    let matches: Vec<&crate::client::ingest::Datasource> = resp
+        .datasources
+        .iter()
+        .filter(|d| {
+            d.display_name
+                .as_deref()
+                .is_some_and(|n| n.trim().eq_ignore_ascii_case(named.trim()))
+        })
+        .collect();
+    match matches.as_slice() {
+        [one] => Resolved {
+            id: one.datasource_id.clone(),
+            family: one.family.clone(),
+        },
+        [] => fail(&format!(
+            "no datasource named '{named}' — list them with 'hotdata datasource list', \
+             or pass the ds_… id"
+        )),
+        several => {
+            let listed: Vec<String> = several
+                .iter()
+                .map(|d| format!("  {}  {}", d.datasource_id, cell(d.family.as_deref())))
+                .collect();
+            fail(&format!(
+                "'{named}' names {} datasources — display names are labels, not identity. \
+                 Pass one of these ids:\n{}",
+                several.len(),
+                listed.join("\n")
+            ))
+        }
     }
 }
 
-/// The (status, stage) pair for a job row: the server's `stage` field wins,
-/// a stage-shaped `status` from an older server is the fallback.
-fn presented_status(status: &str, stage: Option<&str>) -> (String, Option<String>) {
-    let (normalized, fallback) = normalize_status(status);
-    (
-        normalized.to_string(),
-        stage.map(str::to_string).or(fallback.map(str::to_string)),
-    )
-}
+fn create(client: &IngestClient, output: &str, plan: CreatePlan) {
+    let req = build_create(plan).unwrap_or_else(|m| fail(&m));
+    let ing = with_spinner("creating ingest…", || client.create_ingest(&req));
 
-/// STATUS cell for the human tables/details: the normalized status, with the
-/// in-flight stage in parentheses when there is one.
-fn status_cell(status: &str, stage: Option<&str>) -> String {
-    let (normalized, stage) = presented_status(status, stage);
-    let colored = util::color_status(&normalized);
-    match stage {
-        Some(s) => format!("{colored} ({s})"),
-        None => colored,
-    }
-}
-
-/// Display label for a wire family value. Datasource types read as product
-/// nouns (SQL, buckets, API), not protocol jargon.
-fn family_label(family: &str) -> &str {
-    match family {
-        "sql" => "SQL",
-        "filesystem" => "buckets",
-        "rest" => "API",
-        other => other,
-    }
-}
-
-/// Machine value for a wire family (`type` in json/yaml output): the same
-/// product nouns, lowercased for scripting.
-fn family_type(family: &str) -> &str {
-    match family {
-        "filesystem" => "buckets",
-        "rest" => "api",
-        other => other,
-    }
-}
-
-/// A datasource name is the FROM target for imports, so it must be a bare
-/// SQL-identifier-shaped word (the server enforces the same rule).
-fn valid_datasource_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    name.len() <= 64
-        && matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-fn checked_name(name: Option<String>) -> Option<String> {
-    if let Some(n) = name.as_deref()
-        && !valid_datasource_name(n)
-    {
-        fail(
-            "datasource names are letters, digits, and underscores (not starting \
-             with a digit) — they are the FROM target for imports",
+    render(output, &ing, || {
+        use crossterm::style::Stylize;
+        println!("{}", "ingest created".green());
+        field("ingest id:", &ing.ingest_id);
+        field("datasource id:", &cell(ing.datasource_id.as_deref()));
+        field("type:", &cell(ing.r#type.as_deref()));
+        field("state:", &state_cell(ing.state.as_deref()));
+        field(
+            "destination:",
+            &destination_detail(ing.destination.as_ref()),
         );
+        // No run is started here — the scheduler dispatches every one, so the
+        // create response carries a run id only if the service ever starts
+        // reporting one. Saying "watch it" is the honest instruction either
+        // way, and it is the one that does not send someone looking for a run
+        // that does not exist yet.
+        match ing.initial_run_id.as_deref() {
+            Some(run_id) => {
+                field("run id:", run_id);
+                hint(&format!("Track it with: hotdata run show {run_id}"));
+            }
+            None => hint(&format!(
+                "The scheduler dispatches it. Watch it with: hotdata ingest runs {}",
+                ing.ingest_id
+            )),
+        }
+    });
+}
+
+/// Build the `POST /ingests` body. Pure (JSON is pre-parsed, errors are
+/// returned) so the selector shorthands, the `--sql` desugaring, the
+/// destination assembly, and the type/schedule rules — the parts a server-side
+/// 422 would otherwise be the first to catch — are unit-testable.
+fn build_create(plan: CreatePlan) -> Result<IngestCreate, String> {
+    let wire_type = wire_type(plan.kind)?;
+    let (selector, result_table) = build_selector(&plan)?;
+    let destination = build_destination(
+        plan.destination,
+        plan.database_id,
+        plan.dest_schema,
+        plan.dest_table,
+        plan.dest_table_prefix,
+        plan.write_mode,
+        result_table.as_deref(),
+    )?;
+
+    let schedule = build_schedule(plan.schedule, plan.every, plan.next)?;
+    match (wire_type, &schedule) {
+        ("one_time", Some(_)) => {
+            return Err(
+                "a one-time ingest has no schedule — drop --every/--next/--schedule, or use \
+                 --type scheduled"
+                    .into(),
+            );
+        }
+        ("scheduled" | "continuous", None) => {
+            return Err(format!(
+                "--type {} needs a schedule: --every 5m (optionally --next now), or --schedule \
+                 @schedule.json",
+                plan.kind
+            ));
+        }
+        _ => {}
     }
-    name
-}
 
-/// The user-facing name of a job row: the datasource name, falling back to
-/// the connector for rows created before names existed.
-fn display_name(name: Option<&str>, connector_type: Option<&str>) -> Option<String> {
-    name.or(connector_type).map(str::to_string)
-}
-
-/// The user-facing json/yaml view of a job status. One projection shared by
-/// `status`, `show-datasource`, and the poll terminal states, so machine
-/// output never reverts to wire rows.
-fn status_json(st: &JobStatus) -> serde_json::Value {
-    let (status, stage) = presented_status(&st.status, st.stage.as_deref());
-    serde_json::json!({
-        "id": st.ingest_id,
-        "name": display_name(st.name.as_deref(), st.connector_type.as_deref()),
-        "connector": st.connector_type,
-        "type": st.family.as_deref().map(family_type),
-        "status": status,
-        "stage": stage,
-        "detail": st.detail,
-        "database_id": st.database_id,
-        "created_at": st.created_at,
-        "updated_at": st.updated_at,
+    Ok(IngestCreate {
+        datasource_id: plan.datasource_id.to_string(),
+        r#type: wire_type.to_string(),
+        selector,
+        destination,
+        schedule,
     })
 }
 
-fn family_rank(family: &str) -> u8 {
-    match family {
-        "sql" => 0,
-        "filesystem" => 1,
-        "iceberg" => 2,
-        _ => 3, // rest services
-    }
-}
-
-/// Sort the catalog for display: generic families (sql, filesystem, iceberg)
-/// first, then the REST services, each group alphabetical. Redundant SQL
-/// dialect aliases are collapsed at the source (the catalog), not here.
-fn sorted_for_display(entries: &[ConnectorEntry]) -> Vec<ConnectorEntry> {
-    let mut sorted = entries.to_vec();
-    sorted.sort_by(|a, b| {
-        family_rank(&a.family)
-            .cmp(&family_rank(&b.family))
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    sorted
-}
-
-// --- new-datasource: wizard or flag-driven --------------------------------
-
-/// `ingest new-datasource`. The guided wizard runs when no connector was
-/// named and we're on a terminal; otherwise (a `--service` was given, or a
-/// non-TTY / `--no-input` run) it's flag-driven and needs `--service`.
-fn add_datasource(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
-    if args.service.is_none() && util::is_interactive() {
-        if args.any_given() {
-            // The wizard prompts from scratch and would silently ignore
-            // every provided flag — refuse instead of discarding input.
-            fail(
-                "--service is required when other flags are given (e.g. --service postgres); \
-                 run plain 'hotdata ingest new-datasource' for the guided wizard",
-            );
+/// The selector, plus the name of the one table this load produces — when it
+/// produces exactly one and nothing else names it. See [`build_destination`]:
+/// only the query shorthand is in that position.
+///
+/// Every branch here BUILDS the JSON `--selector` would have carried; the
+/// shorthands are sugar over one document, never a second request shape. Which
+/// keys go in follows the flags rather than the family: `tables` means the same
+/// thing to SQL, Iceberg and DuckLake, and a key a family does not have comes
+/// back as a 422 naming it.
+///
+/// `mode` is the exception, and it is why `--table` is the one shorthand that
+/// costs a family lookup. SQL's selector is a union discriminated on `mode`, so
+/// it must be told which member this is EVEN THOUGH the member declares
+/// `tables` as its default — a default fills a field that is present, and a
+/// discriminator has to be read before there is a member to take defaults from.
+/// The other two families forbid unknown keys, so the same one word makes their
+/// request invalid. Sending it always, or never, is wrong for someone.
+fn build_selector(plan: &CreatePlan) -> Result<(serde_json::Value, Option<String>), String> {
+    if let Some(s) = &plan.selector {
+        if !s.is_object() {
+            return Err("--selector must be a JSON object".into());
         }
-        wizard(workspace_id, output, checked_name(args.name), wait);
-    } else {
-        add_from_flags(workspace_id, output, args, wait);
+        return Ok((s.clone(), None));
     }
-}
 
-fn wizard(workspace_id: &str, output: &str, name: Option<String>, wait: &WaitArgs) {
-    let client = IngestClient::new(workspace_id);
-    let entries = fetch_catalog(&client);
-    let entry = select_connector(&entries);
-
-    let mut req = match entry.family.as_str() {
-        "sql" => build_sql_interactive(&entry),
-        "filesystem" => build_filesystem_interactive(&entry),
-        "iceberg" => build_iceberg_interactive(&entry),
-        _ => build_rest_interactive(&entry),
-    };
-    // A --name given up front is honored; otherwise offer one (blank keeps
-    // the connector name, which is what most people want).
-    req.name =
-        checked_name(name.or_else(|| optional(None, "Name (blank to use the connector name):")));
-    // Adding a datasource discovers the schema only — never loads data.
-    req.validate_only = true;
-    run_source(&client, output, wait.no_wait, wait.wait_timeout, req);
-}
-
-/// Present the catalog as a filterable menu and return the chosen entry.
-/// Families are grouped (generic sql/filesystem/iceberg first, then the REST
-/// services) and inquire's typeahead narrows the ~150 entries as the user types.
-fn select_connector(entries: &[ConnectorEntry]) -> ConnectorEntry {
-    let sorted = sorted_for_display(entries);
-    let labels: Vec<String> = sorted
-        .iter()
-        .map(|c| {
-            if c.description.is_empty() {
-                format!("{}  ({})", c.name, family_label(&c.family))
-            } else {
-                format!(
-                    "{}  ({}) — {}",
-                    c.name,
-                    family_label(&c.family),
-                    c.description
-                )
-            }
-        })
-        .collect();
-    let selected = Select::new("Source:", labels.clone())
-        .with_page_size(15)
-        .prompt()
-        .unwrap_or_else(|_| std::process::exit(0));
-    let idx = labels.iter().position(|l| l == &selected).unwrap();
-    sorted[idx].clone()
-}
-
-fn build_sql_interactive(entry: &ConnectorEntry) -> IngestRequest {
-    // `entry.name` is the dialect (postgres, mysql, …) — we know the shape, so
-    // prompt only the connection fields, defaulting the port from the dialect.
-    let mut m = serde_json::Map::new();
-    m.insert("host".into(), ask_text("Host:").into());
-    let default_port = default_port_for(&entry.name);
-    let mut port_prompt = Text::new("Port:");
-    if let Some(dp) = default_port {
-        port_prompt = port_prompt.with_default(dp);
+    // --sql desugars into a structured sql-family selector; the service never
+    // sees the SQL. It names no destination table: the shape it builds reads
+    // source tables, and those land under their own names.
+    if let Some(sql) = plan.sql {
+        return Ok((sql_selector(&parse_select(sql)?), None));
     }
-    let port = port_prompt
-        .prompt()
-        .unwrap_or_else(|_| std::process::exit(0));
-    if let Ok(n) = port.trim().parse::<u16>() {
-        m.insert("port".into(), n.into());
-    }
-    m.insert("username".into(), ask_text("User:").into());
-    let pw = ask_secret("Password (blank if none):");
-    if !pw.is_empty() {
-        m.insert("password".into(), pw.into());
-    }
-    m.insert("database".into(), ask_text("Database:").into());
 
-    let schema = optional(None, "Schema (blank for all):");
-    let tables = prompt_list("Tables (comma-separated, blank for all):");
-
-    IngestRequest {
-        family: "sql".into(),
-        connector_type: Some(entry.name.clone()),
-        credentials: serde_json::Value::Object(m),
-        schema,
-        table_names: tables,
-        ..Default::default()
-    }
-}
-
-fn build_filesystem_interactive(entry: &ConnectorEntry) -> IngestRequest {
-    let bucket_url = ask_text("Bucket URL (e.g. s3://bucket/prefix):");
-    let format = select_optional("File format:", &["parquet", "csv", "jsonl"]);
-    let glob = optional(None, "File glob (e.g. **/*.parquet, blank for all):");
-    IngestRequest {
-        family: "filesystem".into(),
-        // connector_type is what `new-import` resolves FROM when no name is
-        // chosen — without it the datasource lands unnamed and un-importable.
-        connector_type: Some(entry.name.clone()),
-        credentials: filesystem_credentials(),
-        bucket_url: Some(bucket_url),
-        file_glob: glob,
-        file_format: format,
-        ..Default::default()
-    }
-}
-
-fn build_iceberg_interactive(entry: &ConnectorEntry) -> IngestRequest {
-    let catalog_type = optional_default("Catalog type:", "rest");
-    let tables = prompt_list("Tables (namespace.table, comma-separated):");
-    IngestRequest {
-        family: "iceberg".into(),
-        // connector_type is what `new-import` resolves FROM when no name is
-        // chosen — without it the datasource lands unnamed and un-importable.
-        connector_type: Some(entry.name.clone()),
-        catalog_name: Some(entry.name.clone()),
-        catalog_type,
-        catalog_config: Some(iceberg_catalog_config()),
-        tables,
-        ..Default::default()
-    }
-}
-
-/// REST family. A cataloged service carries a `template` with everything but
-/// the secrets filled in — walk it, prompt only the `<PLACEHOLDER>` tokens, and
-/// send the result. The bare `api` entry (no template) falls back to building
-/// a minimal config interactively.
-fn build_rest_interactive(entry: &ConnectorEntry) -> IngestRequest {
-    match &entry.template {
-        Some(template) => {
-            let filled = fill_template(template);
-            IngestRequest {
-                family: "rest".into(),
-                connector_type: Some(entry.name.clone()),
-                rest_config: Some(filled),
-                ..Default::default()
-            }
+    if let Some(sql) = plan.raw_sql {
+        if sql.trim().is_empty() {
+            return Err("--raw-sql needs a statement".into());
         }
-        None => {
-            let name = ask_text("Datasource name (the FROM target for `ingest new-import`):");
-            IngestRequest {
-                family: "rest".into(),
-                connector_type: Some(name),
-                rest_config: Some(rest_config()),
-                ..Default::default()
-            }
+        let mut selector = serde_json::Map::new();
+        selector.insert("mode".into(), "query".into());
+        selector.insert("sql".into(), sql.trim().into());
+        if let Some(n) = plan.limit {
+            selector.insert("limit".into(), n.into());
         }
-    }
-}
-
-// --- template placeholder filling ----------------------------------------
-
-/// Collect the distinct `<PLACEHOLDER>` tokens in a template, in first-seen
-/// order. A placeholder is a whole string value wrapped in angle brackets
-/// (`<CLIENT_ID>`) — the shape the connector catalog uses.
-fn collect_placeholders(v: &serde_json::Value, out: &mut Vec<String>) {
-    match v {
-        serde_json::Value::String(s) if is_placeholder(s) => {
-            if !out.contains(s) {
-                out.push(s.clone());
-            }
-        }
-        serde_json::Value::Array(a) => a.iter().for_each(|i| collect_placeholders(i, out)),
-        serde_json::Value::Object(m) => m.values().for_each(|i| collect_placeholders(i, out)),
-        _ => {}
-    }
-}
-
-fn is_placeholder(s: &str) -> bool {
-    s.len() > 2 && s.starts_with('<') && s.ends_with('>')
-}
-
-/// A placeholder names a secret when its token looks like one — prompt those
-/// with hidden input.
-fn is_secret_placeholder(token: &str) -> bool {
-    let t = token.to_ascii_uppercase();
-    ["SECRET", "TOKEN", "KEY", "PASSWORD", "PASS"]
-        .iter()
-        .any(|needle| t.contains(needle))
-}
-
-/// Prompt for each placeholder in `template` (secrets hidden) and substitute
-/// every occurrence, returning the filled config.
-fn fill_template(template: &serde_json::Value) -> serde_json::Value {
-    let mut tokens = Vec::new();
-    collect_placeholders(template, &mut tokens);
-    let mut filled = template.clone();
-    for token in tokens {
-        let label = format!(
-            "{}:",
-            token
-                .trim_matches(|c| c == '<' || c == '>')
-                .replace('_', " ")
-                .to_lowercase()
-        );
-        let value = if is_secret_placeholder(&token) {
-            ask_secret(&label)
-        } else {
-            ask_text(&label)
+        // A query has no source table, so --table names where the result
+        // lands rather than what to read.
+        return match plan.tables {
+            [] => Ok((serde_json::Value::Object(selector), None)),
+            [one] => Ok((serde_json::Value::Object(selector), Some(one.clone()))),
+            _ => Err(
+                "--raw-sql lands one result set — name one table with --table (or \
+                 --dest-table)"
+                    .into(),
+            ),
         };
-        substitute_placeholder(&mut filled, &token, &value);
     }
-    filled
-}
 
-fn substitute_placeholder(v: &mut serde_json::Value, token: &str, value: &str) {
-    match v {
-        serde_json::Value::String(s) if s == token => {
-            *v = serde_json::Value::String(value.to_string());
+    if plan.all {
+        // "Everything" is only a selector the API accepts where the family's
+        // own selector can express it: a bucket root has a natural whole, and
+        // a database or a catalog requires the list of what to read. Saying so
+        // beats sending a selector that comes back 422 for a missing field.
+        let Some(format) = plan.format else {
+            return Err(
+                "--all loads a whole bucket root and needs --format (csv, jsonl, parquet). \
+                 For a database, catalog, or API source, name what to load with --table."
+                    .into(),
+            );
+        };
+        let mut selector = serde_json::Map::new();
+        selector.insert("prefix".into(), "".into());
+        selector.insert("glob".into(), plan.glob.unwrap_or("**").into());
+        selector.insert("file_format".into(), format.into());
+        add_shape_and_limit(&mut selector, plan);
+        return Ok((serde_json::Value::Object(selector), None));
+    }
+
+    let mut selector = serde_json::Map::new();
+    if !plan.tables.is_empty() {
+        if plan.family == Some("sql") {
+            selector.insert("mode".into(), "tables".into());
         }
-        serde_json::Value::Array(a) => a
-            .iter_mut()
-            .for_each(|i| substitute_placeholder(i, token, value)),
-        serde_json::Value::Object(m) => m
-            .values_mut()
-            .for_each(|i| substitute_placeholder(i, token, value)),
-        _ => {}
+        if let Some(s) = plan.schema {
+            selector.insert("schema".into(), s.into());
+        }
+        selector.insert("tables".into(), plan.tables.to_vec().into());
     }
-}
-
-// --- new-datasource (flag-driven): non-interactive add --------------------
-
-#[derive(clap::Args)]
-pub struct CreateArgs {
-    /// Connector to add (a catalog name: postgres, bitcoin, buckets, …).
-    /// Given → non-interactive; omit on a terminal → guided wizard.
-    #[arg(long)]
-    service: Option<String>,
-
-    /// Name for the datasource — the FROM target for imports (default: the
-    /// connector name). Lets several datasources of one connector coexist.
-    #[arg(long)]
-    name: Option<String>,
-
-    /// Connector config as JSON (inline, @file.json, or @-). Field reference:
-    /// `hotdata ingest datasources -o json` (each entry's config_schema)
-    #[arg(long)]
-    config: Option<String>,
-
-    /// Restrict discovery to this table (repeatable; SQL/iceberg)
-    #[arg(long = "table")]
-    tables: Vec<String>,
-
-    /// Schema to discover (SQL)
-    #[arg(long)]
-    schema: Option<String>,
-
-    /// Bucket URL, e.g. s3://bucket/prefix (buckets)
-    #[arg(long = "bucket-url")]
-    bucket_url: Option<String>,
-
-    /// File format (buckets)
-    #[arg(long, value_parser = ["csv", "jsonl", "parquet"])]
-    format: Option<String>,
-
-    /// File glob, e.g. **/*.parquet (buckets)
-    #[arg(long)]
-    glob: Option<String>,
-
-    /// Keep this datasource continuously synced — refreshed incrementally on a
-    /// schedule, appending only newly-arrived objects (buckets only)
-    #[arg(long)]
-    continuous: bool,
-
-    /// Flatten each source record into rows with a named shape, e.g.
-    /// otel_traces or mqtt_observations (buckets only)
-    #[arg(long = "record-shape")]
-    record_shape: Option<String>,
-
-    /// Catalog type, e.g. rest (iceberg)
-    #[arg(long = "catalog-type")]
-    catalog_type: Option<String>,
-
-    /// Reuse an existing managed database (by id) instead of minting one
-    #[arg(long = "database-id", hide = true)]
-    database_id: Option<String>,
-}
-
-impl CreateArgs {
-    /// Any flag beyond `--service`/`--name` — the wizard never reads these,
-    /// so entering it with any of them set would silently discard user input.
-    /// (`--name` IS honored by the wizard, so it doesn't count.)
-    fn any_given(&self) -> bool {
-        self.config.is_some()
-            || !self.tables.is_empty()
-            || self.schema.is_some()
-            || self.bucket_url.is_some()
-            || self.format.is_some()
-            || self.glob.is_some()
-            || self.continuous
-            || self.record_shape.is_some()
-            || self.catalog_type.is_some()
-            || self.database_id.is_some()
+    // Delta selects ONE table by its path under the datasource root; Kafka
+    // selects topics out of the cluster the datasource is. Both are a single
+    // field, which is exactly why they were the two families a caller could
+    // not reach without writing --selector JSON by hand.
+    if let Some(p) = plan.table_path {
+        selector.insert("table_path".into(), p.into());
     }
-}
-
-fn add_from_flags(workspace_id: &str, output: &str, args: CreateArgs, wait: &WaitArgs) {
-    let Some(service) = args.service.as_deref() else {
-        eprintln!(
-            "error: --service is required to add a datasource non-interactively. \
-             Browse available types with 'hotdata ingest datasources', or run \
-             'hotdata ingest new-datasource' in a terminal for the guided wizard."
-        );
-        std::process::exit(1);
-    };
-    let client = IngestClient::new(workspace_id);
-    let entries = fetch_catalog(&client);
-    let entry = entries
-        .iter()
-        .find(|c| c.name == service)
-        .cloned()
-        .unwrap_or_else(|| {
-            eprintln!("error: unknown connector '{service}'. Run 'hotdata ingest datasources'.");
-            std::process::exit(1);
-        });
-
-    let config = args.config.as_deref().map(parse_config_arg);
-    let req = build_create_request(&entry, args, config).unwrap_or_else(|msg| fail(&msg));
-    run_source(&client, output, wait.no_wait, wait.wait_timeout, req);
-}
-
-/// Flag-driven request construction for one catalog entry. Pure (config is
-/// pre-parsed, errors are returned) so the per-family mapping — the part a
-/// server-side 422 would otherwise be the first to catch — is unit-testable.
-fn build_create_request(
-    entry: &ConnectorEntry,
-    args: CreateArgs,
-    config: Option<serde_json::Value>,
-) -> Result<IngestRequest, String> {
-    if let Some(n) = args.name.as_deref()
-        && !valid_datasource_name(n)
-    {
+    if !plan.topics.is_empty() {
+        selector.insert("topics".into(), plan.topics.to_vec().into());
+    }
+    if let Some(f) = plan.format {
+        selector.insert("file_format".into(), f.into());
+    }
+    if let Some(g) = plan.glob {
+        selector.insert("glob".into(), g.into());
+    }
+    add_shape_and_limit(&mut selector, plan);
+    if selector.is_empty() {
         return Err(
-            "datasource names are letters, digits, and underscores (not starting \
-             with a digit) — they are the FROM target for imports"
+            "nothing to read — pass --table <name> (SQL, Iceberg, DuckLake), --table-path \
+             <path> (Delta), --topic <name> (Kafka), --format with an optional --glob \
+             (buckets), --sql, --raw-sql, --all, or the whole --selector as JSON. A REST \
+             source is --selector only: its resources carry endpoints, not just names \
+             ('hotdata datasource fields rest')"
                 .into(),
         );
     }
-    let mut req = match entry.family.as_str() {
-        "sql" => IngestRequest {
-            family: "sql".into(),
-            connector_type: Some(entry.name.clone()),
-            credentials: config.ok_or(
-                "SQL connectors need --config with credentials (a connection_string or host/user/…)",
-            )?,
-            schema: args.schema,
-            table_names: args.tables,
-            ..Default::default()
-        },
-        "filesystem" => IngestRequest {
-            family: "filesystem".into(),
-            // Same as the wizard path: named, so imports can resolve it.
-            connector_type: Some(entry.name.clone()),
-            credentials: config.unwrap_or(serde_json::Value::Null),
-            bucket_url: Some(args.bucket_url.ok_or("buckets connectors need --bucket-url")?),
-            file_glob: args.glob,
-            file_format: args.format,
-            continuous: args.continuous,
-            record_shape: args.record_shape,
-            ..Default::default()
-        },
-        "iceberg" => IngestRequest {
-            family: "iceberg".into(),
-            // Same as the wizard path: named, so imports can resolve it.
-            connector_type: Some(entry.name.clone()),
-            catalog_name: Some(entry.name.clone()),
-            catalog_type: args.catalog_type.or_else(|| Some("rest".into())),
-            catalog_config: Some(config.ok_or("iceberg needs --config with the catalog fields")?),
-            tables: args.tables,
-            ..Default::default()
-        },
-        _ => {
-            // REST: an explicit --config wins; otherwise the catalog template,
-            // which only works untouched for keyless services.
-            let rest_config = config
-                .or_else(|| entry.template.clone())
-                .ok_or("this API connector needs --config (client + resources)")?;
-            let mut leftover = Vec::new();
-            collect_placeholders(&rest_config, &mut leftover);
-            if !leftover.is_empty() {
-                return Err(format!(
-                    "connector '{}' needs secrets ({}) — pass a filled --config, or use 'hotdata ingest new-datasource'",
-                    entry.name,
-                    leftover.join(", ")
-                ));
-            }
-            IngestRequest {
-                family: "rest".into(),
-                connector_type: Some(entry.name.clone()),
-                rest_config: Some(rest_config),
-                ..Default::default()
-            }
-        }
-    };
-    // Adding a datasource discovers the schema only — never loads data.
-    req.validate_only = true;
-    req.name = args.name;
-    req.database_id = args.database_id;
-    Ok(req)
+    // Named source tables keep their names on the way in, so nothing here
+    // chooses a destination table — not even when only one is named. The
+    // families that read source tables have no `table` field to send it to;
+    // the most a caller can say about where they land is a common prefix.
+    Ok((serde_json::Value::Object(selector), None))
 }
 
-fn catalog_list(workspace_id: &str, filter: Option<&str>, output: &str) {
-    let client = IngestClient::new(workspace_id);
-    let mut entries = fetch_catalog(&client);
-    if let Some(f) = filter {
-        let f = f.to_lowercase();
-        entries.retain(|c| c.name.to_lowercase().contains(&f));
-    }
-    let entries = sorted_for_display(&entries);
-    // "added" = a connector this workspace already has a datasource for.
-    // Best-effort: if the read fails the catalog still shows, just without
-    // the marks. Login sessions are rejected on every workspace-scoped read
-    // (module docs in client/ingest) — don't pay a doomed round-trip.
-    let added = if client.has_api_key() {
-        added_connector_names(&client)
-    } else {
-        Default::default()
-    };
-    let is_added = |name: &str| added.contains(name);
-
-    let projected: Vec<_> = entries
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "name": c.name,
-                "type": family_type(&c.family),
-                "added": is_added(&c.name),
-                "description": c.description,
-                "config_schema": c.config_schema,
-            })
-        })
-        .collect();
-    render(output, &projected, || {
-        let rows: Vec<Vec<String>> = entries
-            .iter()
-            .map(|c| {
-                let status = if is_added(&c.name) { "added" } else { "" };
-                vec![
-                    c.name.clone(),
-                    family_label(&c.family).to_string(),
-                    status.to_string(),
-                    c.description.clone(),
-                ]
-            })
-            .collect();
-        crate::output::table::print(&["NAME", "TYPE", "STATUS", "DESCRIPTION"], &rows);
-    });
-}
-
-/// Connector names this workspace has datasources for, used to flag the
-/// catalog's "added" marks. Best-effort — an unavailable listing yields an
-/// empty set.
-fn added_connector_names(client: &IngestClient) -> std::collections::HashSet<String> {
-    client
-        .list_sources(false)
-        .map(|r| {
-            r.sources
-                .into_iter()
-                .filter_map(|s| s.connector_type)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-// --- new-import: SQL front-door -------------------------------------------
-
-fn new_import(
-    workspace_id: &str,
-    output: &str,
-    sql: Option<String>,
-    all: bool,
-    source: Option<String>,
-    database_id: Option<String>,
-    poll: &PollArgs,
+/// The two qualifiers that ride along with any shorthand shape.
+fn add_shape_and_limit(
+    selector: &mut serde_json::Map<String, serde_json::Value>,
+    plan: &CreatePlan,
 ) {
-    // A 32-char hex --source is a datasource id (pins resolution); anything
-    // else is a datasource name (the FROM target).
-    let (pin, name) = match source {
-        Some(s) if looks_like_ingest_id(&s) => (Some(s), None),
-        Some(s) => (None, Some(s)),
-        None => (None, None),
-    };
+    if let Some(s) = plan.record_shape {
+        selector.insert("record_shape".into(), s.into());
+    }
+    if let Some(n) = plan.limit {
+        selector.insert("limit".into(), n.into());
+    }
+}
 
-    let client = IngestClient::new(workspace_id);
-    // `--all` against a pinned id needs the datasource's name for FROM —
-    // resolve it, only when actually needed.
-    let pinned_name = (all && name.is_none())
-        .then(|| pin.as_deref().and_then(|p| pinned_source_name(&client, p)))
-        .flatten();
-    // A pin that fails to resolve is ITS OWN error — falling through to
-    // build_import_query would blame the --source flag the user did pass.
-    if all
-        && name.is_none()
-        && pinned_name.is_none()
-        && let Some(p) = pin.as_deref()
-    {
-        fail(&format!(
-            "could not resolve datasource id {p} — check 'hotdata ingest list-datasources'"
+/// CLI spelling → wire value. The CLI uses kebab-case like every other flag
+/// value; the API's `type` field is snake_case.
+fn wire_type(kind: &str) -> Result<&'static str, String> {
+    match kind {
+        "one-time" | "one_time" => Ok("one_time"),
+        "scheduled" => Ok("scheduled"),
+        "continuous" => Ok("continuous"),
+        other => Err(format!(
+            "unknown --type '{other}' — use one-time, scheduled, or continuous"
+        )),
+    }
+}
+
+/// The logical write target. `--destination` is passed through (the service
+/// validates it by family); otherwise it is assembled from the convenience
+/// flags.
+///
+/// **`table` and `table_prefix` are two different fields, and which one a
+/// family has is the service's answer to give.** A source that lands one table
+/// names it; a source that lands one table per source table has no single name
+/// to be given, takes at most a prefix, and refuses `table` outright — so
+/// whichever flag was passed is sent, and the wrong one comes back as a 422
+/// naming the field. Deciding it here would be a second copy of that mapping,
+/// wrong from the first family that moves between the two, and wrong quietly:
+/// the request it withholds is one the service would have accepted.
+///
+/// Nothing else fills in a table. `result_table` is the one exception, and it
+/// is narrow: `--raw-sql` produces a single result set that no source table
+/// names, so the `--table` it was given IS the destination table. A selector
+/// that names source tables leaves them named after the source, which is what
+/// those families do whether or not the destination says so.
+fn build_destination(
+    destination: Option<serde_json::Value>,
+    database_id: Option<&str>,
+    schema: Option<&str>,
+    table: Option<&str>,
+    table_prefix: Option<&str>,
+    write_mode: Option<&str>,
+    result_table: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    if let Some(d) = destination {
+        // Accept the file either bare or wrapped, so @destination.json can be
+        // the same document a request body would carry.
+        let d = match d.get("destination") {
+            Some(inner) if inner.is_object() => inner.clone(),
+            _ => d,
+        };
+        if !d.is_object() {
+            return Err("--destination must be a JSON object".into());
+        }
+        return Ok(d);
+    }
+
+    let Some(database_id) = database_id else {
+        return Err(
+            "a destination is required: --destination @destination.json, or --database-id \
+             <db> with --dest-table or --dest-table-prefix"
+                .into(),
+        );
+    };
+    let mut d = serde_json::Map::new();
+    d.insert("database_id".into(), database_id.into());
+    d.insert("schema".into(), schema.unwrap_or("public").into());
+    if let Some(t) = table.or(result_table) {
+        d.insert("table".into(), t.into());
+    }
+    if let Some(p) = table_prefix {
+        d.insert("table_prefix".into(), p.into());
+    }
+    d.insert("write_mode".into(), write_mode.unwrap_or("replace").into());
+    Ok(serde_json::Value::Object(d))
+}
+
+/// `None` means "no schedule at all" — a one-time ingest. `--schedule` is
+/// passed through (bare or wrapped); `--every`/`--next` assemble the same
+/// shape.
+fn build_schedule(
+    schedule: Option<serde_json::Value>,
+    every: Option<&str>,
+    next: Option<&str>,
+) -> Result<Option<serde_json::Value>, String> {
+    if let Some(s) = schedule {
+        let s = match s.get("schedule") {
+            Some(inner) if inner.is_object() => inner.clone(),
+            _ => s,
+        };
+        if !s.is_object() {
+            return Err("--schedule must be a JSON object".into());
+        }
+        return Ok(Some(s));
+    }
+    if every.is_none() && next.is_none() {
+        return Ok(None);
+    }
+    let mut m = serde_json::Map::new();
+    if let Some(e) = every {
+        m.insert("interval_seconds".into(), parse_duration(e)?.into());
+    }
+    if let Some(n) = next {
+        m.insert("next_run_at".into(), parse_next_run_at(n).into());
+    }
+    Ok(Some(serde_json::Value::Object(m)))
+}
+
+// --- the SELECT convenience -------------------------------------------------
+
+/// One parsed `--sql` argument. Deliberately not a general SQL AST: this
+/// grammar exists only to fill in a `sql`-family selector, and anything it
+/// cannot express is rejected with a pointer at `--selector`.
+#[derive(Debug, PartialEq)]
+struct ParsedSelect {
+    /// Empty means `*` — every column.
+    columns: Vec<String>,
+    schema: Option<String>,
+    table: String,
+    /// The WHERE text verbatim; the source engine parses it, not the CLI.
+    filter: Option<String>,
+    limit: Option<u64>,
+}
+
+/// Parse `SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n]`.
+///
+/// The FROM target names the **source table**, optionally schema-qualified.
+/// It is not a datasource name: names are never resolved against (the
+/// datasource is `--datasource-id`), so `FROM prod_pg.orders` means schema
+/// `prod_pg`, table `orders`.
+fn parse_select(sql: &str) -> Result<ParsedSelect, String> {
+    let raw = sql.trim().trim_end_matches(';').trim();
+    if raw.contains(';') {
+        return Err("--sql takes a single SELECT statement".into());
+    }
+    // Whitespace is collapsed to single spaces before anything is matched.
+    // The keyword searches below look for literal " FROM " and "SELECT ", so
+    // without this a newline or a tab between clauses reads as a missing
+    // clause -- and SQL pasted out of a script or a heredoc is normally
+    // indented across several lines. Reporting "needs a FROM clause" about a
+    // query whose second line is FROM is the kind of error that sends someone
+    // looking for a typo that is not there.
+    //
+    // A multi-space run inside a string literal is normalised too. That is
+    // accepted: the predicate is passed through to the source engine, which
+    // parses it, and no engine distinguishes `a = 'x  y'` on whitespace inside
+    // a quoted literal differently from how it would after this -- the far
+    // more common case is indentation, which this fixes.
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.as_str();
+    // ASCII uppercasing is byte-length preserving, so indices found in `upper`
+    // are valid in `trimmed`.
+    let upper = trimmed.to_ascii_uppercase();
+    if !upper.starts_with("SELECT ") {
+        return Err("--sql must start with SELECT — use --selector for other shapes".into());
+    }
+    for kw in [" JOIN ", " UNION ", " GROUP BY ", " ORDER BY ", " HAVING "] {
+        if upper.contains(kw) {
+            return Err(format!(
+                "--sql is a restricted grammar (SELECT … FROM … [WHERE …] [LIMIT n]) and cannot \
+                 express{kw}— pass the full query as --selector \
+                 '{{\"mode\":\"query\",\"sql\":\"…\"}}'"
+            ));
+        }
+    }
+
+    let from = upper
+        .find(" FROM ")
+        .ok_or("--sql needs a FROM clause: SELECT <cols|*> FROM [<schema>.]<table>")?;
+    let columns_text = trimmed["SELECT ".len()..from].trim();
+    let rest = trimmed[from + " FROM ".len()..].trim();
+    let rest_upper = rest.to_ascii_uppercase();
+
+    // A trailing LIMIT only counts when what follows is a bare number —
+    // otherwise the word came from inside the WHERE text.
+    let limit_at = rest_upper.rfind(" LIMIT ").filter(|i| {
+        rest[i + " LIMIT ".len()..]
+            .trim()
+            .parse::<u64>()
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    });
+    let limit = limit_at.map(|i| rest[i + " LIMIT ".len()..].trim().parse::<u64>().unwrap());
+
+    let where_at = rest_upper.find(" WHERE ").filter(|w| match limit_at {
+        Some(l) => *w < l,
+        None => true,
+    });
+    let target_end = where_at.or(limit_at).unwrap_or(rest.len());
+    let target = rest[..target_end].trim();
+    let filter = where_at.map(|w| {
+        let start = w + " WHERE ".len();
+        let end = limit_at.unwrap_or(rest.len());
+        rest[start..end].trim().to_string()
+    });
+
+    let (schema, table) = parse_target(target)?;
+    Ok(ParsedSelect {
+        columns: parse_columns(columns_text)?,
+        schema,
+        table,
+        filter: filter.filter(|f| !f.is_empty()),
+        limit,
+    })
+}
+
+fn parse_columns(text: &str) -> Result<Vec<String>, String> {
+    if text.is_empty() {
+        return Err("--sql needs a column list or * after SELECT".into());
+    }
+    if text == "*" {
+        return Ok(Vec::new());
+    }
+    if text.contains('(') {
+        return Err(
+            "--sql selects plain columns only — expressions and aggregates belong in a \
+             --selector with \"mode\":\"query\""
+                .into(),
+        );
+    }
+    let columns: Vec<String> = text
+        .split(',')
+        .map(|c| unquote(c.trim()).to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
+    if columns.is_empty() {
+        return Err("--sql needs a column list or * after SELECT".into());
+    }
+    Ok(columns)
+}
+
+fn parse_target(target: &str) -> Result<(Option<String>, String), String> {
+    if target.is_empty() {
+        return Err("--sql needs a table after FROM".into());
+    }
+    if target.contains('(') || target.contains(' ') {
+        return Err(format!(
+            "'{target}' is not a plain table name — --sql reads FROM [<schema>.]<table> only \
+             (the datasource is --datasource-id)"
         ));
     }
-    let query = build_import_query(sql, all, name.as_deref(), pinned_name.as_deref())
-        .unwrap_or_else(|msg| fail(msg));
-    let req = QueryToIngest {
-        query,
-        source_ingest_id: pin,
-        database_id,
-    };
-    let spinner = util::spinner("submitting import…");
-    // The by-name FROM lookup reads snapshots that lag writes, so an import
-    // right after adding a datasource can 404 briefly. Retry ONCE: the lag is
-    // usually under one poll interval, and every extra retry makes a typo'd
-    // datasource name look like a slow service for 2.5s more.
-    let mut ack = client.create_query(&req);
-    for _ in 0..1 {
-        match &ack {
-            Err(crate::client::ingest::IngestError::Http { status: 404, .. }) => {
-                spinner.set_message("waiting for the datasource to appear…");
-                std::thread::sleep(POLL_INTERVAL);
-                ack = client.create_query(&req);
+    match target.split_once('.') {
+        Some((schema, table)) => {
+            let table = unquote(table);
+            if table.is_empty() {
+                return Err("--sql needs a table after FROM".into());
             }
-            _ => break,
+            Ok((Some(unquote(schema).to_string()), table.to_string()))
+        }
+        None => Ok((None, unquote(target).to_string())),
+    }
+}
+
+/// Strip one layer of SQL quoting from an identifier.
+fn unquote(s: &str) -> &str {
+    for q in ['"', '`', '\''] {
+        if s.len() >= 2 && s.starts_with(q) && s.ends_with(q) {
+            return &s[1..s.len() - 1];
         }
     }
-    let ack = ack.unwrap_or_else(|e| {
-        spinner.finish_and_clear();
-        e.exit()
-    });
-    spinner.finish_and_clear();
-    if poll.wait {
-        let st = poll_ingest(
-            &client,
-            output,
-            &ack.ingest_id,
-            poll.wait_timeout,
-            "importing",
-            true,
-        );
-        render_done(&st, output);
-        return;
+    s
+}
+
+/// The `sql`-family selector a parsed SELECT desugars to. The service sees
+/// only this — the SQL text never leaves the CLI.
+///
+/// The shape is flat and `tables` is a list of bare table names, because that
+/// is what the service's selector model accepts: `schema`, `columns`, `where`,
+/// and `limit` sit beside `tables` and apply to all of them. The model forbids
+/// unknown keys, so a per-table object inside `tables` is a 422 rather than a
+/// tolerated variant — and the `--sql` grammar reads exactly one table, so one
+/// set of qualifiers is never a loss of expression.
+///
+/// A qualifier the SELECT did not give is omitted, not sent empty: `columns:
+/// []` would read as "project no columns", and the model has no meaning for a
+/// null `where`.
+fn sql_selector(p: &ParsedSelect) -> serde_json::Value {
+    let mut selector = serde_json::Map::new();
+    selector.insert("mode".into(), "tables".into());
+    if let Some(s) = &p.schema {
+        selector.insert("schema".into(), s.clone().into());
     }
-    // Non-blocking default: the service processes on demand, so kick the run
-    // that actually executes the job — without it the import would sit
-    // pending — then hand the terminal back.
-    let _ = client.drain();
-    render_ack(&ack, "import id:", output);
+    selector.insert("tables".into(), vec![p.table.clone()].into());
+    if !p.columns.is_empty() {
+        selector.insert("columns".into(), p.columns.clone().into());
+    }
+    if let Some(f) = &p.filter {
+        selector.insert("where".into(), f.clone().into());
+    }
+    if let Some(n) = p.limit {
+        selector.insert("limit".into(), n.into());
+    }
+    serde_json::Value::Object(selector)
 }
 
-fn looks_like_ingest_id(s: &str) -> bool {
-    s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
+// --- list -------------------------------------------------------------------
 
-// --- raw-sql: source-native SQL front-door --------------------------------
-
-fn raw_sql(
+fn list(
     workspace_id: &str,
     output: &str,
-    sql: String,
-    source: String,
-    table: String,
-    limit: Option<u64>,
-    poll: &PollArgs,
+    datasource_id: Option<String>,
+    kind: Option<String>,
+    state: Option<String>,
+    include_deleted: bool,
 ) {
-    let client = IngestClient::new(workspace_id);
-    let req = RawSqlIngest {
-        sql,
-        source,
-        table,
-        limit,
-    };
-    let spinner = util::spinner("submitting raw-sql import…");
-    let ack = client.create_raw_query(&req).unwrap_or_else(|e| {
-        spinner.finish_and_clear();
-        e.exit()
-    });
-    spinner.finish_and_clear();
-    if poll.wait {
-        let st = poll_ingest(
-            &client,
-            output,
-            &ack.ingest_id,
-            poll.wait_timeout,
-            "importing",
-            true,
-        );
-        render_done(&st, output);
-        return;
+    let mut filters: Vec<(&str, String)> = Vec::new();
+    if let Some(d) = datasource_id {
+        filters.push(("datasource_id", d));
     }
-    // Non-blocking default: kick the drain so the enqueued job actually runs,
-    // then hand the terminal back (same as new-import).
-    let _ = client.drain();
-    render_ack(&ack, "import id:", output);
-}
-
-/// The SQL a `new-import` runs: explicit SQL wins; `--all` becomes a full
-/// `SELECT *` against the datasource's name (`pinned_name` when --source was
-/// a datasource id). Errors are messages for `fail`.
-fn build_import_query(
-    sql: Option<String>,
-    all: bool,
-    name: Option<&str>,
-    pinned_name: Option<&str>,
-) -> Result<String, &'static str> {
-    match (sql, all) {
-        (Some(q), _) => Ok(q), // clap rejects sql + --all together
-        (None, true) => name
-            .or(pinned_name)
-            .map(|n| format!("SELECT * FROM {n}"))
-            .ok_or("--all needs --source <datasource> (a name or datasource id)"),
-        (None, false) => Err(
-            "provide SQL (SELECT … FROM <datasource> …), or --all to import \
-             everything from --source",
-        ),
+    if let Some(k) = kind {
+        filters.push(("type", wire_type(&k).unwrap_or_else(|m| fail(&m)).into()));
     }
-}
-
-/// Resolve a pinned datasource id to its name (the FROM target).
-/// GET /jobs/{id} returns it directly — no need to page the full listing.
-fn pinned_source_name(client: &IngestClient, ingest_id: &str) -> Option<String> {
-    let st = client.job_status(ingest_id).ok()?;
-    display_name(st.name.as_deref(), st.connector_type.as_deref())
-}
-
-// --- trigger-import --------------------------------------------------------
-
-fn trigger_import(workspace_id: &str, output: &str, id: &str, poll: &PollArgs) {
-    let client = IngestClient::new(workspace_id);
-    // The service resets the item to pending and runs it again (409 if a run
-    // is already in progress — its message says to retry shortly).
-    let ack = with_spinner("requesting re-run…", || client.rerun(id));
-    if poll.wait {
-        // The re-run has already been kicked; poll only.
-        let st = poll_ingest(
-            &client,
-            output,
-            &ack.ingest_id,
-            poll.wait_timeout,
-            "re-running",
-            false,
-        );
-        render_done(&st, output);
-        return;
+    if let Some(s) = state {
+        filters.push(("state", s));
     }
-    render_ack(&ack, "import id:", output);
-}
-
-// --- status ------------------------------------------------------------------
-
-/// Exit code for a one-shot status check, mirroring `query status`:
-/// 0 done, 1 failed, 2 still in flight (pending/running).
-fn status_exit_code(status: &str) -> i32 {
-    match normalize_status(status).0 {
-        "done" => 0,
-        "failed" | "cancelled" => 1,
-        _ => 2,
+    if include_deleted {
+        filters.push(("include_deleted", "true".into()));
     }
-}
 
-fn status(workspace_id: &str, output: &str, id: &str, poll: &PollArgs) {
     let client = IngestClient::new(workspace_id);
-    if poll.wait {
-        // Attach and poll to a terminal state. No initial kick — the submit
-        // already fired one — but the poll loop still re-kicks a job stuck in
-        // `pending`, so attaching also rescues an import whose first run
-        // missed it.
-        let st = poll_ingest(&client, output, id, poll.wait_timeout, "waiting", false);
-        render_done(&st, output);
-        return;
-    }
-    let st = client.job_status(id).unwrap_or_else(|e| e.exit());
-    render(output, &status_json(&st), || {
-        use crossterm::style::Stylize;
-        let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
-        println!(
-            "{}{}",
-            label("status:"),
-            status_cell(&st.status, st.stage.as_deref())
-        );
-        if let Some(d) = st.detail.as_deref().filter(|d| !d.trim().is_empty()) {
-            println!("{}{}", label("detail:"), d);
-        }
-        if let Some(db) = st.database_id.as_deref() {
-            println!("{}{}", label("database:"), db);
-        }
-        if let Some(t) = st.updated_at.as_deref() {
-            println!("{}{}", label("updated:"), t);
-        }
-        if status_exit_code(&st.status) == 2 {
-            println!(
-                "{}",
-                format!("Attach with: {}", status_wait_hint(id)).dark_grey()
-            );
-        }
-    });
-    std::process::exit(status_exit_code(&st.status));
-}
+    let resp = with_spinner("loading ingests…", || client.list_ingests(&filters));
 
-// --- cancel ----------------------------------------------------------------
-
-fn cancel_import(workspace_id: &str, output: &str, id: &str) {
-    let client = IngestClient::new(workspace_id);
-    let ack = with_spinner("cancelling…", || client.cancel(id));
-    let machine = serde_json::json!({
-        "ingest_id": ack.ingest_id,
-        "status": ack.status,
-        "detail": ack.detail,
-        "database_id": ack.database_id,
-    });
-    render(output, &machine, || {
-        use crossterm::style::Stylize;
-        let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
-        println!("{}{}", label("status:"), util::color_status(&ack.status));
-        if let Some(db) = ack.database_id.as_deref() {
-            println!("{}{}", label("database:"), db);
-        }
-        println!(
-            "{}",
-            format!(
-                "Drain may still be running — track with: hotdata ingest status {} --wait",
-                ack.ingest_id
-            )
-            .dark_grey()
-        );
-    });
-}
-
-// --- list-datasources ------------------------------------------------------
-
-fn list_datasources(workspace_id: &str, output: &str, all: bool) {
-    let client = IngestClient::new(workspace_id);
-    let resp = with_spinner("loading datasources…", || client.list_sources(all));
-
-    let projected: Vec<_> = resp
-        .sources
-        .iter()
-        .map(|s| {
-            let (status, stage) = presented_status(&s.status, s.stage.as_deref());
-            serde_json::json!({
-                "id": s.ingest_id,
-                "name": display_name(s.name.as_deref(), s.connector_type.as_deref()),
-                "connector": s.connector_type,
-                "type": s.family.as_deref().map(family_type),
-                "status": status,
-                "stage": stage,
-                "detail": s.detail,
-                "database_id": s.database_id,
-                "created_at": s.created_at,
-                "updated_at": s.updated_at,
-                "active": s.active,
-            })
-        })
-        .collect();
-    render(output, &projected, || {
-        use crossterm::style::Stylize;
-        if resp.sources.is_empty() {
-            eprintln!(
-                "{}",
-                "No datasources yet. Add one with 'hotdata ingest new-datasource'.".dark_grey()
-            );
-            return;
-        }
-        let mut headers = vec!["NAME", "TYPE", "STATUS", "CREATED", "DATASOURCE ID"];
-        if all {
-            headers.push("ACTIVE");
-        }
-        let rows: Vec<Vec<String>> = resp
-            .sources
-            .iter()
-            // Oldest at the top, newest at the bottom — the freshest row
-            // lands next to the prompt. (The server returns newest-first;
-            // json/yaml keep that order for scripting.)
-            .rev()
-            .map(|s| {
-                let mut row = vec![
-                    display_name(s.name.as_deref(), s.connector_type.as_deref())
-                        .unwrap_or_else(|| "-".into()),
-                    s.family
-                        .as_deref()
-                        .map(family_label)
-                        .unwrap_or_default()
-                        .to_string(),
-                    status_cell(&s.status, s.stage.as_deref()),
-                    created_cell(s.created_at.as_deref()),
-                    s.ingest_id.clone(),
-                ];
-                if all {
-                    row.push(if s.active {
-                        "yes".into()
-                    } else {
-                        String::new()
-                    });
-                }
-                row
-            })
-            .collect();
-        crate::output::table::print(&headers, &rows);
-    });
-}
-
-// --- list-imports ----------------------------------------------------------
-
-fn list_imports(workspace_id: &str, output: &str) {
-    let client = IngestClient::new(workspace_id);
-    let resp = with_spinner("loading imports…", || client.list_queries());
-
-    let projected: Vec<_> = resp
-        .queries
-        .iter()
-        .map(|q| {
-            let (status, stage) = presented_status(&q.status, q.stage.as_deref());
-            serde_json::json!({
-                "id": q.ingest_id,
-                "datasource": display_name(q.name.as_deref(), q.connector_type.as_deref()),
-                "sql": q.query,
-                "status": status,
-                "stage": stage,
-                "detail": q.detail,
-                "database_id": q.database_id,
-                "created_at": q.created_at,
-                "updated_at": q.updated_at,
-            })
-        })
-        .collect();
-    render(output, &projected, || {
-        use crossterm::style::Stylize;
-        if resp.queries.is_empty() {
-            eprintln!(
-                "{}",
-                "No imports yet. Create one with 'hotdata ingest new-import \
-                     --source <datasource> --all' (or pass SQL)."
-                    .dark_grey()
+    render(output, &resp.ingests, || {
+        if resp.ingests.is_empty() {
+            empty_notice(
+                "No ingests yet. Create one with 'hotdata ingest create --datasource-id <id> \
+                 --type one-time --selector @selector.json --destination @destination.json'.",
             );
             return;
         }
         let rows: Vec<Vec<String>> = resp
-            .queries
+            .ingests
             .iter()
-            // Oldest at the top, newest at the bottom (see list_datasources).
+            // Oldest at the top, newest at the bottom — the freshest row lands
+            // next to the prompt. (The server returns newest-first; json/yaml
+            // keep that order for scripting.)
             .rev()
-            .map(|q| {
+            .map(|i| {
                 vec![
-                    q.ingest_id.clone(),
-                    display_name(q.name.as_deref(), q.connector_type.as_deref())
-                        .unwrap_or_else(|| "-".into()),
-                    q.query.clone().unwrap_or_default(),
-                    status_cell(&q.status, q.stage.as_deref()),
-                    created_cell(q.created_at.as_deref()),
-                    q.database_id.clone().unwrap_or_else(|| "-".into()),
+                    i.ingest_id.clone(),
+                    cell(i.r#type.as_deref()),
+                    state_cell(i.state.as_deref()),
+                    destination_cell(i.destination.as_ref()),
+                    schedule_cell(i.schedule.as_ref(), i.next_attempt_at.as_deref()),
+                    selector_cell(i.selector.as_ref()),
+                    date_cell(i.created_at.as_deref()),
+                    cell(i.datasource_id.as_deref()),
                 ]
             })
             .collect();
+        // Most important first: a narrow terminal takes columns from the right.
+        // What an ingest IS — its id, what it writes, whether it is running —
+        // outranks where it reads from. The datasource id is a 30-character
+        // token that this listing takes as a FILTER (`--datasource-id`) rather
+        // than something a reader picks a row by, so it goes last: shown when
+        // the width is there, and one `hotdata ingest show` away when it is not.
         crate::output::table::print(
             &[
-                "IMPORT ID",
-                "DATASOURCE",
-                "SQL",
-                "STATUS",
+                "INGEST ID",
+                "TYPE",
+                "STATE",
+                "DESTINATION",
+                "SCHEDULE",
+                "READS",
                 "CREATED",
-                "DATABASE",
+                "DATASOURCE ID",
             ],
             &rows,
         );
     });
 }
 
-/// CREATED cell for the listing tables — util::format_date, aligned with
-/// every other table in the CLI ("2026-07-08 10:12").
-fn created_cell(ts: Option<&str>) -> String {
-    ts.map(util::format_date).unwrap_or_else(|| "-".into())
-}
+/// What one ingest reads, in a listing cell.
+///
+/// The selector is the half of an ingest that says what it is FOR, and two
+/// ingests off one datasource into two tables are otherwise told apart only by
+/// their ids. Pure so the shapes it summarises are pinned by tests rather than
+/// by whichever family someone last looked at a listing for.
+///
+/// The families are read by the keys they use, not by a `family` field, so a
+/// family this build has never heard of still gets a summary as long as it
+/// names its subset with one of the same words. Anything unrecognised falls
+/// back to compact JSON, truncated — a cell that is hard to read beats a cell
+/// that says nothing about an ingest that is running.
+fn selector_cell(selector: Option<&serde_json::Value>) -> String {
+    let Some(s) = selector.filter(|s| s.is_object() && !s.as_object().unwrap().is_empty()) else {
+        return "-".into();
+    };
+    let str_at = |key: &str| {
+        s.get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|v| !v.trim().is_empty())
+            .map(str::to_string)
+    };
+    let list_at = |key: &str| {
+        s.get(key)
+            .and_then(serde_json::Value::as_array)
+            .filter(|a| !a.is_empty())
+            .map(|a| {
+                a.iter()
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            // A REST resource can be an object; its `name` is
+                            // the part a reader recognises.
+                            .or_else(|| {
+                                v.get("name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string)
+                            })
+                            .unwrap_or_else(|| v.to_string())
+                    })
+                    .collect::<Vec<_>>()
+            })
+    };
 
-// --- shared run + poll ----------------------------------------------------
-
-fn run_source(
-    client: &IngestClient,
-    output: &str,
-    no_wait: bool,
-    wait_timeout: u64,
-    req: IngestRequest,
-) {
-    // The first add in a workspace provisions the runtime (~15-30s); later
-    // ones are quick. The HTTP client allows 300s.
-    let ack = with_spinner(
-        "adding datasource… (the first one in a workspace takes ~30s)",
-        || client.create_source(&req),
-    );
-    if no_wait {
-        // The service processes on demand: without this kick the datasource
-        // would sit pending until some other command fires one.
-        let _ = client.drain();
-        render_ack(&ack, "datasource id:", output);
-        return;
+    // A source-native query is summarised by its text, because the text IS the
+    // selection — every other field of that selector is a qualifier on it.
+    if s.get("mode").and_then(|m| m.as_str()) == Some("query")
+        && let Some(sql) = str_at("sql")
+    {
+        return truncated(&format!(
+            "query: {}",
+            sql.split_whitespace().collect::<Vec<_>>().join(" ")
+        ));
     }
-    let st = poll_ingest(
-        client,
-        output,
-        &ack.ingest_id,
-        wait_timeout,
-        "discovering schema",
-        true,
+    for (key, prefix) in [("tables", ""), ("topics", "topics: "), ("resources", "")] {
+        if let Some(names) = list_at(key) {
+            let qualified = match (str_at("schema"), names.len()) {
+                (Some(schema), 1) => format!("{schema}.{}", names[0]),
+                _ => names.join(", "),
+            };
+            return truncated(&format!("{prefix}{qualified}"));
+        }
+    }
+    if let Some(path) = str_at("table_path") {
+        return truncated(&path);
+    }
+    // The bucket families select by position rather than by name: the prefix
+    // and glob together are the path pattern that was matched.
+    let prefix = s.get("prefix").and_then(|p| p.as_str()).unwrap_or("");
+    if let Some(glob) = str_at("glob").or_else(|| str_at("file_format").map(|f| format!("*.{f}"))) {
+        return truncated(&format!("{prefix}{glob}"));
+    }
+    truncated(&compact_json(s))
+}
+
+/// Keep a listing cell to one readable width. The full value is one
+/// `hotdata ingest show` away, and `-o json` never passes through here.
+fn truncated(s: &str) -> String {
+    const WIDTH: usize = 40;
+    if s.chars().count() <= WIDTH {
+        return s.to_string();
+    }
+    format!("{}…", s.chars().take(WIDTH - 1).collect::<String>())
+}
+
+/// DETAIL for a run listing.
+///
+/// A failure detail is free text from the pipeline — hundreds of characters
+/// over several lines — and a table renders every one of those lines as a row
+/// of its own, so one failed run is what turns a listing into a screenful of
+/// fragments. Collapsing the whitespace first is what makes the truncation
+/// hold: cutting to 40 characters does nothing if the first newline arrives at
+/// character 12. `hotdata run show <run-id>` and `-o json` carry all of it.
+fn detail_cell(detail: Option<&str>) -> String {
+    match detail.filter(|d| !d.trim().is_empty()) {
+        Some(d) => truncated(&d.split_whitespace().collect::<Vec<_>>().join(" ")),
+        None => "-".into(),
+    }
+}
+
+// --- show -------------------------------------------------------------------
+
+fn show(workspace_id: &str, output: &str, ingest_id: &str) {
+    let client = IngestClient::new(workspace_id);
+    let ing = client.get_ingest(ingest_id).unwrap_or_else(|e| e.exit());
+
+    render(output, &ing, || {
+        print_ingest_identity(&ing);
+        if let Some(s) = ing.selector.as_ref() {
+            field("selector:", &compact_json(s));
+        }
+        if let Some(t) = ing.created_at.as_deref() {
+            field("created:", &util::format_date(t));
+        }
+        if let Some(r) = ing.latest_run.as_ref() {
+            field(
+                "latest run:",
+                &format!(
+                    "{}  {}",
+                    r.run_id,
+                    run_status_cell(&r.status, r.stage.as_deref())
+                ),
+            );
+        }
+        hint(&format!("Its runs: hotdata ingest runs {}", ing.ingest_id));
+    });
+}
+
+/// The identity block every ingest view opens with. One definition so `show`,
+/// `resume`, and `schedule` cannot disagree about what an ingest *is*.
+fn print_ingest_identity(ing: &Ingest) {
+    field("ingest id:", &ing.ingest_id);
+    field("datasource id:", &cell(ing.datasource_id.as_deref()));
+    field("type:", &cell(ing.r#type.as_deref()));
+    field("state:", &state_cell(ing.state.as_deref()));
+    if let Some(r) = ing
+        .stopped_reason
+        .as_deref()
+        .filter(|r| !r.trim().is_empty())
+    {
+        field("stopped by:", r);
+    }
+    field(
+        "destination:",
+        &destination_detail(ing.destination.as_ref()),
     );
-    render_datasource_added(client, &st, output);
-}
-
-/// The canonical "track this" invocation. Every hint goes through here so
-/// the next verb rename has ONE string to update, not ten.
-fn status_wait_hint(ingest_id: &str) -> String {
-    format!("hotdata ingest status {ingest_id} --wait")
-}
-
-/// Timeout exit for a wait: code 2 = still in flight, distinct from 1 = the
-/// run itself failed. One place so every wait path agrees.
-fn poll_timeout_exit(ingest_id: &str) -> ! {
-    use crossterm::style::Stylize;
-    eprintln!("{}", "timed out waiting".red());
-    eprintln!(
-        "{}",
-        format!("Keep tracking it with: {}", status_wait_hint(ingest_id)).dark_grey()
+    field(
+        "schedule:",
+        &schedule_cell(ing.schedule.as_ref(), ing.next_attempt_at.as_deref()),
     );
-    std::process::exit(2);
 }
 
-/// Poll to a terminal state, returning the final (done) status for the
-/// caller to render. `kick` fires processing up front (submit paths;
-/// `trigger-import` skips it — the re-run already did). Every in-flight
-/// stage is shown live in the spinner (stage + detail); exits the process on
-/// failure (1) or timeout (2). On failure with `-o json|yaml` the projected
-/// status object (with the server's detail) still lands on stdout, matching
-/// the one-shot `status` path.
-fn poll_ingest(
-    client: &IngestClient,
+/// STATE cell for ingests and datasources. The lifecycle vocabulary is the
+/// server's; `color_status` already greens the terminal-good ones and leaves
+/// everything else in flight yellow.
+fn state_cell(state: Option<&str>) -> String {
+    state.map(util::color_status).unwrap_or_else(|| "-".into())
+}
+
+fn compact_json(v: &serde_json::Value) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| "-".into())
+}
+
+// --- cancel / resume / delete ------------------------------------------------
+
+fn cancel(workspace_id: &str, output: &str, ingest_id: &str) {
+    let client = IngestClient::new(workspace_id);
+    let ack = with_spinner("stopping ingest…", || client.cancel_ingest(ingest_id));
+
+    render(output, &ack, || {
+        field("ingest id:", &ack.ingest_id);
+        field("state:", &state_cell(ack.state.as_deref()));
+        match ack.cancelled_run_id.as_deref() {
+            Some(run_id) => field("cancelled run:", run_id),
+            None => field("cancelled run:", "- (none was in flight)"),
+        }
+        hint(&format!(
+            "Future runs are stopped too. Start it again with: hotdata ingest resume {}",
+            ack.ingest_id
+        ));
+    });
+}
+
+fn resume(workspace_id: &str, output: &str, ingest_id: &str) {
+    let client = IngestClient::new(workspace_id);
+    let ing = with_spinner("resuming ingest…", || client.resume_ingest(ingest_id));
+
+    render(output, &ing, || {
+        print_ingest_identity(&ing);
+        // Resume is not a run trigger, and saying so here is cheaper
+        // than a support question.
+        hint(&format!(
+            "No run was started — the next one follows the schedule. To bring it forward: \
+             hotdata ingest schedule {} --next now",
+            ing.ingest_id
+        ));
+    });
+}
+
+fn delete(workspace_id: &str, output: &str, ingest_id: &str) {
+    let client = IngestClient::new(workspace_id);
+    let ack = with_spinner("deleting ingest…", || client.delete_ingest(ingest_id));
+
+    render(output, &ack, || {
+        use crossterm::style::Stylize;
+        println!("{} {}", "ingest deleted".green(), ingest_id.dark_grey());
+        hint("The destination table and its data were not touched.");
+    });
+}
+
+// --- schedule ----------------------------------------------------------------
+
+fn reschedule(
+    workspace_id: &str,
     output: &str,
     ingest_id: &str,
-    timeout_secs: u64,
-    verb: &str,
-    kick: bool,
-) -> JobStatus {
-    if kick {
-        let _ = client.drain();
-    }
-    let mut last_drain = Instant::now();
-    let mut consecutive_errors: u32 = 0;
-
-    let spinner = util::spinner(&format!("{verb}…"));
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        // A status poll is read-only and cheap to retry — one transient
-        // gateway error (a 403/5xx blip, a dropped connection) must not kill
-        // a wait that is otherwise progressing. Only persistent failure exits.
-        let st = match client.job_status(ingest_id) {
-            Ok(st) => {
-                consecutive_errors = 0;
-                st
-            }
-            Err(e) => {
-                consecutive_errors += 1;
-                if consecutive_errors >= 3 {
-                    spinner.finish_and_clear();
-                    e.exit();
-                }
-                // The deadline outranks the retry budget: a transient blip AT
-                // the deadline is a timeout (exit 2 — the job may well still
-                // be running), not a failure (exit 1).
-                if Instant::now() > deadline {
-                    spinner.finish_and_clear();
-                    poll_timeout_exit(ingest_id);
-                }
-                std::thread::sleep(POLL_INTERVAL);
-                continue;
-            }
-        };
-        match st.status.as_str() {
-            "done" => {
-                spinner.finish_and_clear();
-                return st;
-            }
-            "failed" | "cancelled" => {
-                spinner.finish_and_clear();
-                // Machine formats get the projected status object (with the
-                // server's detail) on stdout, matching one-shot `status`.
-                render(output, &status_json(&st), || {
-                    use crossterm::style::Stylize;
-                    let label = st.status.as_str();
-                    let detail = st.detail.as_deref().unwrap_or("unknown error");
-                    eprintln!("{}", format!("{label}: {detail}").red());
-                    if detail.contains("Forbidden") {
-                        eprintln!(
-                            "{}",
-                            "Forbidden at load time usually means a database-scoped API token — \
-                                 ingest needs a regular workspace API token."
-                                .dark_grey()
-                        );
-                    }
-                });
-                std::process::exit(1);
-            }
-            // Anything else is in flight. Surface the live stage + detail in
-            // the spinner rather than treating it as terminal.
-            raw => {
-                let (_, stage) = presented_status(raw, st.stage.as_deref());
-                spinner.set_message(progress_message(
-                    verb,
-                    stage.as_deref().unwrap_or(raw),
-                    st.detail.as_deref(),
-                ));
-                // Re-kick processing if the job never left `pending` — the
-                // submit-time kick can race the new row (a harmless double
-                // run; loads replace).
-                if raw == "pending" {
-                    if last_drain.elapsed() > DRAIN_REKICK_AFTER {
-                        let _ = client.drain();
-                        last_drain = Instant::now();
-                    }
-                } else {
-                    last_drain = Instant::now(); // progress seen — reset the clock
-                }
-            }
-        }
-        if Instant::now() > deadline {
-            spinner.finish_and_clear();
-            poll_timeout_exit(ingest_id);
-        }
-        std::thread::sleep(POLL_INTERVAL);
-    }
-}
-
-/// Spinner text for an in-progress poll: the verb plus the current stage,
-/// and its free-text detail when present (e.g. row counts / table name).
-fn progress_message(verb: &str, stage: &str, detail: Option<&str>) -> String {
-    match detail.map(str::trim).filter(|d| !d.is_empty()) {
-        Some(d) => format!("{verb}… {stage} — {d}"),
-        None => format!("{verb}… {stage}"),
-    }
-}
-
-// --- rendering -----------------------------------------------------------
-
-fn render_ack(ack: &IngestAck, id_label: &str, output: &str) {
-    let machine = serde_json::json!({
-        "id": ack.ingest_id,
-        "database_id": ack.database_id,
-        "status": ack.status,
-    });
-    render(output, &machine, || {
-        use crossterm::style::Stylize;
-        let label = |l: &str| format!("{:<15}", l).dark_grey().to_string();
-        println!("{}{}", label(id_label), ack.ingest_id);
-        println!("{}{}", label("status:"), ack.status.as_str().yellow());
-        println!(
-            "{}",
-            format!(
-                "Track it with: hotdata ingest status {} --wait  (or: hotdata ingest list-imports)",
-                ack.ingest_id
-            )
-            .dark_grey()
-        );
-    });
-}
-
-fn render_done(st: &JobStatus, output: &str) {
-    render(output, &status_json(st), || {
-        use crossterm::style::Stylize;
-        let db = st.database_id.as_deref().unwrap_or("-");
-        println!("{} → {}", "done".green(), db);
-        println!(
-            "{}",
-            format!("Query it: hotdata query --database {db} \"SELECT * FROM …\"").dark_grey()
-        );
-    });
-}
-
-/// The user-facing json/yaml view of a datasource with its discovered
-/// schema: the status projection plus `tables`.
-fn datasource_json(st: &JobStatus, tables: Option<&serde_json::Value>) -> serde_json::Value {
-    let mut v = status_json(st);
-    v["tables"] = tables.cloned().unwrap_or(serde_json::Value::Null);
-    v
-}
-
-/// Fetch the schema-preview of a datasource: the raw
-/// `{"tables": {name: [columns]}}` value, when it exists and answers.
-fn discovered_tables(client: &IngestClient, st: &JobStatus) -> Option<serde_json::Value> {
-    let db = st.database_id.as_deref().filter(|d| !d.is_empty())?;
-    client.schema(db).ok()?.get("tables").cloned()
-}
-
-/// Human rendering of the discovered schema: one line per table with its
-/// column names. Shared by `new-datasource` and `show-datasource`.
-fn print_discovered_tables(tables_value: Option<&serde_json::Value>) {
-    use crossterm::style::Stylize;
-    match tables_value.and_then(|t| t.as_object()) {
-        Some(t) if !t.is_empty() => {
-            println!(
-                "{}",
-                format!("discovered {} table(s):", t.len()).dark_grey()
-            );
-            for (name, cols) in t {
-                let names: Vec<&str> = cols.as_array().map_or(Vec::new(), |a| {
-                    a.iter().filter_map(|c| c.as_str()).collect()
-                });
-                println!(
-                    "  {}  {}",
-                    name.as_str().cyan(),
-                    names.join(", ").dark_grey()
-                );
-            }
-        }
-        _ => println!("{}", "no tables discovered".dark_grey()),
-    }
-}
-
-/// Render the result of adding a datasource: the discovered schema (tables +
-/// columns). No data was loaded — the closing hint points at `new-import`
-/// for that. The schema-preview database id stays out of the human view
-/// (it's plumbing); `-o json` carries it as `database_id`.
-fn render_datasource_added(client: &IngestClient, st: &JobStatus, output: &str) {
-    let tables_value = discovered_tables(client, st);
-
-    render(output, &datasource_json(st, tables_value.as_ref()), || {
-        use crossterm::style::Stylize;
-        let source = display_name(st.name.as_deref(), st.connector_type.as_deref())
-            .unwrap_or_else(|| "source".into());
-        println!(
-            "{} {}",
-            "datasource added".green(),
-            source.as_str().dark_grey()
-        );
-        print_discovered_tables(tables_value.as_ref());
-        println!(
-            "{}",
-            format!("Import data with: hotdata ingest new-import --source {source} --all (or SQL)")
-                .dark_grey()
-        );
-    });
-}
-
-// --- show-datasource / delete-datasource ------------------------------------
-
-fn show_datasource(workspace_id: &str, output: &str, id: &str) {
-    let client = IngestClient::new(workspace_id);
-    let st = client.job_status(id).unwrap_or_else(|e| e.exit());
-    let tables_value = discovered_tables(&client, &st);
-
-    render(output, &datasource_json(&st, tables_value.as_ref()), || {
-        use crossterm::style::Stylize;
-        let label = |l: &str| format!("{:<14}", l).dark_grey().to_string();
-        println!(
-            "{}{}",
-            label("name:"),
-            display_name(st.name.as_deref(), st.connector_type.as_deref())
-                .unwrap_or_else(|| "-".into())
-        );
-        if let Some(f) = st.family.as_deref() {
-            println!("{}{}", label("type:"), family_label(f));
-        }
-        println!(
-            "{}{}",
-            label("status:"),
-            status_cell(&st.status, st.stage.as_deref())
-        );
-        if let Some(d) = st.detail.as_deref().filter(|d| !d.trim().is_empty()) {
-            println!("{}{}", label("detail:"), d);
-        }
-        if let Some(t) = st.created_at.as_deref() {
-            println!("{}{}", label("created:"), util::format_date(t));
-        }
-        if let Some(t) = st.updated_at.as_deref() {
-            println!("{}{}", label("updated:"), util::format_date(t));
-        }
-        print_discovered_tables(tables_value.as_ref());
-    });
-}
-
-fn delete_datasource(workspace_id: &str, output: &str, id: &str, keep_database: bool) {
-    let client = IngestClient::new(workspace_id);
-    let ack = with_spinner("deleting datasource…", || client.delete_source(id));
-
-    // Drop the schema-preview database first so the ack (json/yaml) is the
-    // last thing on stdout for scripting.
-    match ack.database_id.as_deref() {
-        Some(db) if !keep_database => crate::commands::databases::delete(workspace_id, db),
-        Some(db) => {
-            use crossterm::style::Stylize;
-            println!(
-                "{}",
-                format!("kept database {db} (--keep-database)").dark_grey()
-            );
-        }
-        None => {}
-    }
-    let machine = serde_json::json!({
-        "id": ack.ingest_id,
-        "name": display_name(ack.name.as_deref(), ack.connector_type.as_deref()),
-        "deleted": ack.deleted,
-    });
-    render(output, &machine, || {
-        use crossterm::style::Stylize;
-        println!(
-            "{} {}",
-            "datasource deleted".green(),
-            display_name(ack.name.as_deref(), ack.connector_type.as_deref())
-                .unwrap_or_else(|| id.to_string())
-                .as_str()
-                .dark_grey()
-        );
-    });
-}
-
-// --- catalog fetch --------------------------------------------------------
-
-fn fetch_catalog(client: &IngestClient) -> Vec<ConnectorEntry> {
-    with_spinner("loading datasource types…", || client.connectors()).connectors
-}
-
-/// Bare `api` connector: build a minimal API config interactively
-/// (base_url + optional bearer token + resource paths).
-fn rest_config() -> serde_json::Value {
-    let base_url = ask_text("API base URL:");
-    let token = ask_secret("Bearer token (blank if none):");
-    let resources: Vec<serde_json::Value> = ask_text("Resource paths (comma-separated):")
-        .split(',')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(serde_json::Value::from)
-        .collect();
-    let mut client = serde_json::Map::new();
-    client.insert("base_url".into(), base_url.into());
-    if !token.is_empty() {
-        client.insert(
-            "auth".into(),
-            serde_json::json!({ "type": "bearer", "token": token }),
-        );
-    }
-    serde_json::json!({ "client": client, "resources": resources })
-}
-
-/// Bucket credentials: prompt for S3-style creds (all optional — blank
-/// access key = public bucket, no creds sent).
-fn filesystem_credentials() -> serde_json::Value {
-    if !util::is_interactive() {
-        return serde_json::Value::Null;
-    }
-    let key = ask_text("Object-store access key id (blank for a public bucket):");
-    if key.trim().is_empty() {
-        return serde_json::Value::Null;
-    }
-    let mut m = serde_json::Map::new();
-    m.insert("aws_access_key_id".into(), key.into());
-    m.insert(
-        "aws_secret_access_key".into(),
-        ask_secret("Secret access key:").into(),
-    );
-    if let Some(ep) = optional(None, "Endpoint URL (S3-compatible; blank for AWS):") {
-        m.insert("endpoint_url".into(), ep.into());
-    }
-    if let Some(region) = optional(None, "Region (blank for default):") {
-        m.insert("region_name".into(), region.into());
-    }
-    serde_json::Value::Object(m)
-}
-
-/// Iceberg catalog connection config: prompt for catalog URI + warehouse +
-/// token + namespace. Field reference: the `iceberg` entry's config_schema
-/// in `hotdata ingest datasources -o json`.
-fn iceberg_catalog_config() -> serde_json::Value {
-    let mut m = serde_json::Map::new();
-    m.insert("uri".into(), ask_text("Catalog URI:").into());
-    if let Some(w) = optional(None, "Warehouse (blank if none):") {
-        m.insert("warehouse".into(), w.into());
-    }
-    let token = ask_secret("Catalog token (blank if none):");
-    if !token.is_empty() {
-        m.insert("token".into(), token.into());
-    }
-    if let Some(ns) = optional(None, "Namespace (blank if none):") {
-        m.insert("namespace".into(), ns.into());
-    }
-    serde_json::Value::Object(m)
-}
-
-/// Parse a `--config` argument: inline JSON, `@file.json`, or `@-` for stdin.
-fn parse_config_arg(arg: &str) -> serde_json::Value {
-    use std::io::Read;
-    let raw = if arg == "@-" {
-        let mut s = String::new();
-        std::io::stdin()
-            .read_to_string(&mut s)
-            .unwrap_or_else(|e| fail(&format!("--config reading stdin: {e}")));
-        s
-    } else if let Some(path) = arg.strip_prefix('@') {
-        std::fs::read_to_string(path)
-            .unwrap_or_else(|e| fail(&format!("--config reading {path}: {e}")))
-    } else {
-        arg.to_string()
+    schedule: Option<serde_json::Value>,
+    every: Option<&str>,
+    next: Option<&str>,
+) {
+    let Some(schedule) = build_schedule(schedule, every, next).unwrap_or_else(|m| fail(&m)) else {
+        fail("nothing to change — pass --every 5m, --next now, or --schedule @schedule.json");
     };
-    serde_json::from_str(&raw).unwrap_or_else(|e| fail(&format!("--config invalid JSON: {e}")))
+    let client = IngestClient::new(workspace_id);
+    let ing = with_spinner("updating schedule…", || {
+        client.update_schedule(ingest_id, &SchedulePatch { schedule })
+    });
+
+    render(output, &ing, || {
+        print_ingest_identity(&ing);
+        hint("No extra run was created — the change applies to future dispatch only.");
+    });
 }
 
-fn default_port_for(dialect: &str) -> Option<&'static str> {
-    match dialect {
-        "postgres" | "postgresql" | "redshift" => Some("5432"),
-        "mysql" | "mariadb" => Some("3306"),
-        "mssql" | "sqlserver" => Some("1433"),
-        "oracle" => Some("1521"),
-        _ => None,
+// --- runs --------------------------------------------------------------------
+
+fn runs(
+    workspace_id: &str,
+    output: &str,
+    ingest_id: &str,
+    status: Option<String>,
+    wait: bool,
+    wait_timeout: u64,
+) {
+    let mut filters: Vec<(&str, String)> = Vec::new();
+    if let Some(s) = status {
+        filters.push(("status", s));
+    }
+
+    let client = IngestClient::new(workspace_id);
+    let resp = if wait {
+        wait_for_newest_run(&client, ingest_id, &filters, wait_timeout)
+    } else {
+        with_spinner("loading runs…", || client.list_runs(ingest_id, &filters))
+    };
+
+    let projected: Vec<_> = resp
+        .runs
+        .iter()
+        .map(|r| {
+            let (status, stage) = presented_run_status(&r.status, r.stage.as_deref());
+            serde_json::json!({
+                "run_id": r.run_id,
+                "ingest_id": r.ingest_id,
+                "attempt": r.attempt,
+                "status": status,
+                "stage": stage,
+                "detail": r.detail,
+                "config_version_id": r.config_version_id,
+                "queued_at": r.queued_at,
+                "started_at": r.started_at,
+                "finished_at": r.finished_at,
+            })
+        })
+        .collect();
+    render(output, &projected, || {
+        if resp.runs.is_empty() {
+            empty_notice(&format!(
+                "No runs for {ingest_id} yet. A scheduled ingest starts on the next tick; \
+                 bring it forward with 'hotdata ingest schedule {ingest_id} --next now'."
+            ));
+            return;
+        }
+        let rows: Vec<Vec<String>> = resp
+            .runs
+            .iter()
+            // Oldest at the top, newest at the bottom (see `list`).
+            .rev()
+            .map(|r| {
+                vec![
+                    r.run_id.clone(),
+                    run_status_cell(&r.status, r.stage.as_deref()),
+                    detail_cell(r.detail.as_deref()),
+                    date_cell(r.started_at.as_deref().or(r.queued_at.as_deref())),
+                    date_cell(r.finished_at.as_deref()),
+                    r.attempt
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                ]
+            })
+            .collect();
+        // Most important first; a narrow terminal takes columns from the right.
+        // DETAIL sits next to STATUS because it is why a run has the status it
+        // has, and dropping it would leave a failed listing saying only that
+        // something failed. ATTEMPT is last: it repeats what a listing of
+        // several attempts already shows by having several rows.
+        crate::output::table::print(
+            &[
+                "RUN ID", "STATUS", "DETAIL", "STARTED", "FINISHED", "ATTEMPT",
+            ],
+            &rows,
+        );
+    });
+}
+
+/// Re-read the run list until its newest entry reaches a terminal status.
+///
+/// A WATCH, not a trigger. The scheduler owns dispatch, so nothing here makes a
+/// queued run start — `ingest schedule <id> --next now` is what moves the next
+/// one forward. It settles on the FIRST run to finish because a recurring
+/// ingest never stops producing them, and a wait with no end is a wait nobody
+/// can put in a script.
+fn wait_for_newest_run(
+    client: &IngestClient,
+    ingest_id: &str,
+    filters: &[(&str, String)],
+    timeout_secs: u64,
+) -> crate::client::ingest::RunsResponse {
+    let outcome = poll_until(
+        "waiting for the newest run…",
+        timeout_secs,
+        || client.list_runs(ingest_id, filters),
+        |resp| resp.runs.first().is_some_and(|r| is_terminal(&r.status)),
+        |resp| match resp.runs.first() {
+            Some(r) => {
+                let (status, stage) = presented_run_status(&r.status, r.stage.as_deref());
+                Some(stage.unwrap_or(status))
+            }
+            // The scheduler has not dispatched one yet, which is the state a
+            // one-time ingest passes through in seconds and a scheduled one can
+            // sit in for its whole interval.
+            None => Some("no run dispatched yet".into()),
+        },
+    );
+    match outcome {
+        Ok(resp) => resp,
+        Err(_) => wait_timed_out(&format!("hotdata ingest runs {ingest_id} --wait")),
     }
 }
 
-fn fail(msg: &str) -> ! {
+// --- removed verbs ------------------------------------------------------------
+
+/// What to say when someone types a verb from before the split. Pure so the
+/// mapping is pinned by tests rather than by whichever message was edited last.
+fn removal_message(verb: &str) -> Option<String> {
+    let replacement = match verb {
+        "new-datasource" | "new-connection" => {
+            "hotdata datasource create --family <f> --config @source.json"
+        }
+        "list-datasources" | "list-connections" => "hotdata datasource list",
+        "show-datasource" | "show-connection" => "hotdata datasource show <datasource-id>",
+        "delete-datasource" | "delete-connection" => "hotdata datasource delete <datasource-id>",
+        "datasources" | "connectors" => "hotdata datasource types",
+        "new-import" => {
+            "hotdata ingest create --source <name-or-id> --table <table> --database-id <db>"
+        }
+        "list-imports" => "hotdata ingest list",
+        "status" => "hotdata run show <run-id>  (or: hotdata ingest runs <ingest-id>)",
+        "raw-sql" => {
+            "hotdata ingest create --source <name-or-id> --raw-sql \"SELECT …\" \
+             --table <result-table> --database-id <db>"
+        }
+        // The one verb with no replacement at all — say why, not just "gone".
+        "trigger-import" | "rerun" | "run-now" => {
+            return Some(format!(
+                "'hotdata ingest {verb}' was removed and has no replacement.\n\
+                 The scheduler dispatches every run — the single run of a one-time ingest, and \
+                 each run of a scheduled or continuous one — and every run recovers from the \
+                 last committed state, so an out-of-band re-run would race the pipeline rather \
+                 than repair it.\n\
+                 \n\
+                 To make the next scheduled run happen now:\n    \
+                 hotdata ingest schedule <ingest-id> --next now\n\
+                 To load the same data again from scratch:\n    \
+                 hotdata ingest create --datasource-id <id> --type one-time …\n\
+                 To restart an ingest you stopped:\n    \
+                 hotdata ingest resume <ingest-id>"
+            ));
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "'hotdata ingest {verb}' was removed in the datasource/ingest/run split.\n\
+         Use instead:\n    {replacement}"
+    ))
+}
+
+pub fn removed(argv: &[String]) -> ! {
     use crossterm::style::Stylize;
-    eprintln!("{}", format!("error: {msg}").red());
+    let verb = argv.first().map(String::as_str).unwrap_or("");
+    match removal_message(verb) {
+        Some(msg) => eprintln!("{}", format!("error: {msg}").red()),
+        None => {
+            eprintln!(
+                "{}",
+                format!("error: unrecognized subcommand 'hotdata ingest {verb}'").red()
+            );
+            eprintln!(
+                "{}",
+                "Verbs: create, list, show, cancel, resume, schedule, runs, delete. \
+                 Datasources are 'hotdata datasource', runs are 'hotdata run'."
+                    .dark_grey()
+            );
+        }
+    }
     std::process::exit(1);
 }
 
@@ -1751,398 +1598,827 @@ fn fail(msg: &str) -> ! {
 mod tests {
     use super::*;
 
+    // --- the SELECT convenience ----------------------------------------------
+
     #[test]
-    fn placeholders_collected_in_order_without_dupes() {
-        let t = serde_json::json!({
-            "client": {
-                "base_url": "https://x/api",
-                "auth": {"client_id": "<CLIENT_ID>", "client_secret": "<CLIENT_SECRET>"}
-            },
-            "resources": ["<CLIENT_ID>", "teams"]
-        });
-        let mut got = Vec::new();
-        collect_placeholders(&t, &mut got);
-        assert_eq!(got, vec!["<CLIENT_ID>", "<CLIENT_SECRET>"]);
+    fn select_parses_columns_table_where_and_limit() {
+        let p =
+            parse_select("SELECT id, status FROM public.orders WHERE status = 'open' LIMIT 100")
+                .unwrap();
+        assert_eq!(p.columns, vec!["id", "status"]);
+        assert_eq!(p.schema.as_deref(), Some("public"));
+        assert_eq!(p.table, "orders");
+        assert_eq!(p.filter.as_deref(), Some("status = 'open'"));
+        assert_eq!(p.limit, Some(100));
     }
 
     #[test]
-    fn keyless_template_has_no_placeholders() {
-        let t = serde_json::json!({
-            "client": {"base_url": "https://blockstream.info/api"},
-            "resources": [{"name": "blocks", "endpoint": {"path": "blocks"}}]
-        });
-        let mut got = Vec::new();
-        collect_placeholders(&t, &mut got);
-        assert!(got.is_empty());
+    fn select_star_and_bare_table_are_the_minimum_form() {
+        let p = parse_select("SELECT * FROM orders").unwrap();
+        assert!(p.columns.is_empty(), "* means every column, not a column");
+        assert_eq!(p.schema, None);
+        assert_eq!(p.table, "orders");
+        assert_eq!(p.filter, None);
+        assert_eq!(p.limit, None);
     }
 
     #[test]
-    fn substitute_replaces_every_occurrence_only_for_that_token() {
-        let mut t = serde_json::json!({
-            "a": "<TOK>", "b": {"c": "<TOK>"}, "d": "<OTHER>", "e": "literal"
-        });
-        substitute_placeholder(&mut t, "<TOK>", "filled");
-        assert_eq!(t["a"], "filled");
-        assert_eq!(t["b"]["c"], "filled");
-        assert_eq!(t["d"], "<OTHER>"); // untouched
-        assert_eq!(t["e"], "literal");
+    fn select_is_case_insensitive_and_tolerates_quoting_and_semicolons() {
+        let p = parse_select("select \"id\" from \"public\".\"orders\" limit 5;").unwrap();
+        assert_eq!(p.columns, vec!["id"]);
+        assert_eq!(p.schema.as_deref(), Some("public"));
+        assert_eq!(p.table, "orders");
+        assert_eq!(p.limit, Some(5));
     }
 
     #[test]
-    fn secret_placeholders_detected_by_token_name() {
-        assert!(is_secret_placeholder("<CLIENT_SECRET>"));
-        assert!(is_secret_placeholder("<API_TOKEN>"));
-        assert!(is_secret_placeholder("<ACCESS_KEY>"));
-        assert!(is_secret_placeholder("<PASSWORD>"));
-        assert!(!is_secret_placeholder("<CLIENT_ID>"));
-        assert!(!is_secret_placeholder("<ACCOUNT>"));
-    }
-
-    #[test]
-    fn ingest_id_recognized_only_for_32_hex() {
-        assert!(looks_like_ingest_id("6232a1694a1b4451957c053a56756ff7"));
-        assert!(!looks_like_ingest_id("bitcoin"));
-        assert!(!looks_like_ingest_id("6232a169")); // too short
-        assert!(!looks_like_ingest_id("zzzz1694a1b4451957c053a56756ffff")); // non-hex
-    }
-
-    #[test]
-    fn import_query_explicit_sql_wins() {
-        let q = build_import_query(
-            Some("SELECT id FROM pg.orders LIMIT 5".into()),
-            false,
-            Some("pg"),
-            None,
-        );
-        assert_eq!(q.unwrap(), "SELECT id FROM pg.orders LIMIT 5");
-    }
-
-    #[test]
-    fn import_query_all_uses_the_datasource_name() {
-        // Named source.
+    fn select_reads_the_same_query_laid_out_across_lines() {
+        // SQL pasted out of a script or a heredoc arrives across lines, and
+        // every keyword match in `parse_select` looks for a literal
+        // single-space form — "SELECT ", " FROM ", " LIMIT ". They see any of
+        // this only because whitespace is collapsed BEFORE the first of them
+        // runs.
+        //
+        // The two layouts below are the ones that pin that, and the obvious
+        // pretty-printed query is not among them: an INDENTED continuation
+        // parses even uncollapsed, because the indent happens to supply the
+        // space the search wanted — "\n  FROM " contains " FROM ". A test
+        // written the natural way would stay green with the collapse deleted.
+        // What actually breaks is a line break with nothing after it: a
+        // keyword at column zero, and a break straight after SELECT.
+        //
+        // Each assertion is equality with the single-line form rather than a
+        // bare `is_ok`, so it also pins that layout moves no clause boundary —
+        // a `WHERE` predicate silently gaining or losing its last word would
+        // pass an `is_ok` and reach the source engine.
+        let across_lines =
+            parse_select("SELECT id, status\nFROM public.orders\nWHERE status = 'open'\nLIMIT 5")
+                .unwrap();
         assert_eq!(
-            build_import_query(None, true, Some("bitcoin"), None).unwrap(),
-            "SELECT * FROM bitcoin"
+            across_lines,
+            parse_select("SELECT id, status FROM public.orders WHERE status = 'open' LIMIT 5")
+                .unwrap()
         );
-        // Pinned datasource id — name resolved by the caller.
+        // Uncollapsed this one fails the `starts_with("SELECT ")` prefix
+        // rather than the FROM search, so it covers the other keyword match
+        // and the other error message.
         assert_eq!(
-            build_import_query(None, true, None, Some("postgres")).unwrap(),
-            "SELECT * FROM postgres"
+            parse_select("SELECT\n\t*\n\tFROM orders").unwrap(),
+            parse_select("SELECT * FROM orders").unwrap()
+        );
+        // Tabs and ragged indentation land on the same parse, which is the
+        // form someone actually pastes.
+        assert_eq!(
+            parse_select(
+                "SELECT id,\n\tstatus\n  FROM public.orders\n  WHERE status = 'open'\n  LIMIT 5"
+            )
+            .unwrap(),
+            across_lines
+        );
+        // Collapsing is not a licence to accept more: a query genuinely
+        // missing a clause is still rejected, and for the right reason.
+        assert!(
+            parse_select("SELECT\n  1\n").unwrap_err().contains("FROM"),
+            "a multi-line SELECT with no FROM must still be rejected as such"
         );
     }
 
     #[test]
-    fn import_query_errors_without_sql_or_all() {
-        // Neither SQL nor --all: the two modes must be chosen explicitly.
-        let err = build_import_query(None, false, Some("bitcoin"), None).unwrap_err();
-        assert!(err.contains("--all"), "got: {err}");
-        // --all with no resolvable source name.
-        let err = build_import_query(None, true, None, None).unwrap_err();
-        assert!(err.contains("--source"), "got: {err}");
+    fn select_does_not_mistake_the_word_limit_inside_a_predicate() {
+        // "LIMIT" in a string literal is not a LIMIT clause: only a trailing
+        // bare number counts.
+        let p = parse_select("SELECT * FROM t WHERE name = 'over the LIMIT now'").unwrap();
+        assert_eq!(p.limit, None);
+        assert_eq!(p.filter.as_deref(), Some("name = 'over the LIMIT now'"));
     }
 
-    fn create_args() -> CreateArgs {
-        CreateArgs {
-            service: None,
-            name: None,
-            config: None,
-            tables: Vec::new(),
+    #[test]
+    fn select_rejects_what_the_grammar_cannot_express() {
+        for bad in [
+            "SELECT a FROM x JOIN y ON x.id = y.id",
+            "SELECT a, count(*) FROM x GROUP BY a",
+            "SELECT a FROM x ORDER BY a",
+            "SELECT a FROM x UNION SELECT a FROM y",
+        ] {
+            let err = parse_select(bad).unwrap_err();
+            assert!(err.contains("--selector"), "{bad}: {err}");
+        }
+        // Not a SELECT at all, and a SELECT with no FROM.
+        assert!(
+            parse_select("DELETE FROM x")
+                .unwrap_err()
+                .contains("SELECT")
+        );
+        assert!(parse_select("SELECT 1").unwrap_err().contains("FROM"));
+        // Multiple statements.
+        assert!(
+            parse_select("SELECT * FROM a; DROP TABLE b")
+                .unwrap_err()
+                .contains("single SELECT")
+        );
+    }
+
+    /// CONTRACT TEST — the literal below is the payload the worker's
+    /// `sql` selector model accepts, and the worker has a test pinning the
+    /// same literal on its side of the wire. **The two must be changed
+    /// together**, because neither suite can fail on its own when they
+    /// disagree: the CLI once emitted a per-table object here and every test
+    /// on both sides stayed green while `ingest create --sql` 422'd for every
+    /// user.
+    #[test]
+    fn sql_selector_emits_exactly_what_the_worker_accepts() {
+        let p = parse_select("SELECT id, status FROM public.orders WHERE x LIMIT 5").unwrap();
+        assert_eq!(
+            sql_selector(&p),
+            serde_json::json!({
+                "mode": "tables",
+                "schema": "public",
+                "tables": ["orders"],
+                "columns": ["id", "status"],
+                "where": "x",
+                "limit": 5,
+            })
+        );
+    }
+
+    #[test]
+    fn select_desugars_to_a_structured_sql_selector() {
+        // The whole point: the SQL text never reaches the API.
+        let p = parse_select("SELECT id FROM public.orders WHERE id > 5 LIMIT 10").unwrap();
+        let selector = sql_selector(&p);
+        assert_eq!(
+            selector,
+            serde_json::json!({
+                "mode": "tables",
+                "schema": "public",
+                "tables": ["orders"],
+                "columns": ["id"],
+                "where": "id > 5",
+                "limit": 10,
+            })
+        );
+        // The minimum form: an unqualified SELECT * carries no `schema`, no
+        // `columns`, no `where`, no `limit` — an empty column list would mean
+        // "project nothing".
+        let star = sql_selector(&parse_select("SELECT * FROM orders").unwrap());
+        assert_eq!(
+            star,
+            serde_json::json!({"mode": "tables", "tables": ["orders"]})
+        );
+    }
+
+    // --- response rendering ---------------------------------------------------
+
+    /// The listing and detail views must show a destination for the body the
+    /// service actually returns, which carries it as one nested object.
+    /// Rendering from top-level `destination_*` fields printed `-` for every
+    /// real ingest while the mock fixtures — invented in that shape — passed.
+    #[test]
+    fn a_worker_shaped_ingest_response_renders_its_destination() {
+        let resp: crate::client::ingest::IngestsResponse =
+            serde_json::from_str(crate::client::ingest::WORKER_INGEST_LIST_BODY).unwrap();
+        let ing = &resp.ingests[0];
+        assert_eq!(
+            destination_cell(ing.destination.as_ref()),
+            "db_1.public.orders_raw"
+        );
+        // What it READS, which is the half that tells two ingests off one
+        // datasource apart.
+        assert_eq!(selector_cell(ing.selector.as_ref()), "public.orders");
+    }
+
+    #[test]
+    fn the_listing_summarises_every_familys_selector() {
+        let cell = |v: serde_json::Value| selector_cell(Some(&v));
+        // The bucket families select by position: prefix and glob together are
+        // the pattern that was matched.
+        assert_eq!(
+            cell(
+                serde_json::json!({"prefix": "orders/", "glob": "**/*.parquet",
+                                    "file_format": "parquet"})
+            ),
+            "orders/**/*.parquet"
+        );
+        // A prefix with no glob still says which files.
+        assert_eq!(
+            cell(serde_json::json!({"prefix": "orders/", "file_format": "jsonl"})),
+            "orders/*.jsonl"
+        );
+        // Several tables read as the list; a single one takes its schema.
+        assert_eq!(
+            cell(serde_json::json!({"tables": ["orders", "customers"]})),
+            "orders, customers"
+        );
+        assert_eq!(
+            cell(serde_json::json!({"topics": ["events"]})),
+            "topics: events"
+        );
+        assert_eq!(
+            cell(serde_json::json!({"table_path": "delta/orders"})),
+            "delta/orders"
+        );
+        // A REST resource may be an object; its name is what a reader knows it
+        // by.
+        assert_eq!(
+            cell(serde_json::json!({"resources": [{"name": "teams", "endpoint": {}}]})),
+            "teams"
+        );
+        // Nothing to summarise renders as a dash, never blank.
+        assert_eq!(selector_cell(None), "-");
+        assert_eq!(cell(serde_json::json!({})), "-");
+        // A shape this build does not recognise still says something about an
+        // ingest that is running.
+        assert_eq!(
+            cell(serde_json::json!({"streams": ["a"]})),
+            r#"{"streams":["a"]}"#
+        );
+    }
+
+    #[test]
+    fn a_source_native_query_is_summarised_by_its_text() {
+        let selector = serde_json::json!({
+            "mode": "query",
+            "sql": "SELECT customer_id, sum(amount)\n  FROM orders\n  GROUP BY 1",
+        });
+        let rendered = selector_cell(Some(&selector));
+        // One line, and inside a column. The whole statement is one
+        // `hotdata ingest show` away.
+        assert!(
+            rendered.starts_with("query: SELECT customer_id"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains('\n'), "{rendered}");
+        assert!(rendered.chars().count() <= 40, "{rendered}");
+    }
+
+    #[test]
+    fn a_run_detail_is_one_cell_not_a_screenful() {
+        // The shape a failed load reports: a sentence, a blank line, then an
+        // indented trace. Untreated, every one of those lines is a table row.
+        let detail = "Pipeline orders load step failed\n\n  \
+                      LoadClientJobRetry: could not set lock on file\n  \
+                      at /var/lib/pipelines/orders/load/completed_jobs/x.parquet\n";
+        let rendered = detail_cell(Some(detail));
+        assert!(!rendered.contains('\n'), "{rendered}");
+        assert!(rendered.chars().count() <= 40, "{rendered}");
+        assert!(
+            rendered.starts_with("Pipeline orders load step"),
+            "{rendered}"
+        );
+        // Short details are untouched, and a run with nothing to say gets a
+        // dash rather than a blank cell.
+        assert_eq!(detail_cell(Some("6 rows loaded")), "6 rows loaded");
+        assert_eq!(detail_cell(None), "-");
+        assert_eq!(detail_cell(Some("   ")), "-");
+    }
+
+    // --- request construction -------------------------------------------------
+
+    /// Named so a test that is not about source tables reads as not being
+    /// about them.
+    const NO_TABLES: &[String] = &[];
+
+    fn plan<'a>(datasource_id: &'a str, kind: &'a str) -> CreatePlan<'a> {
+        CreatePlan {
+            datasource_id,
+            family: None,
+            kind,
+            sql: None,
+            raw_sql: None,
+            all: false,
+            tables: NO_TABLES,
+            table_path: None,
+            topics: NO_TABLES,
             schema: None,
-            bucket_url: None,
             format: None,
             glob: None,
-            continuous: false,
             record_shape: None,
-            catalog_type: None,
+            limit: None,
+            selector: None,
+            destination: None,
             database_id: None,
+            dest_schema: None,
+            dest_table: None,
+            dest_table_prefix: None,
+            write_mode: None,
+            schedule: None,
+            every: None,
+            next: None,
         }
     }
 
     #[test]
-    fn create_request_sql_requires_and_carries_credentials() {
-        let e = entry("postgres", "sql");
-        assert!(
-            build_create_request(&e, create_args(), None)
-                .unwrap_err()
-                .contains("--config")
+    fn create_sends_the_structured_body_for_the_sql_shorthand() {
+        let mut p = plan("ds_pg", "one-time");
+        p.sql = Some("SELECT id, status FROM public.orders WHERE status = 'open'");
+        p.database_id = Some("db_123");
+        let req = build_create(p).unwrap();
+
+        assert_eq!(req.datasource_id, "ds_pg");
+        assert_eq!(req.r#type, "one_time"); // kebab in, snake out
+        assert_eq!(req.selector["mode"], "tables");
+        assert_eq!(req.selector["tables"][0], "orders");
+        // The FROM table is a SOURCE table, and a source table names its own
+        // destination — so nothing is sent for it. Sending `table` here named
+        // a table the load would not write, and the family it goes to has no
+        // such field to send it to.
+        assert_eq!(
+            req.destination,
+            serde_json::json!({
+                "database_id": "db_123",
+                "schema": "public",
+                "write_mode": "replace",
+            })
+        );
+        assert!(req.schedule.is_none());
+    }
+
+    /// The two destination fields are two different requests, and the CLI
+    /// sends whichever was asked for: which one a family accepts is the
+    /// service's question to answer, and a wrong one is a 422 naming the field.
+    #[test]
+    fn the_two_destination_flags_send_two_different_fields() {
+        let orders = ["orders".to_string()];
+        let mut p = plan("ds_cat", "one-time");
+        p.tables = &orders;
+        p.database_id = Some("db_1");
+        p.dest_table_prefix = Some("fam");
+        assert_eq!(
+            build_create(p).unwrap().destination,
+            serde_json::json!({
+                "database_id": "db_1",
+                "schema": "public",
+                "table_prefix": "fam",
+                "write_mode": "replace",
+            })
         );
 
-        let creds = serde_json::json!({"connection_string": "postgresql://u:p@h/db"});
-        let mut args = create_args();
-        args.schema = Some("tpch_sf1".into());
-        args.tables = vec!["region".into()];
-        args.database_id = Some("db_1".into());
-        args.name = Some("prod_pg".into());
-        let req = build_create_request(&e, args, Some(creds.clone())).unwrap();
-        assert_eq!(req.family, "sql");
-        assert_eq!(req.connector_type.as_deref(), Some("postgres"));
-        assert_eq!(req.credentials, creds);
-        assert_eq!(req.schema.as_deref(), Some("tpch_sf1"));
-        assert_eq!(req.table_names, vec!["region"]);
-        // Never loads data; the name and db-reuse flag ride through.
-        assert!(req.validate_only);
-        assert_eq!(req.name.as_deref(), Some("prod_pg"));
-        assert_eq!(req.database_id.as_deref(), Some("db_1"));
+        // The exact-table flag names `table`, whatever the selector reads —
+        // the CLI does not withhold a request the service might accept.
+        let mut p = plan("ds_cat", "one-time");
+        p.tables = &orders;
+        p.database_id = Some("db_1");
+        p.dest_table = Some("orders_raw");
+        let d = build_create(p).unwrap().destination;
+        assert_eq!(d["table"], "orders_raw");
+        assert!(d.get("table_prefix").is_none());
     }
 
     #[test]
-    fn create_request_filesystem_carries_continuous_flag() {
-        let e = entry("buckets", "filesystem");
-        let mut args = create_args();
-        args.bucket_url = Some("s3://b/prefix".into());
-        args.format = Some("jsonl".into());
-        args.continuous = true;
-        let req = build_create_request(&e, args, None).unwrap();
-        assert_eq!(req.family, "filesystem");
-        assert_eq!(req.bucket_url.as_deref(), Some("s3://b/prefix"));
-        assert!(req.continuous); // --continuous rides through to the request body
+    fn create_passes_explicit_selector_and_destination_through_untouched() {
+        let selector = serde_json::json!({
+            "prefix": "orders/", "glob": "**/*.parquet", "format": "parquet"
+        });
+        let destination = serde_json::json!({
+            "database_id": "db_456", "schema": "public",
+            "table": "orders_raw", "write_mode": "upsert"
+        });
+        let mut p = plan("ds_s3", "continuous");
+        p.selector = Some(selector.clone());
+        p.destination = Some(destination.clone());
+        p.every = Some("5m");
+        p.next = Some("now");
+        let req = build_create(p).unwrap();
 
-        // Default is off, and it serializes only when true (skip_serializing_if).
-        let mut off = create_args();
-        off.bucket_url = Some("s3://b".into());
-        off.format = Some("jsonl".into());
-        let req_off = build_create_request(&e, off, None).unwrap();
-        assert!(!req_off.continuous);
-        assert!(
-            !serde_json::to_string(&req_off)
-                .unwrap()
-                .contains("continuous")
+        assert_eq!(req.selector, selector);
+        assert_eq!(req.destination, destination);
+        assert_eq!(
+            req.schedule.unwrap(),
+            serde_json::json!({"interval_seconds": 300, "next_run_at": "now"})
         );
     }
 
     #[test]
-    fn create_request_filesystem_carries_record_shape() {
-        let e = entry("buckets", "filesystem");
-        let mut args = create_args();
-        args.bucket_url = Some("s3://b/otel".into());
-        args.format = Some("jsonl".into());
-        args.record_shape = Some("otel_traces".into());
-        let req = build_create_request(&e, args, None).unwrap();
-        assert_eq!(req.record_shape.as_deref(), Some("otel_traces"));
-        assert!(
-            serde_json::to_string(&req)
-                .unwrap()
-                .contains("\"record_shape\":\"otel_traces\"")
-        );
-
-        // Omitted by default, and skipped from the body entirely (skip_serializing_if).
-        let mut off = create_args();
-        off.bucket_url = Some("s3://b".into());
-        off.format = Some("jsonl".into());
-        let req_off = build_create_request(&e, off, None).unwrap();
-        assert!(req_off.record_shape.is_none());
-        assert!(
-            !serde_json::to_string(&req_off)
-                .unwrap()
-                .contains("record_shape")
-        );
-    }
-
-    #[test]
-    fn create_request_rejects_invalid_names() {
-        let e = entry("postgres", "sql");
-        let creds = serde_json::json!({"connection_string": "postgresql://u:p@h/db"});
-        for bad in ["prod pg", "1pg", "pg-prod", ""] {
-            let mut args = create_args();
-            args.name = Some(bad.into());
-            let err = build_create_request(&e, args, Some(creds.clone())).unwrap_err();
-            assert!(err.contains("datasource names"), "{bad}: {err}");
-        }
-    }
-
-    #[test]
-    fn create_request_filesystem_and_iceberg_required_fields() {
-        let fs = entry("buckets", "filesystem");
-        assert!(
-            build_create_request(&fs, create_args(), None)
-                .unwrap_err()
-                .contains("--bucket-url")
-        );
-        let mut fs_args = create_args();
-        fs_args.bucket_url = Some("s3://bucket/prefix".into());
-        let req = build_create_request(&fs, fs_args, None).unwrap();
-        assert_eq!(req.bucket_url.as_deref(), Some("s3://bucket/prefix"));
-        // Registered under the connector name, or new-import can't FROM it.
-        assert_eq!(req.connector_type.as_deref(), Some("buckets"));
-
-        let ice = entry("iceberg", "iceberg");
-        assert!(
-            build_create_request(&ice, create_args(), None)
-                .unwrap_err()
-                .contains("--config")
-        );
-        let mut args = create_args();
-        args.tables = vec!["ns.t".into()];
-        let req = build_create_request(&ice, args, Some(serde_json::json!({"uri": "u"}))).unwrap();
-        // The catalog type defaults to rest when not specified.
-        assert_eq!(req.catalog_type.as_deref(), Some("rest"));
-        assert_eq!(req.tables, vec!["ns.t"]);
-        // Registered under the connector name, or new-import can't FROM it.
-        assert_eq!(req.connector_type.as_deref(), Some("iceberg"));
-    }
-
-    #[test]
-    fn create_request_rest_template_placeholders_fail_fast() {
-        let mut e = entry("aikido", "rest");
-        e.template = Some(serde_json::json!({
-            "client": {"auth": {"client_id": "<CLIENT_ID>"}}
+    fn create_unwraps_a_wrapped_destination_or_schedule_document() {
+        // @destination.json may be either the bare object or the same document
+        // a request body carries.
+        let mut p = plan("ds_1", "scheduled");
+        p.selector = Some(serde_json::json!({"mode": "tables"}));
+        p.destination = Some(serde_json::json!({
+            "destination": {"database_id": "db_1", "table": "t"}
         }));
-        let err = build_create_request(&e, create_args(), None).unwrap_err();
-        assert!(err.contains("<CLIENT_ID>"), "got: {err}");
-
-        // Keyless template (no placeholders) passes through verbatim.
-        let mut keyless = entry("bitcoin", "rest");
-        keyless.template = Some(serde_json::json!({"client": {"base_url": "https://x"}}));
-        let req = build_create_request(&keyless, create_args(), None).unwrap();
-        assert_eq!(req.family, "rest");
-        assert!(req.rest_config.is_some());
+        p.schedule = Some(serde_json::json!({"schedule": {"interval_seconds": 600}}));
+        let req = build_create(p).unwrap();
+        assert_eq!(req.destination["database_id"], "db_1");
+        assert_eq!(req.schedule.unwrap()["interval_seconds"], 600);
     }
 
     #[test]
-    fn status_exit_codes_close_over_stage_states() {
-        assert_eq!(status_exit_code("done"), 0);
-        assert_eq!(status_exit_code("failed"), 1);
-        // Everything else is in flight — including stage states from older
-        // servers that report them through `status`.
-        assert_eq!(status_exit_code("pending"), 2);
-        assert_eq!(status_exit_code("running"), 2);
-        assert_eq!(status_exit_code("loading"), 2);
+    fn create_requires_a_selector_and_a_destination() {
+        let mut p = plan("ds_1", "one-time");
+        assert!(build_create(p).unwrap_err().contains("--table"));
+
+        // Selector but no destination. The database is the one half the CLI
+        // still insists on: there is no default for where rows go, and no 422
+        // can suggest which database was meant.
+        p = plan("ds_1", "one-time");
+        p.selector = Some(serde_json::json!({"mode": "tables"}));
+        assert!(build_create(p).unwrap_err().contains("--destination"));
+
+        // A database and nothing else is a complete request now: the families
+        // that name their own tables take a destination with no table field,
+        // and the ones that require one say so themselves, about the field
+        // they require. Guessing here refused requests the service accepts.
+        p = plan("ds_1", "one-time");
+        p.selector = Some(serde_json::json!({"mode": "tables"}));
+        p.database_id = Some("db_1");
+        let d = build_create(p).unwrap().destination;
+        assert_eq!(d["database_id"], "db_1");
+        assert!(d.get("table").is_none(), "{d}");
+        assert!(d.get("table_prefix").is_none(), "{d}");
     }
 
     #[test]
-    fn statuses_normalize_to_the_closed_set() {
-        assert_eq!(normalize_status("done"), ("done", None));
-        assert_eq!(normalize_status("pending"), ("pending", None));
-        // Old servers report stages through status — presented as running.
+    fn schedule_rules_follow_the_ingest_type() {
+        let orders = ["orders".to_string()];
+        // scheduled/continuous need one.
+        let mut p = plan("ds_1", "continuous");
+        p.tables = &orders;
+        p.database_id = Some("db_1");
+        let err = build_create(p).unwrap_err();
+        assert!(err.contains("--every"), "{err}");
+
+        // one-time must not have one.
+        let mut p = plan("ds_1", "one-time");
+        p.tables = &orders;
+        p.database_id = Some("db_1");
+        p.every = Some("5m");
+        let err = build_create(p).unwrap_err();
+        assert!(err.contains("one-time ingest has no schedule"), "{err}");
+    }
+
+    // --- the selector shorthands ---------------------------------------------
+
+    /// CONTRACT TEST — the literal below is what `--table`/`--schema` build for
+    /// a SQL datasource, and it is what the service's sql selector model
+    /// accepts. **Change it only with the service.**
+    ///
+    /// `mode` is present even though the member declares `tables` as its
+    /// default: the selector is a UNION discriminated on `mode`, and a
+    /// discriminator has to be read before there is a member whose defaults
+    /// could fill it in. Omitting it is a 422 on every request, which is
+    /// precisely the failure this test exists to hold still.
+    #[test]
+    fn table_and_schema_build_exactly_what_the_worker_accepts_for_sql() {
+        let tables = ["orders".to_string(), "customers".to_string()];
+        let mut p = plan("ds_pg", "one-time");
+        p.family = Some("sql");
+        p.tables = &tables;
+        p.schema = Some("public");
+        p.limit = Some(100);
+        p.database_id = Some("db_1");
+        p.dest_table = Some("orders_raw");
+        let req = build_create(p).unwrap();
         assert_eq!(
-            normalize_status("extracting"),
-            ("running", Some("extracting"))
-        );
-        // A server-provided stage field wins over the fallback.
-        assert_eq!(
-            presented_status("running", Some("loading")),
-            ("running".into(), Some("loading".into()))
-        );
-        assert_eq!(
-            presented_status("normalizing", None),
-            ("running".into(), Some("normalizing".into()))
+            req.selector,
+            serde_json::json!({
+                "mode": "tables",
+                "schema": "public",
+                "tables": ["orders", "customers"],
+                "limit": 100,
+            })
         );
     }
 
+    /// CONTRACT TEST — the same shorthand for the families whose selector is
+    /// NOT a union. They forbid unknown keys, so the `mode` that SQL cannot do
+    /// without is the one word that makes their request invalid.
     #[test]
-    fn datasource_names_are_identifier_shaped() {
-        assert!(valid_datasource_name("prod_pg"));
-        assert!(valid_datasource_name("_x2"));
-        assert!(!valid_datasource_name("2fast"));
-        assert!(!valid_datasource_name("prod pg"));
-        assert!(!valid_datasource_name("prod-pg"));
-        assert!(!valid_datasource_name(""));
+    fn table_builds_exactly_what_the_worker_accepts_for_a_catalog_family() {
+        let tables = ["orders".to_string(), "customers".to_string()];
+        for family in ["iceberg", "ducklake"] {
+            let mut p = plan("ds_cat", "one-time");
+            p.family = Some(family);
+            p.tables = &tables;
+            p.limit = Some(100);
+            p.database_id = Some("db_1");
+            p.dest_table = Some("orders_raw");
+            let req = build_create(p).unwrap();
+            assert_eq!(
+                req.selector,
+                serde_json::json!({"tables": ["orders", "customers"], "limit": 100}),
+                "{family}"
+            );
+        }
+        // A family this build has never seen gets the shape without the SQL
+        // discriminator, which is the one that fits a plain object model.
+        let mut p = plan("ds_new", "one-time");
+        p.family = Some("something-new");
+        p.tables = &tables;
+        p.database_id = Some("db_1");
+        p.dest_table = Some("t");
+        assert!(build_create(p).unwrap().selector.get("mode").is_none());
     }
 
     #[test]
-    fn created_cell_matches_repo_date_format() {
-        assert_eq!(
-            created_cell(Some("2026-07-08T10:12:00+00:00")),
-            "2026-07-08 10:12"
-        );
-        assert_eq!(created_cell(None), "-");
-    }
-
-    #[test]
-    fn family_rank_orders_generic_before_rest() {
-        assert!(family_rank("sql") < family_rank("rest"));
-        assert!(family_rank("filesystem") < family_rank("rest"));
-        assert!(family_rank("iceberg") < family_rank("rest"));
-    }
-
-    #[test]
-    fn family_labels_and_types_read_as_product_nouns() {
-        assert_eq!(family_label("sql"), "SQL");
-        assert_eq!(family_label("filesystem"), "buckets");
-        assert_eq!(family_label("rest"), "API");
-        assert_eq!(family_label("iceberg"), "iceberg");
-        // Machine values: same nouns, scripting-cased.
-        assert_eq!(family_type("sql"), "sql");
-        assert_eq!(family_type("filesystem"), "buckets");
-        assert_eq!(family_type("rest"), "api");
-        assert_eq!(family_type("iceberg"), "iceberg");
-    }
-
-    #[test]
-    fn status_json_projects_user_fields_not_wire_fields() {
-        let st = JobStatus {
-            ingest_id: "a".repeat(32),
-            status: "extracting".into(),
-            detail: Some("orders".into()),
-            name: None,
-            stage: None,
-            connector_type: Some("postgres".into()),
-            family: Some("sql".into()),
-            database_id: Some("db-1".into()),
-            created_at: None,
-            updated_at: Some("2026-07-09T10:00:00+00:00".into()),
-        };
-        let v = status_json(&st);
-        assert_eq!(v["id"], "a".repeat(32));
-        assert_eq!(v["name"], "postgres"); // falls back to the connector
-        assert_eq!(v["type"], "sql");
-        assert_eq!(v["status"], "running"); // normalized...
-        assert_eq!(v["stage"], "extracting"); // ...with the stage split out
-        assert!(v.get("ingest_id").is_none());
-        assert!(v.get("family").is_none());
-    }
-
-    #[test]
-    fn parse_config_accepts_inline_json() {
-        let v = parse_config_arg(r#"{"connection_string": "postgresql://u:p@h/db"}"#);
-        assert_eq!(v["connection_string"], "postgresql://u:p@h/db");
-    }
-
-    fn entry(name: &str, family: &str) -> ConnectorEntry {
-        ConnectorEntry {
-            name: name.into(),
-            family: family.into(),
-            description: String::new(),
-            auth: None,
-            template: None,
-            config_schema: None,
+    fn source_tables_name_their_own_destination_tables() {
+        // One source table or several, the answer is the same: the load names
+        // them, so the destination names none of them. The single-table case
+        // is the one that used to differ, and it is the one that made a
+        // reserved name and a written name look interchangeable.
+        for tables in [
+            vec!["orders".to_string()],
+            vec!["orders".to_string(), "customers".to_string()],
+        ] {
+            let mut p = plan("ds_pg", "one-time");
+            p.family = Some("sql");
+            p.tables = &tables;
+            p.database_id = Some("db_1");
+            let req = build_create(p).unwrap();
+            assert_eq!(req.selector["tables"], serde_json::json!(tables));
+            assert_eq!(
+                req.destination,
+                serde_json::json!({
+                    "database_id": "db_1",
+                    "schema": "public",
+                    "write_mode": "replace",
+                }),
+                "{tables:?}"
+            );
         }
     }
 
+    /// CONTRACT TEST — the selector `--table-path` builds, as the service's
+    /// Delta selector model accepts it. **Change it only with the service.**
+    ///
+    /// No `mode`, and no destination table inferred from the path: the last
+    /// segment of a storage path is not a table name, and the family that
+    /// requires one says so about the field it requires.
     #[test]
-    fn sorted_for_display_groups_generic_families_before_rest() {
-        let entries = vec![
-            entry("stripe", "rest"),
-            entry("postgres", "sql"),
-            entry("buckets", "filesystem"),
-            entry("aikido", "rest"),
-            entry("iceberg", "iceberg"),
-        ];
-        let names: Vec<String> = sorted_for_display(&entries)
-            .into_iter()
-            .map(|c| c.name)
-            .collect();
-        // Generic families (SQL, buckets, iceberg) first, then API services A→Z.
+    fn table_path_builds_exactly_the_delta_selector_the_worker_accepts() {
+        let mut p = plan("ds_delta", "one-time");
+        p.family = Some("delta");
+        p.table_path = Some("warehouse/orders");
+        p.limit = Some(100);
+        p.database_id = Some("db_1");
+        p.dest_table = Some("orders");
+        let req = build_create(p).unwrap();
         assert_eq!(
-            names,
-            vec!["postgres", "buckets", "iceberg", "aikido", "stripe"]
+            req.selector,
+            serde_json::json!({"table_path": "warehouse/orders", "limit": 100})
+        );
+        // The path named what to READ. Where it lands is --dest-table, and
+        // nothing here derived one from the other.
+        assert_eq!(req.destination["table"], "orders");
+
+        // The minimum form carries the one field and nothing else.
+        let mut p = plan("ds_delta", "one-time");
+        p.family = Some("delta");
+        p.table_path = Some("orders");
+        p.database_id = Some("db_1");
+        p.dest_table = Some("orders");
+        assert_eq!(
+            build_create(p).unwrap().selector,
+            serde_json::json!({"table_path": "orders"})
+        );
+    }
+
+    /// CONTRACT TEST — the selector `--topic` builds, as the service's Kafka
+    /// selector model accepts it. **Change it only with the service.**
+    ///
+    /// `start` is deliberately absent rather than sent as its default: the
+    /// model defaults it, and a CLI that repeated the value would be a second
+    /// place for that default to be decided.
+    #[test]
+    fn topic_builds_exactly_the_kafka_selector_the_worker_accepts() {
+        let topics = ["orders".to_string(), "shipments".to_string()];
+        let mut p = plan("ds_kafka", "scheduled");
+        p.family = Some("kafka");
+        p.topics = &topics;
+        p.limit = Some(500);
+        p.database_id = Some("db_1");
+        p.dest_table_prefix = Some("stream");
+        p.every = Some("5m");
+        let req = build_create(p).unwrap();
+        assert_eq!(
+            req.selector,
+            serde_json::json!({"topics": ["orders", "shipments"], "limit": 500})
+        );
+        // One topic is the same shape as several — a list of one, never a
+        // string — because the field is a list.
+        let one = ["orders".to_string()];
+        let mut p = plan("ds_kafka", "one-time");
+        p.family = Some("kafka");
+        p.topics = &one;
+        p.database_id = Some("db_1");
+        assert_eq!(
+            build_create(p).unwrap().selector,
+            serde_json::json!({"topics": ["orders"]})
+        );
+    }
+
+    /// A topic names its own destination table, the same way a source table
+    /// does — so the destination gets neither, and a caller who wants them
+    /// grouped passes a prefix.
+    #[test]
+    fn topics_name_their_own_destination_tables() {
+        let topics = ["orders".to_string()];
+        let mut p = plan("ds_kafka", "one-time");
+        p.family = Some("kafka");
+        p.topics = &topics;
+        p.database_id = Some("db_1");
+        assert_eq!(
+            build_create(p).unwrap().destination,
+            serde_json::json!({
+                "database_id": "db_1",
+                "schema": "public",
+                "write_mode": "replace",
+            })
+        );
+    }
+
+    /// The families whose selector a flag cannot honestly carry are named in
+    /// the error, with what to use instead. REST is the one: its resources are
+    /// a name plus an endpoint, and a flag could only carry the name.
+    #[test]
+    fn nothing_to_read_names_every_shorthand_and_the_rest_escape_hatch() {
+        let err = build_create(plan("ds_1", "one-time")).unwrap_err();
+        for flag in [
+            "--table ",
+            "--table-path",
+            "--topic",
+            "--format",
+            "--sql",
+            "--raw-sql",
+            "--all",
+            "--selector",
+        ] {
+            assert!(err.contains(flag), "{flag} missing: {err}");
+        }
+        assert!(err.contains("rest"), "{err}");
+    }
+
+    /// CONTRACT TEST — the selector `--format`, `--glob` and `--record-shape`
+    /// build, as the service's filesystem selector model accepts it.
+    #[test]
+    fn the_bucket_shorthands_build_exactly_what_the_worker_accepts() {
+        let mut p = plan("ds_s3", "continuous");
+        p.format = Some("jsonl");
+        p.glob = Some("orders/**/*.jsonl");
+        p.record_shape = Some("otel_traces");
+        p.database_id = Some("db_1");
+        p.dest_table = Some("traces");
+        p.every = Some("5m");
+        let req = build_create(p).unwrap();
+        assert_eq!(
+            req.selector,
+            serde_json::json!({
+                "file_format": "jsonl",
+                "glob": "orders/**/*.jsonl",
+                "record_shape": "otel_traces",
+            })
+        );
+    }
+
+    /// CONTRACT TEST — the `mode=query` selector `--raw-sql` builds. This is
+    /// the capability that used to be its own endpoint: the statement runs
+    /// verbatim in the source engine's dialect and only the result transfers.
+    #[test]
+    fn raw_sql_builds_exactly_the_query_selector_the_worker_accepts() {
+        let result = ["order_totals".to_string()];
+        let mut p = plan("ds_pg", "one-time");
+        p.raw_sql = Some("SELECT customer_id, sum(amount) FROM orders GROUP BY 1");
+        p.limit = Some(1000);
+        p.tables = &result;
+        p.database_id = Some("db_1");
+        let req = build_create(p).unwrap();
+        assert_eq!(
+            req.selector,
+            serde_json::json!({
+                "mode": "query",
+                "sql": "SELECT customer_id, sum(amount) FROM orders GROUP BY 1",
+                "limit": 1000,
+            })
+        );
+        // A query has no source table, so --table named where the result lands
+        // — the same thing it named before the split.
+        assert_eq!(req.destination["table"], "order_totals");
+    }
+
+    #[test]
+    fn raw_sql_lands_one_table() {
+        let two = ["a".to_string(), "b".to_string()];
+        let mut p = plan("ds_pg", "one-time");
+        p.raw_sql = Some("SELECT 1");
+        p.tables = &two;
+        p.database_id = Some("db_1");
+        let err = build_create(p).unwrap_err();
+        assert!(err.contains("one result set"), "{err}");
+    }
+
+    /// CONTRACT TEST — the selector `--all` builds for a bucket source.
+    #[test]
+    fn all_builds_the_whole_root_selector_the_worker_accepts() {
+        let mut p = plan("ds_s3", "one-time");
+        p.all = true;
+        p.format = Some("parquet");
+        p.database_id = Some("db_1");
+        p.dest_table = Some("events");
+        let req = build_create(p).unwrap();
+        assert_eq!(
+            req.selector,
+            serde_json::json!({"prefix": "", "glob": "**", "file_format": "parquet"})
         );
     }
 
     #[test]
-    fn progress_message_appends_detail_when_present() {
-        assert_eq!(
-            progress_message("importing", "running", None),
-            "importing… running"
-        );
-        // Empty/whitespace detail is dropped, not shown as a dangling dash.
-        assert_eq!(
-            progress_message("importing", "pending", Some("  ")),
-            "importing… pending"
-        );
-        assert_eq!(
-            progress_message("importing", "loading", Some("region (5 rows)")),
-            "importing… loading — region (5 rows)"
-        );
+    fn all_says_which_flag_names_what_to_load_where_it_cannot_be_expressed() {
+        // A database or a catalog selector requires the list; "everything" is
+        // not a request those families have. Saying so beats sending a body
+        // that comes back 422 for a field the user never saw.
+        let mut p = plan("ds_pg", "one-time");
+        p.all = true;
+        p.database_id = Some("db_1");
+        p.dest_table = Some("t");
+        let err = build_create(p).unwrap_err();
+        assert!(err.contains("--format"), "{err}");
+        assert!(err.contains("--table"), "{err}");
+    }
+
+    #[test]
+    fn destination_flags_default_schema_and_write_mode() {
+        let d = build_destination(None, Some("db_1"), None, Some("t"), None, None, None).unwrap();
+        assert_eq!(d["schema"], "public");
+        assert_eq!(d["write_mode"], "replace");
+        // Explicit values win.
+        let d = build_destination(
+            None,
+            Some("db_1"),
+            Some("staging"),
+            Some("t"),
+            None,
+            Some("upsert"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(d["schema"], "staging");
+        assert_eq!(d["write_mode"], "upsert");
+        // --dest-table beats the result table --raw-sql implied.
+        let d = build_destination(
+            None,
+            Some("db_1"),
+            None,
+            Some("renamed"),
+            None,
+            None,
+            Some("query_result"),
+        )
+        .unwrap();
+        assert_eq!(d["table"], "renamed");
+    }
+
+    #[test]
+    fn schedule_builds_from_every_and_next_independently() {
+        // --next alone is legal: "run on the next tick", no interval change.
+        let s = build_schedule(None, None, Some("now")).unwrap().unwrap();
+        assert_eq!(s, serde_json::json!({"next_run_at": "now"}));
+        // --every alone leaves the next dispatch to the server.
+        let s = build_schedule(None, Some("2h"), None).unwrap().unwrap();
+        assert_eq!(s, serde_json::json!({"interval_seconds": 7200}));
+        // Neither means "no schedule", which is what a one-time ingest sends.
+        assert!(build_schedule(None, None, None).unwrap().is_none());
+        // A bad duration is the CLI's error, not a server 422.
+        assert!(build_schedule(None, Some("soon"), None).is_err());
+    }
+
+    #[test]
+    fn type_spellings_map_to_the_wire_enum() {
+        assert_eq!(wire_type("one-time").unwrap(), "one_time");
+        assert_eq!(wire_type("one_time").unwrap(), "one_time");
+        assert_eq!(wire_type("scheduled").unwrap(), "scheduled");
+        assert_eq!(wire_type("continuous").unwrap(), "continuous");
+        assert!(wire_type("hourly").is_err());
+    }
+
+    // --- removed verbs ---------------------------------------------------------
+
+    #[test]
+    fn trigger_import_removal_says_why_and_what_to_do_instead() {
+        let msg = removal_message("trigger-import").unwrap();
+        assert!(msg.contains("no replacement"), "{msg}");
+        assert!(msg.contains("last committed state"), "{msg}");
+        assert!(msg.contains("--next now"), "{msg}");
+    }
+
+    #[test]
+    fn old_verbs_name_their_replacements() {
+        for (verb, needle) in [
+            ("new-datasource", "hotdata datasource create"),
+            ("list-datasources", "hotdata datasource list"),
+            ("show-datasource", "hotdata datasource show"),
+            ("delete-datasource", "hotdata datasource delete"),
+            ("datasources", "hotdata datasource types"),
+            ("new-import", "hotdata ingest create"),
+            ("list-imports", "hotdata ingest list"),
+            ("status", "hotdata run show"),
+            // Not "--selector" any more: the capability has its own flag back,
+            // and a pointer at the escape hatch would be the long way round.
+            ("raw-sql", "--raw-sql"),
+        ] {
+            let msg = removal_message(verb).unwrap_or_else(|| panic!("{verb} unmapped"));
+            assert!(msg.contains(needle), "{verb}: {msg}");
+        }
+        // A genuine typo is not claimed to be a removed verb.
+        assert!(removal_message("crate").is_none());
     }
 }

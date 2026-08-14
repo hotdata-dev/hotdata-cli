@@ -13,6 +13,7 @@ use commands::auth::{self, AuthCommands};
 use commands::connections;
 use commands::context::{self, ContextCommands};
 use commands::databases::{self, DatabaseTablesCommands, DatabasesCommands};
+use commands::datasource;
 use commands::embedding_providers::{self, EmbeddingProvidersCommands};
 use commands::indexes::{self, IndexesCommands};
 use commands::ingest;
@@ -20,6 +21,7 @@ use commands::jobs::{self, JobsCommands};
 use commands::queries::{self, QueriesCommands};
 use commands::query::{self, QueryCommands};
 use commands::results::{self, ResultsCommands};
+use commands::run;
 use commands::skill::{self, SkillCommands};
 use commands::tables::{self, TablesCommands};
 use commands::workspace::{self, WorkspaceCommands};
@@ -532,13 +534,39 @@ fn main() {
                     }
                 }
             }
-            Commands::Ingest {
+            Commands::Datasource {
                 workspace_id,
                 output,
                 command,
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
+                datasource::dispatch(&workspace_id, &output, command);
+            }
+            Commands::Ingest {
+                workspace_id,
+                output,
+                command,
+            } => {
+                // Answered BEFORE the workspace is resolved. That a verb no
+                // longer exists is a fact about the command surface, not about
+                // the caller's workspace — so gating it behind resolution
+                // replaces the explanation with an unrelated auth error, and
+                // the person most likely to type a retired verb is the one
+                // returning to the tool after a while, who may well not be
+                // logged in.
+                if let ingest::IngestCommands::Removed(argv) = &command {
+                    ingest::removed(argv);
+                }
+                let workspace_id = resolve_workspace(workspace_id);
                 ingest::dispatch(&workspace_id, &output, command);
+            }
+            Commands::Run {
+                workspace_id,
+                output,
+                command,
+            } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                run::dispatch(&workspace_id, &output, command);
             }
             Commands::Indexes {
                 workspace_id,

@@ -61,7 +61,7 @@ There are two ways to make your data queryable, and they compose:
 - **Connect** — a live, synced view of an external source. The data stays
   where it is; Hotdata keeps the schema and cache fresh.
 - **Import** — copy data *into* a managed database, either from a file you
-  have or from an external source via `hotdata ingest`.
+  have or from an external source via `hotdata datasource` + `hotdata ingest`.
 
 ### Connect a live database
 
@@ -78,37 +78,90 @@ hotdata tables list                         # see what's now queryable
 `hotdata connections create list <type> -o json` prints the exact config
 fields it takes.
 
-### Import from external sources (`ingest`)
+### Import from external sources (`datasource` + `ingest`)
 
-Pull data from SQL databases, APIs, S3/GCS/Azure buckets, or Iceberg catalogs
-into a managed database:
+Three nouns, and each one has a stable id:
+
+- **datasource** (`ds_…`) — a reusable external source: what a credential
+  opens. A Postgres server, a bucket root, an Iceberg catalog, a Kafka cluster.
+- **ingest** (`ing_…`) — a saved load definition: which subset of a datasource
+  lands in which managed-database table, once or on a schedule.
+- **run** (`run_…`) — one execution attempt, recording the config version,
+  selector, and destination it used.
 
 ```sh
-hotdata ingest datasources                  # browse: SQL dialects, ~150 API services,
-                                            # buckets, iceberg, api (bring-your-own)
+hotdata datasource types                    # browse: SQL dialects, ~150 API services,
+                                            # buckets, iceberg, kafka, api
+hotdata datasource fields sql               # the fields --config, --credentials and
+                                            # --selector take for one family, and
+                                            # what that family can do (-o json for
+                                            # the JSON Schema)
 
-# Add a datasource — validates credentials and discovers the schema, loads no data.
-# Keep secrets out of argv with --config @file.json or @- (stdin):
-hotdata ingest new-datasource --service postgres --config @conn.json --schema public
-hotdata ingest new-datasource --service buckets --bucket-url s3://bucket/prefix --format parquet
-hotdata ingest new-datasource --service iceberg --config @catalog.json --table ns.orders
+# 1. Check credentials without creating anything — nothing is persisted:
+hotdata datasource validate --family sql --config @source.json
 
-# --name sets the FROM target (default: the connector name), so several
-# datasources of one connector can coexist:
-hotdata ingest new-datasource --service postgres --name prod_pg --config @conn.json
+# 2. Create the datasource. Loads no data; returns a ds_… id.
+#    On a terminal, with no --config, it asks: which source type, then that
+#    family's own fields. The questions come from the service, and secrets are
+#    never echoed. --no-input, CI and a piped stdin skip the questions.
+hotdata datasource create
 
-# Import — a plain SELECT against the datasource; returns immediately:
-hotdata ingest new-import "SELECT * FROM prod_pg.orders WHERE status = 'open'"
-hotdata ingest new-import --source prod_pg --all
-hotdata ingest status <import-id> --wait    # or one-shot: exits 0 done / 1 failed / 2 running
+#    Non-interactively — keep secrets out of argv with @file.json or @- (stdin):
+hotdata datasource create --family sql --config @source.json \
+  --display-name "prod postgres"
+hotdata datasource create --family filesystem --bucket-url s3://events-prod
+hotdata datasource list                     # ids, families, states
 
-# The import lands in a managed database — query it like any other:
-hotdata query --database <db-id> "SELECT count(*) FROM public.orders"
+# 3. Ingest — what to load, and where it lands. Once:
+hotdata ingest create --source "prod postgres" --table orders --database-id db_123
+
+#    Source tables keep their own names. Put several under a common prefix —
+#    orders lands as raw_orders, customers as raw_customers:
+hotdata ingest create --source "prod postgres" --database-id db_123 \
+  --table orders --table customers --dest-table-prefix raw
+
+#    A source that lands ONE table is told that table's name instead, and can
+#    be kept fresh on a schedule:
+hotdata ingest create --source ds_01J --type continuous --database-id db_123 \
+  --format parquet --glob "orders/**/*.parquet" --dest-table orders_raw --every 5m
+
+#    Anything the shorthands cannot say goes as JSON:
+hotdata ingest create --datasource-id ds_01J --type one-time \
+  --selector @selector.json --destination @destination.json
+
+#    SQL sources take two shorthands the CLI parses into that structured JSON:
+hotdata ingest create --datasource-id ds_01J --database-id db_123 \
+  --sql "SELECT * FROM public.orders WHERE status = 'open'"
+hotdata ingest create --datasource-id ds_01J --database-id db_123 \
+  --raw-sql "SELECT customer_id, sum(amount) FROM orders GROUP BY 1" \
+  --table order_totals             # runs at the source, in its own dialect
+
+# 4. Watch it. --wait polls; the scheduler decides when a run starts:
+hotdata ingest runs ing_01J                 # every attempt, newest first
+hotdata run show run_01J --wait             # one attempt; exits 0 succeeded /
+                                            # 1 failed / 2 in flight
+
+# The data lands in a managed database — query it like any other:
+hotdata query --database db_123 "SELECT count(*) FROM public.orders"
 ```
 
-Public buckets need no credentials. Re-run an import any time with
-`hotdata ingest trigger-import <import-id>` — it refreshes the same database
-from the source.
+`source.json` is family-specific and carries both halves:
+
+```json
+{
+  "config": {"dialect": "postgres", "host": "pg.example.com", "database": "prod"},
+  "credentials": {"username": "reader", "password": "…"}
+}
+```
+
+Public buckets need no credentials. Config edits and credential rotation are
+`hotdata datasource update-config <ds-id>`, which appends an immutable config
+version under the same id — runs in flight keep the version they started with.
+
+`hotdata ingest cancel <ing-id>` stops the current run **and** future ones;
+`hotdata ingest resume <ing-id>` clears the stop but starts nothing
+immediately. To make the next scheduled run happen now:
+`hotdata ingest schedule <ing-id> --next now`.
 
 ### Upload files
 
@@ -172,7 +225,7 @@ System embedding providers come pre-configured; bring your own with
 The CLI is built to be driven programmatically:
 
 - Every listing command takes `-o json|yaml`; long-running commands expose
-  script-friendly exit codes (`query status`, `ingest status`).
+  script-friendly exit codes (`query status`, `run show`).
 - Authenticate non-interactively with an API key: `--api-key`, or
   `HOTDATA_API_KEY` in the environment or a `.env` file.
 - `hotdata databases run <cmd>` launches a child process (an agent, a script)
@@ -198,7 +251,9 @@ Run `hotdata <command> --help` for full flags on any command.
 | `search` | BM25 and vector search over indexed columns |
 | `indexes` | Create/list/delete `sorted`, `bm25`, `vector` indexes |
 | `embedding-providers` | Manage embedding providers for vector indexes |
-| `ingest` | Import from databases, APIs, buckets, Iceberg |
+| `datasource` | External sources: validate, create, list, update-config, delete |
+| `ingest` | Saved load definitions: create, list, cancel, resume, schedule, runs |
+| `run` | One ingest execution attempt and the snapshots it used |
 | `context` | Shared server-side Markdown (`DATAMODEL`, glossaries) |
 | `jobs` | Background jobs (refreshes, index builds) |
 | `skills` | Install/inspect the bundled agent skills |

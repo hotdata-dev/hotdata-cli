@@ -1,70 +1,64 @@
-//! Shared interactive-prompt helpers (inquire wrappers).
+//! Interactive prompt helpers — thin `inquire` wrappers shared by the guided
+//! flows.
 //!
-//! Conventions all wizards agree on: prompting is TTY-gated by callers or by
-//! the helper itself; `inquire` returns Err on Ctrl-C/ESC, which exits the
-//! process cleanly with code 0. Used by the ingest wizard; the connections
-//! wizard (`connections/interactive.rs`) predates this module and still
-//! inlines the same patterns — migrating it here is a welcome follow-up.
+//! Two conventions every caller depends on:
+//!
+//! - **The caller gates prompting**, on `util::is_interactive()` — false for
+//!   `--no-input`, for CI, and for a non-TTY stdin. Nothing in here checks it,
+//!   so gating happens once at the entry to a flow rather than being re-decided
+//!   per question; a helper called from a script path would block on a terminal
+//!   that is not there instead of failing.
+//! - **Ctrl-C and ESC exit 0.** `inquire` reports both as `Err`, and a flow the
+//!   user backed out of has created nothing and failed at nothing.
+//!
+//! Secrets go through [`secret`], which neither echoes nor accepts a default: a
+//! masked prompt carrying a pre-filled value still shows its length, and the
+//! value would then be a secret the user never typed and cannot see to correct.
 
-use crate::util;
-use inquire::{Password, Select, Text};
+use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
 
-pub(crate) fn ask_text(label: &str) -> String {
-    Text::new(label)
-        .prompt()
-        .unwrap_or_else(|_| std::process::exit(0))
+/// A free-text answer, optionally pre-filled and annotated.
+pub fn text(label: &str, help: Option<&str>, default: Option<&str>) -> String {
+    let mut prompt = Text::new(label);
+    if let Some(d) = default {
+        prompt = prompt.with_default(d);
+    }
+    if let Some(h) = help {
+        prompt = prompt.with_help_message(h);
+    }
+    prompt.prompt().unwrap_or_else(|_| std::process::exit(0))
 }
 
-pub(crate) fn ask_secret(label: &str) -> String {
-    Password::new(label)
+/// A hidden answer. Masked rather than fully invisible so the user can see that
+/// a paste landed — a terminal that shows nothing at all reads as a hung prompt,
+/// and the retry is where people paste into the scrollback instead.
+pub fn secret(label: &str, help: Option<&str>) -> String {
+    let mut prompt = Password::new(label)
         .without_confirmation()
-        .prompt()
-        .unwrap_or_else(|_| std::process::exit(0))
+        .with_display_mode(PasswordDisplayMode::Masked);
+    if let Some(h) = help {
+        prompt = prompt.with_help_message(h);
+    }
+    prompt.prompt().unwrap_or_else(|_| std::process::exit(0))
 }
 
-/// Optional value: the flag, else a prompt (TTY) whose blank answer = none.
-pub(crate) fn optional(flag: Option<String>, label: &str) -> Option<String> {
-    if flag.is_some() {
-        return flag;
+/// Pick one of `options`, returning its index. The index, not the label,
+/// because the label is built for reading and the caller needs the row.
+pub fn select_index(label: &str, help: Option<&str>, options: &[String]) -> usize {
+    let mut prompt = Select::new(label, options.to_vec()).with_page_size(15);
+    if let Some(h) = help {
+        prompt = prompt.with_help_message(h);
     }
-    if util::is_interactive() {
-        let v = ask_text(label);
-        return (!v.trim().is_empty()).then_some(v);
-    }
-    None
+    let chosen = prompt.prompt().unwrap_or_else(|_| std::process::exit(0));
+    options
+        .iter()
+        .position(|o| *o == chosen)
+        .expect("inquire returns one of the options it was given")
 }
 
-/// Optional value with a default; non-interactive falls back to the default.
-pub(crate) fn optional_default(label: &str, default: &str) -> Option<String> {
-    if !util::is_interactive() {
-        return Some(default.to_string());
-    }
-    let v = Text::new(label)
+pub fn confirm(label: &str, default: bool) -> bool {
+    Confirm::new(label)
         .with_default(default)
         .prompt()
-        .unwrap_or_else(|_| std::process::exit(0));
-    (!v.trim().is_empty()).then_some(v)
-}
-
-/// Select one of `options` (TTY only; None otherwise or on ESC).
-pub(crate) fn select_optional(label: &str, options: &[&str]) -> Option<String> {
-    if !util::is_interactive() {
-        return None;
-    }
-    Select::new(label, options.to_vec())
-        .prompt()
-        .ok()
-        .map(|s| s.to_string())
-}
-
-/// Prompt for a comma-separated list (TTY only; empty otherwise).
-pub(crate) fn prompt_list(label: &str) -> Vec<String> {
-    if !util::is_interactive() {
-        return Vec::new();
-    }
-    ask_text(label)
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+        .unwrap_or_else(|_| std::process::exit(0))
 }

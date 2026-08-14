@@ -7,26 +7,30 @@
 //! pair and derives the ingest destination server-side, so the CLI never sends
 //! a destination.
 //!
-//! Auth is split by endpoint kind. The enqueue routes (`POST /sources`,
-//! `POST /queries`) require a durable `hd_...` API key as the bearer — the
-//! drain job uses the credential *after* the request returns, so the server
-//! 422s any 5-minute JWT. Read routes accept *workspace-scoped* JWTs, but the
-//! CLI's login session is a user-scoped JWT and the worker refuses to trust
-//! `X-Workspace-Id` on the JWT route — so in practice only `/connectors`
-//! (workspace-free) works without a key. So: when an API key is available
-//! (`--api-key` / `HOTDATA_API_KEY`) it is sent directly on every call;
-//! otherwise the CLI's session JWT ([`jwt::ensure_access_token`]) is used,
-//! enqueue calls fail fast with [`IngestError::NeedsApiKey`], and
-//! workspace-scoped reads get a 403 with an `--api-key` hint.
+//! **Four nouns, matching the service:** a *datasource* is a reusable external
+//! source identity (`ds_…`); each config edit appends an immutable *config
+//! version* (`dscv_…`); an *ingest* (`ing_…`) is a saved load definition
+//! (datasource + selector + destination + type/schedule); a *run* (`run_…`) is
+//! one execution attempt, carrying snapshots of everything it used. Display
+//! names are labels only — ids are the identity the API resolves on.
+//!
+//! Auth is split by endpoint kind. The routes that persist a credential
+//! (`POST /datasources`, `PATCH /datasources/{id}/config`, `POST /ingests`)
+//! require a durable `hd_...` API key as the bearer — the run executes the
+//! credential *after* the request returns, so the server 422s any 5-minute JWT.
+//! Read routes accept *workspace-scoped* JWTs, but the CLI's login session is a
+//! user-scoped JWT and the worker refuses to trust `X-Workspace-Id` on the JWT
+//! route — so in practice only `/connectors` (workspace-free) works without a
+//! key. So: when an API key is available (`--api-key` / `HOTDATA_API_KEY`) it is
+//! sent directly on every call; otherwise the CLI's session JWT
+//! ([`jwt::ensure_access_token`]) is used, credential-persisting calls fail fast
+//! with [`IngestError::NeedsApiKey`], and workspace-scoped reads get a 403 with
+//! an `--api-key` hint.
 //!
 //! When the ingest routes land in the public OpenAPI and the SDK regenerates,
 //! delete this module and move the commands onto `sdk::Api`.
 //!
-//! Surface: `create_source` (onboard, backs `new-datasource`), `create_query`
-//! (SQL front-door, backs `new-import`), `list_sources` / `list_queries` (the
-//! registries behind `list-datasources` / `list-imports`), `rerun` (backs
-//! `trigger-import`), `connectors` (the catalog), `drain` + `job_status` (the
-//! async run loop). The result-reading endpoints are intentionally absent —
+//! The result-reading endpoints are intentionally absent — once a run lands,
 //! that path is the core `query`/`databases`/`results` commands.
 #![allow(dead_code)] // Response structs are read only through serde/printing.
 
@@ -45,8 +49,8 @@ pub enum IngestError {
     Connection(String),
     /// 2xx whose body didn't match the expected shape.
     Decode(String),
-    /// Enqueue attempted with only a session JWT — the server would 422 it
-    /// (the drain job runs after a short-lived JWT expires), so fail before
+    /// A credential-persisting call attempted with only a session JWT — the
+    /// server would 422 it (the run outlives a short-lived JWT), so fail before
     /// sending credentials that can't work.
     NeedsApiKey,
 }
@@ -54,10 +58,29 @@ pub enum IngestError {
 impl IngestError {
     pub fn message(&self) -> String {
         match self {
-            // util::api_error extracts the server's human message from the
-            // JSON body shapes in the wild, matching every SDK-backed command.
+            // The service's error envelope is
+            // {"error": {"code", "message", "details"}}. util::api_error pulls
+            // the human message (matching every SDK-backed command);
+            // util::error_code pulls the stable code, which is what a script
+            // or a follow-up hint should branch on — so print both.
             IngestError::Http { status, body } => {
-                format!("HTTP {status}: {}", util::api_error(body.clone()))
+                let message = util::api_error(body.clone());
+                let mut rendered = match util::error_code(body) {
+                    Some(code) => format!("HTTP {status}: {message} ({code})"),
+                    None => format!("HTTP {status}: {message}"),
+                };
+                // The message says which payload was rejected; the details say
+                // which field, and only together are they an instruction. One
+                // line each, indented under it, because a rejected body can
+                // name several fields and a joined sentence hides all but the
+                // first.
+                for (field, msg) in util::error_fields(body) {
+                    rendered.push_str(&match field.as_str() {
+                        "" => format!("\n  {msg}"),
+                        f => format!("\n  {f}: {msg}"),
+                    });
+                }
+                rendered
             }
             IngestError::Connection(e) => format!("connection error: {e}"),
             IngestError::Decode(e) => format!("malformed response: {e}"),
@@ -85,7 +108,7 @@ impl IngestError {
                 "the ingest service may be starting up — retry in a few seconds".dark_grey()
             );
         }
-        // A transport failure on an enqueue is usually the worker being
+        // A transport failure on a create is usually the worker being
         // unavailable — a cold start or a rollout — where the gateway holds the
         // connection until its timeout rather than returning a status. "error
         // sending request" is opaque; point at the actual cause + retry.
@@ -93,7 +116,7 @@ impl IngestError {
             eprintln!(
                 "{}",
                 "the request didn't complete — the ingest service may be starting up or \
-                 redeploying; retry in a moment (a timed-out enqueue is safe to re-run)."
+                 redeploying; retry in a moment."
                     .dark_grey()
             );
         }
@@ -126,8 +149,101 @@ impl IngestError {
                     .dark_grey()
             );
         }
+        // Codes whose fix is a specific next command. Keep this list short:
+        // the server's message says what happened, these say what to do.
+        if let IngestError::Http { body, .. } = self {
+            match util::error_code(body).as_deref() {
+                Some("destination_table_conflict") => {
+                    eprintln!("{}", table_conflict_hint(body).dark_grey());
+                }
+                // The destination is per-family, and the pair of flags that
+                // build it is the thing to re-read: a family lands one table
+                // or a table per source table, never both, so a rejected
+                // `table`/`table_prefix` is the other flag's job.
+                Some("invalid_destination") => {
+                    eprintln!(
+                        "{}",
+                        "--dest-table names ONE table (buckets, Delta, a --raw-sql result); \
+                         --dest-table-prefix prefixes the tables a source that lands several \
+                         produces (SQL --table/--sql, Iceberg, DuckLake, Kafka, REST). The \
+                         family's own field reference: hotdata datasource fields <family>."
+                            .dark_grey()
+                    );
+                }
+                Some("immutable_ingest_definition") => {
+                    eprintln!(
+                        "{}",
+                        "Selector and destination are fixed at creation — create a new ingest \
+                         instead ('hotdata ingest create')."
+                            .dark_grey()
+                    );
+                }
+                Some("active_ingests_exist") => {
+                    eprintln!(
+                        "{}",
+                        "Delete the datasource's ingests first: hotdata ingest list \
+                         --datasource-id <id>, then 'hotdata ingest delete <ingest-id>'."
+                            .dark_grey()
+                    );
+                }
+                // Raised both for a family that does not exist and for one
+                // asked to do something it cannot. The same command answers
+                // either question, and the likely mistake behind the first is
+                // a catalog entry name (`postgres`) used where its family
+                // (`sql`) belongs.
+                Some("unsupported_family_feature") => {
+                    eprintln!(
+                        "{}",
+                        "The families, and what each one supports: \
+                         hotdata datasource fields."
+                            .dark_grey()
+                    );
+                }
+                _ => {}
+            }
+        }
         std::process::exit(1);
     }
+}
+
+/// What to DO about a destination-table conflict, chosen from what the service
+/// reported about the ingest already holding the reservation.
+///
+/// The server's message says what happened and which release rule applies; this
+/// only names the command. It has to read the reported holder rather than
+/// assume one, because the rule covers a saved load of any kind and the kinds
+/// release differently — a hint naming one kind unconditionally contradicts the
+/// message printed directly above it, and prescribing a delete for a holder
+/// that is about to release on its own tears down a live load for nothing.
+fn table_conflict_hint(body: &str) -> String {
+    let conflicting =
+        util::error_detail(body, "conflicting_ingest_id").unwrap_or_else(|| "<ingest-id>".into());
+    let releases_itself = matches!(
+        util::error_detail(body, "conflicting_ingest_type").as_deref(),
+        Some("one_time") | Some("scheduled")
+    );
+    // An empty reservation is the holder taking the source's own table names,
+    // and it is the one conflict the caller can settle without touching the
+    // holder: a prefix makes two loads unable to reach the same name. The
+    // server names the JSON field; this names the flag that fills it.
+    let unprefixed =
+        util::error_detail(body, "reserved_table").is_some_and(|reserved| reserved.is_empty());
+    let mut hint = if unprefixed {
+        "Give this ingest a --dest-table-prefix so the two cannot land the same table".to_string()
+    } else if releases_itself {
+        format!(
+            "That ingest frees the table when it finishes or is stopped — check it with: \
+             hotdata ingest show {conflicting}"
+        )
+    } else {
+        format!("Free the table with: hotdata ingest delete {conflicting}")
+    };
+    if unprefixed || releases_itself {
+        hint.push_str(&format!(
+            ", or take the table now with: hotdata ingest delete {conflicting}"
+        ));
+    }
+    hint
 }
 
 /// Ingest client bound to a workspace + a resolved bearer token.
@@ -136,7 +252,7 @@ pub struct IngestClient {
     base: String,
     token: String,
     /// Whether `token` is a durable `hd_...` API key (vs a session JWT).
-    /// Enqueue endpoints require the former; see the module docs.
+    /// Credential-persisting endpoints require the former; see the module docs.
     token_is_api_key: bool,
     workspace_id: String,
     client: reqwest::blocking::Client,
@@ -145,7 +261,7 @@ pub struct IngestClient {
 impl IngestClient {
     /// Build a client for `workspace_id`. An explicit API key (`--api-key` /
     /// `HOTDATA_API_KEY`) is sent as the bearer directly — the extAuth route
-    /// accepts it everywhere and the enqueue routes *require* it. Without one,
+    /// accepts it everywhere and the create routes *require* it. Without one,
     /// fall back to the CLI's session JWT, which covers the read routes.
     pub fn new(workspace_id: &str) -> Self {
         let profile = config::load("default").unwrap_or_else(|e| {
@@ -156,7 +272,7 @@ impl IngestClient {
         // key must fall through to the session JWT, not ship as a bearer.
         // (HOTDATA_DATABASE_TOKEN is deliberately NOT consulted here:
         // database-scoped tokens cannot serve as ingest destinations — the
-        // drain load fails Forbidden — so ingest always uses the workspace
+        // run's load fails Forbidden — so ingest always uses the workspace
         // credential.)
         let api_key = profile
             .api_key
@@ -215,6 +331,21 @@ impl IngestClient {
             .header("X-Workspace-Id", &self.workspace_id)
     }
 
+    /// A GET with optional `?key=value` filters. Empty filter sets are not
+    /// applied at all, so the plain listing URL stays free of a bare `?`.
+    fn authed_get(
+        &self,
+        path: &str,
+        filters: &[(&str, String)],
+    ) -> reqwest::blocking::RequestBuilder {
+        let builder = self.authed(reqwest::Method::GET, path);
+        if filters.is_empty() {
+            builder
+        } else {
+            builder.query(filters)
+        }
+    }
+
     /// Send a request, enforce a 2xx, and decode the JSON body into `T`.
     ///
     /// `body_log` is the *printable* form for `--debug` — callers whose body
@@ -236,11 +367,9 @@ impl IngestClient {
         serde_json::from_str(&body).map_err(|e| IngestError::Decode(e.to_string()))
     }
 
-    // --- write endpoints -------------------------------------------------
-
-    /// Guard for the enqueue routes: a session JWT is rejected server-side
-    /// (422) because the drain job outlives it, so fail fast with a message
-    /// that says what to do instead.
+    /// Guard for the credential-persisting routes: a session JWT is rejected
+    /// server-side (422) because the run outlives it, so fail fast with a
+    /// message that says what to do instead.
     fn require_api_key(&self) -> Result<(), IngestError> {
         if self.token_is_api_key {
             Ok(())
@@ -249,134 +378,227 @@ impl IngestClient {
         }
     }
 
-    pub fn create_source(&self, req: &IngestRequest) -> Result<IngestAck, IngestError> {
-        self.require_api_key()?;
-        let body = serde_json::to_value(req).expect("IngestRequest serializes");
+    // --- datasources -----------------------------------------------------
+
+    /// Validate a datasource config without persisting a datasource, config
+    /// version, managed database, or secret. The credentials are used for the
+    /// validation request only, so this route takes a session JWT too.
+    pub fn validate_datasource(
+        &self,
+        req: &DatasourceConfig,
+    ) -> Result<ValidateResponse, IngestError> {
+        let body = serde_json::to_value(req).expect("DatasourceConfig serializes");
         let body_log = redact_secret_fields(&body);
         self.send(
-            self.authed(reqwest::Method::POST, "/sources").json(&body),
+            self.authed(reqwest::Method::POST, "/datasources/validate")
+                .json(&body),
             Some(&body_log),
         )
     }
 
-    pub fn create_query(&self, req: &QueryToIngest) -> Result<IngestAck, IngestError> {
+    /// Create a datasource and its config version 1.
+    pub fn create_datasource(&self, req: &DatasourceConfig) -> Result<Datasource, IngestError> {
         self.require_api_key()?;
-        let body = serde_json::to_value(req).expect("QueryToIngest serializes");
+        let body = serde_json::to_value(req).expect("DatasourceConfig serializes");
+        let body_log = redact_secret_fields(&body);
         self.send(
-            self.authed(reqwest::Method::POST, "/queries").json(&body),
-            Some(&body),
-        )
-    }
-
-    /// Ingest the result of a source-native SQL query (SQL datasources only).
-    /// The SQL runs verbatim in the source dialect; the server enforces a single
-    /// read-only statement.
-    pub fn create_raw_query(&self, req: &RawSqlIngest) -> Result<IngestAck, IngestError> {
-        self.require_api_key()?;
-        let body = serde_json::to_value(req).expect("RawSqlIngest serializes");
-        self.send(
-            self.authed(reqwest::Method::POST, "/queries/raw")
+            self.authed(reqwest::Method::POST, "/datasources")
                 .json(&body),
+            Some(&body_log),
+        )
+    }
+
+    /// Append a config version and move the datasource's current pointer.
+    /// `credentials` omitted inherits the previous source secret refs; an
+    /// explicitly empty object means "no source credential" — see
+    /// [`ConfigUpdate`].
+    pub fn update_datasource_config(
+        &self,
+        datasource_id: &str,
+        req: &ConfigUpdate,
+    ) -> Result<ConfigUpdateAck, IngestError> {
+        self.require_api_key()?;
+        let body = serde_json::to_value(req).expect("ConfigUpdate serializes");
+        let body_log = redact_secret_fields(&body);
+        self.send(
+            self.authed(
+                reqwest::Method::PATCH,
+                &format!("/datasources/{datasource_id}/config"),
+            )
+            .json(&body),
+            Some(&body_log),
+        )
+    }
+
+    pub fn list_datasources(
+        &self,
+        filters: &[(&str, String)],
+    ) -> Result<DatasourcesResponse, IngestError> {
+        self.send(self.authed_get("/datasources", filters), None)
+    }
+
+    pub fn get_datasource(&self, datasource_id: &str) -> Result<Datasource, IngestError> {
+        self.send(
+            self.authed(
+                reqwest::Method::GET,
+                &format!("/datasources/{datasource_id}"),
+            ),
+            None,
+        )
+    }
+
+    /// Soft-delete a datasource. The server returns `409
+    /// active_ingests_exist` while any non-deleted ingest references it —
+    /// destination tables and managed databases are never touched.
+    pub fn delete_datasource(&self, datasource_id: &str) -> Result<DeleteAck, IngestError> {
+        self.send(
+            self.authed(
+                reqwest::Method::DELETE,
+                &format!("/datasources/{datasource_id}"),
+            ),
+            None,
+        )
+    }
+
+    // --- ingests ----------------------------------------------------------
+
+    /// Create a saved load definition. A `one_time` ingest also creates its
+    /// first run in the same transaction (`initial_run_id` in the response);
+    /// `scheduled`/`continuous` ones start on the next scheduler tick.
+    pub fn create_ingest(&self, req: &IngestCreate) -> Result<Ingest, IngestError> {
+        self.require_api_key()?;
+        let body = serde_json::to_value(req).expect("IngestCreate serializes");
+        self.send(
+            self.authed(reqwest::Method::POST, "/ingests").json(&body),
             Some(&body),
         )
     }
 
-    pub fn drain(&self) -> Result<serde_json::Value, IngestError> {
-        self.send(self.authed(reqwest::Method::POST, "/jobs/drain"), None)
+    pub fn list_ingests(&self, filters: &[(&str, String)]) -> Result<IngestsResponse, IngestError> {
+        self.send(self.authed_get("/ingests", filters), None)
     }
 
-    /// Re-run an ingest: the worker resets it to pending and fires the drain.
-    /// Replace-mode loads + the stored (encrypted) source and destination
-    /// credentials mean this refreshes the SAME managed DB from source. No
-    /// API-key guard: the drain reuses the destination stored at enqueue, so
-    /// the server accepts any credential its write check does. A 409 means a
-    /// drain is mid-flight — the worker's message says to retry shortly.
-    pub fn rerun(&self, ingest_id: &str) -> Result<IngestAck, IngestError> {
+    pub fn get_ingest(&self, ingest_id: &str) -> Result<Ingest, IngestError> {
         self.send(
-            self.authed(reqwest::Method::POST, &format!("/jobs/{ingest_id}/rerun")),
+            self.authed(reqwest::Method::GET, &format!("/ingests/{ingest_id}")),
             None,
         )
     }
 
-    /// Cancel a running or pending ingest. The dltHub drain may still be
-    /// running (we can't interrupt it remotely); the server marks the status
-    /// as `cancelled` — a non-terminal state that keeps the /rerun in-flight
-    /// guard active. A 409 from /rerun means the drain hasn't settled yet.
-    pub fn cancel(&self, ingest_id: &str) -> Result<IngestCancelAck, IngestError> {
+    /// Change future dispatch timing. Rejected (`409`) for `one_time` ingests,
+    /// and never creates an extra run — `next_run_at: "now"` is what brings the
+    /// next scheduled run forward.
+    pub fn update_schedule(
+        &self,
+        ingest_id: &str,
+        req: &SchedulePatch,
+    ) -> Result<Ingest, IngestError> {
+        let body = serde_json::to_value(req).expect("SchedulePatch serializes");
         self.send(
-            self.authed(reqwest::Method::POST, &format!("/jobs/{ingest_id}/cancel")),
+            self.authed(
+                reqwest::Method::PATCH,
+                &format!("/ingests/{ingest_id}/schedule"),
+            )
+            .json(&body),
+            Some(&body),
+        )
+    }
+
+    /// Stop an ingest: cancels the active run *and* prevents future scheduled
+    /// dispatch. Idempotent when already stopped.
+    pub fn cancel_ingest(&self, ingest_id: &str) -> Result<CancelAck, IngestError> {
+        self.send(
+            self.authed(
+                reqwest::Method::POST,
+                &format!("/ingests/{ingest_id}/cancel"),
+            ),
             None,
         )
     }
 
-    // --- read endpoints --------------------------------------------------
+    /// Clear the stop and the scheduler backoff. Deliberately does NOT create a
+    /// run — the next one follows the schedule.
+    pub fn resume_ingest(&self, ingest_id: &str) -> Result<Ingest, IngestError> {
+        self.send(
+            self.authed(
+                reqwest::Method::POST,
+                &format!("/ingests/{ingest_id}/resume"),
+            ),
+            None,
+        )
+    }
+
+    /// Soft-delete an ingest: cancels an active run, releases destination
+    /// table ownership, and leaves the destination table, its data, and the
+    /// datasource alone.
+    pub fn delete_ingest(&self, ingest_id: &str) -> Result<DeleteAck, IngestError> {
+        self.send(
+            self.authed(reqwest::Method::DELETE, &format!("/ingests/{ingest_id}")),
+            None,
+        )
+    }
+
+    // --- runs -------------------------------------------------------------
+
+    /// Runs for one ingest, newest first.
+    pub fn list_runs(
+        &self,
+        ingest_id: &str,
+        filters: &[(&str, String)],
+    ) -> Result<RunsResponse, IngestError> {
+        self.send(
+            self.authed_get(&format!("/ingests/{ingest_id}/runs"), filters),
+            None,
+        )
+    }
+
+    pub fn get_run(&self, run_id: &str) -> Result<Run, IngestError> {
+        self.send(
+            self.authed(reqwest::Method::GET, &format!("/runs/{run_id}")),
+            None,
+        )
+    }
+
+    // --- catalog ----------------------------------------------------------
 
     /// The connector catalog. REST entries carry a ready-to-edit `template`
     /// (a dlt `rest_api` config with the service's `base_url`, auth shape, and
-    /// resources pre-filled and `<PLACEHOLDER>` secrets) — this is what lets
-    /// the `new` wizard fill in everything but the caller's secrets.
+    /// resources pre-filled and `<PLACEHOLDER>` secrets); generic families
+    /// carry a `config_schema` naming the fields `--config` takes.
     pub fn connectors(&self) -> Result<ConnectorsResponse, IngestError> {
         self.send(self.authed(reqwest::Method::GET, "/connectors"), None)
     }
 
-    pub fn job_status(&self, ingest_id: &str) -> Result<JobStatus, IngestError> {
+    // --- family reference -------------------------------------------------
+
+    /// Every family's field reference: what `config`, `credentials` and
+    /// `selector` may contain, plus what the family can do.
+    pub fn families(&self) -> Result<FamiliesResponse, IngestError> {
+        self.send(self.authed(reqwest::Method::GET, "/families"), None)
+    }
+
+    /// One family's field reference. An unknown family comes back 422 with the
+    /// families that do exist in `error.details.families`, so the CLI never
+    /// needs its own list of legal names.
+    pub fn family(&self, family: &str) -> Result<FamilyReference, IngestError> {
         self.send(
-            self.authed(reqwest::Method::GET, &format!("/jobs/{ingest_id}")),
-            None,
-        )
-    }
-
-    /// Remove a datasource from the registry (`DELETE /sources/{id}`):
-    /// the request row (with its stored encrypted credentials) and any run
-    /// row. The discovery database is untouched — the command layer decides
-    /// its fate. The server 422s import rows and 409s while a drain is in
-    /// flight.
-    pub fn delete_source(&self, ingest_id: &str) -> Result<DeleteSourceAck, IngestError> {
-        self.send(
-            self.authed(reqwest::Method::DELETE, &format!("/sources/{ingest_id}")),
-            None,
-        )
-    }
-
-    /// The onboarded-source registry (`GET /sources`) — one row per datasource,
-    /// newest first, each with its own ingest id (the datasource id). The
-    /// default view is the current set: the latest onboard per connector name
-    /// plus unnamed onboards; `all` includes superseded onboards too.
-    pub fn list_sources(&self, all: bool) -> Result<SourcesResponse, IngestError> {
-        let path = if all { "/sources?all=true" } else { "/sources" };
-        self.send(self.authed(reqwest::Method::GET, path), None)
-    }
-
-    /// The import registry (`GET /queries`) — every SQL import, newest first,
-    /// with the SQL that produced it, its source connection, and the managed
-    /// DB it landed in.
-    pub fn list_queries(&self) -> Result<QueriesResponse, IngestError> {
-        self.send(self.authed(reqwest::Method::GET, "/queries"), None)
-    }
-
-    /// Tables + columns discovered for a result database — the schema preview a
-    /// metadata-only onboard lands: `{database_id, tables: {table: [columns]}}`.
-    pub fn schema(&self, database_id: &str) -> Result<serde_json::Value, IngestError> {
-        self.send(
-            self.authed(
-                reqwest::Method::GET,
-                &format!("/databases/{database_id}/schema"),
-            ),
+            self.authed(reqwest::Method::GET, &format!("/families/{family}")),
             None,
         )
     }
 }
 
-/// `IngestRequest` fields that carry source secrets: SQL passwords /
-/// connection strings, REST bearer tokens inside `rest_config`, Iceberg
-/// catalog tokens, filesystem access keys.
-const SECRET_BODY_FIELDS: &[&str] = &["credentials", "rest_config", "catalog_config"];
+/// Request fields that can carry source secrets. `credentials` is secrets by
+/// definition; `config` is documented as secret-free, but a caller can always
+/// inline a password there, and `--debug` output lands in a terminal scrollback
+/// — so both subtrees are dropped from the printable body.
+const SECRET_BODY_FIELDS: &[&str] = &["credentials", "config"];
 
-/// Debug-log view of an enqueue body with the secret-bearing subtrees
-/// replaced wholesale. These fields are nested *objects* whose secret keys
-/// vary by connector, so dropping the whole subtree beats field-level
-/// masking (`util::redact_json_fields` only masks string values). Mirrors
-/// the `redacted_form_body` pattern in `jwt.rs`.
+/// Debug-log view of a request body with the secret-bearing subtrees replaced
+/// wholesale. These fields are nested *objects* whose secret keys vary by
+/// family, so dropping the whole subtree beats field-level masking
+/// (`util::redact_json_fields` only masks string values). Mirrors the
+/// `redacted_form_body` pattern in `jwt.rs`.
 fn redact_secret_fields(body: &serde_json::Value) -> serde_json::Value {
     let mut v = body.clone();
     if let serde_json::Value::Object(map) = &mut v {
@@ -389,214 +611,324 @@ fn redact_secret_fields(body: &serde_json::Value) -> serde_json::Value {
     v
 }
 
-// --- request / response types -------------------------------------------
+// --- request types --------------------------------------------------------
 
-/// Mirrors the worker's `IngestRequest`. Sensitive fields (`credentials`,
-/// `rest_config`, `catalog_config`) are forwarded over TLS and Fernet-encrypted
-/// at rest by the worker. `None`/empty fields are omitted so the worker applies
-/// its own defaults.
+/// Body of `POST /datasources/validate` and `POST /datasources`.
+///
+/// `config` and `credentials` are both family-specific: the datasource is what
+/// a credential opens (host/root/cluster/catalog), never the subset to read —
+/// that is the ingest's selector.
 #[derive(Debug, Serialize, Default)]
-pub struct IngestRequest {
+pub struct DatasourceConfig {
     pub family: String,
+    /// Label only. Not identity, not unique, never resolved against.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub connector_type: Option<String>,
-    /// User-chosen datasource name — the FROM target for imports. Omitted →
-    /// the datasource answers to its connector name.
+    pub display_name: Option<String>,
+    pub config: serde_json::Value,
+    /// `None` omits the key entirely; `Some({})` sends an explicitly empty
+    /// object. The two are different requests — see [`ConfigUpdate`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
-    pub credentials: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rest_config: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schema: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub table_names: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bucket_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_glob: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_format: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub catalog_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub catalog_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub catalog_config: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub tables: Vec<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub validate_only: bool,
-    /// filesystem only: keep this datasource continuously synced — the scheduler
-    /// re-runs it incrementally (append only new objects). Ignored otherwise.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub continuous: bool,
-    /// filesystem only: flatten each source record into table rows with a named
-    /// shape (e.g. `otel_traces`, `mqtt_observations`). Omitted → a record is a
-    /// row. The worker validates the name and rejects an unknown one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub record_shape: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub database_id: Option<String>,
+    pub credentials: Option<serde_json::Value>,
 }
 
-/// Mirrors the worker's `QueryToIngestRequest`.
-#[derive(Serialize)]
-pub struct QueryToIngest {
-    pub query: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_ingest_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub database_id: Option<String>,
-}
-
-/// `POST /ingest/queries/raw` body: source-native SQL run verbatim against a SQL
-/// datasource, its result loaded into `table`. The workspace rides the
-/// X-Workspace-Id header, so it is not in the body.
+/// Body of `PATCH /datasources/{id}/config`. Always appends a config version.
+///
+/// Credential semantics are three-valued and the difference is on the wire:
+///
+/// ```text
+/// credentials omitted (None)      -> inherit the previous source secret refs
+/// credentials present (Some(v))   -> replace the source credential state
+/// credentials empty   (Some({}))  -> no source credential (no-auth families)
+/// ```
 #[derive(Debug, Serialize)]
-pub struct RawSqlIngest {
-    pub sql: String,
-    pub source: String,
-    pub table: String,
+pub struct ConfigUpdate {
+    pub config: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u64>,
+    pub credentials: Option<serde_json::Value>,
 }
 
-/// 202 body from `POST /sources` and `POST /queries`. Common fields are typed;
-/// everything else (e.g. `resource`, `columns`, `where`, `limit` on queries) is
-/// captured for `--output json`.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct IngestAck {
-    pub ingest_id: String,
-    pub database_id: String,
-    pub status: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub status_url: Option<String>,
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
+/// Body of `POST /ingests`: the saved load definition. `selector` and
+/// `destination` are immutable after creation — changing either means a new
+/// ingest.
+#[derive(Debug, Serialize)]
+pub struct IngestCreate {
+    pub datasource_id: String,
+    /// Wire values: `one_time` | `scheduled` | `continuous`.
+    pub r#type: String,
+    pub selector: serde_json::Value,
+    pub destination: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<serde_json::Value>,
 }
 
-/// `GET /jobs/{id}` body.
+/// Body of `PATCH /ingests/{id}/schedule`.
+#[derive(Debug, Serialize)]
+pub struct SchedulePatch {
+    pub schedule: serde_json::Value,
+}
+
+// --- response types -------------------------------------------------------
+
+/// `POST /datasources/validate` body. Nothing was persisted; `discovered` is
+/// family-specific (schemas/tables, bucket listings, topics, …).
 #[derive(Debug, Deserialize, Serialize)]
-pub struct JobStatus {
-    pub ingest_id: String,
-    pub status: String,
-    /// Finer in-flight progress state (extracting/loading/…) — split from
-    /// `status` by newer servers; the command layer falls back to a
-    /// stage-shaped `status` for older ones.
+pub struct ValidateResponse {
     #[serde(default)]
-    pub stage: Option<String>,
-    #[serde(default)]
-    pub detail: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub connector_type: Option<String>,
+    pub valid: bool,
     #[serde(default)]
     pub family: Option<String>,
     #[serde(default)]
-    pub database_id: Option<String>,
+    pub normalized_config: Option<serde_json::Value>,
+    #[serde(default)]
+    pub discovered: Option<serde_json::Value>,
+    /// Whether anything actually connected to the source.
+    ///
+    /// `valid` answers the narrower question of whether the config and
+    /// credentials PARSE. A family with no read-only probe, and a credential
+    /// shape no client can be built from, are both `valid: true` having
+    /// reached nothing — so this is the field that separates a config that
+    /// checked out from a credential that works, and the reason it is decoded
+    /// rather than dropped is that `-o json` is this struct serialized.
+    #[serde(default)]
+    pub probed: Option<bool>,
+    /// Why the probe did not run, when it did not.
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// One config version of a datasource: the immutable row a run snapshots.
+///
+/// `config` is the non-secret half only — a credential is a reference the
+/// service holds, and `has_source_credential` is how the wire answers "was
+/// this version authenticated?" without handing back the reference.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ConfigVersion {
+    pub config_version_id: String,
+    #[serde(default)]
+    pub version: Option<i64>,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+    #[serde(default)]
+    pub has_source_credential: bool,
+    #[serde(default)]
+    pub validation_status: Option<String>,
+    /// Why the status is what it is — including the case where the family
+    /// could not reach the source at all and only the config's shape was
+    /// checked. A `valid` version can still carry one.
+    #[serde(default)]
+    pub validation_detail: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// A datasource row, as create, list and show all return it.
+///
+/// **The current config is NESTED, and only show sends it.** A flat `config`
+/// or `version` beside the identity fields decodes to nothing from every real
+/// response, and an absent nested object is indistinguishable from a
+/// datasource that has no config — which is the reading `-o json` then prints.
+/// `discovered` is the mirror case: create reports what the probe saw, and no
+/// other response carries it.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Datasource {
+    pub datasource_id: String,
+    #[serde(default)]
+    pub family: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// `creating` | `active` | `failed` | `deleted`.
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub current_config_version_id: Option<String>,
+    /// The version `current_config_version_id` points at (show only).
+    #[serde(default)]
+    pub current_config: Option<ConfigVersion>,
+    /// The ingests loading from this datasource — what a delete would refuse
+    /// over, answered before it is asked (show only).
+    #[serde(default)]
+    pub ingest_ids: Option<Vec<String>>,
+    /// What the probe listed at the source: schemas and tables, object keys,
+    /// topics, … (create only).
+    #[serde(default)]
+    pub discovered: Option<serde_json::Value>,
+    /// Whether that probe ran at all. A family with no read-only probe, or a
+    /// credential shape it cannot build a client from, creates the datasource
+    /// with `probed: false` — so this, not the 201, is what says the
+    /// credentials were exercised.
+    #[serde(default)]
+    pub probed: Option<bool>,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
 }
 
-/// `POST /jobs/{id}/cancel` body.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct IngestCancelAck {
-    pub ingest_id: String,
-    pub status: String,
+#[derive(Debug, Deserialize)]
+pub struct DatasourcesResponse {
     #[serde(default)]
-    pub detail: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub database_id: Option<String>,
+    pub datasources: Vec<Datasource>,
 }
 
-/// `DELETE /sources/{id}` body.
+/// `PATCH /datasources/{id}/config` body: the pointer move, so the caller can
+/// see which version replaced which.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DeleteSourceAck {
-    pub ingest_id: String,
+pub struct ConfigUpdateAck {
+    pub datasource_id: String,
     #[serde(default)]
-    pub name: Option<String>,
+    pub previous_config_version_id: Option<String>,
     #[serde(default)]
-    pub connector_type: Option<String>,
+    pub current_config_version_id: Option<String>,
     #[serde(default)]
-    pub database_id: Option<String>,
+    pub version: Option<i64>,
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+/// Soft-delete acknowledgement, shared by datasources and ingests. Both id
+/// fields are optional so a bodyless 200 still decodes.
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct DeleteAck {
+    #[serde(default)]
+    pub datasource_id: Option<String>,
+    #[serde(default)]
+    pub ingest_id: Option<String>,
+    #[serde(default)]
     pub deleted: bool,
 }
 
-/// `GET /sources` body.
-#[derive(Deserialize)]
-pub struct SourcesResponse {
-    pub sources: Vec<SourceRow>,
-}
-
-/// One datasource in the onboarded-source registry. `ingest_id` is the
-/// datasource's own id — the pin key `new-import --source` accepts. `active`
-/// marks the row by-name resolution picks (always true in the default view;
-/// superseded onboards surface with `all=true`).
+/// An ingest row. `POST /ingests` returns the identity fields plus
+/// `initial_run_id`; list/show/resume/schedule return the fuller view — one
+/// struct serves them all.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct SourceRow {
+pub struct Ingest {
     pub ingest_id: String,
     #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub connector_type: Option<String>,
+    pub datasource_id: Option<String>,
     #[serde(default)]
     pub family: Option<String>,
+    /// `one_time` | `scheduled` | `continuous`.
     #[serde(default)]
-    pub database_id: Option<String>,
+    pub r#type: Option<String>,
+    /// `creating` | `active` | `stopped` | `completed` | `failed` | `deleted`.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Set by the machine when repeated failures stopped the ingest; empty for
+    /// a user cancel.
+    #[serde(default)]
+    pub stopped_reason: Option<String>,
+    #[serde(default)]
+    pub selector: Option<serde_json::Value>,
+    /// The logical write target as one object — `{database_id, schema, table,
+    /// write_mode}`, the same document `POST /ingests` sent. The service also
+    /// keeps those three in their own columns for the destination-ownership
+    /// index, but they are not on the wire: this object is the whole
+    /// destination a response carries.
+    #[serde(default)]
+    pub destination: Option<serde_json::Value>,
+    #[serde(default)]
+    pub schedule: Option<serde_json::Value>,
+    #[serde(default)]
+    pub next_attempt_at: Option<String>,
+    /// Only on the `POST /ingests` response for a `one_time` ingest.
+    #[serde(default)]
+    pub initial_run_id: Option<String>,
+    #[serde(default)]
+    pub latest_run: Option<Run>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IngestsResponse {
+    #[serde(default)]
+    pub ingests: Vec<Ingest>,
+}
+
+/// A `GET /ingests` body in the service's own ingest-view shape, shared by the
+/// decode test here and the rendering test in `commands::ingest` so both read
+/// the same bytes a real response carries.
+///
+/// Pinned because the destination arrives ONLY as the nested object: a fixture
+/// invented with top-level `destination_*` fields decodes, renders, and passes
+/// green while every real response prints a blank destination.
+#[cfg(test)]
+pub const WORKER_INGEST_LIST_BODY: &str = r#"{"ingests":[
+    {"ingest_id":"ing_1","datasource_id":"ds_1","family":"sql","type":"continuous",
+     "state":"active",
+     "selector":{"mode":"tables","schema":"public","tables":["orders"]},
+     "destination":{"database_id":"db_1","schema":"public","table":"orders_raw",
+                    "write_mode":"replace"},
+     "schedule":{"interval_seconds":300},
+     "next_attempt_at":"2026-08-02T09:05:00+00:00","interval_seconds":300,
+     "consecutive_failures":0,"stopped_reason":null,"attempt":7,
+     "job_name":"drain-run-7","created_at":"2026-08-02T09:00:00+00:00",
+     "updated_at":"2026-08-02T09:04:00+00:00","deleted_at":null}
+]}"#;
+
+/// `POST /ingests/{id}/cancel` body. Cancel means both "stop the active run"
+/// and "stop future runs", so the ack reports the run it cancelled *and* the
+/// resulting ingest state.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CancelAck {
+    pub ingest_id: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub cancelled_run_id: Option<String>,
+    #[serde(default)]
+    pub stopped: bool,
+}
+
+/// One execution attempt. The `*_snapshot` fields are what makes a historical
+/// run explainable after the datasource config or schedule has moved on.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Run {
+    pub run_id: String,
+    #[serde(default)]
+    pub ingest_id: Option<String>,
+    #[serde(default)]
+    pub datasource_id: Option<String>,
+    #[serde(default)]
+    pub config_version_id: Option<String>,
+    #[serde(default)]
+    pub attempt: Option<i64>,
+    /// `queued` | `running` | `succeeded` | `failed` | `cancelled`.
     pub status: String,
     #[serde(default)]
     pub stage: Option<String>,
     #[serde(default)]
     pub detail: Option<String>,
     #[serde(default)]
-    pub created_at: Option<String>,
+    pub error: Option<serde_json::Value>,
     #[serde(default)]
-    pub updated_at: Option<String>,
+    pub selector_snapshot: Option<serde_json::Value>,
     #[serde(default)]
-    pub active: bool,
-}
-
-/// `GET /queries` body.
-#[derive(Deserialize)]
-pub struct QueriesResponse {
-    pub queries: Vec<QueryRow>,
-}
-
-/// One import in the registry: the SQL that produced it (verbatim for new
-/// rows, server-reconstructed for older ones), the datasource it drew from,
-/// and the managed DB it landed in.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct QueryRow {
-    pub ingest_id: String,
-    pub source_ingest_id: String,
+    pub destination_snapshot: Option<serde_json::Value>,
     #[serde(default)]
-    pub name: Option<String>,
+    pub schedule_snapshot: Option<serde_json::Value>,
     #[serde(default)]
-    pub connector_type: Option<String>,
+    pub job_name: Option<String>,
     #[serde(default)]
-    pub family: Option<String>,
+    pub queued_at: Option<String>,
     #[serde(default)]
-    pub query: Option<String>,
+    pub started_at: Option<String>,
     #[serde(default)]
-    pub database_id: Option<String>,
-    pub status: String,
-    #[serde(default)]
-    pub stage: Option<String>,
-    #[serde(default)]
-    pub detail: Option<String>,
+    pub finished_at: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RunsResponse {
+    #[serde(default)]
+    pub runs: Vec<Run>,
 }
 
 #[derive(Deserialize)]
@@ -607,8 +939,13 @@ pub struct ConnectorsResponse {
 /// One catalog entry. `sql` names are dialects, `filesystem`/`iceberg`/`rest`
 /// are family templates. REST entries additionally carry `auth` (the method
 /// name, e.g. `bearer`, `oauth_client_credentials`, `none`) and a `template`
-/// dlt config with `<PLACEHOLDER>` secrets the wizard prompts for.
-#[derive(Clone, Deserialize)]
+/// dlt config with `<PLACEHOLDER>` secrets to fill in.
+///
+/// An entry carries only what its family does not already say: which dialect,
+/// which catalog type, which file format — the presets that turn a family into
+/// a named connector. The field lists themselves travel once per family, not
+/// once per entry (see [`ConnectorsResponse::families`]).
+#[derive(Clone, Default, Deserialize)]
 pub struct ConnectorEntry {
     pub name: String,
     #[serde(default)]
@@ -619,10 +956,285 @@ pub struct ConnectorEntry {
     pub auth: Option<String>,
     #[serde(default)]
     pub template: Option<serde_json::Value>,
+    /// Iceberg entries: which catalog flavour this one is (`rest`, `glue`, …).
+    #[serde(default)]
+    pub catalog_type: Option<String>,
+    /// Kafka entries: `kafka` or `debezium`.
+    #[serde(default)]
+    pub connector_type: Option<String>,
+    /// Filesystem entries: the file format the entry is named for.
+    #[serde(default)]
+    pub file_format: Option<String>,
+    /// Which keys belong in this entry's deliberately free-form config map.
+    #[serde(default)]
+    pub options_hint: Option<OptionsHint>,
     /// JSON Schema for the entry's `--config` payload (generic families).
     #[serde(default)]
     pub config_schema: Option<serde_json::Value>,
 }
+
+/// The keys one catalog entry wants inside a free-form config map.
+///
+/// Those maps (`options` on sql, `catalog_config` on iceberg, `storage` on
+/// ducklake) are unmodelled on purpose — what goes in them differs per engine,
+/// not per family, so the generated schema says `object` and stops. This is the
+/// service's own answer to "which keys, for THIS entry", which is why a client
+/// can prompt for them without keeping a list of dialect knowledge of its own.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OptionsHint {
+    /// The config field the keys go under.
+    pub config_field: String,
+    /// Key name -> what it is for.
+    #[serde(default)]
+    pub keys: std::collections::BTreeMap<String, String>,
+}
+
+/// One family's field reference, as `GET /families/{family}` returns it.
+///
+/// The three schemas are plain JSON Schema and are kept as raw values on
+/// purpose. Reshaping them into CLI-side types would put a second, quieter
+/// answer next to the service's — and the answer this endpoint exists to give
+/// is precisely "what does the API accept", which only the API can be right
+/// about. The CLI reads them for its table; `-o json` hands them on untouched.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FamilyReference {
+    pub family: String,
+    /// Shape of `--config` on `datasource create` / `update-config`.
+    #[serde(default)]
+    pub config_schema: serde_json::Value,
+    /// Shape of `--credentials` on the same commands.
+    #[serde(default)]
+    pub credentials_schema: serde_json::Value,
+    /// Shape of `--selector` on `ingest create`. A family whose selector has
+    /// several forms describes them as a `oneOf` with a `discriminator`.
+    #[serde(default)]
+    pub selector_schema: serde_json::Value,
+    #[serde(default)]
+    pub capabilities: Capabilities,
+    /// Keys this build does not know about, carried through verbatim.
+    ///
+    /// Without the flatten, `-o json` would silently emit a reference *less*
+    /// complete than the one on the wire: a field the service started
+    /// describing would vanish on the way to the UI or script consuming it,
+    /// which is the failure mode this endpoint exists to end.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What a family can do, as the service reports it. Read, never assumed: a CLI
+/// that hardcoded these would go on offering a write mode a family had stopped
+/// accepting, and the user would find out from a 422.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Capabilities {
+    /// Write modes a `POST /ingests` destination may name for this family.
+    #[serde(default)]
+    pub write_modes: Vec<String>,
+    /// Whether `--type continuous` is accepted.
+    #[serde(default)]
+    pub continuous: bool,
+    /// Whether a later run resumes from the position the last one committed
+    /// (rather than re-reading the source from the start).
+    #[serde(default)]
+    pub recoverable: bool,
+    /// Whether the selector accepts a row filter.
+    #[serde(default)]
+    pub supports_where: bool,
+    /// Whether one selector may name several source tables.
+    #[serde(default)]
+    pub multi_table: bool,
+    /// Config fields that are fixed once an ingest references the datasource.
+    /// Changing one is a 409, not a new config version.
+    #[serde(default)]
+    pub immutable_config_fields: Vec<String>,
+    /// See [`FamilyReference::extra`].
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FamiliesResponse {
+    #[serde(default)]
+    pub families: Vec<FamilyReference>,
+}
+
+/// A `GET /families/{family}` body, shared by the decode test here and the
+/// rendering tests in `commands::datasource` so both read the bytes a real
+/// response carries.
+///
+/// Pinned on the parts a hand-written fixture gets wrong: optional fields
+/// arrive as an `anyOf` against `null` rather than an absent `required` entry,
+/// enums carry their members, and a family with several selector forms sends a
+/// `oneOf` + `discriminator` instead of one object. A fixture that flattened
+/// any of those renders green here and blank against the service.
+///
+/// `format: password` sits BESIDE the `anyOf`, not inside one of its members —
+/// which is what makes an optional secret's marker easy to miss, and a secret
+/// whose marker is missed is one the guided flow echoes to the terminal.
+///
+/// The `description` on a property is the service's own sentence about the
+/// field, written on the model that validates it. Some properties have one and
+/// some do not, which is the pair of cases the reference has to render — a
+/// fixture where none did is how the field reference came to drop all of them
+/// from its table and keep them only under `-o json`.
+#[cfg(test)]
+pub const FAMILY_REFERENCE_BODY: &str = r#"{
+  "family": "sql",
+  "config_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "dialect": {"enum": ["postgres", "mysql", "duckdb"], "title": "Dialect",
+                  "type": "string",
+                  "description": "Which SQL engine this is. The rest of `config` is read in its terms."},
+      "host": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null,
+               "title": "Host",
+               "description": "Server hostname. Omit for engines addressed by account or path."},
+      "port": {"anyOf": [{"maximum": 65535, "minimum": 1, "type": "integer"},
+                         {"type": "null"}], "default": null, "title": "Port"},
+      "options": {"additionalProperties": true, "title": "Options", "type": "object"}
+    },
+    "required": ["dialect"],
+    "title": "SqlDatasourceConfig",
+    "type": "object"
+  },
+  "credentials_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "username": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                   "default": null, "title": "Username"},
+      "password": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                   "default": null, "format": "password", "title": "Password"}
+    },
+    "title": "SqlCredentials",
+    "type": "object"
+  },
+  "selector_schema": {
+    "oneOf": [
+      {"additionalProperties": false,
+       "properties": {
+         "mode": {"const": "tables", "default": "tables", "title": "Mode",
+                  "type": "string"},
+         "schema": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": null, "title": "Schema"},
+         "tables": {"items": {"type": "string"}, "minItems": 1,
+                    "title": "Tables", "type": "array",
+                    "description": "Source tables to read. Each lands in a destination table of the same name."},
+         "limit": {"anyOf": [{"minimum": 1, "type": "integer"}, {"type": "null"}],
+                   "default": null, "title": "Limit"}
+       },
+       "required": ["tables"], "title": "SqlTableSelector", "type": "object"},
+      {"additionalProperties": false,
+       "properties": {
+         "mode": {"const": "query", "title": "Mode", "type": "string"},
+         "sql": {"minLength": 1, "title": "Sql", "type": "string"}
+       },
+       "required": ["mode", "sql"], "title": "SqlQuerySelector", "type": "object"}
+    ],
+    "discriminator": {"propertyName": "mode"}
+  },
+  "capabilities": {
+    "write_modes": ["replace", "append"],
+    "continuous": false,
+    "recoverable": true,
+    "supports_where": true,
+    "multi_table": true,
+    "immutable_config_fields": ["dialect", "host", "port"]
+  }
+}"#;
+
+/// The same family, with its selector encoded the other legal way: the `oneOf`
+/// branches hoisted into `$defs` and referenced instead of written inline.
+///
+/// Both encodings describe the identical pair of forms, and which one arrives
+/// is the schema generator's choice — a discriminated union is hoisted by
+/// default and only inlined when something asks it to be. The body above is
+/// inlined, so on its own it cannot tell "the service inlines" apart from "the
+/// renderer only handles inline", and a renderer that reads `properties`
+/// straight off a branch passes it while printing the `sql` family — the one
+/// whose two selector forms are the reason the field reference exists — as a
+/// family that takes no fields at all.
+///
+/// Trimmed to the selector: the other schemas are exercised above, and what is
+/// being pinned here is the indirection, including the discriminator `const`
+/// living a hop away from the `discriminator` that names it.
+///
+/// `r##` rather than the `r#` the other bodies use: a JSON pointer is written
+/// `"#/$defs/…"`, and that `"#` would close an `r#` string mid-literal.
+#[cfg(test)]
+pub const FAMILY_REFERENCE_REF_SELECTOR_BODY: &str = r##"{
+  "family": "sql",
+  "config_schema": {"properties": {}, "type": "object"},
+  "credentials_schema": {"properties": {}, "type": "object"},
+  "selector_schema": {
+    "$defs": {
+      "SqlTableSelector": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {"const": "tables", "default": "tables", "title": "Mode",
+                   "type": "string"},
+          "schema": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                     "default": null, "title": "Schema"},
+          "tables": {"items": {"type": "string"}, "minItems": 1,
+                     "title": "Tables", "type": "array",
+                     "description": "Source tables to read. Each lands in a destination table of the same name."}
+        },
+        "required": ["tables"], "title": "SqlTableSelector", "type": "object"},
+      "SqlQuerySelector": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {"const": "query", "title": "Mode", "type": "string"},
+          "sql": {"minLength": 1, "title": "Sql", "type": "string"}
+        },
+        "required": ["mode", "sql"], "title": "SqlQuerySelector", "type": "object"}
+    },
+    "discriminator": {"propertyName": "mode",
+                      "mapping": {"tables": "#/$defs/SqlTableSelector",
+                                  "query": "#/$defs/SqlQuerySelector"}},
+    "oneOf": [{"$ref": "#/$defs/SqlTableSelector"},
+              {"$ref": "#/$defs/SqlQuerySelector"}]
+  },
+  "capabilities": {
+    "write_modes": ["replace", "append"],
+    "continuous": false,
+    "recoverable": true,
+    "supports_where": true,
+    "multi_table": true,
+    "immutable_config_fields": []
+  }
+}"##;
+
+/// A `GET /families` body: the same shape, several families, trimmed to the
+/// parts the index table reads.
+#[cfg(test)]
+pub const FAMILIES_LIST_BODY: &str = r#"{"families": [
+  {"family": "filesystem",
+   "config_schema": {
+     "properties": {
+       "provider": {"enum": ["s3", "gs", "az", "file"], "type": "string"},
+       "root_uri": {"minLength": 1, "type": "string"}
+     },
+     "required": ["provider", "root_uri"], "type": "object"},
+   "credentials_schema": {"properties": {}, "type": "object"},
+   "selector_schema": {
+     "properties": {"prefix": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                               "default": null}},
+     "type": "object"},
+   "capabilities": {"write_modes": ["replace", "append"], "continuous": true,
+                    "recoverable": true, "supports_where": false,
+                    "multi_table": false,
+                    "immutable_config_fields": ["provider", "root_uri"]}},
+  {"family": "kafka",
+   "config_schema": {
+     "properties": {"bootstrap_servers": {"minLength": 1, "type": "string"}},
+     "required": ["bootstrap_servers"], "type": "object"},
+   "credentials_schema": {"properties": {}, "type": "object"},
+   "selector_schema": {
+     "properties": {"topics": {"items": {"type": "string"}, "type": "array"}},
+     "required": ["topics"], "type": "object"},
+   "capabilities": {"write_modes": ["append"], "continuous": true,
+                    "recoverable": false, "supports_where": false,
+                    "multi_table": true,
+                    "immutable_config_fields": ["bootstrap_servers"]}}
+]}"#;
 
 #[cfg(test)]
 mod tests {
@@ -636,114 +1248,746 @@ mod tests {
         IngestClient::from_parts(&server.url(), "eyJ.fake.jwt", false, "ws-1")
     }
 
-    // --- enqueue auth ------------------------------------------------------
+    // --- the destination-conflict hint -------------------------------------
+
+    fn conflict_body(kind: &str, reserved: &str) -> String {
+        format!(
+            r#"{{"error":{{"code":"destination_table_conflict","message":"...",
+                "details":{{"conflicting_ingest_id":"ing_held",
+                            "conflicting_ingest_type":"{kind}",
+                            "reserved_table":"{reserved}"}}}}}}"#
+        )
+    }
+
+    /// The three cases differ in what the caller can do about them, and the
+    /// hint has to differ with them: a holder that never releases on its own,
+    /// one that does, and a reservation the caller can step around entirely.
+    #[test]
+    fn conflict_hint_prescribes_a_delete_only_where_nothing_else_frees_the_table() {
+        let hint = table_conflict_hint(&conflict_body("continuous", "orders_raw"));
+        assert_eq!(hint, "Free the table with: hotdata ingest delete ing_held");
+    }
 
     #[test]
-    fn create_source_sends_api_key_bearer_and_workspace_header() {
+    fn conflict_hint_says_a_finishing_holder_frees_the_table_itself() {
+        for kind in ["one_time", "scheduled"] {
+            let hint = table_conflict_hint(&conflict_body(kind, "orders_raw"));
+            assert!(
+                hint.starts_with("That ingest frees the table when it finishes or is stopped"),
+                "{kind}: {hint}"
+            );
+            // Delete stays reachable — it is the way to take the table NOW —
+            // but as the second option rather than the prescription.
+            assert!(hint.ends_with("hotdata ingest delete ing_held"), "{hint}");
+        }
+    }
+
+    /// An empty `reserved_table` is the holder taking the source's own table
+    /// names. It is the only conflict with a remedy that touches nothing else,
+    /// and the remedy is a flag this CLI owns the spelling of.
+    #[test]
+    fn conflict_hint_offers_a_prefix_when_the_reservation_is_the_raw_names() {
+        let hint = table_conflict_hint(&conflict_body("one_time", ""));
+        assert!(
+            hint.starts_with("Give this ingest a --dest-table-prefix"),
+            "{hint}"
+        );
+    }
+
+    /// A server that reports no holder type still gets a usable hint rather
+    /// than a claim about a type nobody reported.
+    #[test]
+    fn conflict_hint_falls_back_to_delete_when_the_holder_type_is_absent() {
+        let body = r#"{"error":{"code":"destination_table_conflict","message":"...",
+                       "details":{"conflicting_ingest_id":"ing_held"}}}"#;
+        assert_eq!(
+            table_conflict_hint(body),
+            "Free the table with: hotdata ingest delete ing_held"
+        );
+    }
+
+    // --- datasources -------------------------------------------------------
+
+    #[test]
+    fn validate_datasource_posts_family_config_and_credentials() {
         let mut server = mockito::Server::new();
         let m = server
-            .mock("POST", "/ingest/sources")
+            .mock("POST", "/ingest/datasources/validate")
             .match_header("authorization", "Bearer hd_test")
             .match_header("x-workspace-id", "ws-1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "family": "sql",
-                "connector_type": "postgres",
-                "credentials": {"connection_string": "postgresql://u:p@h:5432/d"},
-                "validate_only": true,
+                "config": {"dialect": "postgres", "host": "pg.example.com", "database": "prod"},
+                "credentials": {"username": "reader", "password": "s3cret"},
             })))
-            .with_status(202)
+            .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"ingest_id":"ing-1","database_id":"db-1","workspace_id":"ws-1",
-                    "status":"pending","status_url":"/ingest/jobs/ing-1"}"#,
+                r#"{"valid":true,"family":"sql",
+                    "normalized_config":{"dialect":"postgres","host":"pg.example.com"},
+                    "discovered":{"schemas":["public"],
+                                  "tables":[{"schema":"public","table":"orders"}]}}"#,
             )
             .create();
 
-        let req = IngestRequest {
+        let req = DatasourceConfig {
             family: "sql".into(),
-            connector_type: Some("postgres".into()),
-            credentials: serde_json::json!({"connection_string": "postgresql://u:p@h:5432/d"}),
-            validate_only: true,
+            config: serde_json::json!({
+                "dialect": "postgres", "host": "pg.example.com", "database": "prod"
+            }),
+            credentials: Some(serde_json::json!({"username": "reader", "password": "s3cret"})),
             ..Default::default()
         };
-        let ack = api_key_client(&server).create_source(&req).unwrap();
+        let resp = api_key_client(&server).validate_datasource(&req).unwrap();
         m.assert();
-        assert_eq!(ack.ingest_id, "ing-1");
-        assert_eq!(ack.database_id, "db-1");
-        assert_eq!(ack.status, "pending");
-        // Untyped extras (workspace_id, …) survive for --output json.
-        assert_eq!(ack.extra["workspace_id"], "ws-1");
+        assert!(resp.valid);
+        assert_eq!(resp.family.as_deref(), Some("sql"));
+        assert_eq!(resp.discovered.unwrap()["schemas"][0], "public");
     }
 
     #[test]
-    fn enqueue_with_session_jwt_fails_fast_without_http() {
+    fn validate_datasource_works_with_a_session_jwt() {
+        // Validation persists nothing, so it does not need a durable key.
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/ingest/datasources/validate")
+            .match_header("authorization", "Bearer eyJ.fake.jwt")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"valid":false,"family":"sql","detail":"connection refused"}"#)
+            .create();
+
+        let resp = jwt_client(&server)
+            .validate_datasource(&DatasourceConfig {
+                family: "sql".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        m.assert();
+        assert!(!resp.valid);
+        assert_eq!(resp.detail.as_deref(), Some("connection refused"));
+    }
+
+    #[test]
+    fn create_datasource_sends_display_name_and_decodes_the_new_identity() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/ingest/datasources")
+            .match_header("authorization", "Bearer hd_test")
+            .match_header("x-workspace-id", "ws-1")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "family": "sql",
+                "display_name": "prod postgres",
+                "config": {"dialect": "postgres"},
+                "credentials": {"username": "reader"},
+            })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"datasource_id":"ds_01J","family":"sql","display_name":"prod postgres",
+                    "current_config_version_id":"dscv_01J","state":"active"}"#,
+            )
+            .create();
+
+        let ds = api_key_client(&server)
+            .create_datasource(&DatasourceConfig {
+                family: "sql".into(),
+                display_name: Some("prod postgres".into()),
+                config: serde_json::json!({"dialect": "postgres"}),
+                credentials: Some(serde_json::json!({"username": "reader"})),
+            })
+            .unwrap();
+        m.assert();
+        assert_eq!(ds.datasource_id, "ds_01J");
+        assert_eq!(ds.current_config_version_id.as_deref(), Some("dscv_01J"));
+        assert_eq!(ds.state.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn credential_persisting_calls_fail_fast_on_a_session_jwt() {
         // Point at a dead port: reaching the network would surface as a
         // Connection error instead of NeedsApiKey.
         let client = IngestClient::from_parts("http://127.0.0.1:1", "eyJ.fake.jwt", false, "ws-1");
 
-        let source_err = client.create_source(&IngestRequest::default()).unwrap_err();
-        assert!(matches!(source_err, IngestError::NeedsApiKey));
+        let create = client
+            .create_datasource(&DatasourceConfig::default())
+            .unwrap_err();
+        assert!(matches!(create, IngestError::NeedsApiKey));
 
-        let query_err = client
-            .create_query(&QueryToIngest {
-                query: "SELECT * FROM x".into(),
-                source_ingest_id: None,
-                database_id: None,
+        let patch = client
+            .update_datasource_config(
+                "ds_1",
+                &ConfigUpdate {
+                    config: serde_json::json!({}),
+                    credentials: None,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(patch, IngestError::NeedsApiKey));
+
+        let ingest = client
+            .create_ingest(&IngestCreate {
+                datasource_id: "ds_1".into(),
+                r#type: "one_time".into(),
+                selector: serde_json::json!({}),
+                destination: serde_json::json!({}),
+                schedule: None,
             })
             .unwrap_err();
-        assert!(matches!(query_err, IngestError::NeedsApiKey));
+        assert!(matches!(ingest, IngestError::NeedsApiKey));
+        assert!(ingest.message().contains("API key"), "{}", ingest.message());
+    }
+
+    #[test]
+    fn update_config_omits_credentials_when_inheriting() {
+        let mut server = mockito::Server::new();
+        // Omitted credentials must not appear as `null` — the server reads
+        // "key absent" as "inherit the previous secret refs".
+        let m = server
+            .mock("PATCH", "/ingest/datasources/ds_01J/config")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "config": {"dialect": "postgres", "host": "pg.example.com"},
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"datasource_id":"ds_01J","previous_config_version_id":"dscv_old",
+                    "current_config_version_id":"dscv_new","version":2,"state":"active"}"#,
+            )
+            .create();
+
+        let ack = api_key_client(&server)
+            .update_datasource_config(
+                "ds_01J",
+                &ConfigUpdate {
+                    config: serde_json::json!({"dialect": "postgres", "host": "pg.example.com"}),
+                    credentials: None,
+                },
+            )
+            .unwrap();
+        m.assert();
+        assert_eq!(ack.version, Some(2));
+        assert_eq!(ack.previous_config_version_id.as_deref(), Some("dscv_old"));
+    }
+
+    #[test]
+    fn update_config_sends_an_explicitly_empty_credentials_object() {
+        let mut server = mockito::Server::new();
+        // `{}` is a different request from omission: it drops the source
+        // credential for families that support no-auth sources.
+        let m = server
+            .mock("PATCH", "/ingest/datasources/ds_01J/config")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "config": {"provider": "s3", "root_uri": "s3://public"},
+                "credentials": {},
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"datasource_id":"ds_01J","version":3,"state":"active"}"#)
+            .create();
+
+        api_key_client(&server)
+            .update_datasource_config(
+                "ds_01J",
+                &ConfigUpdate {
+                    config: serde_json::json!({"provider": "s3", "root_uri": "s3://public"}),
+                    credentials: Some(serde_json::json!({})),
+                },
+            )
+            .unwrap();
+        m.assert();
+    }
+
+    #[test]
+    fn list_datasources_applies_filters_and_omits_an_empty_query() {
+        let mut server = mockito::Server::new();
+        let plain = server
+            .mock("GET", "/ingest/datasources")
+            .match_header("x-workspace-id", "ws-1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"datasources":[{"datasource_id":"ds_1","family":"sql",
+                    "display_name":"prod postgres","state":"active",
+                    "current_config_version_id":"dscv_1",
+                    "created_at":"2026-08-01T10:00:00+00:00"}]}"#,
+            )
+            .create();
+        let filtered = server
+            .mock("GET", "/ingest/datasources?family=sql&state=active")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"datasources":[]}"#)
+            .create();
+
+        let client = api_key_client(&server);
+        let resp = client.list_datasources(&[]).unwrap();
+        assert_eq!(resp.datasources[0].datasource_id, "ds_1");
+        assert_eq!(
+            resp.datasources[0].display_name.as_deref(),
+            Some("prod postgres")
+        );
+
+        let resp = client
+            .list_datasources(&[("family", "sql".into()), ("state", "active".into())])
+            .unwrap();
+        assert!(resp.datasources.is_empty());
+        plain.assert();
+        filtered.assert();
+    }
+
+    /// Bodies captured verbatim from a running service, not written by hand.
+    ///
+    /// The bug they exist to prevent is not a wrong value but a wrong SHAPE:
+    /// a field the service never sends at the level the struct looks for it
+    /// decodes to `None` in silence, the human view omits the row, and
+    /// `-o json` prints `null` — a positive claim that the datasource has no
+    /// config. Only a real body catches that, so these are refreshed by
+    /// re-capturing a response, never by editing.
+    const DATASOURCE_SHOW: &str = include_str!("testdata/datasource_show.json");
+    const DATASOURCE_SHOW_UNPROBED: &str = include_str!("testdata/datasource_show_unprobed.json");
+
+    #[test]
+    fn get_datasource_decodes_the_nested_current_config() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/datasources/ds_01KZXYA24DEP1KD5DN9PERC1H9")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(DATASOURCE_SHOW)
+            .create();
+
+        let ds = api_key_client(&server)
+            .get_datasource("ds_01KZXYA24DEP1KD5DN9PERC1H9")
+            .unwrap();
+        m.assert();
+
+        let current = ds
+            .current_config
+            .as_ref()
+            .expect("the current config is on the wire and must decode");
+        assert_eq!(current.version, Some(1));
+        assert_eq!(
+            current.config_version_id,
+            ds.current_config_version_id.clone().unwrap()
+        );
+        assert_eq!(current.config.as_ref().unwrap()["dialect"], "postgres");
+        assert!(current.has_source_credential);
+        assert_eq!(current.validation_status.as_deref(), Some("valid"));
+        assert_eq!(ds.ingest_ids.as_deref().map(<[String]>::len), Some(2));
+
+        // What `-o json` prints is this struct serialized, so the round trip
+        // is the assertion that matters: a config on the wire must still be a
+        // config in the output.
+        let rendered = serde_json::to_value(&ds).unwrap();
+        assert_eq!(rendered["current_config"]["config"]["database"], "control");
         assert!(
-            query_err.message().contains("API key"),
-            "got: {}",
-            query_err.message()
+            !rendered["current_config"].is_null(),
+            "-o json would assert this datasource has no config: {rendered}"
         );
     }
 
-    // --- read endpoints accept a JWT ---------------------------------------
-
     #[test]
-    fn job_status_works_with_jwt_and_decodes_body() {
+    fn a_valid_config_version_can_still_carry_a_validation_note() {
+        // A family with no read-only probe validates the config's shape and
+        // says so. Dropping that note is how "valid" comes to read as
+        // "connected", which it is not.
         let mut server = mockito::Server::new();
         let m = server
-            .mock("GET", "/ingest/jobs/ing-1")
+            .mock("GET", "/ingest/datasources/ds_01KZXYKGC8MC9SQJ6EC4856Y37")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(DATASOURCE_SHOW_UNPROBED)
+            .create();
+
+        let ds = api_key_client(&server)
+            .get_datasource("ds_01KZXYKGC8MC9SQJ6EC4856Y37")
+            .unwrap();
+        m.assert();
+        let current = ds.current_config.unwrap();
+        assert_eq!(current.validation_status.as_deref(), Some("valid"));
+        assert!(
+            current
+                .validation_detail
+                .as_deref()
+                .unwrap()
+                .contains("checked for shape only"),
+            "{:?}",
+            current.validation_detail
+        );
+    }
+
+    #[test]
+    fn delete_datasource_409s_while_ingests_reference_it() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("DELETE", "/ingest/datasources/ds_1")
+            .with_status(409)
+            .with_body(
+                r#"{"error":{"code":"active_ingests_exist",
+                    "message":"2 ingests still reference ds_1"}}"#,
+            )
+            .create();
+
+        let err = api_key_client(&server)
+            .delete_datasource("ds_1")
+            .unwrap_err();
+        m.assert();
+        match &err {
+            IngestError::Http { status, .. } => assert_eq!(*status, 409),
+            other => panic!("expected Http, got: {}", other.message()),
+        }
+        // Both halves of the error envelope reach the user.
+        let msg = err.message();
+        assert!(msg.contains("2 ingests still reference ds_1"), "{msg}");
+        assert!(msg.contains("active_ingests_exist"), "{msg}");
+    }
+
+    // --- ingests -----------------------------------------------------------
+
+    #[test]
+    fn create_ingest_posts_structured_selector_and_destination() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/ingest/ingests")
+            .match_header("authorization", "Bearer hd_test")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "datasource_id": "ds_pg_prod",
+                "type": "one_time",
+                "selector": {"mode": "tables", "schema": "public",
+                             "tables": ["orders"]},
+                "destination": {"database_id": "db_123", "schema": "public",
+                                "table": "orders", "write_mode": "replace"},
+            })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"ingest_id":"ing_01J","datasource_id":"ds_pg_prod","type":"one_time",
+                    "state":"active","initial_run_id":"run_01J"}"#,
+            )
+            .create();
+
+        let ing = api_key_client(&server)
+            .create_ingest(&IngestCreate {
+                datasource_id: "ds_pg_prod".into(),
+                r#type: "one_time".into(),
+                selector: serde_json::json!({
+                    "mode": "tables", "schema": "public", "tables": ["orders"]
+                }),
+                destination: serde_json::json!({
+                    "database_id": "db_123", "schema": "public",
+                    "table": "orders", "write_mode": "replace"
+                }),
+                schedule: None,
+            })
+            .unwrap();
+        m.assert();
+        assert_eq!(ing.ingest_id, "ing_01J");
+        assert_eq!(ing.initial_run_id.as_deref(), Some("run_01J"));
+    }
+
+    #[test]
+    fn create_ingest_409s_on_a_destination_table_conflict() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/ingest/ingests")
+            .with_status(409)
+            .with_body(
+                r#"{"error":{"code":"destination_table_conflict",
+                    "message":"continuous filesystem ingest already owns db_456.public.orders_raw",
+                    "details":{"conflicting_ingest_id":"ing_old"}}}"#,
+            )
+            .create();
+
+        let err = api_key_client(&server)
+            .create_ingest(&IngestCreate {
+                datasource_id: "ds_s3".into(),
+                r#type: "continuous".into(),
+                selector: serde_json::json!({}),
+                destination: serde_json::json!({}),
+                schedule: None,
+            })
+            .unwrap_err();
+        m.assert();
+        let msg = err.message();
+        assert!(
+            msg.contains("already owns db_456.public.orders_raw"),
+            "{msg}"
+        );
+        assert!(msg.contains("destination_table_conflict"), "{msg}");
+    }
+
+    #[test]
+    fn list_ingests_filters_by_datasource_id() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/ingests?datasource_id=ds_1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(WORKER_INGEST_LIST_BODY)
+            .create();
+
+        let resp = api_key_client(&server)
+            .list_ingests(&[("datasource_id", "ds_1".into())])
+            .unwrap();
+        m.assert();
+        let ing = &resp.ingests[0];
+        assert_eq!(ing.ingest_id, "ing_1");
+        assert_eq!(ing.r#type.as_deref(), Some("continuous"));
+        assert_eq!(ing.destination.as_ref().unwrap()["table"], "orders_raw");
+    }
+
+    #[test]
+    fn cancel_reports_the_cancelled_run_and_the_stopped_state() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/ingest/ingests/ing_1/cancel")
+            .match_header("x-workspace-id", "ws-1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"ingest_id":"ing_1","state":"stopped","cancelled_run_id":"run_9",
+                    "stopped":true}"#,
+            )
+            .create();
+
+        let ack = api_key_client(&server).cancel_ingest("ing_1").unwrap();
+        m.assert();
+        assert_eq!(ack.state.as_deref(), Some("stopped"));
+        assert_eq!(ack.cancelled_run_id.as_deref(), Some("run_9"));
+        assert!(ack.stopped);
+    }
+
+    #[test]
+    fn resume_returns_the_active_ingest_without_a_new_run() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/ingest/ingests/ing_1/resume")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"ingest_id":"ing_1","state":"active","type":"scheduled",
+                    "next_attempt_at":"2026-08-13T12:05:00+00:00"}"#,
+            )
+            .create();
+
+        let ing = api_key_client(&server).resume_ingest("ing_1").unwrap();
+        m.assert();
+        assert_eq!(ing.state.as_deref(), Some("active"));
+        // No run id anywhere in the resume ack: resuming starts nothing.
+        assert!(ing.initial_run_id.is_none());
+    }
+
+    #[test]
+    fn schedule_patch_sends_the_schedule_envelope() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("PATCH", "/ingest/ingests/ing_1/schedule")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "schedule": {"interval_seconds": 300, "next_run_at": "now"},
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"ingest_id":"ing_1","state":"active","type":"continuous",
+                    "schedule":{"interval_seconds":300}}"#,
+            )
+            .create();
+
+        api_key_client(&server)
+            .update_schedule(
+                "ing_1",
+                &SchedulePatch {
+                    schedule: serde_json::json!({"interval_seconds": 300, "next_run_at": "now"}),
+                },
+            )
+            .unwrap();
+        m.assert();
+    }
+
+    #[test]
+    fn schedule_patch_409s_for_a_one_time_ingest() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("PATCH", "/ingest/ingests/ing_1/schedule")
+            .with_status(409)
+            .with_body(
+                r#"{"error":{"code":"unsupported_ingest_type",
+                    "message":"one_time ingests have no schedule"}}"#,
+            )
+            .create();
+
+        let err = api_key_client(&server)
+            .update_schedule(
+                "ing_1",
+                &SchedulePatch {
+                    schedule: serde_json::json!({"interval_seconds": 60}),
+                },
+            )
+            .unwrap_err();
+        m.assert();
+        assert!(
+            err.message().contains("unsupported_ingest_type"),
+            "{}",
+            err.message()
+        );
+    }
+
+    // --- runs --------------------------------------------------------------
+
+    #[test]
+    fn list_runs_decodes_newest_first_with_snapshots() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/ingests/ing_1/runs")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"runs":[
+                    {"run_id":"run_3","ingest_id":"ing_1","status":"running","stage":"loading",
+                     "attempt":3,"started_at":"2026-08-13T10:10:00+00:00"},
+                    {"run_id":"run_2","ingest_id":"ing_1","status":"failed","detail":"boom",
+                     "attempt":2,"finished_at":"2026-08-13T10:06:00+00:00"}
+                ]}"#,
+            )
+            .create();
+
+        let resp = api_key_client(&server).list_runs("ing_1", &[]).unwrap();
+        m.assert();
+        assert_eq!(resp.runs.len(), 2);
+        assert_eq!(resp.runs[0].run_id, "run_3");
+        assert_eq!(resp.runs[0].stage.as_deref(), Some("loading"));
+        assert_eq!(resp.runs[1].status, "failed");
+    }
+
+    #[test]
+    fn list_runs_filters_by_status() {
+        // The two mocks are the same endpoint with and without the filter, and
+        // they answer differently — so this fails if the query stops being
+        // sent AND if a filtered listing comes back carrying the other status.
+        // Asserting only that the request carried `?status=failed` is what let
+        // a flag ship that every layer below it ignored: the URL was right and
+        // every run came back.
+        let mut server = mockito::Server::new();
+        let unfiltered = server
+            .mock("GET", "/ingest/ingests/ing_1/runs")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"runs":[
+                    {"run_id":"run_2","ingest_id":"ing_1","status":"succeeded","attempt":2},
+                    {"run_id":"run_1","ingest_id":"ing_1","status":"failed",
+                     "detail":"boom","attempt":1}
+                ]}"#,
+            )
+            .create();
+        let filtered = server
+            .mock("GET", "/ingest/ingests/ing_1/runs?status=failed")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"runs":[
+                    {"run_id":"run_1","ingest_id":"ing_1","status":"failed",
+                     "detail":"boom","attempt":1}
+                ]}"#,
+            )
+            .create();
+
+        let client = api_key_client(&server);
+        let all = client.list_runs("ing_1", &[]).unwrap();
+        assert_eq!(all.runs.len(), 2, "the unfiltered listing carries both");
+
+        let resp = client
+            .list_runs("ing_1", &[("status", "failed".into())])
+            .unwrap();
+        unfiltered.assert();
+        filtered.assert();
+        let statuses: Vec<&str> = resp.runs.iter().map(|r| r.status.as_str()).collect();
+        assert_eq!(
+            statuses,
+            vec!["failed"],
+            "--status failed must return only failed runs, not every run"
+        );
+        assert_eq!(resp.runs[0].run_id, "run_1");
+    }
+
+    #[test]
+    fn get_run_carries_the_config_version_it_used() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/ingest/runs/run_2")
             .match_header("authorization", "Bearer eyJ.fake.jwt")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"ingest_id":"ing-1","status":"failed","detail":"boom",
-                    "connector_type":"postgres","family":"sql","database_id":"db-1",
-                    "created_at":"2026-07-07T15:30:10+00:00",
-                    "updated_at":"2026-07-07T15:30:45+00:00",
-                    "dlt_workspace_id":"ignored-unknown-field"}"#,
+                r#"{"run_id":"run_2","ingest_id":"ing_1","datasource_id":"ds_1",
+                    "config_version_id":"dscv_1","attempt":2,"status":"succeeded",
+                    "destination_snapshot":{"database_id":"db_1","table":"orders"},
+                    "job_name":"drain-run-2","queued_at":"2026-08-13T10:05:00+00:00",
+                    "finished_at":"2026-08-13T10:06:00+00:00",
+                    "unknown_future_field":"ignored"}"#,
             )
             .create();
 
-        let st = jwt_client(&server).job_status("ing-1").unwrap();
+        let run = jwt_client(&server).get_run("run_2").unwrap();
         m.assert();
-        assert_eq!(st.status, "failed");
-        assert_eq!(st.detail.as_deref(), Some("boom"));
-        assert_eq!(st.database_id.as_deref(), Some("db-1"));
+        assert_eq!(run.config_version_id.as_deref(), Some("dscv_1"));
+        assert_eq!(run.destination_snapshot.unwrap()["table"], "orders");
+        assert_eq!(run.job_name.as_deref(), Some("drain-run-2"));
     }
 
     #[test]
-    fn http_error_carries_status_and_body() {
+    fn missing_run_surfaces_the_404_code() {
         let mut server = mockito::Server::new();
         let m = server
-            .mock("GET", "/ingest/jobs/nope")
+            .mock("GET", "/ingest/runs/nope")
             .with_status(404)
-            .with_body(r#"{"detail":"ingest not found"}"#)
+            .with_body(r#"{"error":{"code":"run_not_found","message":"no run 'nope'"}}"#)
             .create();
 
-        let err = api_key_client(&server).job_status("nope").unwrap_err();
+        let err = api_key_client(&server).get_run("nope").unwrap_err();
         m.assert();
         match err {
             IngestError::Http { status, body } => {
                 assert_eq!(status, 404);
-                assert!(body.contains("ingest not found"), "got: {body}");
+                assert!(body.contains("run_not_found"), "got: {body}");
             }
             other => panic!("expected Http, got: {}", other.message()),
         }
     }
+
+    /// A 422 about ONE field must say which field.
+    ///
+    /// The message half names the payload and the family and stops there — by
+    /// design, since `details` is where the field paths are. Printing only the
+    /// message left a caller who sent a destination field the family does not
+    /// have with "invalid destination for family 'iceberg'" and nothing to act
+    /// on, which is the same amount of information as no error text at all.
+    #[test]
+    fn a_field_level_rejection_names_the_field_it_rejected() {
+        let err = IngestError::Http {
+            status: 422,
+            body: r#"{"error": {"code": "invalid_destination",
+                      "message": "invalid destination for family 'iceberg'",
+                      "details": {"errors": [
+                        {"field": "table", "message": "Extra inputs are not permitted"}]}}}"#
+                .into(),
+        };
+        let rendered = err.message();
+        assert!(rendered.contains("invalid_destination"), "{rendered}");
+        assert!(
+            rendered.contains("\n  table: Extra inputs are not permitted"),
+            "{rendered}"
+        );
+        // An envelope with no field errors is unchanged — one line, as before.
+        let plain = IngestError::Http {
+            status: 404,
+            body: r#"{"error":{"code":"run_not_found","message":"no run 'nope'"}}"#.into(),
+        };
+        assert_eq!(plain.message(), "HTTP 404: no run 'nope' (run_not_found)");
+    }
+
+    // --- catalog -----------------------------------------------------------
 
     #[test]
     fn connectors_decodes_rest_template_and_auth() {
@@ -777,154 +2021,113 @@ mod tests {
         );
     }
 
-    // --- registry reads ------------------------------------------------------
+    // --- family reference ----------------------------------------------------
 
     #[test]
-    fn list_sources_default_and_all_hit_the_right_paths() {
+    fn family_reference_decodes_the_generated_schemas_and_capabilities() {
         let mut server = mockito::Server::new();
-        let m_default = server
-            .mock("GET", "/ingest/sources")
+        let m = server
+            .mock("GET", "/ingest/families/sql")
             .match_header("x-workspace-id", "ws-1")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"sources":[{"ingest_id":"a1","connector_type":"postgres","family":"sql",
-                    "database_id":"db-1","status":"done","detail":null,
-                    "created_at":"2026-07-08T10:00:00+00:00","updated_at":null,"active":true}]}"#,
-            )
-            .create();
-        let m_all = server
-            .mock("GET", "/ingest/sources?all=true")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"sources":[]}"#)
+            .with_body(FAMILY_REFERENCE_BODY)
             .create();
 
-        let client = api_key_client(&server);
-        let resp = client.list_sources(false).unwrap();
-        assert_eq!(resp.sources.len(), 1);
-        let s = &resp.sources[0];
-        assert_eq!(s.ingest_id, "a1");
-        assert_eq!(s.connector_type.as_deref(), Some("postgres"));
-        assert!(s.active);
-
-        assert!(client.list_sources(true).unwrap().sources.is_empty());
-        m_default.assert();
-        m_all.assert();
-    }
-
-    #[test]
-    fn list_queries_decodes_sql_and_source_link() {
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("GET", "/ingest/queries")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"queries":[{"ingest_id":"q1","source_ingest_id":"a1",
-                    "connector_type":"bitcoin","family":"rest",
-                    "query":"SELECT id, height FROM bitcoin.blocks LIMIT 100",
-                    "database_id":"db-2","status":"done","detail":null,
-                    "created_at":"2026-07-08T10:05:00+00:00","updated_at":null}]}"#,
-            )
-            .create();
-
-        let resp = api_key_client(&server).list_queries().unwrap();
+        let reference = api_key_client(&server).family("sql").unwrap();
         m.assert();
-        let q = &resp.queries[0];
-        assert_eq!(q.source_ingest_id, "a1");
+        assert_eq!(reference.family, "sql");
+        // The schemas arrive whole, nested constraints included.
         assert_eq!(
-            q.query.as_deref(),
-            Some("SELECT id, height FROM bitcoin.blocks LIMIT 100")
+            reference.config_schema["properties"]["dialect"]["enum"][0],
+            "postgres"
         );
-        assert_eq!(q.database_id.as_deref(), Some("db-2"));
+        assert_eq!(reference.config_schema["required"][0], "dialect");
+        assert_eq!(
+            reference.credentials_schema["properties"]["password"]["anyOf"][1]["type"],
+            "null"
+        );
+        // A multi-form selector keeps both forms and the key that tells them
+        // apart; picking one member would document half the API.
+        assert_eq!(
+            reference.selector_schema["discriminator"]["propertyName"],
+            "mode"
+        );
+        assert_eq!(
+            reference.selector_schema["oneOf"][1]["properties"]["mode"]["const"],
+            "query"
+        );
+        assert_eq!(reference.capabilities.write_modes, ["replace", "append"]);
+        assert!(!reference.capabilities.continuous);
+        assert!(reference.capabilities.recoverable);
+        assert_eq!(
+            reference.capabilities.immutable_config_fields,
+            ["dialect", "host", "port"]
+        );
     }
 
     #[test]
-    fn rerun_posts_and_decodes_the_pending_ack() {
+    fn families_list_decodes_every_entry() {
         let mut server = mockito::Server::new();
         let m = server
-            .mock("POST", "/ingest/jobs/q1/rerun")
-            .match_header("authorization", "Bearer hd_test")
-            .match_header("x-workspace-id", "ws-1")
-            .with_status(202)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"ingest_id":"q1","database_id":"db-2","connector_type":"bitcoin",
-                    "family":"rest","status":"pending","status_url":"/ingest/jobs/q1"}"#,
-            )
-            .create();
-
-        let ack = api_key_client(&server).rerun("q1").unwrap();
-        m.assert();
-        assert_eq!(ack.ingest_id, "q1");
-        assert_eq!(ack.database_id, "db-2");
-        assert_eq!(ack.status, "pending");
-    }
-
-    #[test]
-    fn rerun_409_surfaces_the_in_flight_detail() {
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/ingest/jobs/q1/rerun")
-            .with_status(409)
-            .with_body(r#"{"detail":"a drain appears to be running (in flight: a1); retry once it settles"}"#)
-            .create();
-
-        let err = api_key_client(&server).rerun("q1").unwrap_err();
-        m.assert();
-        match err {
-            IngestError::Http { status, body } => {
-                assert_eq!(status, 409);
-                assert!(body.contains("retry once it settles"), "got: {body}");
-            }
-            other => panic!("expected Http, got: {}", other.message()),
-        }
-    }
-
-    #[test]
-    fn delete_source_removes_and_acks() {
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("DELETE", "/ingest/sources/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1")
-            .match_header("authorization", "Bearer hd_test")
-            .match_header("x-workspace-id", "ws-1")
+            .mock("GET", "/ingest/families")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"ingest_id":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-                    "connector_type":"postgres","database_id":"db-1","deleted":true}"#,
-            )
+            .with_body(FAMILIES_LIST_BODY)
             .create();
 
-        let ack = api_key_client(&server)
-            .delete_source("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1")
-            .unwrap();
+        let resp = api_key_client(&server).families().unwrap();
         m.assert();
-        assert!(ack.deleted);
-        assert_eq!(ack.database_id.as_deref(), Some("db-1"));
+        let names: Vec<&str> = resp.families.iter().map(|f| f.family.as_str()).collect();
+        assert_eq!(names, ["filesystem", "kafka"]);
+        assert!(resp.families[1].capabilities.continuous);
+        assert_eq!(resp.families[1].capabilities.write_modes, ["append"]);
     }
 
     #[test]
-    fn delete_source_surfaces_import_422() {
+    fn an_unknown_family_reports_the_families_that_exist() {
         let mut server = mockito::Server::new();
         let m = server
-            .mock("DELETE", "/ingest/sources/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2")
+            .mock("GET", "/ingest/families/postgres")
             .with_status(422)
-            .with_body(r#"{"detail":"that ingest is an import, not a connection"}"#)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"error":{"code":"unsupported_family_feature",
+                    "message":"unknown family 'postgres'",
+                    "details":{"families":["filesystem","kafka","sql"]}}}"#,
+            )
             .create();
 
-        let err = api_key_client(&server)
-            .delete_source("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2")
-            .unwrap_err();
+        // `postgres` is a catalog entry name, not a family — the mistake this
+        // error has to survive, since both columns sit in `datasource types`.
+        let err = api_key_client(&server).family("postgres").unwrap_err();
         m.assert();
-        match err {
-            IngestError::Http { status, body } => {
-                assert_eq!(status, 422);
-                assert!(body.contains("import"), "got: {body}");
-            }
-            other => panic!("expected Http, got: {}", other.message()),
-        }
+        assert!(
+            err.message().contains("unknown family"),
+            "{}",
+            err.message()
+        );
+        assert!(
+            err.message().contains("unsupported_family_feature"),
+            "{}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn a_reference_survives_the_round_trip_to_json_output() {
+        // `-o json` re-serializes what was decoded, so a key this build does
+        // not model must still reach the consumer.
+        let body = r#"{"family":"sql","config_schema":{"type":"object"},
+                       "credentials_schema":{},"selector_schema":{},
+                       "capabilities":{"write_modes":["replace"],
+                                       "streaming_offsets":true},
+                       "docs_url":"https://example.test/sql"}"#;
+        let reference: FamilyReference = serde_json::from_str(body).unwrap();
+        let out = serde_json::to_value(&reference).unwrap();
+        assert_eq!(out["docs_url"], "https://example.test/sql");
+        assert_eq!(out["capabilities"]["streaming_offsets"], true);
+        assert_eq!(out["capabilities"]["write_modes"][0], "replace");
     }
 
     // --- debug-log redaction -------------------------------------------------
@@ -932,12 +2135,10 @@ mod tests {
     #[test]
     fn redact_secret_fields_masks_all_secret_subtrees_and_keeps_the_rest() {
         let body = serde_json::json!({
-            "family": "rest",
-            "connector_type": "svc",
+            "family": "sql",
+            "display_name": "prod postgres",
+            "config": {"dialect": "postgres", "host": "pg.example.com"},
             "credentials": {"connection_string": "postgresql://u:s3cret@h/db"},
-            "rest_config": {"client": {"auth": {"type": "bearer", "token": "tok-abc"}}},
-            "catalog_config": {"uri": "http://c", "token": "iceberg-tok"},
-            "table_names": ["users"],
         });
         let logged = redact_secret_fields(&body);
         for key in super::SECRET_BODY_FIELDS {
@@ -948,14 +2149,12 @@ mod tests {
         }
         let printed = logged.to_string();
         assert!(
-            !printed.contains("s3cret")
-                && !printed.contains("tok-abc")
-                && !printed.contains("iceberg-tok"),
+            !printed.contains("s3cret"),
             "no secret may survive into the printable body: {printed}"
         );
         // Non-secret fields stay readable, and the wire body is untouched.
-        assert_eq!(logged["family"], "rest");
-        assert_eq!(logged["table_names"][0], "users");
+        assert_eq!(logged["family"], "sql");
+        assert_eq!(logged["display_name"], "prod postgres");
         assert_eq!(
             body["credentials"]["connection_string"],
             "postgresql://u:s3cret@h/db"
@@ -965,17 +2164,35 @@ mod tests {
     // --- request serialization ----------------------------------------------
 
     #[test]
-    fn ingest_request_omits_unset_fields() {
-        // The worker applies its own defaults; nulls/empties must not be sent.
-        let req = IngestRequest {
+    fn datasource_config_omits_unset_fields() {
+        // The worker applies its own defaults; nulls must not be sent, and an
+        // omitted `credentials` key is what "inherit" means on the wire.
+        let req = DatasourceConfig {
             family: "filesystem".into(),
-            bucket_url: Some("s3://b/prefix".into()),
+            config: serde_json::json!({"provider": "s3", "root_uri": "s3://b"}),
             ..Default::default()
         };
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(
             v,
-            serde_json::json!({"family": "filesystem", "bucket_url": "s3://b/prefix"})
+            serde_json::json!({
+                "family": "filesystem",
+                "config": {"provider": "s3", "root_uri": "s3://b"},
+            })
         );
+    }
+
+    #[test]
+    fn ingest_create_serializes_type_as_the_wire_name() {
+        let req = IngestCreate {
+            datasource_id: "ds_1".into(),
+            r#type: "one_time".into(),
+            selector: serde_json::json!({"mode": "tables"}),
+            destination: serde_json::json!({"database_id": "db_1"}),
+            schedule: None,
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["type"], "one_time");
+        assert!(v.get("schedule").is_none());
     }
 }
