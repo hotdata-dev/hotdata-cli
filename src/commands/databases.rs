@@ -559,6 +559,10 @@ fn schema_name(schema: Option<&str>) -> &str {
 }
 
 /// Build the request body for `POST /v1/databases`.
+///
+/// The `schema` argument (the `--schema` flag, defaulting to `public`) is always
+/// declared: with no `--table`, with bare ones, and alongside any schema a
+/// dot-qualified `--table` names for itself.
 pub fn create_database_request(
     name: Option<&str>,
     catalog: Option<&str>,
@@ -579,36 +583,51 @@ pub fn create_database_request(
         );
     }
 
-    if !tables.is_empty() {
-        // Group tables by schema, preserving insertion order.
-        // Dot-notation entries (e.g. "raw.raw_orders") use the named schema;
-        // bare names fall back to the `schema` argument.
-        let mut schema_tables: Vec<(String, Vec<String>)> = Vec::new();
-        for t in tables {
-            let (s, table_name) = match t.split_once('.') {
-                Some((s, tbl)) => (s.to_string(), tbl.to_string()),
-                None => (schema.to_string(), t.to_string()),
-            };
-            if let Some(entry) = schema_tables.iter_mut().find(|(n, _)| n == &s) {
-                entry.1.push(table_name);
-            } else {
-                schema_tables.push((s, vec![table_name]));
-            }
+    // `schemas` always goes out, and always carries `schema`: the engine only
+    // auto-declares `main`, so leaving `--schema` (default `public`) undeclared
+    // makes every later table declaration into it fail with "Schema 'public' is
+    // not declared". `tables` is optional on a schema declaration, so a schema
+    // with nothing in it yet is a first-class request.
+    //
+    // Seeded rather than special-cased on `tables.is_empty()`, because an empty
+    // `--table` list is not the only way the chosen schema goes undeclared:
+    // `--table raw.orders` names its own schema, so with every entry
+    // dot-qualified the group list would never contain `schema` either.
+    let mut schema_tables: Vec<(String, Vec<String>)> = vec![(schema.to_string(), Vec::new())];
+    // Dot-notation entries (e.g. "raw.raw_orders") use the named schema; bare
+    // names fall back to the `schema` argument. Insertion order is preserved,
+    // and `schema` leads because it is already seeded.
+    for t in tables {
+        let (s, table_name) = match t.split_once('.') {
+            Some((s, tbl)) => (s.to_string(), tbl.to_string()),
+            None => (schema.to_string(), t.to_string()),
+        };
+        if let Some(entry) = schema_tables.iter_mut().find(|(n, _)| n == &s) {
+            entry.1.push(table_name);
+        } else {
+            schema_tables.push((s, vec![table_name]));
         }
-        let schemas_json: Vec<serde_json::Value> = schema_tables
-            .into_iter()
-            .map(|(s, tbls)| {
+    }
+    let schemas_json: Vec<serde_json::Value> = schema_tables
+        .into_iter()
+        .map(|(s, tbls)| {
+            // `tables` omitted rather than sent empty: the seeded schema may
+            // have collected nothing, and the field is optional precisely so a
+            // schema can be declared on its own.
+            if tbls.is_empty() {
+                serde_json::json!({ "name": s })
+            } else {
                 serde_json::json!({
                     "name": s,
                     "tables": tbls.iter().map(|t| serde_json::json!({ "name": t })).collect::<Vec<_>>()
                 })
-            })
-            .collect();
-        req.insert(
-            "schemas".to_string(),
-            serde_json::Value::Array(schemas_json),
-        );
-    }
+            }
+        })
+        .collect();
+    req.insert(
+        "schemas".to_string(),
+        serde_json::Value::Array(schemas_json),
+    );
 
     if let Some(exp) = expires_at {
         req.insert(
@@ -2215,16 +2234,40 @@ mod tests {
     }
 
     #[test]
-    fn create_database_request_empty_without_name_or_tables() {
+    fn create_database_request_declares_schema_without_name_or_tables() {
         let req = create_database_request(None, None, "public", &[], None);
-        assert_eq!(req, serde_json::json!({}));
+        assert_eq!(
+            req,
+            serde_json::json!({"schemas": [{"name": "public"}]}),
+            "the --schema default must be declared even with no --table"
+        );
+    }
+
+    #[test]
+    fn create_database_request_declares_custom_schema_without_tables() {
+        let req = create_database_request(None, None, "analytics", &[], None);
+        assert_eq!(req["schemas"][0]["name"], "analytics");
+        // An empty schema declaration omits `tables` entirely — the server
+        // treats that as "declare the schema, add tables later".
+        assert!(req["schemas"][0].get("tables").is_none());
+    }
+
+    #[test]
+    fn create_database_request_typed_round_trip_without_tables() {
+        // The typed builder deserializes the JSON body and panics on a shape the
+        // SDK model rejects, so the tables-less schema declaration must survive it.
+        let req = create_database_typed_request(None, None, "public", &[], None);
+        let schemas = req.schemas.expect("schemas is always sent");
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0].name, "public");
+        assert!(schemas[0].tables.is_none());
     }
 
     #[test]
     fn create_database_request_includes_name() {
         let req = create_database_request(Some("jaffle_shop"), None, "public", &[], None);
         assert_eq!(req["name"], "jaffle_shop");
-        assert!(req.get("schemas").is_none());
+        assert_eq!(req["schemas"][0]["name"], "public");
     }
 
     #[test]
@@ -2246,6 +2289,38 @@ mod tests {
         let req = create_database_request(None, None, "analytics", &["events".to_string()], None);
         assert!(req.get("name").is_none());
         assert_eq!(req["schemas"][0]["name"], "analytics");
+    }
+
+    #[test]
+    fn create_database_request_declares_the_chosen_schema_beside_a_dotted_one() {
+        // Every --table dot-qualified elsewhere: --schema still has to be
+        // declared, or a later bare-name declaration into it fails the same way
+        // an empty --table list used to.
+        let req = create_database_request(None, None, "public", &["raw.orders".to_string()], None);
+        assert_eq!(req["schemas"][0]["name"], "public");
+        assert!(
+            req["schemas"][0].get("tables").is_none(),
+            "the chosen schema collected no tables, so it is declared on its own"
+        );
+        assert_eq!(req["schemas"][1]["name"], "raw");
+        assert_eq!(req["schemas"][1]["tables"][0]["name"], "orders");
+    }
+
+    #[test]
+    fn create_database_request_does_not_declare_the_chosen_schema_twice() {
+        // A bare name and a dot-qualified one naming the SAME schema are one
+        // group, and the seed must not become a second, empty copy of it.
+        let req = create_database_request(
+            None,
+            None,
+            "public",
+            &["orders".to_string(), "public.customers".to_string()],
+            None,
+        );
+        assert_eq!(req["schemas"].as_array().unwrap().len(), 1);
+        assert_eq!(req["schemas"][0]["name"], "public");
+        assert_eq!(req["schemas"][0]["tables"][0]["name"], "orders");
+        assert_eq!(req["schemas"][0]["tables"][1]["name"], "customers");
     }
 
     #[test]
