@@ -638,6 +638,57 @@ fn trigger_import_explains_its_removal_instead_of_vanishing() {
 }
 
 #[test]
+fn the_fallback_hint_lists_every_verb_clap_accepts() {
+    // The `None` arm of `removed()` — what an unrecognized verb with no
+    // specific removal message prints. It is a hand-maintained list beside a
+    // clap enum, so it drifts silently: when `run` moved under `ingest` the
+    // hint kept naming the old top-level spelling and omitted the new verb,
+    // and nothing failed.
+    //
+    // Compared as exact tokens, not with `contains`. A substring check passes
+    // while `run` is missing, because the hint still says `runs` — which is
+    // how a first attempt at this test passed against the very drift it was
+    // written to catch.
+    let (_, hint) = combined(&["ingest", "definitely-not-a-verb"]);
+    let (ok, help) = combined(&["ingest", "--help"]);
+    assert!(ok, "{help}");
+
+    let listed: Vec<String> = hint
+        .split("Verbs:")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no verb list in the hint: {hint}"))
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .split(',')
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect();
+
+    let from_clap: Vec<String> = help
+        .lines()
+        .skip_while(|l| !l.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  ") && !l.trim().is_empty())
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|v| *v != "help")
+        .map(str::to_string)
+        .collect();
+    assert!(from_clap.len() > 5, "parsed too few verbs: {from_clap:?}");
+
+    let mut a = listed.clone();
+    let mut b = from_clap.clone();
+    a.sort();
+    b.sort();
+    assert_eq!(
+        a, b,
+        "the hint's verb list and clap's disagree\n  hint: {listed:?}\n  clap: {from_clap:?}"
+    );
+    // And it must not send anyone to a command that no longer parses.
+    assert!(!hint.contains("hotdata run'"), "{hint}");
+}
+
+#[test]
 fn renamed_verbs_point_at_their_replacements() {
     for (old, expected) in [
         ("new-datasource", "hotdata datasource create"),

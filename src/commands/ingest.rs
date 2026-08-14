@@ -1612,8 +1612,8 @@ pub fn removed(argv: &[String]) -> ! {
             );
             eprintln!(
                 "{}",
-                "Verbs: create, list, show, cancel, resume, schedule, runs, delete. \
-                 Datasources are 'hotdata datasource', runs are 'hotdata run'."
+                "Verbs: create, list, show, cancel, resume, schedule, runs, run, delete. \
+                 Datasources are 'hotdata datasource'."
                     .dark_grey()
             );
         }

@@ -1,8 +1,9 @@
-//! Presentation and argument helpers shared by the three ingest-side command
-//! groups: `hotdata datasource`, `hotdata ingest`, and `hotdata run`.
+//! Presentation and argument helpers shared by the two ingest-side command
+//! groups: `hotdata datasource` and `hotdata ingest` (which is where a run is
+//! shown, as `ingest run <run-id>`).
 //!
 //! They were one group before the datasource/ingest/run split, and the output
-//! conventions must not drift now that they are three: one `render`, one
+//! conventions must not drift now that they are separate: one `render`, one
 //! spinner wrapper, one detail-view label width, one `@file.json` parser, one
 //! date cell. Each group keeps its own request-building logic.
 
