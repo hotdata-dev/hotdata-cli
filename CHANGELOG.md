@@ -17,7 +17,7 @@ They are now three nouns with three command groups.
 | `ingest list-datasources` / `show-datasource` / `delete-datasource` | `datasource list` / `show` / `delete` |
 | `ingest new-import` | `ingest create --type one-time` |
 | `ingest list-imports` | `ingest list` |
-| `ingest status <id>` | `run show <run_id>` / `ingest runs <ingest_id>` |
+| `ingest status <id>` | `ingest run <run_id>` / `ingest runs <ingest_id>` |
 | `ingest raw-sql "…"` | `ingest create --raw-sql "…"` |
 | `ingest trigger-import` | **removed, no replacement** |
 
@@ -28,6 +28,10 @@ is discoverable rather than an unrecognised-subcommand error.
 committed position — re-running by hand is not the recovery it looks like. To
 bring the next scheduled run forward: `ingest schedule <id> --next now`. For a
 one-off, create another one-time ingest.
+
+A run is addressed under its ingest — `ingest runs <ingest_id>` lists them,
+`ingest run <run_id>` shows one. There is no top-level `run` command: that word
+already belongs to `databases run`, `jobs`, and `queries`.
 
 Two smaller changes worth knowing:
 
