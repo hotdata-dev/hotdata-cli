@@ -559,6 +559,9 @@ fn schema_name(schema: Option<&str>) -> &str {
 }
 
 /// Build the request body for `POST /v1/databases`.
+///
+/// The `schema` argument (the `--schema` flag, defaulting to `public`) is always
+/// declared, with or without `--table`.
 pub fn create_database_request(
     name: Option<&str>,
     catalog: Option<&str>,
@@ -579,7 +582,14 @@ pub fn create_database_request(
         );
     }
 
-    if !tables.is_empty() {
+    // `schemas` always goes out, even with no `--table`: the engine only
+    // auto-declares `main`, so a schemas-less create leaves `--schema` (default
+    // `public`) undeclared and every later table declaration into it fails with
+    // "Schema 'public' is not declared". `tables` is optional on a schema
+    // declaration, so an empty schema is a first-class request.
+    let schemas_json: Vec<serde_json::Value> = if tables.is_empty() {
+        vec![serde_json::json!({ "name": schema })]
+    } else {
         // Group tables by schema, preserving insertion order.
         // Dot-notation entries (e.g. "raw.raw_orders") use the named schema;
         // bare names fall back to the `schema` argument.
@@ -595,7 +605,7 @@ pub fn create_database_request(
                 schema_tables.push((s, vec![table_name]));
             }
         }
-        let schemas_json: Vec<serde_json::Value> = schema_tables
+        schema_tables
             .into_iter()
             .map(|(s, tbls)| {
                 serde_json::json!({
@@ -603,12 +613,12 @@ pub fn create_database_request(
                     "tables": tbls.iter().map(|t| serde_json::json!({ "name": t })).collect::<Vec<_>>()
                 })
             })
-            .collect();
-        req.insert(
-            "schemas".to_string(),
-            serde_json::Value::Array(schemas_json),
-        );
-    }
+            .collect()
+    };
+    req.insert(
+        "schemas".to_string(),
+        serde_json::Value::Array(schemas_json),
+    );
 
     if let Some(exp) = expires_at {
         req.insert(
@@ -2215,16 +2225,40 @@ mod tests {
     }
 
     #[test]
-    fn create_database_request_empty_without_name_or_tables() {
+    fn create_database_request_declares_schema_without_name_or_tables() {
         let req = create_database_request(None, None, "public", &[], None);
-        assert_eq!(req, serde_json::json!({}));
+        assert_eq!(
+            req,
+            serde_json::json!({"schemas": [{"name": "public"}]}),
+            "the --schema default must be declared even with no --table"
+        );
+    }
+
+    #[test]
+    fn create_database_request_declares_custom_schema_without_tables() {
+        let req = create_database_request(None, None, "analytics", &[], None);
+        assert_eq!(req["schemas"][0]["name"], "analytics");
+        // An empty schema declaration omits `tables` entirely — the server
+        // treats that as "declare the schema, add tables later".
+        assert!(req["schemas"][0].get("tables").is_none());
+    }
+
+    #[test]
+    fn create_database_request_typed_round_trip_without_tables() {
+        // The typed builder deserializes the JSON body and panics on a shape the
+        // SDK model rejects, so the tables-less schema declaration must survive it.
+        let req = create_database_typed_request(None, None, "public", &[], None);
+        let schemas = req.schemas.expect("schemas is always sent");
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0].name, "public");
+        assert!(schemas[0].tables.is_none());
     }
 
     #[test]
     fn create_database_request_includes_name() {
         let req = create_database_request(Some("jaffle_shop"), None, "public", &[], None);
         assert_eq!(req["name"], "jaffle_shop");
-        assert!(req.get("schemas").is_none());
+        assert_eq!(req["schemas"][0]["name"], "public");
     }
 
     #[test]
