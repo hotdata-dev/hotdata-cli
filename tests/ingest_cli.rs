@@ -670,6 +670,12 @@ fn the_fallback_hint_lists_every_verb_clap_accepts() {
         .skip_while(|l| !l.starts_with("Commands:"))
         .skip(1)
         .take_while(|l| l.starts_with("  ") && !l.trim().is_empty())
+        // Verbs sit at a fixed indent; clap wraps a long about-line and aligns
+        // the continuation further right. Nothing wraps at today's help width,
+        // but a stray sentence fragment in this list would read as a drift
+        // failure when it is nothing of the kind — so keep the verb column
+        // only, rather than every indented line.
+        .filter(|l| !l.starts_with("   "))
         .filter_map(|l| l.split_whitespace().next())
         .filter(|v| *v != "help")
         .map(str::to_string)
