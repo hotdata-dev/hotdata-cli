@@ -1,3 +1,8 @@
+## [0.25.0] - 2026-08-14
+
+### 🚀 Features
+
+- *(ingest)* [**breaking**] Split ingest into datasource, ingest, and run (#256)
 ## [0.24.0] - 2026-08-12
 
 ### 🚀 Features
