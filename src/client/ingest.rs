@@ -462,9 +462,10 @@ impl IngestClient {
 
     // --- ingests ----------------------------------------------------------
 
-    /// Create a saved load definition. A `one_time` ingest also creates its
-    /// first run in the same transaction (`initial_run_id` in the response);
-    /// `scheduled`/`continuous` ones start on the next scheduler tick.
+    /// Create a saved load definition. Starts nothing — the scheduler
+    /// dispatches every run, so `initial_run_id` comes back null for every
+    /// type. A `one_time` ingest is created DUE, which is what gets it claimed
+    /// on the next tick and exactly once; it is not run here.
     pub fn create_ingest(&self, req: &IngestCreate) -> Result<Ingest, IngestError> {
         self.require_api_key()?;
         let body = serde_json::to_value(req).expect("IngestCreate serializes");
