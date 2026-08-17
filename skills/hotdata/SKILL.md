@@ -306,7 +306,11 @@ hotdata ingest create --datasource-id ds_01J --type one-time \
 # destination.json is {"database_id", "schema", "table", "write_mode"} —
 #   write_mode: replace | upsert (upsert needs a continuous bucket ingest).
 #   Selector and destination are both IMMUTABLE after creation.
-# A one-time ingest runs immediately and reports its initial run id.
+# CREATE STARTS NOTHING, for every type. It returns no run id, and
+# `ingest runs <id>` is EMPTY until the scheduler claims the ingest — normal,
+# not a failure, and not something to retry. A one-time ingest is created DUE,
+# so it is claimed on the next tick and exactly once. Poll `ingest runs` until
+# a run appears, then `ingest run <run-id> --wait`.
 
 hotdata ingest create --datasource-id ds_01J --type continuous \
   --selector @selector.json --destination @destination.json --every 5m [--next now]
@@ -357,7 +361,8 @@ hotdata ingest run <run-id>          # exits 0 succeeded / 1 failed|cancelled / 
 ```
 
 Agent tips:
-- **There is no `trigger-import` / run-now verb, by design.** A one-time ingest runs when created; scheduled/continuous ones run on their schedule and each run recovers from the last committed state. To make the next scheduled run happen now: `hotdata ingest schedule <ingest-id> --next now`. To load again from scratch: create another one-time ingest.
+- **There is no `trigger-import` / run-now verb, by design.** Nothing you can call starts a run — the scheduler dispatches every one. A one-time ingest is created *due*, so it is claimed on the next tick; scheduled/continuous ones are claimed on their schedule, and each run recovers from the last committed state. To make the next scheduled run happen now: `hotdata ingest schedule <ingest-id> --next now`. To load again from scratch: create another one-time ingest.
+- **An empty run list right after `ingest create` is normal.** The scheduler has not claimed the ingest yet. Poll `ingest runs <ingest-id>` until a run appears rather than treating the gap as a failed create — re-creating the ingest here is how you end up with two loads into one table.
 - **`cancel` means both halves** — stop the current run *and* stop future dispatch. `resume` is its inverse and is deliberately not a trigger.
 - **Selector and destination are immutable.** Changing what an ingest reads or where it lands means a new ingest; the server rejects edits with `immutable_ingest_definition`.
 - `--sql` is a **restricted grammar**: `SELECT <cols|*> FROM [<schema>.]<table> [WHERE …] [LIMIT n]` — no joins/GROUP BY/ORDER BY, and the FROM target names the **source table**, not a datasource. For anything richer use `--raw-sql`, which runs the statement verbatim at the source in its own dialect.
