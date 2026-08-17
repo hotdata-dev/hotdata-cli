@@ -463,9 +463,13 @@ impl IngestClient {
     // --- ingests ----------------------------------------------------------
 
     /// Create a saved load definition. Starts nothing — the scheduler
-    /// dispatches every run, so `initial_run_id` comes back null for every
-    /// type. A `one_time` ingest is created DUE, which is what gets it claimed
-    /// on the next tick and exactly once; it is not run here.
+    /// dispatches every run, and the service does not populate `initial_run_id`
+    /// today, for any type. A `one_time` ingest is created DUE, which is what
+    /// gets it claimed on the next tick and exactly once; it is not run here.
+    ///
+    /// Stated as current behaviour rather than a guarantee, to match the render
+    /// in `commands::ingest`, which keeps a branch for a run id in case the
+    /// service ever reports one.
     pub fn create_ingest(&self, req: &IngestCreate) -> Result<Ingest, IngestError> {
         self.require_api_key()?;
         let body = serde_json::to_value(req).expect("IngestCreate serializes");
@@ -800,9 +804,9 @@ pub struct DeleteAck {
     pub deleted: bool,
 }
 
-/// An ingest row. `POST /ingests` returns the identity fields plus
-/// `initial_run_id`; list/show/resume/schedule return the fuller view — one
-/// struct serves them all.
+/// An ingest row. `POST /ingests` returns the identity fields;
+/// list/show/resume/schedule return the fuller view — one struct serves them
+/// all, so most fields are optional by shape rather than by meaning.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Ingest {
     pub ingest_id: String,
@@ -833,7 +837,11 @@ pub struct Ingest {
     pub schedule: Option<serde_json::Value>,
     #[serde(default)]
     pub next_attempt_at: Option<String>,
-    /// Only on the `POST /ingests` response for a `one_time` ingest.
+    /// Where a create's run id WOULD appear. The service does not populate it
+    /// today — the scheduler dispatches every run — so treat `None` as the
+    /// normal answer and find the run with `GET /ingests/{id}/runs`. Kept
+    /// optional rather than removed so a service that starts reporting one
+    /// needs no client change.
     #[serde(default)]
     pub initial_run_id: Option<String>,
     #[serde(default)]
