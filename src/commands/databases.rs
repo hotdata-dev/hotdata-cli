@@ -1626,11 +1626,9 @@ pub fn set(workspace_id: &str, id: &str) {
     // `set` only writes local config; the GET is just a friendly existence-check.
     // A database API token can't call GET /v1/databases/{id} (denied by its
     // allow-list), so skip the check for it and save the id directly.
-    let is_database_api_token = crate::config::load("default")
-        .ok()
-        .and_then(|profile| crate::client::credentials::api_key_jwt_source(&profile))
-        .as_deref()
-        == Some("database_api_token");
+    let is_database_api_token = crate::config::load("default").ok().is_some_and(|profile| {
+        crate::client::credentials::api_key_likely_database_scoped(&profile)
+    });
     if !is_database_api_token {
         let api = Api::new(Some(workspace_id));
         if none_if_404(get_database(&api, id))
@@ -1770,8 +1768,7 @@ pub fn tables_load(
     // connection-scoped managed endpoints (all outside its allow-list). Route it
     // through the database-scoped endpoints, addressed by database id.
     if let Ok(profile) = crate::config::load("default")
-        && crate::client::credentials::api_key_jwt_source(&profile).as_deref()
-            == Some("database_api_token")
+        && crate::client::credentials::api_key_likely_database_scoped(&profile)
     {
         tables_load_database_scoped(
             workspace_id,

@@ -317,11 +317,10 @@ pub fn ensure_access_token(
     // 0) An explicit identity override (`--api-key`, `HOTDATA_API_KEY`,
     // or `.env`) is asserting a specific identity for *this invocation*.
     // The on-disk session may belong to a completely different user
-    // from a prior `hotdata auth login` and must not be reused. Mint fresh
-    // and deliberately skip persisting so we don't clobber the
-    // interactive session. Surface the real mint error here too — if
-    // the override key is bad, "HTTP 401" is more useful than the
-    // generic "session expired" message the cache-fallthrough returns.
+    // from a prior `hotdata auth login` and must not be reused. The API
+    // token is sent verbatim as the bearer credential — there is no
+    // client-side exchange or validation, so an invalid key surfaces as a
+    // 401 on the actual request rather than here.
     //
     // Only `ApiKeySource::Config` continues to honor the cache: that's
     // a stable identity persisted in config.yml, paired with a session
@@ -331,8 +330,7 @@ pub fn ensure_access_token(
         config::ApiKeySource::Flag | config::ApiKeySource::Env
     ) && let Some(api_key) = api_key_fallback
     {
-        let session = mint_from_api_token(profile, api_key)?;
-        return Ok(session.access_token);
+        return Ok(api_key.to_string());
     }
 
     fn usable_token(session: &Session, now: u64) -> Option<String> {
@@ -399,102 +397,15 @@ pub fn ensure_access_token(
         }
     }
 
-    // 3) No cache, or refresh is dead → need a fresh mint.
+    // 3) No cache, or refresh is dead → fall back to the raw API token
+    // as the bearer credential directly. Nothing to mint or persist: an
+    // opaque `hd_...` token doesn't expire the way a session JWT does, so
+    // there's no session.json state to keep in sync with it.
     if let Some(api_key) = api_key_fallback {
-        match mint_from_api_token(profile, api_key) {
-            Ok(session) => {
-                let tok = session.access_token.clone();
-                save_session(&session)?;
-                return Ok(tok);
-            }
-            Err(_) => {
-                // API token rejected (revoked, expired, or invalid).
-                // Fall through to the re-auth hint — hide the raw HTTP
-                // error from the user; the api.rs caller appends a
-                // `hotdata auth login` hint.
-            }
-        }
+        return Ok(api_key.to_string());
     }
 
     Err("session expired or revoked".into())
-}
-
-/// Which credential source the [`CliTokenProvider`] serves bearers from.
-///
-/// Mirrors the auth-source precedence the wrapper (`src/sdk.rs`) applies
-/// (database env -> user session/api_key). The wrapper picks the variant at
-/// construction time; the provider re-runs the corresponding *existing*
-/// blocking CLI function on every request so session.json, the 30s leeway
-/// table, no-clobber for Flag/Env, and clear-on-dead-refresh stay owned by
-/// the CLI — the SDK never re-implements JWT exchange.
-#[derive(Debug, Clone)]
-pub enum AuthMode {
-    /// `HOTDATA_DATABASE_TOKEN` env var (a `databases run` child).
-    DatabaseEnv { api_url: String },
-    /// Normal user-scoped CLI session in `~/.hotdata/session.json`, with an
-    /// optional `hd_...` api-key fallback to mint from.
-    Session {
-        profile: config::ProfileConfig,
-        api_key_fallback: Option<String>,
-    },
-}
-
-/// A CLI-owned [`BearerTokenProvider`](hotdata::auth::BearerTokenProvider)
-/// installed on the SDK's `Configuration.token_provider`.
-///
-/// `bearer_value` delegates to the CLI's existing *synchronous* token
-/// functions (which own session.json, PKCE-minted refresh tokens, and the
-/// `/o/token/` `client_id=hotdata-cli` attribution). They already return a
-/// ready `eyJ...` JWT, which the SDK passes through unchanged — so the SDK's
-/// own `TokenManager` is bypassed for the user-JWT path and the CLI keeps
-/// full ownership of auth. The blocking functions run inside
-/// `spawn_blocking` so they don't stall the wrapper's async runtime.
-#[derive(Debug, Clone)]
-pub struct CliTokenProvider {
-    mode: AuthMode,
-}
-
-impl CliTokenProvider {
-    pub fn new(mode: AuthMode) -> Self {
-        Self { mode }
-    }
-
-    /// Resolve a fresh bearer synchronously. Pure delegation to the existing
-    /// CLI auth functions; returns the JWT to put on the wire, or an error
-    /// string describing why no token could be obtained.
-    fn resolve_blocking(mode: &AuthMode) -> Result<String, String> {
-        match mode {
-            AuthMode::DatabaseEnv { api_url } => {
-                crate::client::database_session::refresh_from_env(api_url)
-                    .ok_or_else(|| "HOTDATA_DATABASE_TOKEN is empty".to_string())
-            }
-            AuthMode::Session {
-                profile,
-                api_key_fallback,
-            } => ensure_access_token(profile, api_key_fallback.as_deref()),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl hotdata::auth::BearerTokenProvider for CliTokenProvider {
-    async fn bearer_value(&self) -> Result<String, hotdata::auth::TokenExchangeError> {
-        let mode = self.mode.clone();
-        // The CLI auth functions are blocking (reqwest::blocking I/O + file
-        // writes). Run them on a blocking thread so the multi-thread runtime's
-        // worker threads (and concurrent rayon block_on calls) aren't stalled.
-        let resolved = tokio::task::spawn_blocking(move || Self::resolve_blocking(&mode))
-            .await
-            .unwrap_or_else(|e| Err(format!("token resolution task failed: {e}")));
-
-        resolved.map_err(|body| {
-            // Surface as a 401 so `Configuration::resolve_bearer_token` logs the
-            // cause and the request proceeds to a 401 the wrapper shapes into
-            // the "run hotdata auth login" hint (the same end-state as the old
-            // ApiClient refresher returning None).
-            hotdata::auth::TokenExchangeError::Status { status: 401, body }
-        })
-    }
 }
 
 #[cfg(test)]
@@ -923,7 +834,9 @@ mod tests {
     }
 
     #[test]
-    fn ensure_falls_back_to_api_token_mint_when_refresh_rejected() {
+    fn ensure_falls_back_to_raw_api_key_when_refresh_rejected() {
+        // Refresh is rejected -> the session is cleared -> step 3 falls back
+        // to the raw api_key with no further network call (no more mint).
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
         let refresh_mock = server
@@ -934,85 +847,40 @@ mod tests {
             ))
             .with_status(400)
             .with_body("invalid_grant")
-            .create();
-        let mint_mock = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "api_token".into(),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"reminted-jwt","expires_in":300,"refresh_token":"r2"}"#)
+            .expect(1)
             .create();
 
         save_session(&cached_session(-10, 86400)).unwrap();
         let profile = mock_profile(&server.url());
         let token = ensure_access_token(&profile, Some("hd_xyz")).unwrap();
         refresh_mock.assert();
-        mint_mock.assert();
-        assert_eq!(token, "reminted-jwt");
-        let loaded = load_session().unwrap();
-        assert_eq!(loaded.access_token, "reminted-jwt");
-        assert_eq!(loaded.source, "api_token");
+        assert_eq!(token, "hd_xyz");
+        // The dead session was cleared and nothing new was cached — a raw
+        // api_key fallback has no session state to persist.
+        assert!(load_session().is_none());
     }
 
     #[test]
-    fn ensure_mints_from_api_token_when_no_session() {
+    fn ensure_returns_raw_api_key_when_no_session() {
+        // No cache, api_key fallback present: the raw token is returned
+        // verbatim with zero network calls and nothing written to disk.
         let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "api_token".into(),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"fresh-jwt","expires_in":300,"refresh_token":"r"}"#)
-            .create();
-
-        let profile = mock_profile(&server.url());
+        let profile = mock_profile("http://127.0.0.1:1");
         let token = ensure_access_token(&profile, Some("hd_xyz")).unwrap();
-        m.assert();
-        assert_eq!(token, "fresh-jwt");
-        assert_eq!(load_session().unwrap().access_token, "fresh-jwt");
+        assert_eq!(token, "hd_xyz");
+        assert!(load_session().is_none());
     }
 
     #[test]
     fn ensure_skips_refresh_when_refresh_ttl_expired() {
-        // Refresh token is past its soft TTL — the orchestrator should
-        // skip the refresh attempt entirely and go straight to the
-        // api_token re-mint path.
+        // Refresh token is past its soft TTL — the orchestrator should skip
+        // the refresh attempt entirely and fall straight through to the raw
+        // api_key, with zero network calls.
         let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-        let mint_mock = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "api_token".into(),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"reminted","expires_in":300,"refresh_token":"r"}"#)
-            .expect(1)
-            .create();
-        // Refresh path must NOT be hit.
-        let refresh_mock = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "refresh_token".into(),
-            ))
-            .expect(0)
-            .create();
-
         save_session(&cached_session(-10, -10)).unwrap();
-        let profile = mock_profile(&server.url());
+        let profile = mock_profile("http://127.0.0.1:1");
         let token = ensure_access_token(&profile, Some("hd_xyz")).unwrap();
-        mint_mock.assert();
-        refresh_mock.assert();
-        assert_eq!(token, "reminted");
+        assert_eq!(token, "hd_xyz");
     }
 
     #[test]
@@ -1023,74 +891,31 @@ mod tests {
         assert!(err.contains("session"), "got: {err}");
     }
 
-    #[test]
-    fn ensure_errors_when_api_token_rejected() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "api_token".into(),
-            ))
-            .with_status(401)
-            .create();
-
-        let profile = mock_profile(&server.url());
-        let err = ensure_access_token(&profile, Some("revoked")).unwrap_err();
-        m.assert();
-        // Error is the generic "session expired or revoked" — the raw
-        // HTTP status is suppressed so api.rs can append a clean
-        // re-auth hint.
-        assert!(err.contains("session"), "got: {err}");
-    }
-
     // --- ensure_access_token: --api-key (Flag source) overrides cache ---
 
     #[test]
     fn ensure_with_flag_source_bypasses_valid_cached_session() {
-        // A perfectly valid PKCE session is on disk, but the user
-        // passed --api-key — we must mint a fresh JWT from that key
-        // instead of reusing the cached session.
+        // A perfectly valid PKCE session is on disk, but the user passed
+        // --api-key — the raw key is used directly, not the cached session,
+        // and no network call is made to validate or exchange it.
         let (_tmp, _guard) = with_temp_config_dir();
         save_session(&cached_session(3600, 7 * 24 * 3600)).unwrap();
 
-        let mut server = mockito::Server::new();
-        let mint_mock = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::UrlEncoded("grant_type".into(), "api_token".into()),
-                mockito::Matcher::UrlEncoded("api_token".into(), "hd_flag_token".into()),
-            ]))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"flag-jwt","expires_in":300,"refresh_token":"r"}"#)
-            .create();
-
-        let mut profile = mock_profile(&server.url());
+        let mut profile = mock_profile("http://127.0.0.1:1");
         profile.api_key_source = config::ApiKeySource::Flag;
         let token = ensure_access_token(&profile, Some("hd_flag_token")).unwrap();
-        mint_mock.assert();
-        assert_eq!(token, "flag-jwt");
+        assert_eq!(token, "hd_flag_token");
     }
 
     #[test]
     fn ensure_with_flag_source_does_not_overwrite_cached_session() {
-        // Flag-driven mints are for one-shot CLI invocations; persisting
-        // them would silently log the interactive user out.
+        // A raw api_key fallback is never persisted; the on-disk PKCE
+        // session (if any) must survive untouched.
         let (_tmp, _guard) = with_temp_config_dir();
         let original = cached_session(3600, 7 * 24 * 3600);
         save_session(&original).unwrap();
 
-        let mut server = mockito::Server::new();
-        let _mint = server
-            .mock("POST", "/o/token/")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"flag-jwt","expires_in":300,"refresh_token":"r"}"#)
-            .create();
-
-        let mut profile = mock_profile(&server.url());
+        let mut profile = mock_profile("http://127.0.0.1:1");
         profile.api_key_source = config::ApiKeySource::Flag;
         ensure_access_token(&profile, Some("hd_flag_token")).unwrap();
 
@@ -1101,52 +926,18 @@ mod tests {
     }
 
     #[test]
-    fn ensure_with_flag_source_surfaces_mint_error() {
-        // When --api-key was passed explicitly, the user wants the real
-        // failure reason, not the generic "session expired or revoked"
-        // message that the cache-fall-through path returns.
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/o/token/")
-            .with_status(401)
-            .with_body("invalid api token")
-            .create();
-
-        let mut profile = mock_profile(&server.url());
-        profile.api_key_source = config::ApiKeySource::Flag;
-        let err = ensure_access_token(&profile, Some("bad")).unwrap_err();
-        m.assert();
-        assert!(err.contains("401"), "got: {err}");
-    }
-
-    #[test]
     fn ensure_with_env_source_bypasses_valid_cached_session() {
-        // HOTDATA_API_KEY (whether exported in the shell or loaded
-        // from .env) must override a cached session for the same
-        // reason --api-key does: the env var asserts a specific
-        // identity for this invocation.
+        // HOTDATA_API_KEY (whether exported in the shell or loaded from
+        // .env) must override a cached session the same way --api-key does,
+        // returning the raw token with no network call.
         let (_tmp, _guard) = with_temp_config_dir();
         let original = cached_session(3600, 7 * 24 * 3600);
         save_session(&original).unwrap();
 
-        let mut server = mockito::Server::new();
-        let mint_mock = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::UrlEncoded("grant_type".into(), "api_token".into()),
-                mockito::Matcher::UrlEncoded("api_token".into(), "hd_env_token".into()),
-            ]))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"env-jwt","expires_in":300,"refresh_token":"r"}"#)
-            .create();
-
-        let mut profile = mock_profile(&server.url());
+        let mut profile = mock_profile("http://127.0.0.1:1");
         profile.api_key_source = config::ApiKeySource::Env;
         let token = ensure_access_token(&profile, Some("hd_env_token")).unwrap();
-        mint_mock.assert();
-        assert_eq!(token, "env-jwt");
+        assert_eq!(token, "hd_env_token");
 
         // Cached session must remain untouched — same no-clobber
         // guarantee as the Flag path.
@@ -1272,138 +1063,6 @@ mod tests {
         assert!(err.contains("session"), "got: {err}");
         // Stale session must be cleared so the next attempt doesn't
         // burn a network call on the same dead refresh token.
-        assert!(load_session().is_none());
-    }
-
-    // --- CliTokenProvider (SDK BearerTokenProvider impl) ------------------
-    //
-    // These drive `bearer_value` through the shared multi-thread runtime,
-    // asserting the provider delegates to the existing CLI auth functions
-    // (so session.json, the 30s leeway, and `client_id=hotdata-cli` at
-    // `/o/token/` stay CLI-owned and the SDK only sees a ready JWT).
-
-    use hotdata::auth::BearerTokenProvider;
-
-    /// Resolve a provider's bearer on the shared wrapper runtime.
-    fn bearer(provider: &CliTokenProvider) -> Result<String, hotdata::auth::TokenExchangeError> {
-        crate::client::sdk::rt().block_on(provider.bearer_value())
-    }
-
-    fn session_provider(profile: &ProfileConfig, api_key: Option<&str>) -> CliTokenProvider {
-        CliTokenProvider::new(AuthMode::Session {
-            profile: profile.clone(),
-            api_key_fallback: api_key.map(String::from),
-        })
-    }
-
-    #[test]
-    fn provider_returns_cached_jwt_without_http() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        save_session(&cached_session(600, 7 * 24 * 3600)).unwrap();
-        // Dead port: a network call would error, proving the fast path.
-        let profile = mock_profile("http://127.0.0.1:1");
-        let provider = session_provider(&profile, None);
-        assert_eq!(bearer(&provider).unwrap(), "cached-jwt");
-    }
-
-    #[test]
-    fn provider_refreshes_inside_leeway_with_hotdata_cli_client_id() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::UrlEncoded("grant_type".into(), "refresh_token".into()),
-                mockito::Matcher::UrlEncoded("client_id".into(), "hotdata-cli".into()),
-            ]))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"refreshed-jwt","expires_in":300}"#)
-            .create();
-
-        save_session(&cached_session(5, 86400)).unwrap();
-        let profile = mock_profile(&server.url());
-        let provider = session_provider(&profile, None);
-        assert_eq!(bearer(&provider).unwrap(), "refreshed-jwt");
-        m.assert();
-    }
-
-    #[test]
-    fn provider_mints_from_api_token_with_hotdata_cli_client_id() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::AllOf(vec![
-                mockito::Matcher::UrlEncoded("grant_type".into(), "api_token".into()),
-                mockito::Matcher::UrlEncoded("client_id".into(), "hotdata-cli".into()),
-            ]))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"fresh-jwt","expires_in":300,"refresh_token":"r"}"#)
-            .create();
-
-        let profile = mock_profile(&server.url());
-        let provider = session_provider(&profile, Some("hd_xyz"));
-        assert_eq!(bearer(&provider).unwrap(), "fresh-jwt");
-        m.assert();
-    }
-
-    #[test]
-    fn provider_persists_rotated_token_to_session_0600() {
-        use std::os::unix::fs::PermissionsExt;
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-        let _m = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "refresh_token".into(),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"rotated-jwt","expires_in":300,"refresh_token":"r2"}"#)
-            .create();
-
-        save_session(&cached_session(-10, 86400)).unwrap();
-        let profile = mock_profile(&server.url());
-        let provider = session_provider(&profile, None);
-        assert_eq!(bearer(&provider).unwrap(), "rotated-jwt");
-
-        // The rotated token survives to disk for the next CLI invocation,
-        // still at 0600 (it carries a refresh token).
-        let loaded = load_session().unwrap();
-        assert_eq!(loaded.access_token, "rotated-jwt");
-        let path = session_path().unwrap();
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-    }
-
-    #[test]
-    fn provider_surfaces_401_when_no_credential() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        // No session, no api_key fallback -> ensure_access_token errors, the
-        // provider maps it to a 401 so the request proceeds to the wrapper's
-        // "run hotdata auth login" hint.
-        let profile = mock_profile("http://127.0.0.1:1");
-        let provider = session_provider(&profile, None);
-        match bearer(&provider).unwrap_err() {
-            hotdata::auth::TokenExchangeError::Status { status, .. } => assert_eq!(status, 401),
-            other => panic!("expected Status 401, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn provider_clears_session_when_refresh_dies_no_fallback() {
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-        let _m = server.mock("POST", "/o/token/").with_status(400).create();
-
-        save_session(&cached_session(-10, 86400)).unwrap();
-        let profile = mock_profile(&server.url());
-        let provider = session_provider(&profile, None);
-        assert!(bearer(&provider).is_err());
-        // Dead refresh with no fallback -> session cleared (no clobber loop).
         assert!(load_session().is_none());
     }
 }

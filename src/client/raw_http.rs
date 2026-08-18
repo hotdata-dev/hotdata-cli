@@ -10,7 +10,7 @@
 //! * `skill.rs`'s arbitrary-URL markdown fetch.
 //!
 //! This module owns the timeout-bounded blocking client builder and a thin
-//! bearer/header request builder. Token freshness is the `CliTokenProvider`'s
+//! bearer/header request builder. Token freshness is `jwt::ensure_access_token`'s
 //! job (proactive refresh at the 30s leeway), so these helpers carry no
 //! 401-retry loop.
 

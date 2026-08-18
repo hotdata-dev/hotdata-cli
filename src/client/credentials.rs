@@ -1,5 +1,10 @@
-//! Credential inspection: validate the active profile's auth state and read
-//! claims (workspace scope, token source) from a minted api-key JWT.
+//! Credential inspection: validate the active profile's auth state and, for
+//! an api-key credential, discover which workspace(s) it's authorized for.
+//!
+//! An `hd_...` API key is sent verbatim as the bearer (no client-side JWT
+//! exchange — see [`crate::client::jwt`]), so it carries no claims to decode.
+//! Workspace scope is instead discovered the same way any caller would: by
+//! asking the API.
 //!
 //! This is the infrastructure half of auth — consumed by the SDK seam and by
 //! `main`'s workspace resolution. The interactive login/register/status UI
@@ -7,7 +12,6 @@
 //! reverse).
 
 use crate::config::{self, ApiKeySource};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 #[derive(Debug, PartialEq)]
 pub enum AuthStatus {
@@ -89,10 +93,48 @@ pub(crate) fn default_workspace_id(profile_config: &config::ProfileConfig) -> Op
     ids.into_iter().next()
 }
 
+/// Best-effort guess at whether the active api-key credential (`--api-key` /
+/// `HOTDATA_API_KEY`) is a database-scoped API token, for callers that need
+/// to route around endpoints outside its allow-list (e.g. `databases set`,
+/// `tables load`).
+///
+/// Before the API-token → JWT exchange was removed, this read the minted
+/// JWT's authoritative `source` claim. That claim is server-side-only
+/// knowledge now (`APIToken.kind` in the webapp's database — see
+/// `permissions.token_source`) and nothing in the public API surface
+/// re-exposes it to the client (`X-Source-Id` is internal gateway→backend
+/// plumbing, never echoed to the caller). This heuristic — a database token
+/// is always restricted to exactly one workspace server-side — is the best
+/// available signal without adding a new endpoint. It can misclassify an
+/// ordinary api_token that happens to be scoped to a single workspace, but
+/// only in the safe direction: such a token takes the more restrictive
+/// database-scoped code path unnecessarily rather than a genuine
+/// database_api_token hitting hard 403s calling endpoints outside its
+/// allow-list.
+pub(crate) fn api_key_likely_database_scoped(profile_config: &config::ProfileConfig) -> bool {
+    matches!(
+        profile_config.api_key_source,
+        ApiKeySource::Flag | ApiKeySource::Env
+    ) && api_key_workspace_ids(profile_config).len() == 1
+}
+
+/// Response shape of `GET /workspaces` — only the field this probe needs.
+#[derive(serde::Deserialize)]
+struct WorkspacesIdsResponse {
+    workspaces: Vec<WorkspaceIdItem>,
+}
+
+#[derive(serde::Deserialize)]
+struct WorkspaceIdItem {
+    public_id: String,
+}
+
 /// Workspace public-ids the active api-key credential (`--api-key` /
-/// `HOTDATA_API_KEY`) is scoped to, read from its minted JWT's `workspaces`
-/// claim. A database API token carries exactly one. Empty when there's no api
-/// key, it can't be exchanged, or the claim is absent (an unrestricted token).
+/// `HOTDATA_API_KEY`) is authorized for, discovered via `GET /workspaces`
+/// (the same probe [`check_status`] uses) — the raw token carries no claims
+/// to decode client-side. A database API token is scoped to exactly one; an
+/// unrestricted token returns every workspace it can reach. Empty when
+/// there's no api key or the request fails.
 pub(crate) fn api_key_workspace_ids(profile_config: &config::ProfileConfig) -> Vec<String> {
     let Some(key) = profile_config
         .api_key
@@ -104,58 +146,19 @@ pub(crate) fn api_key_workspace_ids(profile_config: &config::ProfileConfig) -> V
     let Ok(token) = crate::client::jwt::ensure_access_token(profile_config, Some(key)) else {
         return Vec::new();
     };
-    jwt_array_claim(&token, "workspaces")
-}
-
-/// When the active credential is a user-supplied api key (`--api-key` /
-/// `HOTDATA_API_KEY`), exchange it for a JWT and return that JWT's `source`
-/// claim (e.g. `database_api_token`). This lets `auth status` double as a
-/// validator: a successful mint proves the key is accepted, and the source
-/// confirms which kind of token it is. Returns `None` for CLI-session
-/// credentials or if the key can't be exchanged.
-pub(crate) fn api_key_jwt_source(profile_config: &config::ProfileConfig) -> Option<String> {
-    if !matches!(
-        profile_config.api_key_source,
-        ApiKeySource::Flag | ApiKeySource::Env
-    ) {
-        return None;
+    let url = format!("{}/workspaces", profile_config.api_url);
+    let client = crate::client::raw_http::build_http_client();
+    let req = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"));
+    match crate::util::send_debug(&client, req, None) {
+        Ok((status, body)) if status.is_success() => {
+            serde_json::from_str::<WorkspacesIdsResponse>(&body)
+                .map(|r| r.workspaces.into_iter().map(|w| w.public_id).collect())
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
     }
-    let key = profile_config
-        .api_key
-        .as_deref()
-        .filter(|k| !k.is_empty() && *k != "PLACEHOLDER")?;
-    let token = crate::client::jwt::ensure_access_token(profile_config, Some(key)).ok()?;
-    jwt_string_claim(&token, "source")
-}
-
-/// Decode a JWT payload (no signature verification) and return the named
-/// string claim. Mirrors the decoder in `database_session` — the server
-/// validates signatures on receipt, so the CLI only peeks at claims.
-fn jwt_string_claim(token: &str, claim: &str) -> Option<String> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    value.get(claim).and_then(|v| v.as_str()).map(String::from)
-}
-
-/// Decode a JWT payload (no signature verification) and return the named claim
-/// as a list of strings. Empty when the token is unparseable or the claim is
-/// absent / not a string array (e.g. the `workspaces` scope claim).
-fn jwt_array_claim(token: &str, claim: &str) -> Vec<String> {
-    token
-        .split('.')
-        .nth(1)
-        .and_then(|payload| URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok())
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|value| {
-            value.get(claim).and_then(|c| c.as_array()).map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -194,61 +197,32 @@ mod tests {
         .unwrap();
     }
 
-    // --- jwt_string_claim / jwt_array_claim tests ---
-
     #[test]
-    fn jwt_string_claim_extracts_source() {
-        let payload = URL_SAFE_NO_PAD.encode(br#"{"source":"database_api_token","exp":123}"#);
-        let token = format!("header.{payload}.sig");
-        assert_eq!(
-            jwt_string_claim(&token, "source").as_deref(),
-            Some("database_api_token")
-        );
-        // Missing claim, non-string claim, and malformed tokens yield None.
-        assert_eq!(jwt_string_claim(&token, "nope"), None);
-        assert_eq!(jwt_string_claim(&token, "exp"), None);
-        assert_eq!(jwt_string_claim("not-a-jwt", "source"), None);
-    }
-
-    #[test]
-    fn jwt_array_claim_extracts_workspaces() {
-        let payload = URL_SAFE_NO_PAD.encode(br#"{"workspaces":["work_a","work_b"]}"#);
-        let token = format!("header.{payload}.sig");
-        assert_eq!(
-            jwt_array_claim(&token, "workspaces"),
-            vec!["work_a", "work_b"]
-        );
-        // Missing claim / malformed tokens yield an empty list.
-        assert!(jwt_array_claim(&token, "nope").is_empty());
-        assert!(jwt_array_claim("not-a-jwt", "workspaces").is_empty());
-    }
-
-    #[test]
-    fn api_key_workspace_ids_decodes_the_tokens_workspace_claim() {
-        // A database API token is authorized for exactly one workspace, carried
-        // in its minted JWT's `workspaces` claim — that's what scopes requests.
+    fn api_key_workspace_ids_fetches_workspaces_with_the_raw_key_as_bearer() {
+        // A database API token is authorized for exactly one workspace,
+        // discovered by asking the API directly — the raw key carries no
+        // claims to decode client-side.
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
-        let payload = URL_SAFE_NO_PAD
-            .encode(br#"{"workspaces":["workbound"],"source":"database_api_token"}"#);
-        let jwt = format!("header.{payload}.sig");
-        let mint = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "api_token".into(),
-            ))
+        let m = server
+            .mock("GET", "/workspaces")
+            .match_header("Authorization", "Bearer hd_dbtoken")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(format!(
-                r#"{{"access_token":"{jwt}","expires_in":300,"refresh_token":"r"}}"#
-            ))
+            .with_body(r#"{"workspaces":[{"public_id":"workbound","name":"Workbound"}]}"#)
             .create();
 
         let profile = mock_profile(&server.url(), Some("hd_dbtoken"));
         let ids = api_key_workspace_ids(&profile);
-        mint.assert();
+        m.assert();
         assert_eq!(ids, vec!["workbound".to_string()]);
+    }
+
+    #[test]
+    fn api_key_workspace_ids_empty_when_request_fails() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let profile = mock_profile("http://127.0.0.1:1", Some("hd_dbtoken"));
+        assert!(api_key_workspace_ids(&profile).is_empty());
     }
 
     // --- default_workspace_id tests ---
@@ -260,27 +234,22 @@ mod tests {
         }
     }
 
-    /// Mint mock returning a JWT whose `workspaces` claim is `ids`.
-    fn mock_token_with_workspaces(server: &mut mockito::Server, ids: &[&str]) -> mockito::Mock {
-        let claim = serde_json::json!({ "workspaces": ids }).to_string();
-        let jwt = format!("header.{}.sig", URL_SAFE_NO_PAD.encode(claim.as_bytes()));
+    /// `GET /workspaces` mock returning the given public-ids.
+    fn mock_workspaces(server: &mut mockito::Server, ids: &[&str]) -> mockito::Mock {
+        let body = serde_json::json!({
+            "workspaces": ids.iter().map(|id| serde_json::json!({"public_id": id, "name": id})).collect::<Vec<_>>(),
+        });
         server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "api_token".into(),
-            ))
+            .mock("GET", "/workspaces")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(format!(
-                r#"{{"access_token":"{jwt}","expires_in":300,"refresh_token":"r"}}"#
-            ))
+            .with_body(body.to_string())
             .create()
     }
 
     #[test]
     fn default_workspace_id_session_uses_saved_default_without_network() {
-        // Config source (a CLI session): the saved default, no mint call.
+        // Config source (a CLI session): the saved default, no network call.
         let (_tmp, _guard) = with_temp_config_dir();
         let profile = ProfileConfig {
             workspaces: vec![ws("work_saved"), ws("work_other")],
@@ -298,7 +267,7 @@ mod tests {
         // different workspace sits at the front of the (unrelated) config cache.
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
-        let mint = mock_token_with_workspaces(&mut server, &["work_only"]);
+        let probe = mock_workspaces(&mut server, &["work_only"]);
         let mut profile = mock_profile(&server.url(), Some("hd_dbtoken"));
         profile.api_key_source = ApiKeySource::Env;
         profile.workspaces = vec![ws("work_saved")];
@@ -306,7 +275,7 @@ mod tests {
             default_workspace_id(&profile),
             Some("work_only".to_string())
         );
-        mint.assert();
+        probe.assert();
     }
 
     #[test]
@@ -315,7 +284,7 @@ mod tests {
         // default wins (so `workspaces set` keeps working).
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
-        let _mint = mock_token_with_workspaces(&mut server, &["work_a", "work_saved", "work_b"]);
+        let _probe = mock_workspaces(&mut server, &["work_a", "work_saved", "work_b"]);
         let mut profile = mock_profile(&server.url(), Some("hd_org"));
         profile.api_key_source = ApiKeySource::Env;
         profile.workspaces = vec![ws("work_saved")];
@@ -331,7 +300,7 @@ mod tests {
         // authorized workspace, never a workspace the gateway would 403.
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
-        let _mint = mock_token_with_workspaces(&mut server, &["work_a", "work_b"]);
+        let _probe = mock_workspaces(&mut server, &["work_a", "work_b"]);
         let mut profile = mock_profile(&server.url(), Some("hd_org"));
         profile.api_key_source = ApiKeySource::Env;
         profile.workspaces = vec![ws("work_unauthorized")];
@@ -374,30 +343,19 @@ mod tests {
     #[test]
     fn status_authenticated_via_api_token_fallback_when_no_session() {
         // Realistic upgrade path: user has an api_key in config but no
-        // session.json yet. ensure_access_token must mint a JWT from
-        // the api_key, then check_status probes /workspaces with it.
+        // session.json yet. check_status sends the raw key verbatim as the
+        // bearer on the /workspaces probe — no mint step.
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
-        let mint_mock = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "api_token".into(),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"minted-jwt","expires_in":300,"refresh_token":"r"}"#)
-            .create();
         let probe_mock = server
             .mock("GET", "/workspaces")
-            .match_header("Authorization", "Bearer minted-jwt")
+            .match_header("Authorization", "Bearer hd_xyz")
             .with_status(200)
             .with_body(r#"{"workspaces":[]}"#)
             .create();
 
         let profile = mock_profile(&server.url(), Some("hd_xyz"));
         assert_eq!(check_status(&profile), AuthStatus::Authenticated);
-        mint_mock.assert();
         probe_mock.assert();
     }
 
@@ -427,12 +385,16 @@ mod tests {
 
     #[test]
     fn status_invalid_when_api_token_rejected_no_session() {
-        // No session, and the api_key fallback is rejected by the mint
-        // endpoint — collapse to Invalid(401) so `auth status` shows
-        // the user they need to re-auth.
+        // No session, and the raw api_key is rejected by the server on the
+        // actual /workspaces probe — there's no client-side mint step left
+        // to reject it earlier.
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
-        let mock = server.mock("POST", "/o/token/").with_status(401).create();
+        let mock = server
+            .mock("GET", "/workspaces")
+            .match_header("Authorization", "Bearer hd_revoked")
+            .with_status(401)
+            .create();
 
         let profile = mock_profile(&server.url(), Some("hd_revoked"));
         assert_eq!(check_status(&profile), AuthStatus::Invalid(401));

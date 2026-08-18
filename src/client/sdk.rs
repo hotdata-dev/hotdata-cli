@@ -17,12 +17,18 @@
 //!
 //! # Auth
 //!
-//! Construction reproduces the old `ApiClient::new` 4-level auth-source
-//! precedence by choosing the [`AuthMode`](crate::client::jwt::AuthMode) the installed
-//! [`CliTokenProvider`](crate::client::jwt::CliTokenProvider) will serve. The provider
-//! returns a ready CLI-minted JWT (`client_id=hotdata-cli`, `/o/token/`), which
-//! the SDK passes through unchanged; the CLI keeps full ownership of
-//! session.json and the refresh table.
+//! `hotdata` 0.12.0 dropped the SDK's own JWT-exchange machinery
+//! (`Configuration::token_provider`, `resolve_bearer_token`): a request now
+//! carries whatever static string sits in `Configuration.bearer_access_token`.
+//! Construction reproduces the old `ApiClient::new` auth-source precedence by
+//! resolving that bearer once, synchronously, up front — via the CLI's
+//! existing `jwt::ensure_access_token` (session.json + PKCE refresh table) or
+//! `database_session::refresh_from_env` — and installing the result directly.
+//! A CLI invocation that outlives the resolved credential's TTL (a 5-minute
+//! PKCE-session JWT, for a long `databases run` or a large parallel `indexes`
+//! batch) will see the SDK's requests start failing with 401 mid-command;
+//! there is no more per-request refresh hook to paper over that. A raw
+//! `hd_...` API-key credential has no such TTL.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -34,7 +40,6 @@ use hotdata::apis::{Error, ResponseContent};
 use hotdata::{UploadError, UploadOptions, UploadProgress};
 
 use crate::client::credentials;
-use crate::client::jwt::{AuthMode, CliTokenProvider};
 use crate::config;
 use crate::util;
 
@@ -57,7 +62,7 @@ pub fn rt() -> &'static tokio::runtime::Runtime {
 /// Synchronous handle over the Hotdata SDK `Client`.
 ///
 /// Cheap to clone (`Arc<Client>`); all clones share one `Configuration` — one
-/// `token_provider`, one reqwest connection pool — across rayon workers.
+/// bearer, one reqwest connection pool — across rayon workers.
 #[derive(Clone)]
 pub struct Api {
     client: Arc<Client>,
@@ -407,10 +412,10 @@ fn sdk_base_path(api_url: &str) -> String {
 
 /// Apply the seam's common request headers to a raw `RequestBuilder`: User-Agent,
 /// the `X-Workspace-Id` api_key, the database `X-Database-Id` scope, and the
-/// resolved bearer. Generated SDK ops inject the api_key headers themselves; the
+/// static bearer. Generated SDK ops inject the api_key headers themselves; the
 /// raw seam helpers ([`Api::get_json`] etc.) bypass the generated client, so
 /// they funnel through this one place rather than repeating the block per verb.
-async fn apply_seam_headers(
+fn apply_seam_headers(
     mut req: reqwest::RequestBuilder,
     cfg: &Configuration,
     database_id: Option<&str>,
@@ -430,17 +435,18 @@ async fn apply_seam_headers(
     if let Some(db) = database_id {
         req = req.header("X-Database-Id", db);
     }
-    if let Some(token) = cfg.resolve_bearer_token().await {
+    if let Some(ref token) = cfg.bearer_access_token {
         req = req.bearer_auth(token);
     }
     req
 }
 
 impl Api {
-    /// Build an [`Api`], reproducing `ApiClient::new`'s auth-source precedence
-    /// by selecting the [`AuthMode`] the installed provider will serve. Exits
-    /// with a diagnostic if config can't load or no usable credential exists,
-    /// matching the old startup behavior.
+    /// Build an [`Api`], reproducing `ApiClient::new`'s auth-source precedence.
+    /// Resolves the bearer once, synchronously, up front (see the module-level
+    /// `# Auth` note on why this is now a one-shot resolution rather than a
+    /// per-request hook) and exits with a diagnostic if config can't load or
+    /// no usable credential exists, matching the old startup behavior.
     pub fn new(workspace_id: Option<&str>) -> Self {
         let profile_config = match config::load("default") {
             Ok(c) => c,
@@ -454,20 +460,16 @@ impl Api {
         // Auth-source precedence:
         //   1. HOTDATA_DATABASE_TOKEN env (databases run child)
         //   2. ~/.hotdata/session.json + optional api_key fallback
-        //
-        // We pre-flight (so a dead/unusable credential exits at startup with
-        // the right hint), then hand the CliTokenProvider the matching mode to
-        // re-resolve on every request.
-        let mode = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
-            if crate::client::database_session::refresh_from_env(&api_url).is_none() {
-                eprintln!(
-                    "{}",
-                    crossterm::style::Stylize::red("error: HOTDATA_DATABASE_TOKEN is empty")
-                );
-                std::process::exit(1);
-            }
-            AuthMode::DatabaseEnv {
-                api_url: api_url.clone(),
+        let bearer = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
+            match crate::client::database_session::refresh_from_env(&api_url) {
+                Some(tok) => tok,
+                None => {
+                    eprintln!(
+                        "{}",
+                        crossterm::style::Stylize::red("error: HOTDATA_DATABASE_TOKEN is empty")
+                    );
+                    std::process::exit(1);
+                }
             }
         } else {
             let api_key_fallback = profile_config
@@ -476,21 +478,20 @@ impl Api {
                 .filter(|k| !k.is_empty() && *k != "PLACEHOLDER")
                 .map(String::from);
 
-            if let Err(e) = crate::client::jwt::ensure_access_token(
+            match crate::client::jwt::ensure_access_token(
                 &profile_config,
                 api_key_fallback.as_deref(),
             ) {
-                use crossterm::style::Stylize;
-                eprintln!("{}", format!("error: {e}").red());
-                eprintln!(
-                    "Run {} to log in, or pass --api-key.",
-                    "hotdata auth login".cyan()
-                );
-                std::process::exit(1);
-            }
-            AuthMode::Session {
-                profile: profile_config.clone(),
-                api_key_fallback,
+                Ok(tok) => tok,
+                Err(e) => {
+                    use crossterm::style::Stylize;
+                    eprintln!("{}", format!("error: {e}").red());
+                    eprintln!(
+                        "Run {} to log in, or pass --api-key.",
+                        "hotdata auth login".cyan()
+                    );
+                    std::process::exit(1);
+                }
             }
         };
 
@@ -502,17 +503,17 @@ impl Api {
             &api_url,
             workspace_id.map(String::from),
             database_id,
-            CliTokenProvider::new(mode),
+            bearer,
         )
     }
 
-    /// Build the SDK `Configuration` directly (base_path, token_provider,
+    /// Build the SDK `Configuration` directly (base_path, static bearer,
     /// X-Workspace-Id api_key) and wrap it. Shared by `new` and tests.
     fn from_configuration(
         api_url: &str,
         workspace_id: Option<String>,
         database_id: Option<String>,
-        provider: CliTokenProvider,
+        bearer: String,
     ) -> Self {
         let mut configuration = Configuration {
             base_path: sdk_base_path(api_url),
@@ -521,9 +522,9 @@ impl Api {
             // (`hotdata-rust/...`). The old ApiClient sent no User-Agent; an
             // explicit CLI agent is the correct attribution.
             user_agent: Some(format!("hotdata-cli/{}", env!("CARGO_PKG_VERSION"))),
+            bearer_access_token: Some(bearer),
             ..Configuration::default()
         };
-        configuration.token_provider = Some(Arc::new(provider));
         if let Some(ref ws) = workspace_id {
             configuration.api_keys.insert(
                 hotdata::client::WORKSPACE_ID_HEADER.to_string(),
@@ -542,9 +543,8 @@ impl Api {
     }
 
     /// Test-only constructor: build an [`Api`] against a mock server with a
-    /// static bearer (no config load, no token provider). The SDK's
-    /// `resolve_bearer_token` falls back to `bearer_access_token` when no
-    /// provider is installed, so requests carry `Authorization: Bearer <jwt>`.
+    /// static bearer (no config load), so requests carry
+    /// `Authorization: Bearer <jwt>`.
     #[cfg(test)]
     pub(crate) fn test_new(api_url: &str, bearer: &str, workspace_id: Option<&str>) -> Self {
         let mut configuration = Configuration {
@@ -671,7 +671,7 @@ impl Api {
         if let Some(ref user_agent) = cfg.user_agent {
             req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
         }
-        if let Some(token) = cfg.resolve_bearer_token().await {
+        if let Some(ref token) = cfg.bearer_access_token {
             req = req.bearer_auth(token);
         }
         let Ok(resp) = req.send().await else {
@@ -709,7 +709,7 @@ impl Api {
     /// client**: a 10 GB+ parquet far outlives the shared client's 300s request
     /// timeout, and the storage `PUT`s reuse `configuration.client`, so a
     /// wall-clock cap would abort a healthy-but-slow transfer. We clone the
-    /// configured `Configuration` (same base_path, token_provider, scope
+    /// configured `Configuration` (same base_path, bearer, scope
     /// api_keys, user-agent) and swap only the reqwest client, so the
     /// session/finalize calls carry the identical auth + headers.
     ///
@@ -738,7 +738,7 @@ impl Api {
     ///
     /// Used where the generated SDK model is lossy (drops fields the CLI
     /// displays) so the seam still owns auth/transport — same reqwest client,
-    /// bearer via the `token_provider`, and `X-Workspace-Id` header as every
+    /// bearer, and `X-Workspace-Id` header as every
     /// other SDK call — while the CLI keeps its own typed deserialization. The
     /// `connections_new`-style "keep untyped parsing when the SDK model omits
     /// fields" escape hatch, applied here for `GET /results`.
@@ -758,7 +758,7 @@ impl Api {
             if !query.is_empty() {
                 req = req.query(query);
             }
-            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
+            req = apply_seam_headers(req, cfg, database_id.as_deref());
 
             let resp = req
                 .send()
@@ -795,7 +795,7 @@ impl Api {
         let database_id = self.database_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::POST, &url).json(body);
-            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
+            req = apply_seam_headers(req, cfg, database_id.as_deref());
 
             let resp = req
                 .send()
@@ -824,7 +824,7 @@ impl Api {
         let database_id = self.database_id.clone();
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::DELETE, &url);
-            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
+            req = apply_seam_headers(req, cfg, database_id.as_deref());
 
             let resp = req
                 .send()
@@ -843,7 +843,7 @@ impl Api {
     /// `get_result_arrow`, returning the fully-buffered [`hotdata::ArrowResult`].
     ///
     /// The SDK owns transport (same reqwest client, bearer via the
-    /// `token_provider`, `X-Workspace-Id`) and decode. Results are
+    /// bearer, `X-Workspace-Id`) and decode. Results are
     /// database-scoped, so the active database is forwarded as the required
     /// `X-Database-Id`; [`require_database`](Self::require_database) exits with a
     /// hint when none is set. Its `ArrowError` (the Arrow-path error type, which

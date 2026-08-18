@@ -1,4 +1,4 @@
-use crate::client::credentials::{AuthStatus, api_key_jwt_source, check_status};
+use crate::client::credentials::{AuthStatus, check_status};
 use crate::config::{self, ApiKeySource};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use crossterm::ExecutableCommand;
@@ -81,11 +81,12 @@ pub fn status(profile: &str) {
                 "Authenticated",
                 &format!("{}{}", "Yes".green(), method_suffix.dark_grey()),
             );
-            // For a passed api key, surface the minted JWT's source claim so the
-            // caller can confirm the token type (e.g. database_api_token).
-            if let Some(src) = api_key_jwt_source(&profile_config) {
-                print_row("API Key Source", &src.as_str().cyan().to_string());
-            }
+            // The token type (e.g. database_api_token vs. a full api_token)
+            // used to be surfaced here by decoding the minted JWT's `source`
+            // claim. An api key is now sent verbatim with no client-side
+            // exchange, so there's no claim left to read — that row is gone
+            // rather than guessing at the token's type.
+            //
             // Show the workspace commands will actually target — the exact
             // value `resolve_workspace` uses — so the readout can't lie about
             // where work lands. Resolve a display name from the credential's
@@ -593,30 +594,20 @@ mod tests {
     #[test]
     fn api_key_authorized_workspaces_returns_the_credentials_workspace() {
         // A database API token is authorized for exactly one workspace. `auth
-        // status` must show THAT workspace (fetched live with the token), not
-        // the CLI session's cached config.workspaces.
+        // status` must show THAT workspace (fetched live with the raw token
+        // as bearer — no client-side exchange), not the CLI session's cached
+        // config.workspaces.
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
-        let mint = server
-            .mock("POST", "/o/token/")
-            .match_body(mockito::Matcher::UrlEncoded(
-                "grant_type".into(),
-                "api_token".into(),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"minted-jwt","expires_in":300,"refresh_token":"r"}"#)
-            .create();
         let ws = server
             .mock("GET", "/workspaces")
-            .match_header("Authorization", "Bearer minted-jwt")
+            .match_header("Authorization", "Bearer hd_dbtoken")
             .with_status(200)
             .with_body(r#"{"workspaces":[{"public_id":"workbound","name":"Bound WS"}]}"#)
             .create();
 
         let profile = mock_profile(&server.url(), Some("hd_dbtoken"));
         let result = api_key_authorized_workspaces(&profile);
-        mint.assert();
         ws.assert();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].public_id, "workbound");
