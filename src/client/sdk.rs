@@ -321,22 +321,32 @@ impl ApiError {
     /// stamped with whatever bearer was fresh when the upload started (see
     /// [`Api::upload`]). A PKCE session credential is only good for ~5
     /// minutes; an upload that runs longer than that gets its bytes fully
-    /// onto storage and then 401s or 403s at finalize, with no way for the
-    /// CLI to refresh mid-flight (`upload_file` is one opaque SDK call).
+    /// onto storage and then 401s at finalize, with no way for the CLI to
+    /// refresh mid-flight (`upload_file` is one opaque SDK call).
     ///
     /// The generic 4xx path is actively misleading here, not just unhelpful:
     /// [`exit`](Self::exit)'s re-probe calls `check_status`, and for a PKCE
     /// session the 7-day refresh token is usually still good, so the probe
     /// comes back `Authenticated` and the bare server body is printed with no
-    /// explanation. `is_session_credential` lets the caller say whether the
-    /// resolved bearer was session-sourced (has this TTL) as opposed to a raw
-    /// `hd_...` API key (which doesn't, and isn't affected).
+    /// explanation. `is_session_credential` must be true only for an actual
+    /// PKCE-derived bearer, never a raw `hd_...` API key — the caller
+    /// establishes that by comparing the resolved bearer against the
+    /// api-key fallback string, not by `AuthSource` variant alone, since
+    /// `AuthSource::Session` also covers the api-key case (see [`Api::upload`]).
+    /// A revoked or wrongly-scoped API key has no TTL to blame and `hotdata
+    /// auth login` isn't even a valid remedy for it (or available
+    /// non-interactively, where API keys are the norm), so misclassifying it
+    /// here would swallow the server's real error under a false diagnosis.
     fn from_upload_error_for_session(err: UploadError, is_session_credential: bool) -> Self {
+        // Only 401: a 403 at finalize is much more likely a real
+        // authorization problem (e.g. a database-scoped credential denied
+        // from finalizing into the target database) than an expired token,
+        // and mislabeling it as "session expired" would hide the server's
+        // own explanation.
         if is_session_credential
             && let UploadError::Finalize(Error::ResponseError(ResponseContent { status, .. })) =
                 &err
-            && (*status == reqwest::StatusCode::UNAUTHORIZED
-                || *status == reqwest::StatusCode::FORBIDDEN)
+            && *status == reqwest::StatusCode::UNAUTHORIZED
         {
             return ApiError::Status {
                 status: *status,
@@ -893,10 +903,23 @@ impl Api {
     /// instead of a bare `401`; see
     /// [`from_upload_error_for_session`](ApiError::from_upload_error_for_session).
     pub fn upload(&self, path: &Path, progress: UploadProgress) -> Result<String, ApiError> {
-        let is_session_credential = matches!(self.auth_source, Some(AuthSource::Session { .. }));
         let mut cfg = self.client.configuration().clone();
         cfg.client = upload_reqwest_client();
-        if let Some(token) = self.fresh_bearer(&cfg) {
+        let resolved = self.fresh_bearer(&cfg);
+        // `AuthSource::Session` covers both a PKCE browser login *and* a raw
+        // `hd_...` API key (`--api-key`/env/config) — only the former has the
+        // ~5-minute TTL this diagnosis is about. `ensure_access_token` returns
+        // an api-key fallback verbatim (no mint, no expiry), so a resolved
+        // bearer that equals the fallback string is that raw key, not a
+        // session JWT — compare against it rather than trusting the enum
+        // variant alone.
+        let is_session_credential = match &self.auth_source {
+            Some(AuthSource::Session {
+                api_key_fallback, ..
+            }) => resolved.as_deref() != api_key_fallback.as_deref(),
+            _ => false,
+        };
+        if let Some(token) = resolved {
             cfg.bearer_access_token = Some(token);
         }
         let upload_client = Client::from_configuration(cfg);
@@ -1832,12 +1855,53 @@ mod tests {
         }
     }
 
-    /// Build an `Api` with a `Session` [`AuthSource`], so `upload` classifies
-    /// it as a PKCE-session credential. `ApiKeySource::Flag` with an
-    /// `api_key_fallback` makes `ensure_access_token` return the fallback
-    /// verbatim with no network call (see `jwt::ensure_access_token`), so
-    /// this needs no `/o/token/` mock.
-    fn session_credential_api(api_url: &str, workspace_id: Option<&str>) -> Api {
+    /// Build an `Api` backed by a genuine cached PKCE session, so `upload`
+    /// resolves a real session JWT (not an api-key fallback returned
+    /// verbatim) and classifies it as session-sourced. Requires the caller
+    /// to be inside a `with_temp_config_dir` guard.
+    fn pkce_session_credential_api(api_url: &str, workspace_id: Option<&str>) -> Api {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        crate::client::jwt::save_session(&crate::client::jwt::Session {
+            access_token: "session-jwt".to_string(),
+            access_expires_at: now + 300,
+            refresh_token: "refresh-1".to_string(),
+            refresh_expires_at: now + 7 * 24 * 3600,
+            source: "pkce".to_string(),
+        })
+        .unwrap();
+
+        let profile = config::ProfileConfig {
+            api_key_source: config::ApiKeySource::Config,
+            api_url: config::ApiUrl(Some(api_url.to_string())),
+            ..Default::default()
+        };
+        Api::from_configuration(
+            api_url,
+            workspace_id.map(String::from),
+            None,
+            "session-jwt".to_string(),
+            Some(AuthSource::Session {
+                profile,
+                api_key_fallback: None,
+            }),
+        )
+    }
+
+    /// Build an `Api` for a raw `hd_...` API key passed via `--api-key`
+    /// (`ApiKeySource::Flag`). This *also* uses `AuthSource::Session` — the
+    /// same enum variant a PKCE login uses — because `Api::new` only takes
+    /// the `DatabaseEnv` branch for `HOTDATA_DATABASE_TOKEN`; every other
+    /// credential, including a raw API key, is `Session { .. }`.
+    /// `ensure_access_token` returns `api_key_fallback` verbatim with no
+    /// network call for `Flag`/`Env` sources (see `jwt::ensure_access_token`),
+    /// so this needs no `/o/token/` mock — and, critically, means the
+    /// resolved bearer equals `api_key_fallback`, which is the signal
+    /// `upload` uses to tell this apart from an actual session JWT.
+    fn api_key_via_session_auth_source_api(api_url: &str, workspace_id: Option<&str>) -> Api {
         let profile = config::ProfileConfig {
             api_key_source: config::ApiKeySource::Flag,
             api_url: config::ApiUrl(Some(api_url.to_string())),
@@ -1847,21 +1911,22 @@ mod tests {
             api_url,
             workspace_id.map(String::from),
             None,
-            "test-jwt".to_string(),
+            "hd_test_key".to_string(),
             Some(AuthSource::Session {
                 profile,
-                api_key_fallback: Some("test-jwt".to_string()),
+                api_key_fallback: Some("hd_test_key".to_string()),
             }),
         )
     }
 
-    /// A finalize 401 on a PKCE-session credential gets a specific
+    /// A finalize 401 on a genuine PKCE-session credential gets a specific
     /// "your login session expired" diagnosis, not the bare server body —
     /// the generic 4xx path is actively misleading here (the session's
     /// refresh token is usually still good, so `check_status`'s re-probe
     /// reports `Authenticated` and the real cause never surfaces).
     #[test]
-    fn upload_maps_finalize_401_to_session_expired_message_for_session_credential() {
+    fn upload_maps_finalize_401_to_session_expired_message_for_pkce_session() {
+        let (_tmp, _guard) = config::test_helpers::with_temp_config_dir();
         let (tf, _len) = upload_temp_file(64);
 
         let mut server = mockito::Server::new();
@@ -1885,7 +1950,7 @@ mod tests {
             .with_body(r#"{"error":{"message":"token expired"}}"#)
             .create();
 
-        let api = session_credential_api(&server.url(), Some("ws-1"));
+        let api = pkce_session_credential_api(&server.url(), Some("ws-1"));
         let err = api
             .upload(tf.path(), noop_progress())
             .expect_err("a finalize 401 must map to an error");
@@ -1898,6 +1963,57 @@ mod tests {
                     "expected the session-expiry diagnosis, got: {body}"
                 );
                 assert!(body.contains("hotdata auth login"), "got: {body}");
+            }
+            other => panic!("expected Status error, got {other:?}"),
+        }
+    }
+
+    /// The same finalize 401, but for a raw `hd_...` API key passed via
+    /// `--api-key` — this shares `AuthSource::Session` with a PKCE login (see
+    /// `api_key_via_session_auth_source_api`), which is exactly the shape a
+    /// prior version of this check got wrong. An API key has no TTL, so the
+    /// generic bare-status message is correct and must NOT be replaced by
+    /// the session-expiry wording — `hotdata auth login` isn't even a valid
+    /// remedy for a revoked API key, or available non-interactively.
+    #[test]
+    fn upload_finalize_401_stays_generic_for_api_key_via_session_auth_source() {
+        let (tf, _len) = upload_temp_file(64);
+
+        let mut server = mockito::Server::new();
+        let put_url = format!("{}/storage/upload_revoked_key", server.url());
+        let _create = server
+            .mock("POST", "/v1/uploads")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_revoked_key","url":"{put_url}"}}"#
+            ))
+            .create();
+        let _put = server
+            .mock("PUT", "/storage/upload_revoked_key")
+            .with_status(200)
+            .with_header("ETag", "\"etag-1\"")
+            .create();
+        let _finalize = server
+            .mock("POST", "/v1/uploads/upload_revoked_key/finalize")
+            .with_status(401)
+            .with_body(r#"{"error":{"message":"api key revoked"}}"#)
+            .create();
+
+        let api = api_key_via_session_auth_source_api(&server.url(), Some("ws-1"));
+        let err = api
+            .upload(tf.path(), noop_progress())
+            .expect_err("a finalize 401 must map to an error");
+
+        match err {
+            ApiError::Status { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+                assert!(body.contains("api key revoked"), "got: {body}");
+                assert!(
+                    !body.contains("expired while this upload was in progress"),
+                    "must not apply the session-expiry wording to an api-key credential, \
+                     got: {body}"
+                );
             }
             other => panic!("expected Status error, got {other:?}"),
         }
