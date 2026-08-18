@@ -19,16 +19,40 @@
 //!
 //! `hotdata` 0.12.0 dropped the SDK's own JWT-exchange machinery
 //! (`Configuration::token_provider`, `resolve_bearer_token`): a request now
-//! carries whatever static string sits in `Configuration.bearer_access_token`.
-//! Construction reproduces the old `ApiClient::new` auth-source precedence by
-//! resolving that bearer once, synchronously, up front — via the CLI's
-//! existing `jwt::ensure_access_token` (session.json + PKCE refresh table) or
-//! `database_session::refresh_from_env` — and installing the result directly.
-//! A CLI invocation that outlives the resolved credential's TTL (a 5-minute
-//! PKCE-session JWT, for a long `databases run` or a large parallel `indexes`
-//! batch) will see the SDK's requests start failing with 401 mid-command;
-//! there is no more per-request refresh hook to paper over that. A raw
-//! `hd_...` API-key credential has no such TTL.
+//! carries whatever static string sits in `Configuration.bearer_access_token`,
+//! baked in once when a `Client` is built. Construction reproduces the old
+//! `ApiClient::new` auth-source precedence, resolving that initial bearer via
+//! the CLI's existing `jwt::ensure_access_token` (session.json + PKCE refresh
+//! table) or `database_session::refresh_from_env`, and also captures which of
+//! the two as an [`AuthSource`] so it can be re-resolved later.
+//!
+//! **What re-resolves a fresh bearer per call, and what doesn't:** the
+//! CLI-owned request paths that build their own `reqwest::RequestBuilder` —
+//! [`apply_seam_headers`] (backing [`Api::get_json`]/[`post_raw`](Api::post_raw)/
+//! [`delete_raw`](Api::delete_raw)), [`Api::probe_runtime_status`],
+//! [`Api::get_result_arrow`] (calls the SDK's free `hotdata::arrow::get_result_arrow`
+//! against a freshly-stamped `Configuration` instead of the shared one), and
+//! [`Api::upload`] (refreshed once at the start of the upload) — all call
+//! [`Api::fresh_bearer`], which re-runs `ensure_access_token`/`refresh_from_env`
+//! (a cheap no-op when the cached credential is still fresh). **Generated SDK
+//! ops** (`self.client.<resource>()...`, used throughout the command modules,
+//! including the parallel `indexes.rs` rayon batch and a long-lived
+//! `databases run` child) still read the bearer baked into the shared
+//! `Arc<Client>`'s `Configuration` once at [`Api::new`] time — refreshing that
+//! would require making the shared client swappable under concurrent access,
+//! which this pass doesn't attempt. A command whose generated-op calls span
+//! longer than the resolved credential's TTL (a 5-minute PKCE-session JWT, or
+//! a ~300s `databases run` child token) will see those specific calls start
+//! failing with 401 mid-command; a raw `hd_...` API-key credential has no such
+//! TTL and isn't affected. Tracked as a known follow-up rather than solved
+//! here.
+//!
+//! Even where the bearer is re-resolved per call, [`Api::upload`]'s underlying
+//! `Client::upload_file` is one opaque SDK call spanning session-open, every
+//! part `PUT`, and finalize against a single fixed `Configuration` snapshot —
+//! a transfer that itself outlives the credential's TTL still fails at
+//! finalize, since there's no hook to refresh mid-flight without reimplementing
+//! that orchestration in the CLI.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -71,6 +95,49 @@ pub struct Api {
     pub api_url: String,
     workspace_id: Option<String>,
     database_id: Option<String>,
+    /// How to re-resolve a fresh bearer for the CLI-owned request paths below
+    /// ([`apply_seam_headers`], [`Api::probe_runtime_status`], [`Api::upload`],
+    /// [`Api::get_result_arrow`]) instead of reusing the one baked into
+    /// `Configuration` at construction. `None` for the test constructors,
+    /// which have a fixed static bearer and nothing to re-resolve.
+    ///
+    /// This does **not** cover generated SDK ops (`self.client.<resource>()...`,
+    /// e.g. the rayon batch in `indexes.rs` or a long-lived `databases run`
+    /// child) — those read the bearer baked into the shared `Arc<Client>`'s
+    /// `Configuration` once, and refreshing that would mean making the shared
+    /// client swappable under concurrent access. See the module-level `# Auth`
+    /// note.
+    auth_source: Option<AuthSource>,
+}
+
+/// A re-resolvable credential source, mirroring the auth-source precedence
+/// [`Api::new`] applies. `resolve` is cheap to call on every request: both
+/// underlying functions early-return the cached credential with no network
+/// call when it's still fresh, and only hit the wire when it's stale.
+#[derive(Debug, Clone)]
+enum AuthSource {
+    /// `HOTDATA_DATABASE_TOKEN` env var (a `databases run` child).
+    DatabaseEnv { api_url: String },
+    /// Normal user-scoped CLI session in `~/.hotdata/session.json`, with an
+    /// optional `hd_...` api-key fallback.
+    Session {
+        profile: config::ProfileConfig,
+        api_key_fallback: Option<String>,
+    },
+}
+
+impl AuthSource {
+    fn resolve(&self) -> Option<String> {
+        match self {
+            AuthSource::DatabaseEnv { api_url } => {
+                crate::client::database_session::refresh_from_env(api_url)
+            }
+            AuthSource::Session {
+                profile,
+                api_key_fallback,
+            } => crate::client::jwt::ensure_access_token(profile, api_key_fallback.as_deref()).ok(),
+        }
+    }
 }
 
 /// Request timeout for SDK-routed calls. Mirrors the old `ApiClient` so a hung
@@ -419,6 +486,7 @@ fn apply_seam_headers(
     mut req: reqwest::RequestBuilder,
     cfg: &Configuration,
     database_id: Option<&str>,
+    bearer: Option<&str>,
 ) -> reqwest::RequestBuilder {
     if let Some(ref user_agent) = cfg.user_agent {
         req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
@@ -435,7 +503,7 @@ fn apply_seam_headers(
     if let Some(db) = database_id {
         req = req.header("X-Database-Id", db);
     }
-    if let Some(ref token) = cfg.bearer_access_token {
+    if let Some(token) = bearer {
         req = req.bearer_auth(token);
     }
     req
@@ -460,9 +528,18 @@ impl Api {
         // Auth-source precedence:
         //   1. HOTDATA_DATABASE_TOKEN env (databases run child)
         //   2. ~/.hotdata/session.json + optional api_key fallback
-        let bearer = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
+        //
+        // Resolved once here for the diagnostic-on-failure behavior below, and
+        // captured as an `AuthSource` so later CLI-owned calls can re-resolve a
+        // fresh bearer instead of reusing this one for the process lifetime.
+        let (bearer, auth_source) = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
             match crate::client::database_session::refresh_from_env(&api_url) {
-                Some(tok) => tok,
+                Some(tok) => (
+                    tok,
+                    AuthSource::DatabaseEnv {
+                        api_url: api_url.clone(),
+                    },
+                ),
                 None => {
                     eprintln!(
                         "{}",
@@ -482,7 +559,13 @@ impl Api {
                 &profile_config,
                 api_key_fallback.as_deref(),
             ) {
-                Ok(tok) => tok,
+                Ok(tok) => (
+                    tok,
+                    AuthSource::Session {
+                        profile: profile_config.clone(),
+                        api_key_fallback,
+                    },
+                ),
                 Err(e) => {
                     use crossterm::style::Stylize;
                     eprintln!("{}", format!("error: {e}").red());
@@ -504,6 +587,7 @@ impl Api {
             workspace_id.map(String::from),
             database_id,
             bearer,
+            Some(auth_source),
         )
     }
 
@@ -514,6 +598,7 @@ impl Api {
         workspace_id: Option<String>,
         database_id: Option<String>,
         bearer: String,
+        auth_source: Option<AuthSource>,
     ) -> Self {
         let mut configuration = Configuration {
             base_path: sdk_base_path(api_url),
@@ -539,7 +624,21 @@ impl Api {
             api_url: api_url.to_string(),
             workspace_id,
             database_id,
+            auth_source,
         }
+    }
+
+    /// Re-resolve a fresh bearer for the CLI-owned request paths, falling back
+    /// to the one baked into `cfg` at construction when there's no
+    /// [`AuthSource`] to re-resolve from (the test constructors) or
+    /// re-resolution fails (the request then proceeds with the stale bearer
+    /// and fails naturally with the server's own 401, same as before this
+    /// existed).
+    fn fresh_bearer(&self, cfg: &Configuration) -> Option<String> {
+        self.auth_source
+            .as_ref()
+            .and_then(AuthSource::resolve)
+            .or_else(|| cfg.bearer_access_token.clone())
     }
 
     /// Test-only constructor: build an [`Api`] against a mock server with a
@@ -567,6 +666,7 @@ impl Api {
             api_url: api_url.to_string(),
             workspace_id,
             database_id: None,
+            auth_source: None,
         }
     }
 
@@ -598,6 +698,7 @@ impl Api {
             api_url: api_url.to_string(),
             workspace_id: workspace_id.map(String::from),
             database_id: database_id.map(String::from),
+            auth_source: None,
         }
     }
 
@@ -671,7 +772,7 @@ impl Api {
         if let Some(ref user_agent) = cfg.user_agent {
             req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
         }
-        if let Some(ref token) = cfg.bearer_access_token {
+        if let Some(token) = self.fresh_bearer(cfg) {
             req = req.bearer_auth(token);
         }
         let Ok(resp) = req.send().await else {
@@ -716,9 +817,22 @@ impl Api {
     /// `progress` is the SDK [`UploadProgress`] callback, invoked with
     /// cumulative `(bytes_done, total)` as bytes flow; the caller drives a
     /// progress bar from it. The recorded content type is parquet (advisory).
+    ///
+    /// The bearer is re-resolved fresh right before the upload starts (rather
+    /// than reusing whatever [`Api::new`] resolved, which may already be
+    /// stale by the time a command reaches this call) — see [`Api::fresh_bearer`].
+    /// That covers the common case, but not a transfer that itself outlives
+    /// the credential's TTL: `upload_file` is one opaque SDK call spanning
+    /// session-open, every part `PUT`, and finalize against a single fixed
+    /// `Configuration`, so a token that expires mid-upload still fails at
+    /// finalize with no way for the CLI to intervene without reimplementing
+    /// that orchestration itself.
     pub fn upload(&self, path: &Path, progress: UploadProgress) -> Result<String, ApiError> {
         let mut cfg = self.client.configuration().clone();
         cfg.client = upload_reqwest_client();
+        if let Some(token) = self.fresh_bearer(&cfg) {
+            cfg.bearer_access_token = Some(token);
+        }
         let upload_client = Client::from_configuration(cfg);
 
         let opts = UploadOptions {
@@ -753,12 +867,13 @@ impl Api {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
+        let bearer = self.fresh_bearer(cfg);
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::GET, &url);
             if !query.is_empty() {
                 req = req.query(query);
             }
-            req = apply_seam_headers(req, cfg, database_id.as_deref());
+            req = apply_seam_headers(req, cfg, database_id.as_deref(), bearer.as_deref());
 
             let resp = req
                 .send()
@@ -793,9 +908,10 @@ impl Api {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
+        let bearer = self.fresh_bearer(cfg);
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::POST, &url).json(body);
-            req = apply_seam_headers(req, cfg, database_id.as_deref());
+            req = apply_seam_headers(req, cfg, database_id.as_deref(), bearer.as_deref());
 
             let resp = req
                 .send()
@@ -822,9 +938,10 @@ impl Api {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
+        let bearer = self.fresh_bearer(cfg);
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::DELETE, &url);
-            req = apply_seam_headers(req, cfg, database_id.as_deref());
+            req = apply_seam_headers(req, cfg, database_id.as_deref(), bearer.as_deref());
 
             let resp = req
                 .send()
@@ -842,18 +959,32 @@ impl Api {
     /// Fetch `/v1/results/{id}` as Arrow IPC and decode it through the SDK's
     /// `get_result_arrow`, returning the fully-buffered [`hotdata::ArrowResult`].
     ///
-    /// The SDK owns transport (same reqwest client, bearer via the
-    /// bearer, `X-Workspace-Id`) and decode. Results are
-    /// database-scoped, so the active database is forwarded as the required
-    /// `X-Database-Id`; [`require_database`](Self::require_database) exits with a
-    /// hint when none is set. Its `ArrowError` (the Arrow-path error type, which
-    /// is not an `Error<T>`) is mapped to [`ApiError`] via
-    /// [`from_arrow`](ApiError::from_arrow) so callers keep the same `.exit()`
-    /// handling.
+    /// The SDK owns transport (same reqwest client, `X-Workspace-Id`) and
+    /// decode. Results are database-scoped, so the active database is
+    /// forwarded as the required `X-Database-Id`;
+    /// [`require_database`](Self::require_database) exits with a hint when none
+    /// is set. Its `ArrowError` (the Arrow-path error type, which is not an
+    /// `Error<T>`) is mapped to [`ApiError`] via [`from_arrow`](ApiError::from_arrow)
+    /// so callers keep the same `.exit()` handling.
+    ///
+    /// Calls the free `hotdata::arrow::get_result_arrow` against a cloned
+    /// `Configuration` carrying a freshly re-resolved bearer, rather than
+    /// `self.client.get_result_arrow` (which would read whatever bearer was
+    /// baked in at construction) — see [`Api::fresh_bearer`].
     pub fn get_result_arrow(&self, id: &str) -> Result<hotdata::ArrowResult, ApiError> {
-        let database_id = self.require_database();
-        rt().block_on(self.client.get_result_arrow(id, database_id, None, None))
-            .map_err(ApiError::from_arrow)
+        let database_id = self.require_database().to_string();
+        let mut cfg = self.client.configuration().clone();
+        if let Some(token) = self.fresh_bearer(&cfg) {
+            cfg.bearer_access_token = Some(token);
+        }
+        rt().block_on(hotdata::arrow::get_result_arrow(
+            &cfg,
+            id,
+            &database_id,
+            None,
+            None,
+        ))
+        .map_err(ApiError::from_arrow)
     }
 
     // --- Sample migrated call (workspace.rs uses this) -----------------------
