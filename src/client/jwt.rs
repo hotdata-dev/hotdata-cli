@@ -1,8 +1,14 @@
 //! JWT session management for the CLI.
 //!
 //! A *session* is the `{access_token, refresh_token}` pair returned by
-//! `/o/token/`. Access tokens are short-lived (5 min); refresh tokens
-//! last 7 days for PKCE-origin sessions, 36 h for api-token-origin.
+//! `/o/token/` — the CLI's own PKCE/browser-login flow (a different endpoint
+//! from the `/v1/auth/jwt` API-token exchange `hotdata` 0.12.0 dropped
+//! client-side; see [`ensure_access_token`]'s own doc). Access tokens are
+//! short-lived (5 min); refresh tokens last 7 days for PKCE-origin sessions,
+//! 36 h for api-token-origin (minted via [`exchange_cli_register_code`]'s
+//! `hotdata auth register` flow, which still calls `grant_type=api_token`
+//! against `/o/token/` — untouched by the 0.12.0 change, which only removed
+//! the SDK's own separate exchange).
 //!
 //! The session is cached in `~/.hotdata/session.json` (mode 0600).
 //! Before every API call, [`ensure_access_token`] decides what to do:
@@ -11,12 +17,12 @@
 //! |---|---|
 //! | Access token valid for > 30 s | return it directly |
 //! | Access expiring or expired, refresh token valid | call `/o/token/` with `grant_type=refresh_token` |
-//! | Refresh token dead, `api_key` present | re-mint via `grant_type=api_token` |
+//! | Refresh token dead, `api_key` present | return the raw `hd_...` token directly as the bearer |
 //! | Refresh token dead, no `api_key` | return an error — user must `hotdata auth login` again |
 //!
-//! The raw `hd_...` API token (flow 3 in the design doc) is *never*
-//! persisted to the session file — it stays in the main config or the
-//! `HOTDATA_API_KEY` env var and is only used transiently to mint.
+//! The raw `hd_...` API token is *never* persisted to the session file — it
+//! stays in the main config or the `HOTDATA_API_KEY` env var and is sent
+//! verbatim as the bearer on every call, with no exchange or expiry to track.
 
 use crate::client::raw_http::build_http_client;
 use crate::config;
@@ -304,12 +310,15 @@ pub fn refresh(
     ))
 }
 
-/// Return a valid access token, minting or refreshing as needed.
+/// Return a valid access token, refreshing the PKCE session as needed or
+/// falling back to a raw API key.
 ///
 /// The caller passes in whatever credential they want to fall back on
-/// (an `hd_...` API key from `--api-key`, env var, or config). If the
-/// cached session is usable it's returned without touching the API;
-/// otherwise the session is refreshed/re-minted and persisted.
+/// (an `hd_...` API key from `--api-key`, env var, or config). If the cached
+/// PKCE session is usable it's returned without touching the API; if it
+/// needs refreshing, that's done and persisted. An `hd_...` API key fallback
+/// is returned verbatim with no exchange and nothing persisted — see the
+/// module-level decision table.
 pub fn ensure_access_token(
     profile: &config::ProfileConfig,
     api_key_fallback: Option<&str>,
