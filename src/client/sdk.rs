@@ -52,7 +52,16 @@
 //! part `PUT`, and finalize against a single fixed `Configuration` snapshot —
 //! a transfer that itself outlives the credential's TTL still fails at
 //! finalize, since there's no hook to refresh mid-flight without reimplementing
-//! that orchestration in the CLI.
+//! that orchestration in the CLI. That specific failure is at least given a
+//! diagnosable message instead of a bare `401` — see
+//! [`ApiError::from_upload_error_for_session`] — because the generic 4xx path
+//! is actively misleading for it: a PKCE session's refresh token is usually
+//! still good, so `check_status`'s re-probe reports `Authenticated` and hides
+//! what actually happened.
+//!
+//! The remaining generated-SDK-op gap (a raw `hd_...` API-key credential has
+//! no TTL and isn't affected; only a PKCE session on a command dominated by
+//! generated ops is) is accepted as-is, not tracked as follow-up work.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -306,6 +315,41 @@ impl ApiError {
         }
     }
 
+    /// [`from_upload_error`](Self::from_upload_error), specialized for the one
+    /// case that needs a distinct diagnosis: `upload_file` runs create-session
+    /// → every part `PUT` → finalize against a single `Configuration` snapshot
+    /// stamped with whatever bearer was fresh when the upload started (see
+    /// [`Api::upload`]). A PKCE session credential is only good for ~5
+    /// minutes; an upload that runs longer than that gets its bytes fully
+    /// onto storage and then 401s or 403s at finalize, with no way for the
+    /// CLI to refresh mid-flight (`upload_file` is one opaque SDK call).
+    ///
+    /// The generic 4xx path is actively misleading here, not just unhelpful:
+    /// [`exit`](Self::exit)'s re-probe calls `check_status`, and for a PKCE
+    /// session the 7-day refresh token is usually still good, so the probe
+    /// comes back `Authenticated` and the bare server body is printed with no
+    /// explanation. `is_session_credential` lets the caller say whether the
+    /// resolved bearer was session-sourced (has this TTL) as opposed to a raw
+    /// `hd_...` API key (which doesn't, and isn't affected).
+    fn from_upload_error_for_session(err: UploadError, is_session_credential: bool) -> Self {
+        if is_session_credential
+            && let UploadError::Finalize(Error::ResponseError(ResponseContent { status, .. })) =
+                &err
+            && (*status == reqwest::StatusCode::UNAUTHORIZED
+                || *status == reqwest::StatusCode::FORBIDDEN)
+        {
+            return ApiError::Status {
+                status: *status,
+                body: "your login session expired while this upload was in progress (a large \
+                       upload can outlive the ~5 minute session token). The file finished \
+                       uploading to storage but could not be finalized. Run `hotdata auth \
+                       login` and retry the same command."
+                    .to_string(),
+            };
+        }
+        Self::from_upload_error(err)
+    }
+
     /// A printable, single-line description of the failure.
     ///
     /// Used where the error is surfaced inline (e.g. folded into a query
@@ -419,6 +463,15 @@ where
 {
     let pb = util::spinner(msg);
     let hint_pb = pb.clone();
+    // Resolved before entering the runtime, not inside `probe_runtime_status`
+    // itself: that function runs as one arm of the `select!` below, polled
+    // alongside the real request `fut`, and `fresh_bearer` can do blocking
+    // I/O (session-file reads/an `/o/token/` refresh call). Doing that inside
+    // a polled future would stall the whole task on the calling thread until
+    // it returns, delaying the real request's completion right along with
+    // it — exactly what `spawn_blocking` protected against in the old
+    // `CliTokenProvider` this replaced.
+    let probe_bearer = api.fresh_bearer(api.client.configuration());
     let result = rt().block_on(async {
         tokio::pin!(fut);
         // After the delay, probe once and (if cold) upgrade the message, then
@@ -427,9 +480,12 @@ where
         // `fut` wins.
         let hint = async {
             tokio::time::sleep(WAKE_PROBE_DELAY).await;
-            let state = tokio::time::timeout(WAKE_PROBE_TIMEOUT, api.probe_runtime_status())
-                .await
-                .unwrap_or(RuntimeState::Unknown);
+            let state = tokio::time::timeout(
+                WAKE_PROBE_TIMEOUT,
+                api.probe_runtime_status(probe_bearer.as_deref()),
+            )
+            .await
+            .unwrap_or(RuntimeState::Unknown);
             if state.is_cold() {
                 hint_pb.set_message(WAKE_MESSAGE);
             }
@@ -756,7 +812,12 @@ impl Api {
     /// routing this probe there would wake the very worker we're asking about.
     /// Without it the request lands on the always-warm control plane, which
     /// answers from Kubernetes state.
-    async fn probe_runtime_status(&self) -> RuntimeState {
+    ///
+    /// `bearer` is resolved by the caller *before* entering the runtime (see
+    /// [`block_with_wakeup`]), not here: this fn runs as a polled future
+    /// racing the real request via `select!`, and [`Api::fresh_bearer`] can do
+    /// blocking I/O that would otherwise stall that whole task.
+    async fn probe_runtime_status(&self, bearer: Option<&str>) -> RuntimeState {
         let Some(ws) = self.workspace_id.as_deref() else {
             return RuntimeState::Unknown;
         };
@@ -772,7 +833,7 @@ impl Api {
         if let Some(ref user_agent) = cfg.user_agent {
             req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
         }
-        if let Some(token) = self.fresh_bearer(cfg) {
+        if let Some(token) = bearer {
             req = req.bearer_auth(token);
         }
         let Ok(resp) = req.send().await else {
@@ -826,8 +887,13 @@ impl Api {
     /// session-open, every part `PUT`, and finalize against a single fixed
     /// `Configuration`, so a token that expires mid-upload still fails at
     /// finalize with no way for the CLI to intervene without reimplementing
-    /// that orchestration itself.
+    /// that orchestration itself. That specific failure — a PKCE session
+    /// credential's ~5-minute TTL elapsing after the bytes are already on
+    /// storage but before finalize — is at least given a diagnosable message
+    /// instead of a bare `401`; see
+    /// [`from_upload_error_for_session`](ApiError::from_upload_error_for_session).
     pub fn upload(&self, path: &Path, progress: UploadProgress) -> Result<String, ApiError> {
+        let is_session_credential = matches!(self.auth_source, Some(AuthSource::Session { .. }));
         let mut cfg = self.client.configuration().clone();
         cfg.client = upload_reqwest_client();
         if let Some(token) = self.fresh_bearer(&cfg) {
@@ -843,7 +909,7 @@ impl Api {
         };
         let resp = rt()
             .block_on(upload_client.upload_file(path, opts))
-            .map_err(ApiError::from_upload_error)?;
+            .map_err(|e| ApiError::from_upload_error_for_session(e, is_session_credential))?;
         Ok(resp.upload_id)
     }
 
@@ -1766,6 +1832,125 @@ mod tests {
         }
     }
 
+    /// Build an `Api` with a `Session` [`AuthSource`], so `upload` classifies
+    /// it as a PKCE-session credential. `ApiKeySource::Flag` with an
+    /// `api_key_fallback` makes `ensure_access_token` return the fallback
+    /// verbatim with no network call (see `jwt::ensure_access_token`), so
+    /// this needs no `/o/token/` mock.
+    fn session_credential_api(api_url: &str, workspace_id: Option<&str>) -> Api {
+        let profile = config::ProfileConfig {
+            api_key_source: config::ApiKeySource::Flag,
+            api_url: config::ApiUrl(Some(api_url.to_string())),
+            ..Default::default()
+        };
+        Api::from_configuration(
+            api_url,
+            workspace_id.map(String::from),
+            None,
+            "test-jwt".to_string(),
+            Some(AuthSource::Session {
+                profile,
+                api_key_fallback: Some("test-jwt".to_string()),
+            }),
+        )
+    }
+
+    /// A finalize 401 on a PKCE-session credential gets a specific
+    /// "your login session expired" diagnosis, not the bare server body —
+    /// the generic 4xx path is actively misleading here (the session's
+    /// refresh token is usually still good, so `check_status`'s re-probe
+    /// reports `Authenticated` and the real cause never surfaces).
+    #[test]
+    fn upload_maps_finalize_401_to_session_expired_message_for_session_credential() {
+        let (tf, _len) = upload_temp_file(64);
+
+        let mut server = mockito::Server::new();
+        let put_url = format!("{}/storage/upload_expired", server.url());
+        let _create = server
+            .mock("POST", "/v1/uploads")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_expired","url":"{put_url}"}}"#
+            ))
+            .create();
+        let _put = server
+            .mock("PUT", "/storage/upload_expired")
+            .with_status(200)
+            .with_header("ETag", "\"etag-1\"")
+            .create();
+        let _finalize = server
+            .mock("POST", "/v1/uploads/upload_expired/finalize")
+            .with_status(401)
+            .with_body(r#"{"error":{"message":"token expired"}}"#)
+            .create();
+
+        let api = session_credential_api(&server.url(), Some("ws-1"));
+        let err = api
+            .upload(tf.path(), noop_progress())
+            .expect_err("a finalize 401 must map to an error");
+
+        match err {
+            ApiError::Status { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+                assert!(
+                    body.contains("expired while this upload was in progress"),
+                    "expected the session-expiry diagnosis, got: {body}"
+                );
+                assert!(body.contains("hotdata auth login"), "got: {body}");
+            }
+            other => panic!("expected Status error, got {other:?}"),
+        }
+    }
+
+    /// The same finalize 401, but for a raw `hd_...` API-key credential (no
+    /// `AuthSource`, as built by `Api::test_new`) — no TTL, so the generic
+    /// bare-status message is correct and must NOT be replaced by the
+    /// session-expiry wording.
+    #[test]
+    fn upload_finalize_401_stays_generic_for_non_session_credential() {
+        let (tf, _len) = upload_temp_file(64);
+
+        let mut server = mockito::Server::new();
+        let put_url = format!("{}/storage/upload_apikey", server.url());
+        let _create = server
+            .mock("POST", "/v1/uploads")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_apikey","url":"{put_url}"}}"#
+            ))
+            .create();
+        let _put = server
+            .mock("PUT", "/storage/upload_apikey")
+            .with_status(200)
+            .with_header("ETag", "\"etag-1\"")
+            .create();
+        let _finalize = server
+            .mock("POST", "/v1/uploads/upload_apikey/finalize")
+            .with_status(401)
+            .with_body(r#"{"error":{"message":"invalid credential"}}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
+        let err = api
+            .upload(tf.path(), noop_progress())
+            .expect_err("a finalize 401 must map to an error");
+
+        match err {
+            ApiError::Status { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+                assert!(body.contains("invalid credential"), "got: {body}");
+                assert!(
+                    !body.contains("expired while this upload was in progress"),
+                    "must not apply the session-expiry wording to a non-session credential, \
+                     got: {body}"
+                );
+            }
+            other => panic!("expected Status error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn upload_concurrency_honors_env_else_defaults() {
         // Default when unset.
@@ -1826,7 +2011,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("work-1"));
-        let state = rt().block_on(api.probe_runtime_status());
+        let state = rt().block_on(api.probe_runtime_status(Some("test-jwt")));
         assert_eq!(state, RuntimeState::Asleep);
         m.assert();
     }
@@ -1842,7 +2027,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("work-1"));
         assert_eq!(
-            rt().block_on(api.probe_runtime_status()),
+            rt().block_on(api.probe_runtime_status(Some("test-jwt"))),
             RuntimeState::Unknown
         );
     }
@@ -1855,7 +2040,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", None);
         assert_eq!(
-            rt().block_on(api.probe_runtime_status()),
+            rt().block_on(api.probe_runtime_status(Some("test-jwt"))),
             RuntimeState::Unknown
         );
         m.assert();
