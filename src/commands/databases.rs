@@ -1751,6 +1751,30 @@ pub fn tables_list(
     }
 }
 
+/// Whether `tables_load` should take the database-scoped path (addressed by
+/// id only) instead of the standard name/catalog-resolving path.
+///
+/// `api_key_likely_database_scoped` is a heuristic (see its doc comment) that
+/// can misclassify an ordinary single-workspace `api_token` as
+/// database-scoped. `tables_load_database_scoped` can only address a database
+/// by a `dbid…` id or the current-database context — it silently drops any
+/// other `--database` alias rather than resolving it, which would load into
+/// the wrong database for a misclassified token. So the heuristic is only
+/// trusted when there's no alias it could drop: `database` is `None` (falls
+/// to the current-database context) or already looks like a `dbid…` id. A
+/// misclassified token with a name/catalog alias falls through to the
+/// standard path instead, which resolves the alias correctly; a genuine
+/// database token with a name alias was never going to work anyway (it can't
+/// resolve names either) and gets a clear 403 there instead of a silent
+/// wrong-database write.
+fn should_route_database_scoped(
+    profile: &crate::config::ProfileConfig,
+    database: Option<&str>,
+) -> bool {
+    crate::client::credentials::api_key_likely_database_scoped(profile)
+        && database.is_none_or(|d| d.starts_with("dbid"))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn tables_load(
     workspace_id: &str,
@@ -1768,7 +1792,7 @@ pub fn tables_load(
     // connection-scoped managed endpoints (all outside its allow-list). Route it
     // through the database-scoped endpoints, addressed by database id.
     if let Ok(profile) = crate::config::load("default")
-        && crate::client::credentials::api_key_likely_database_scoped(&profile)
+        && should_route_database_scoped(&profile, database)
     {
         tables_load_database_scoped(
             workspace_id,
@@ -2190,6 +2214,67 @@ pub fn tables_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mock_flag_profile(url: &str, api_key: &str) -> crate::config::ProfileConfig {
+        crate::config::ProfileConfig {
+            api_key: Some(api_key.to_string()),
+            api_key_source: crate::config::ApiKeySource::Flag,
+            api_url: crate::config::ApiUrl(Some(url.to_string())),
+            ..Default::default()
+        }
+    }
+
+    fn mock_workspaces(server: &mut mockito::Server, ids: &[&str]) -> mockito::Mock {
+        let body = serde_json::json!({
+            "workspaces": ids.iter().map(|id| serde_json::json!({"public_id": id, "name": id})).collect::<Vec<_>>(),
+        });
+        server
+            .mock("GET", "/workspaces")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body.to_string())
+            .create()
+    }
+
+    #[test]
+    fn should_route_database_scoped_rejects_name_alias_for_single_workspace_token() {
+        // Regression for a silent wrong-database `tables load`: a plain
+        // single-workspace api_token is misclassified as database-scoped by
+        // the heuristic, but `--database mycatalog` is a name/catalog alias
+        // the database-scoped path would silently discard (falling back to
+        // whatever the current database happens to be) instead of resolving.
+        // That must NOT take the database-scoped path.
+        let mut server = mockito::Server::new();
+        mock_workspaces(&mut server, &["work_only"]);
+        let profile = mock_flag_profile(&server.url(), "hd_plain_token");
+
+        assert!(!should_route_database_scoped(&profile, Some("mycatalog")));
+    }
+
+    #[test]
+    fn should_route_database_scoped_allows_dbid_or_missing_database() {
+        // Same single-workspace-classified token, but nothing for the
+        // database-scoped path to silently drop: no `--database` (falls to
+        // the current-database context) or an already-resolved `dbid…` id.
+        let mut server = mockito::Server::new();
+        mock_workspaces(&mut server, &["work_only"]);
+        let profile = mock_flag_profile(&server.url(), "hd_db_token");
+
+        assert!(should_route_database_scoped(&profile, None));
+        assert!(should_route_database_scoped(&profile, Some("dbid_abc123")));
+    }
+
+    #[test]
+    fn should_route_database_scoped_false_when_not_single_workspace() {
+        // A multi-workspace (or unrestricted) credential is never classified
+        // as database-scoped, regardless of the `--database` value.
+        let mut server = mockito::Server::new();
+        mock_workspaces(&mut server, &["work_a", "work_b"]);
+        let profile = mock_flag_profile(&server.url(), "hd_org_token");
+
+        assert!(!should_route_database_scoped(&profile, None));
+        assert!(!should_route_database_scoped(&profile, Some("dbid_abc123")));
+    }
 
     #[test]
     fn schema_name_defaults_to_public() {
