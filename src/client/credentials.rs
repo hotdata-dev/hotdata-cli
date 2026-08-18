@@ -93,31 +93,6 @@ pub(crate) fn default_workspace_id(profile_config: &config::ProfileConfig) -> Op
     ids.into_iter().next()
 }
 
-/// Best-effort guess at whether the active api-key credential (`--api-key` /
-/// `HOTDATA_API_KEY`) is a database-scoped API token, for callers that need
-/// to route around endpoints outside its allow-list (e.g. `databases set`,
-/// `tables load`).
-///
-/// Before the API-token → JWT exchange was removed, this read the minted
-/// JWT's authoritative `source` claim. That claim is server-side-only
-/// knowledge now (`APIToken.kind` in the webapp's database — see
-/// `permissions.token_source`) and nothing in the public API surface
-/// re-exposes it to the client (`X-Source-Id` is internal gateway→backend
-/// plumbing, never echoed to the caller). This heuristic — a database token
-/// is always restricted to exactly one workspace server-side — is the best
-/// available signal without adding a new endpoint. It can misclassify an
-/// ordinary api_token that happens to be scoped to a single workspace, but
-/// only in the safe direction: such a token takes the more restrictive
-/// database-scoped code path unnecessarily rather than a genuine
-/// database_api_token hitting hard 403s calling endpoints outside its
-/// allow-list.
-pub(crate) fn api_key_likely_database_scoped(profile_config: &config::ProfileConfig) -> bool {
-    matches!(
-        profile_config.api_key_source,
-        ApiKeySource::Flag | ApiKeySource::Env
-    ) && api_key_workspace_ids(profile_config).len() == 1
-}
-
 /// Response shape of `GET /workspaces`.
 #[derive(serde::Deserialize)]
 struct WsListResponse {

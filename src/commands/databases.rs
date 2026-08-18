@@ -690,21 +690,6 @@ pub fn managed_table_delete_path(connection_id: &str, schema: &str, table: &str)
     format!("/connections/{connection_id}/schemas/{schema}/tables/{table}")
 }
 
-/// Database-scoped managed-table endpoints (addressed by database id, not
-/// connection id). These are the paths a database API token is allowed to use —
-/// the connection-scoped variants above are denied for it.
-pub fn database_table_load_path(database_id: &str, schema: &str, table: &str) -> String {
-    format!("/databases/{database_id}/schemas/{schema}/tables/{table}/loads")
-}
-
-pub fn database_schemas_path(database_id: &str) -> String {
-    format!("/databases/{database_id}/schemas")
-}
-
-pub fn database_schema_tables_path(database_id: &str, schema: &str) -> String {
-    format!("/databases/{database_id}/schemas/{schema}/tables")
-}
-
 pub fn load_table_request(upload_id: &str) -> serde_json::Value {
     serde_json::json!({
         "mode": "replace",
@@ -1624,20 +1609,21 @@ pub fn unset(workspace_id: &str) {
 pub fn set(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     // `set` only writes local config; the GET is just a friendly existence-check.
-    // A database API token can't call GET /v1/databases/{id} (denied by its
-    // allow-list), so skip the check for it and save the id directly.
-    let is_database_api_token = crate::config::load("default").ok().is_some_and(|profile| {
-        crate::client::credentials::api_key_likely_database_scoped(&profile)
-    });
-    if !is_database_api_token {
-        let api = Api::new(Some(workspace_id));
-        if none_if_404(get_database(&api, id))
-            .unwrap_or_else(|e| e.exit())
-            .is_none()
-        {
-            eprintln!("{}", format!("error: no database with id '{id}'").red());
-            std::process::exit(1);
-        }
+    //
+    // NOTE: this check used to be skipped for a database API token, which can't
+    // call GET /v1/databases/{id} (denied by its allow-list). That detection
+    // read the `source` claim off the JWT the CLI minted from the API token;
+    // with the exchange gone the claim no longer exists and the server exposes
+    // no equivalent, so the check now runs unconditionally and such a token
+    // sees the server's 403 here. Skipping it again needs a real signal first —
+    // see the matching note in `tables_load`.
+    let api = Api::new(Some(workspace_id));
+    if none_if_404(get_database(&api, id))
+        .unwrap_or_else(|e| e.exit())
+        .is_none()
+    {
+        eprintln!("{}", format!("error: no database with id '{id}'").red());
+        std::process::exit(1);
     }
     if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
@@ -1751,30 +1737,6 @@ pub fn tables_list(
     }
 }
 
-/// Whether `tables_load` should take the database-scoped path (addressed by
-/// id only) instead of the standard name/catalog-resolving path.
-///
-/// `api_key_likely_database_scoped` is a heuristic (see its doc comment) that
-/// can misclassify an ordinary single-workspace `api_token` as
-/// database-scoped. `tables_load_database_scoped` can only address a database
-/// by a `dbid…` id or the current-database context — it silently drops any
-/// other `--database` alias rather than resolving it, which would load into
-/// the wrong database for a misclassified token. So the heuristic is only
-/// trusted when there's no alias it could drop: `database` is `None` (falls
-/// to the current-database context) or already looks like a `dbid…` id. A
-/// misclassified token with a name/catalog alias falls through to the
-/// standard path instead, which resolves the alias correctly; a genuine
-/// database token with a name alias was never going to work anyway (it can't
-/// resolve names either) and gets a clear 403 there instead of a silent
-/// wrong-database write.
-fn should_route_database_scoped(
-    profile: &crate::config::ProfileConfig,
-    database: Option<&str>,
-) -> bool {
-    crate::client::credentials::api_key_likely_database_scoped(profile)
-        && database.is_none_or(|d| d.starts_with("dbid"))
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn tables_load(
     workspace_id: &str,
@@ -1788,25 +1750,17 @@ pub fn tables_load(
 ) {
     use crossterm::style::Stylize;
 
-    // A database API token can't resolve names/catalogs or use the
-    // connection-scoped managed endpoints (all outside its allow-list). Route it
-    // through the database-scoped endpoints, addressed by database id.
-    if let Ok(profile) = crate::config::load("default")
-        && should_route_database_scoped(&profile, database)
-    {
-        tables_load_database_scoped(
-            workspace_id,
-            database,
-            table,
-            schema,
-            file,
-            url,
-            upload_id,
-            result_id,
-        );
-        return;
-    }
-
+    // NOTE: this used to detect a database API token and route it through the
+    // database-scoped endpoints (the connection-scoped managed paths and the
+    // name/catalog resolve below are outside such a token's allow-list). That
+    // detection read the `source` claim off the JWT the CLI minted from the
+    // API token; with the exchange gone the claim no longer exists, and the
+    // server exposes no equivalent signal, so there is nothing authoritative
+    // left to branch on. A database API token now takes this path and gets the
+    // server's ACCESS_DENIED 403 (which `format_fail_message` annotates with a
+    // token-scope hint) rather than being silently routed. Restoring the
+    // database-scoped path needs a real signal first — a server-provided token
+    // kind, or an explicit opt-in flag.
     let database = resolve_current_database(database, workspace_id);
     let api = Api::new(Some(workspace_id));
     // Prefer the active database when its catalog or name matches the lookup key,
@@ -2030,155 +1984,6 @@ pub fn tables_load(
     );
 }
 
-/// Load path for a database API token: addresses the database by id and uses
-/// the database-scoped endpoints (the connection-scoped managed paths and the
-/// name/catalog resolve used by the standard flow are denied for this token).
-#[allow(clippy::too_many_arguments)]
-fn tables_load_database_scoped(
-    workspace_id: &str,
-    database: Option<&str>,
-    table: &str,
-    schema: Option<&str>,
-    file: Option<&str>,
-    url: Option<&str>,
-    upload_id: Option<&str>,
-    result_id: Option<&str>,
-) {
-    use crossterm::style::Stylize;
-
-    let api = Api::new(Some(workspace_id));
-    let schema = schema_name(schema);
-
-    // A database API token can't resolve names/catalog aliases (list/get are
-    // denied), so address by id: an explicitly-supplied database id, else the
-    // current-database context.
-    let db_id = database
-        .filter(|d| d.starts_with("dbid"))
-        .map(str::to_string)
-        .or_else(|| crate::config::load_current_database("default", workspace_id))
-        .unwrap_or_else(|| {
-            eprintln!(
-                "{}",
-                "error: a database id is required for a database API token. Pass the database \
-                 id, or set one with 'hotdata databases set <dbid…>'."
-                    .red()
-            );
-            std::process::exit(1);
-        });
-
-    // clap enforces mutual exclusion; only one source is ever Some. A file/URL is
-    // uploaded first and loaded by upload id; a result is loaded by reference. The
-    // database-scoped endpoint scopes the result by the path database id, so no
-    // X-Database-Id header is needed here.
-    let body = match (result_id, upload_id, file, url) {
-        (Some(rid), None, None, None) => load_table_request_from_result(rid),
-        (None, Some(id), None, None) => load_table_request(id),
-        (None, None, Some(path), None) => load_table_request(&upload_parquet_file(&api, path)),
-        (None, None, None, Some(u)) => load_table_request(&upload_parquet_url(&api, u)),
-        (None, None, None, None) => {
-            eprintln!(
-                "error: one of --file <path>, --url <url>, --upload-id <id>, or --result-id <id> is required"
-            );
-            std::process::exit(1);
-        }
-        _ => unreachable!(),
-    };
-
-    let load_path = database_table_load_path(&db_id, schema, table);
-
-    let load = || {
-        let spinner = crate::util::spinner("Loading table...");
-        let r = api.post_raw(&load_path, &body).unwrap_or_else(|e| {
-            spinner.finish_and_clear();
-            e.exit()
-        });
-        spinner.finish_and_clear();
-        r
-    };
-
-    let (mut status, mut resp_body) = load();
-
-    // Auto-declare the table (database-scoped) when it wasn't declared at create
-    // time, then retry — the db-scoped equivalent of the standard flow's declare
-    // step, with no delete/recreate (that endpoint is denied for this token).
-    if !status.is_success() && crate::util::api_error(resp_body.clone()).contains("not declared") {
-        declare_database_table(&api, &db_id, schema, table);
-        let (s, b) = load();
-        status = s;
-        resp_body = b;
-    }
-
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
-
-    let result: LoadManagedTableResponse = match serde_json::from_str(&resp_body) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    // Display catalog: the supplied alias when it wasn't an id, else the default.
-    let catalog = database
-        .filter(|d| !d.starts_with("dbid"))
-        .unwrap_or("default");
-    let full_name = format!("{catalog}.{}.{}", result.schema_name, result.table_name);
-    println!("{}", "Table loaded".green());
-    println!("full_name: {}", full_name.clone().green());
-    println!("rows:      {}", result.row_count);
-    println!();
-    println!(
-        "{}",
-        format!(
-            concat!(
-                "Query it now:\n",
-                "  hotdata query \"SELECT * FROM {} LIMIT 10\"\n",
-                "\n  Tip: column names are case-sensitive.\n",
-                "  Wrap uppercase names in double quotes: SELECT \"MyColumn\" FROM {} LIMIT 10",
-            ),
-            full_name, full_name
-        )
-        .dark_grey()
-    );
-}
-
-/// Declare a table on a database's default catalog via the database-scoped
-/// endpoints (what a database API token may call). Creates the schema with the
-/// table when the schema doesn't exist; if it already exists (409), declares
-/// just the table. Treats "already exists" as success.
-fn declare_database_table(api: &Api, db_id: &str, schema: &str, table: &str) {
-    use crossterm::style::Stylize;
-
-    let (status, body) = api
-        .post_raw(
-            &database_schemas_path(db_id),
-            &serde_json::json!({"name": schema, "tables": [{"name": table}]}),
-        )
-        .unwrap_or_else(|e| e.exit());
-    if status.is_success() {
-        return;
-    }
-    if status == reqwest::StatusCode::CONFLICT {
-        // Schema already exists — declare just the table on it.
-        let (table_status, table_body) = api
-            .post_raw(
-                &database_schema_tables_path(db_id, schema),
-                &serde_json::json!({"name": table}),
-            )
-            .unwrap_or_else(|e| e.exit());
-        if table_status.is_success() || table_status == reqwest::StatusCode::CONFLICT {
-            return;
-        }
-        eprintln!("{}", crate::util::api_error(table_body).red());
-        std::process::exit(1);
-    }
-    eprintln!("{}", crate::util::api_error(body).red());
-    std::process::exit(1);
-}
-
 pub fn tables_delete(
     workspace_id: &str,
     database: Option<&str>,
@@ -2215,67 +2020,6 @@ pub fn tables_delete(
 mod tests {
     use super::*;
 
-    fn mock_flag_profile(url: &str, api_key: &str) -> crate::config::ProfileConfig {
-        crate::config::ProfileConfig {
-            api_key: Some(api_key.to_string()),
-            api_key_source: crate::config::ApiKeySource::Flag,
-            api_url: crate::config::ApiUrl(Some(url.to_string())),
-            ..Default::default()
-        }
-    }
-
-    fn mock_workspaces(server: &mut mockito::Server, ids: &[&str]) -> mockito::Mock {
-        let body = serde_json::json!({
-            "workspaces": ids.iter().map(|id| serde_json::json!({"public_id": id, "name": id})).collect::<Vec<_>>(),
-        });
-        server
-            .mock("GET", "/workspaces")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(body.to_string())
-            .create()
-    }
-
-    #[test]
-    fn should_route_database_scoped_rejects_name_alias_for_single_workspace_token() {
-        // Regression for a silent wrong-database `tables load`: a plain
-        // single-workspace api_token is misclassified as database-scoped by
-        // the heuristic, but `--database mycatalog` is a name/catalog alias
-        // the database-scoped path would silently discard (falling back to
-        // whatever the current database happens to be) instead of resolving.
-        // That must NOT take the database-scoped path.
-        let mut server = mockito::Server::new();
-        mock_workspaces(&mut server, &["work_only"]);
-        let profile = mock_flag_profile(&server.url(), "hd_plain_token");
-
-        assert!(!should_route_database_scoped(&profile, Some("mycatalog")));
-    }
-
-    #[test]
-    fn should_route_database_scoped_allows_dbid_or_missing_database() {
-        // Same single-workspace-classified token, but nothing for the
-        // database-scoped path to silently drop: no `--database` (falls to
-        // the current-database context) or an already-resolved `dbid…` id.
-        let mut server = mockito::Server::new();
-        mock_workspaces(&mut server, &["work_only"]);
-        let profile = mock_flag_profile(&server.url(), "hd_db_token");
-
-        assert!(should_route_database_scoped(&profile, None));
-        assert!(should_route_database_scoped(&profile, Some("dbid_abc123")));
-    }
-
-    #[test]
-    fn should_route_database_scoped_false_when_not_single_workspace() {
-        // A multi-workspace (or unrestricted) credential is never classified
-        // as database-scoped, regardless of the `--database` value.
-        let mut server = mockito::Server::new();
-        mock_workspaces(&mut server, &["work_a", "work_b"]);
-        let profile = mock_flag_profile(&server.url(), "hd_org_token");
-
-        assert!(!should_route_database_scoped(&profile, None));
-        assert!(!should_route_database_scoped(&profile, Some("dbid_abc123")));
-    }
-
     #[test]
     fn schema_name_defaults_to_public() {
         assert_eq!(schema_name(None), "public");
@@ -2297,21 +2041,6 @@ mod tests {
         assert_eq!(
             parse_attach_spec("  salesdb = sales "),
             ("salesdb", Some("sales"))
-        );
-    }
-
-    #[test]
-    fn database_scoped_table_paths_address_by_database_id() {
-        // The database-scoped endpoints a database API token uses — addressed by
-        // database id, not connection id.
-        assert_eq!(
-            database_table_load_path("dbid_1", "public", "t"),
-            "/databases/dbid_1/schemas/public/tables/t/loads"
-        );
-        assert_eq!(database_schemas_path("dbid_1"), "/databases/dbid_1/schemas");
-        assert_eq!(
-            database_schema_tables_path("dbid_1", "public"),
-            "/databases/dbid_1/schemas/public/tables"
         );
     }
 
