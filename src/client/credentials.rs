@@ -118,15 +118,47 @@ pub(crate) fn api_key_likely_database_scoped(profile_config: &config::ProfileCon
     ) && api_key_workspace_ids(profile_config).len() == 1
 }
 
-/// Response shape of `GET /workspaces` — only the field this probe needs.
+/// Response shape of `GET /workspaces`.
 #[derive(serde::Deserialize)]
-struct WorkspacesIdsResponse {
-    workspaces: Vec<WorkspaceIdItem>,
+struct WsListResponse {
+    workspaces: Vec<WsItem>,
 }
 
 #[derive(serde::Deserialize)]
-struct WorkspaceIdItem {
+struct WsItem {
     public_id: String,
+    name: String,
+}
+
+/// Fetch the workspaces `bearer` is authorized for via `GET {api_url}/workspaces`.
+///
+/// Shared by every caller that needs a live workspace list for a bearer
+/// credential: this module's own [`check_status`]-adjacent probes,
+/// `commands::auth`'s post-login cache and `auth status` display. Callers
+/// that treat a failure as "no workspaces" rather than a hard error can
+/// `.unwrap_or_default()` the result.
+pub(crate) fn fetch_workspaces(
+    api_url: &str,
+    bearer: &str,
+) -> Result<Vec<config::WorkspaceEntry>, String> {
+    let url = format!("{api_url}/workspaces");
+    let client = crate::client::raw_http::build_http_client();
+    let req = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {bearer}"));
+    let (status, body) = crate::util::send_debug(&client, req, None).map_err(|e| format!("{e}"))?;
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    let parsed: WsListResponse = serde_json::from_str(&body).map_err(|e| format!("{e}"))?;
+    Ok(parsed
+        .workspaces
+        .into_iter()
+        .map(|w| config::WorkspaceEntry {
+            public_id: w.public_id,
+            name: w.name,
+        })
+        .collect())
 }
 
 /// Workspace public-ids the active api-key credential (`--api-key` /
@@ -146,19 +178,9 @@ pub(crate) fn api_key_workspace_ids(profile_config: &config::ProfileConfig) -> V
     let Ok(token) = crate::client::jwt::ensure_access_token(profile_config, Some(key)) else {
         return Vec::new();
     };
-    let url = format!("{}/workspaces", profile_config.api_url);
-    let client = crate::client::raw_http::build_http_client();
-    let req = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {token}"));
-    match crate::util::send_debug(&client, req, None) {
-        Ok((status, body)) if status.is_success() => {
-            serde_json::from_str::<WorkspacesIdsResponse>(&body)
-                .map(|r| r.workspaces.into_iter().map(|w| w.public_id).collect())
-                .unwrap_or_default()
-        }
-        _ => Vec::new(),
-    }
+    fetch_workspaces(&profile_config.api_url.to_string(), &token)
+        .map(|ws| ws.into_iter().map(|w| w.public_id).collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

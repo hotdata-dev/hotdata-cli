@@ -4,7 +4,6 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use crossterm::ExecutableCommand;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor, Stylize};
 use rand::Rng;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::stdout;
@@ -134,17 +133,6 @@ pub fn status(profile: &str) {
             std::process::exit(1);
         }
     }
-}
-
-#[derive(Deserialize)]
-struct WsListResponse {
-    workspaces: Vec<WsItem>,
-}
-
-#[derive(Deserialize)]
-struct WsItem {
-    public_id: String,
-    name: String,
 }
 
 /// Wait for the browser callback, verify state, and extract the authorization code.
@@ -440,24 +428,8 @@ fn cache_workspaces(
     profile: &config::ProfileConfig,
     access_token: &str,
 ) -> Result<Vec<config::WorkspaceEntry>, String> {
-    let url = format!("{}/workspaces", profile.api_url);
-    let client = crate::client::raw_http::build_http_client();
-    let req = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {access_token}"));
-    let (status, body) = crate::util::send_debug(&client, req, None).map_err(|e| format!("{e}"))?;
-    if !status.is_success() {
-        return Err(format!("HTTP {status}"));
-    }
-    let ws: WsListResponse = serde_json::from_str(&body).map_err(|e| format!("{e}"))?;
-    let entries: Vec<config::WorkspaceEntry> = ws
-        .workspaces
-        .into_iter()
-        .map(|w| config::WorkspaceEntry {
-            public_id: w.public_id,
-            name: w.name,
-        })
-        .collect();
+    let entries =
+        crate::client::credentials::fetch_workspaces(&profile.api_url.to_string(), access_token)?;
     config::save_workspaces("default", entries.clone())?;
     Ok(entries)
 }
@@ -485,25 +457,8 @@ fn api_key_authorized_workspaces(
     else {
         return Vec::new();
     };
-    let url = format!("{}/workspaces", profile_config.api_url);
-    let client = crate::client::raw_http::build_http_client();
-    let req = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {access_token}"));
-    match crate::util::send_debug(&client, req, None) {
-        Ok((status, body)) if status.is_success() => serde_json::from_str::<WsListResponse>(&body)
-            .map(|ws| {
-                ws.workspaces
-                    .into_iter()
-                    .map(|w| config::WorkspaceEntry {
-                        public_id: w.public_id,
-                        name: w.name,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
+    crate::client::credentials::fetch_workspaces(&profile_config.api_url.to_string(), &access_token)
+        .unwrap_or_default()
 }
 
 fn generate_code_verifier() -> String {
