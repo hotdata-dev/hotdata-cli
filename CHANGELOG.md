@@ -1,3 +1,59 @@
+## [0.26.0] - 2026-08-19
+
+### 🚀 Features
+
+- *(auth)* [**breaking**] Stop minting jwts from api tokens
+- *(sdk)* [**breaking**] Adopt hotdata 0.13.0 and restore the per-request bearer hook
+- *(databases)* [**breaking**] Remove the run command
+
+### 🐛 Bug Fixes
+
+- *(databases)* Stop tables load misrouting into wrong database
+- *(sdk)* Re-resolve bearer per call for CLI-owned request paths
+- *(sdk)* Diagnose expired-session upload failures, fix blocking probe
+- *(sdk)* Scope expired-session upload hint to real sessions
+- *(databases)* Treat a 403 existence check as unverifiable in set
+
+### 🚜 Refactor
+
+- *(auth)* Share the /workspaces fetch helper
+- *(databases)* [**breaking**] Drop guessed database-token detection
+
+### 📚 Documentation
+
+- *(ingest)* Create starts no run — correct the causality (#260)
+- *(jwt)* Correct stale JWT-exchange doc comments
+- *(credentials)* Correct stale empty-ids semantics
+
+### 🧪 Testing
+
+- *(sdk)* Prove the bearer re-resolves per request, not once
+- *(sdk)* Pin which mint answers which upload refresh
+
+### ⚠️ Breaking: `databases run` is gone, and API tokens are no longer exchanged for JWTs
+
+`databases run` is removed with no replacement. It was the only command that
+minted a database session token, so the client side of that credential goes
+with it — the `HOTDATA_DATABASE_TOKEN` auth path no longer exists.
+`HOTDATA_DATABASE` and the `hd_…` database API token are untouched.
+
+An `hd_…` API token is now sent verbatim as the bearer instead of being
+exchanged for a JWT, and the credential is resolved once per request rather
+than once per client. That fixes uploads large enough to outlive the credential
+they started with, which used to 401 at finalize (#120).
+
+Three consequences of losing the JWT claims the CLI used to read:
+
+- `auth status` no longer shows an "API Key Source" row.
+- `tables load` no longer routes a database-scoped API token to the
+  database-scoped endpoints — the claim it keyed off is gone and there is no
+  replacement signal, so those tokens now surface the server's `ACCESS_DENIED`
+  403. `databases set` still works with them: its existence check is advisory,
+  so a 403 there means "can't verify, proceed".
+- Workspace scope for an API key comes from a live `GET /workspaces` instead of
+  a claim. An unrestricted key with no saved default used to have no
+  discoverable scope and forced `--workspace-id`; it now resolves to whichever
+  workspace the API lists first.
 ## [0.25.0] - 2026-08-14
 
 ### 🚀 Features
