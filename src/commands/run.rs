@@ -6,11 +6,10 @@
 //! reconfigured or the schedule changed. That is what this prints.
 //!
 //! It sits under `ingest` rather than at the top level because "run" on its own
-//! is not this subsystem's word to take: `hotdata databases run <cmd>` launches
-//! a child process, `hotdata jobs` is platform background jobs, and
-//! `hotdata queries` is query run history. A bare `hotdata run` would have to
-//! be read as "which of those four?" — and it would spend a name whose obvious
-//! eventual meaning is runs of every kind, not ingest's alone.
+//! is not this subsystem's word to take: `hotdata jobs` is platform background
+//! jobs and `hotdata queries` is query run history. A bare `hotdata run` would
+//! have to be read as "which of those three?" — and it would spend a name whose
+//! obvious eventual meaning is runs of every kind, not ingest's alone.
 //!
 //! `ingest runs <ingest-id>` lists; `ingest run <run-id>` shows one.
 //!

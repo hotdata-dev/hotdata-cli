@@ -141,11 +141,11 @@ fn a_run_is_shown_under_ingest_and_the_bare_noun_stays_unclaimed() {
     let (ok, help) = combined(&["ingest", "run", "--help"]);
     assert!(ok, "{help}");
     assert!(help.contains("RUN_ID") || help.contains("run-id"), "{help}");
-    // `run` on its own is deliberately NOT a top-level command. Three other
-    // groups already have a claim on the word — `databases run` launches a
-    // child process, `jobs` is platform background jobs, `queries` is query run
-    // history — and the obvious eventual meaning of a bare `hotdata run` is
-    // runs of every kind, which ingest should not spend on its own.
+    // `run` on its own is deliberately NOT a top-level command. Two other
+    // groups already have a claim on the word — `jobs` is platform background
+    // jobs, `queries` is query run history — and the obvious eventual meaning
+    // of a bare `hotdata run` is runs of every kind, which ingest should not
+    // spend on its own.
     let (taken, out) = combined(&["run", "run_01JZZZ"]);
     assert!(!taken, "top-level `run` should not exist: {out}");
 }
