@@ -1,4 +1,4 @@
-//! `hotdata datasource` — reusable external source identities.
+//! `hotdata ingest sources` — reusable external source identities.
 //!
 //! A datasource is what a credential opens: a Postgres server, a bucket root, a
 //! Kafka cluster, an Iceberg catalog. It is *not* the subset of data to load —
@@ -61,6 +61,7 @@ pub enum DatasourceCommands {
     /// which is the one that means the credentials work. Some families have no
     /// read-only probe and can only be checked for shape — they report `valid:
     /// yes` with `probed: no` and a detail saying why.
+    #[command(name = "test")]
     Validate {
         /// Source family — the shape of --config: sql, filesystem, iceberg,
         /// delta, ducklake, kafka, rest. Use `sql` for any SQL dialect (the
@@ -88,7 +89,8 @@ pub enum DatasourceCommands {
     /// data: pull rows with `hotdata ingest create --datasource-id <id>`.
     ///
     /// The fields --config and --credentials take, for one family:
-    /// `hotdata datasource fields <family>`.
+    /// `hotdata ingest sources fields <family>`.
+    #[command(name = "add")]
     Create {
         /// Source family — the shape of --config: sql, filesystem, iceberg,
         /// delta, ducklake, kafka, rest. Use `sql` for any SQL dialect (the
@@ -130,7 +132,7 @@ pub enum DatasourceCommands {
 
     /// Show one datasource: state, current config version, and discovery
     Show {
-        /// Datasource id (from `hotdata datasource list`)
+        /// Datasource id (from `hotdata ingest sources list`)
         datasource_id: String,
     },
 
@@ -141,7 +143,7 @@ pub enum DatasourceCommands {
     /// and a stopped ingest is NOT resumed by a config change.
     #[command(name = "update-config")]
     UpdateConfig {
-        /// Datasource id (from `hotdata datasource list`)
+        /// Datasource id (from `hotdata ingest sources list`)
         datasource_id: String,
 
         #[command(flatten)]
@@ -157,15 +159,16 @@ pub enum DatasourceCommands {
     ///
     /// Soft-delete. Returns 409 while any non-deleted ingest references it —
     /// destination tables, their data, and managed databases are never touched.
+    #[command(name = "remove")]
     Delete {
-        /// Datasource id (from `hotdata datasource list`)
+        /// Datasource id (from `hotdata ingest sources list`)
         datasource_id: String,
     },
 
     /// Browse the catalog of source types: their names and families
     ///
     /// The FAMILY column is what `--family` takes; the field reference for one
-    /// of them is `hotdata datasource fields <family>`.
+    /// of them is `hotdata ingest sources fields <family>`.
     #[command(alias = "connectors")]
     Types {
         /// Filter to entries whose name contains this text
@@ -180,7 +183,7 @@ pub enum DatasourceCommands {
     /// one can do. `-o json` prints the JSON Schema itself, for a UI or a
     /// script to build a form from.
     Fields {
-        /// Family to describe — the FAMILY column of `hotdata datasource
+        /// Family to describe — the FAMILY column of `hotdata ingest sources
         /// types`, e.g. sql, filesystem, iceberg, kafka, rest
         family: Option<String>,
     },
@@ -191,7 +194,7 @@ pub enum DatasourceCommands {
 #[derive(clap::Args)]
 pub struct WaitArgs {
     /// Watch the new datasource until it leaves `creating` (the default).
-    /// Polls `datasource show` — it cannot make anything happen sooner.
+    /// Polls `ingest sources show` — it cannot make anything happen sooner.
     #[arg(long)]
     wait: bool,
 
@@ -219,13 +222,13 @@ pub struct WaitArgs {
 pub struct ConfigArgs {
     /// Source config as JSON (inline, @file.json, or @- for stdin). Either a
     /// bare config object, or the envelope {"config": …, "credentials": …}.
-    /// Field reference: `hotdata datasource fields <family>`.
+    /// Field reference: `hotdata ingest sources fields <family>`.
     #[arg(long)]
     config: Option<String>,
 
     /// Source credentials as JSON (inline, @file.json, or @-). Wins over any
     /// `credentials` inside --config. Keep secrets out of argv with @file.
-    /// Field reference: `hotdata datasource fields <family>`.
+    /// Field reference: `hotdata ingest sources fields <family>`.
     #[arg(long)]
     credentials: Option<String>,
 
@@ -346,7 +349,7 @@ fn split_payload(
             return Err(
                 "--config is required (inline JSON, @file.json, or @-), or --bucket-url / \
                  --catalog-type for those fields. The fields a family takes: \
-                 'hotdata datasource fields <family>'"
+                 'hotdata ingest sources fields <family>'"
                     .into(),
             );
         }
@@ -450,7 +453,7 @@ fn validate(workspace_id: &str, output: &str, family: &str, payload: ConfigArgs)
         }
         if resp.valid {
             hint(&format!(
-                "Nothing was created. Persist it with: hotdata datasource create --family {family} --config @source.json"
+                "Nothing was created. Persist it with: hotdata ingest sources add --family {family} --config @source.json"
             ));
         }
     });
@@ -507,7 +510,7 @@ fn create(
         let Some(family) = family else {
             fail(
                 "--family is required (sql, filesystem, iceberg, delta, ducklake, kafka, rest). \
-                 Run 'hotdata datasource create' in a terminal to be asked instead.",
+                 Run 'hotdata ingest sources add' in a terminal to be asked instead.",
             );
         };
         let (config, credentials, shortcuts) = payload.parse();
@@ -623,7 +626,7 @@ fn list(
     render(output, &resp.datasources, || {
         if resp.datasources.is_empty() {
             empty_notice(
-                "No datasources yet. Add one with 'hotdata datasource create --family <f> \
+                "No datasources yet. Add one with 'hotdata ingest sources add --family <f> \
                  --config @source.json'.",
             );
             return;
@@ -852,7 +855,7 @@ fn types(workspace_id: &str, output: &str, filter: Option<&str>) {
         crate::output::table::print(&["NAME", "FAMILY", "STATUS", "DESCRIPTION"], &rows);
         hint(
             "The FAMILY column is what --family takes. \
-             The fields a family accepts: 'hotdata datasource fields <family>'.",
+             The fields a family accepts: 'hotdata ingest sources fields <family>'.",
         );
     });
 }
@@ -939,7 +942,7 @@ fn print_family_index(families: &[FamilyReference]) {
         &["FAMILY", "REQUIRED CONFIG", "WRITE MODES", "CONTINUOUS"],
         &rows,
     );
-    hint("Every field of one family: hotdata datasource fields <family>.");
+    hint("Every field of one family: hotdata ingest sources fields <family>.");
 }
 
 fn print_family_reference(r: &FamilyReference) {
@@ -950,9 +953,9 @@ fn print_family_reference(r: &FamilyReference) {
     // Each section is titled with the flag it is the reference FOR, because
     // the three schemas are spent on two different commands: config and
     // credentials build a datasource, the selector builds an ingest against it.
-    section("CONFIG", "hotdata datasource create --config");
+    section("CONFIG", "hotdata ingest sources add --config");
     print_schema(&r.config_schema);
-    section("CREDENTIALS", "hotdata datasource create --credentials");
+    section("CREDENTIALS", "hotdata ingest sources add --credentials");
     print_schema(&r.credentials_schema);
     section("SELECTOR", "hotdata ingest create --selector");
     print_schema(&r.selector_schema);
@@ -968,7 +971,7 @@ fn print_family_reference(r: &FamilyReference) {
     }
     println!();
     hint(&format!(
-        "'hotdata datasource fields {} -o json' prints the JSON Schema itself, \
+        "'hotdata ingest sources fields {} -o json' prints the JSON Schema itself, \
          including any nested definitions.",
         r.family
     ));

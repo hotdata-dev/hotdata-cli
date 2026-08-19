@@ -13,6 +13,7 @@ pub enum WorkspaceCommands {
     },
 
     /// Set the default workspace
+    #[command(name = "use")]
     Set {
         /// Workspace ID to set as default (omit for interactive selection)
         workspace_id: Option<String>,
@@ -69,7 +70,7 @@ pub fn set(workspace_id: Option<&str>) {
                 eprintln!(
                     "error: stdin is not a TTY; cannot prompt for selection. \
                      Run 'hotdata workspaces list' to see available IDs, \
-                     then 'hotdata workspaces set <workspace_id>'."
+                     then 'hotdata workspaces use <workspace_id>'."
                 );
                 std::process::exit(1);
             }

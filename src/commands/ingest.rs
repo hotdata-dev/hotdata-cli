@@ -3,13 +3,13 @@
 //! An ingest is `datasource + selector + destination + type/schedule`. One
 //! datasource can back many ingests; the ingest decides *what subset* to read
 //! and *where it lands*. Every execution attempt is a run
-//! (`hotdata ingest runs`, `hotdata ingest run`).
+//! (`hotdata ingest logs`, `hotdata ingest run`).
 //!
 //! **The definition is immutable.** Selector and destination are fixed at
 //! creation — changing either means a new ingest. Only the schedule and the
-//! lifecycle state (`cancel` / `resume` / `delete`) can move.
+//! lifecycle state (`pause` / `resume` / `remove`) can move.
 //!
-//! **Cancel means both halves.** `cancel` stops the active run *and* stops
+//! **Pause means both halves.** `pause` stops the active run *and* stops
 //! future scheduled dispatch; `resume` clears the stop and the backoff but
 //! deliberately does **not** run anything immediately. Bringing the next run
 //! forward is `ingest schedule <id> --next now`, which is also why there is no
@@ -34,7 +34,7 @@
 //! was guessed wrong returns the first page and reports success, which is a
 //! silent partial load, and one whose row selector was guessed wrong loads the
 //! envelope instead of the rows. Those are worth a `--selector` document, and
-//! `hotdata datasource fields rest` is what describes it.
+//! `hotdata ingest sources fields rest` is what describes it.
 //!
 //! `--sql` and `--raw-sql` are the two that carry SQL, and neither sends any.
 //! `--sql`'s restricted `SELECT <cols> FROM [<schema>.]<table> [WHERE …]
@@ -60,6 +60,7 @@
 //! progress demoted to `stage` — see `ingest_common`.
 
 use crate::client::ingest::{Ingest, IngestClient, IngestCreate, SchedulePatch};
+use crate::commands::datasource::{self, DatasourceCommands};
 use crate::commands::ingest_common::{
     cell, date_cell, destination_cell, destination_detail, empty_notice, fail, field, hint,
     is_terminal, parse_duration, parse_json_arg, parse_next_run_at, poll_until,
@@ -77,18 +78,18 @@ pub enum IngestCommands {
     /// Selector and destination are fixed at creation — changing either means a
     /// new ingest. Creating one starts nothing: the scheduler dispatches every
     /// run, including the single run of a one-time ingest, so watch it with
-    /// `hotdata ingest runs <id>` rather than expecting a run id back.
+    /// `hotdata ingest logs <id>` rather than expecting a run id back.
     ///
     /// The fields --selector takes, and which write modes and types the
-    /// datasource's family supports: `hotdata datasource fields <family>`.
+    /// datasource's family supports: `hotdata ingest sources fields <family>`.
     Create {
-        /// Datasource to read from, by `ds_…` id (from `hotdata datasource
+        /// Datasource to read from, by `ds_…` id (from `hotdata ingest sources
         /// list`). --source takes a display name too.
         #[arg(long = "datasource-id", required_unless_present = "source")]
         datasource_id: Option<String>,
 
         /// Datasource to read from: a `ds_…` id, or a display name resolved
-        /// here against `hotdata datasource list`. Two datasources sharing a
+        /// here against `hotdata ingest sources list`. Two datasources sharing a
         /// name is an error listing both — names are labels, not identity, so
         /// nothing picks between them for you.
         #[arg(long, conflicts_with = "datasource_id")]
@@ -99,9 +100,14 @@ pub enum IngestCommands {
         #[arg(long = "type", value_parser = TYPES, default_value = "one-time")]
         kind: String,
 
+        /// Shorthand for `--type continuous` — a streaming ingest (needs --every
+        /// or --schedule, like any recurring ingest)
+        #[arg(long, conflicts_with = "kind")]
+        stream: bool,
+
         /// What to read, as family-specific JSON (inline, @file.json, or @-).
         /// The escape hatch the shorthand flags below build for you.
-        /// Field reference: `hotdata datasource fields <family>` (SELECTOR).
+        /// Field reference: `hotdata ingest sources fields <family>` (SELECTOR).
         #[arg(
             long,
             conflicts_with_all = ["sql", "raw_sql", "all", "tables", "table_path",
@@ -232,7 +238,7 @@ pub enum IngestCommands {
 
         /// How each run writes (default: replace). `upsert` needs a family
         /// whose load path stamps a row key — today that is a continuous bucket
-        /// ingest, and `hotdata datasource fields <family>` reports which modes
+        /// ingest, and `hotdata ingest sources fields <family>` reports which modes
         /// a family accepts for which type.
         ///
         /// The two listed are the two the destination accepts anywhere. Offering
@@ -285,6 +291,7 @@ pub enum IngestCommands {
     /// Both halves, deliberately — an ingest you cancelled must not come back
     /// on the next scheduler tick. Idempotent. Start it again with
     /// `hotdata ingest resume`.
+    #[command(name = "pause")]
     Cancel {
         /// Ingest id (from `hotdata ingest list`)
         ingest_id: String,
@@ -323,6 +330,7 @@ pub enum IngestCommands {
     },
 
     /// List the runs of one ingest, newest first
+    #[command(name = "logs")]
     Runs {
         /// Ingest id (or pass --ingest-id)
         #[arg(required_unless_present = "ingest_id_flag")]
@@ -356,12 +364,12 @@ pub enum IngestCommands {
 
     /// Show one run: status, the snapshots it used, and its timings
     ///
-    /// `runs` lists an ingest's attempts; this shows one of them by id.
+    /// `logs` lists an ingest's attempts; this shows one of them by id.
     ///
     /// Exits 0 when the run succeeded, 1 when it failed or was cancelled, and
     /// 2 while it is still queued or running.
     Run {
-        /// Run id (from `hotdata ingest runs <ingest-id>`)
+        /// Run id (from `hotdata ingest logs <ingest-id>`)
         run_id: String,
 
         /// Watch until the run finishes.
@@ -381,9 +389,18 @@ pub enum IngestCommands {
     /// Soft-delete: cancels an active run first, then releases destination
     /// table ownership. The destination table and its data are never deleted,
     /// and neither is the datasource.
+    #[command(name = "remove")]
     Delete {
         /// Ingest id (from `hotdata ingest list`)
         ingest_id: String,
+    },
+
+    /// External sources an ingest reads from — the connection config and
+    /// credentials. Surfaced here as `ingest sources` so a source and the
+    /// ingest that reads it share one command tree.
+    Sources {
+        #[command(subcommand)]
+        command: DatasourceCommands,
     },
 
     /// Verbs removed in the datasource/ingest/run split. clap's own
@@ -400,6 +417,7 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             datasource_id,
             source,
             kind,
+            stream,
             selector,
             sql,
             raw_sql,
@@ -423,6 +441,12 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             next,
         } => {
             let client = IngestClient::new(workspace_id);
+            // `--stream` is sugar for `--type continuous`.
+            let kind = if stream {
+                "continuous".to_string()
+            } else {
+                kind
+            };
             // clap's required_unless_present already rejects "neither".
             let named = datasource_id
                 .or(source)
@@ -524,6 +548,7 @@ pub fn dispatch(workspace_id: &str, output: &str, command: IngestCommands) {
             wait_timeout,
         } => super::run::show(workspace_id, output, &run_id, wait, wait_timeout),
         IngestCommands::Delete { ingest_id } => delete(workspace_id, output, &ingest_id),
+        IngestCommands::Sources { command } => datasource::dispatch(workspace_id, output, command),
         IngestCommands::Removed(argv) => removed(&argv),
     }
 }
@@ -607,7 +632,7 @@ fn resolve_datasource(client: &IngestClient, named: &str) -> Resolved {
             family: one.family.clone(),
         },
         [] => fail(&format!(
-            "no datasource named '{named}' — list them with 'hotdata datasource list', \
+            "no datasource named '{named}' — list them with 'hotdata ingest sources list', \
              or pass the ds_… id"
         )),
         several => {
@@ -651,7 +676,7 @@ fn create(client: &IngestClient, output: &str, plan: CreatePlan) {
                 hint(&format!("Track it with: hotdata ingest run {run_id}"));
             }
             None => hint(&format!(
-                "The scheduler dispatches it. Watch it with: hotdata ingest runs {}",
+                "The scheduler dispatches it. Watch it with: hotdata ingest logs {}",
                 ing.ingest_id
             )),
         }
@@ -811,7 +836,7 @@ fn build_selector(plan: &CreatePlan) -> Result<(serde_json::Value, Option<String
              <path> (Delta), --topic <name> (Kafka), --format with an optional --glob \
              (buckets), --sql, --raw-sql, --all, or the whole --selector as JSON. A REST \
              source is --selector only: its resources carry endpoints, not just names \
-             ('hotdata datasource fields rest')"
+             ('hotdata ingest sources fields rest')"
                 .into(),
         );
     }
@@ -1327,7 +1352,7 @@ fn show(workspace_id: &str, output: &str, ingest_id: &str) {
                 ),
             );
         }
-        hint(&format!("Its runs: hotdata ingest runs {}", ing.ingest_id));
+        hint(&format!("Its runs: hotdata ingest logs {}", ing.ingest_id));
     });
 }
 
@@ -1549,7 +1574,7 @@ fn wait_for_newest_run(
     );
     match outcome {
         Ok(resp) => resp,
-        Err(_) => wait_timed_out(&format!("hotdata ingest runs {ingest_id} --wait")),
+        Err(_) => wait_timed_out(&format!("hotdata ingest logs {ingest_id} --wait")),
     }
 }
 
@@ -1560,17 +1585,19 @@ fn wait_for_newest_run(
 fn removal_message(verb: &str) -> Option<String> {
     let replacement = match verb {
         "new-datasource" | "new-connection" => {
-            "hotdata datasource create --family <f> --config @source.json"
+            "hotdata ingest sources add --family <f> --config @source.json"
         }
-        "list-datasources" | "list-connections" => "hotdata datasource list",
-        "show-datasource" | "show-connection" => "hotdata datasource show <datasource-id>",
-        "delete-datasource" | "delete-connection" => "hotdata datasource delete <datasource-id>",
-        "datasources" | "connectors" => "hotdata datasource types",
+        "list-datasources" | "list-connections" => "hotdata ingest sources list",
+        "show-datasource" | "show-connection" => "hotdata ingest sources show <datasource-id>",
+        "delete-datasource" | "delete-connection" => {
+            "hotdata ingest sources remove <datasource-id>"
+        }
+        "datasources" | "connectors" => "hotdata ingest sources types",
         "new-import" => {
             "hotdata ingest create --source <name-or-id> --table <table> --database-id <db>"
         }
         "list-imports" => "hotdata ingest list",
-        "status" => "hotdata ingest run <run-id>  (or: hotdata ingest runs <ingest-id>)",
+        "status" => "hotdata ingest run <run-id>  (or: hotdata ingest logs <ingest-id>)",
         "raw-sql" => {
             "hotdata ingest create --source <name-or-id> --raw-sql \"SELECT …\" \
              --table <result-table> --database-id <db>"
@@ -1612,8 +1639,8 @@ pub fn removed(argv: &[String]) -> ! {
             );
             eprintln!(
                 "{}",
-                "Verbs: create, list, show, cancel, resume, schedule, runs, run, delete. \
-                 Datasources are 'hotdata datasource'."
+                "Verbs: create, list, show, pause, resume, schedule, logs, run, remove. \
+                 Datasources are 'hotdata ingest sources'."
                     .dark_grey()
             );
         }
@@ -2430,11 +2457,11 @@ mod tests {
     #[test]
     fn old_verbs_name_their_replacements() {
         for (verb, needle) in [
-            ("new-datasource", "hotdata datasource create"),
-            ("list-datasources", "hotdata datasource list"),
-            ("show-datasource", "hotdata datasource show"),
-            ("delete-datasource", "hotdata datasource delete"),
-            ("datasources", "hotdata datasource types"),
+            ("new-datasource", "hotdata ingest sources add"),
+            ("list-datasources", "hotdata ingest sources list"),
+            ("show-datasource", "hotdata ingest sources show"),
+            ("delete-datasource", "hotdata ingest sources remove"),
+            ("datasources", "hotdata ingest sources types"),
             ("new-import", "hotdata ingest create"),
             ("list-imports", "hotdata ingest list"),
             ("status", "hotdata ingest run"),

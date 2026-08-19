@@ -9,12 +9,12 @@ fn hotdata() -> Command {
 // `resolve_workspace` refuses to let a `--workspace-id`/`-w` flag override a
 // workspace pinned by the HOTDATA_WORKSPACE env var. That check runs before
 // any auth or network I/O, so any workspace-scoped subcommand exercises it;
-// we use `indexes list` here.
+// we use `search list` here.
 
 #[test]
 fn workspace_env_blocks_conflicting_flag() {
     let output = hotdata()
-        .args(["indexes", "list", "-w", "other-ws"])
+        .args(["search", "list", "-w", "other-ws"])
         .env("HOTDATA_WORKSPACE", "locked-ws")
         .output()
         .unwrap();
@@ -32,7 +32,7 @@ fn workspace_env_allows_matching_flag() {
     // When the flag matches the env var, no workspace conflict error.
     // Will fail later on auth, but should NOT fail on the workspace lock.
     let output = hotdata()
-        .args(["indexes", "list", "-w", "ws-1"])
+        .args(["search", "list", "-w", "ws-1"])
         .env("HOTDATA_WORKSPACE", "ws-1")
         .output()
         .unwrap();

@@ -5,96 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
-/// Subcommands for `hotdata indexes`.
-#[derive(clap::Subcommand)]
-pub enum IndexesCommands {
-    /// List indexes in the active database, or all workspace indexes if none is set
-    List {
-        /// Filter by schema name
-        #[arg(long)]
-        schema: Option<String>,
-
-        /// Filter by table name
-        #[arg(long)]
-        table: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// Create an index on a table.
-    Create {
-        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
-        #[arg(long)]
-        catalog: Option<String>,
-
-        /// Schema name (default: public)
-        #[arg(long, default_value = "public")]
-        schema: String,
-
-        /// Table name to index
-        #[arg(long)]
-        table: Option<String>,
-
-        /// Column(s) to index (comma-separated)
-        #[arg(long)]
-        column: Option<String>,
-
-        /// Index name (derived from table, columns, and type if omitted)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Index type — required (no default; choose deliberately)
-        #[arg(long, value_parser = ["sorted", "bm25", "vector"])]
-        r#type: String,
-
-        /// Distance metric for vector indexes
-        #[arg(long, value_parser = ["l2", "cosine", "dot"])]
-        metric: Option<String>,
-
-        /// Create as a background job
-        #[arg(long)]
-        r#async: bool,
-
-        /// Embedding provider ID — when set on a vector index over a text column,
-        /// embeddings are generated automatically. Defaults to first system provider if omitted.
-        #[arg(long = "embedding-provider-id")]
-        embedding_provider_id: Option<String>,
-
-        /// Override embedding output dimensions (vector indexes with auto-embedding only)
-        #[arg(long)]
-        dimensions: Option<u32>,
-
-        /// Custom name for the generated embedding column (defaults to `{column}_embedding`)
-        #[arg(long = "output-column")]
-        output_column: Option<String>,
-
-        /// Human-readable description of the embedding (e.g. "product titles")
-        #[arg(long)]
-        description: Option<String>,
-    },
-
-    /// Delete an index from a table
-    Delete {
-        /// SQL catalog alias of the target database or catalog name (same flag as `indexes create`)
-        #[arg(long)]
-        catalog: String,
-
-        /// Schema name (default: public)
-        #[arg(long, default_value = "public")]
-        schema: String,
-
-        /// Table name
-        #[arg(long)]
-        table: String,
-
-        /// Index name
-        #[arg(long)]
-        name: String,
-    },
-}
-
 #[derive(Deserialize, Serialize)]
 struct Index {
     index_name: String,
@@ -122,13 +32,6 @@ impl Index {
         self.source_column
             .clone()
             .or_else(|| self.columns.first().cloned())
-    }
-
-    /// Whether `column` identifies this index for search: matches the embedding
-    /// source column or any indexed column. Lets `--column <source>` resolve an
-    /// auto-embed index even though the source column is not in `columns`.
-    fn matches_search_column(&self, column: &str) -> bool {
-        self.source_column.as_deref() == Some(column) || self.columns.iter().any(|c| c == column)
     }
 }
 
@@ -402,94 +305,6 @@ fn list_one_table_scan(
     }
 }
 
-/// Pure matching logic for search inference — extracted for testability.
-///
-/// Filters `indexes` to searchable types (`bm25`, `vector`), narrows by `hint_type` /
-/// `hint_column` when provided, and returns `Ok((index_type, column))` on an unambiguous
-/// match. Returns `Err(message)` on no match, multiple matches, or an index with no columns.
-/// `location` is used only in error messages (e.g. `"mydb.public.listings"`).
-fn resolve_search_params(
-    indexes: &[Index],
-    hint_type: Option<&str>,
-    hint_column: Option<&str>,
-    location: &str,
-) -> Result<(String, String), String> {
-    let matches: Vec<&Index> = indexes
-        .iter()
-        .filter(|i| {
-            let t = i.index_type.as_str();
-            (t == "bm25" || t == "vector")
-                && hint_type.is_none_or(|ht| ht == t)
-                && hint_column.is_none_or(|hc| i.matches_search_column(hc))
-        })
-        .collect();
-
-    match matches.as_slice() {
-        [] => {
-            let what = match hint_type {
-                Some(t) => format!("{} index", t),
-                None => "BM25 or vector index".to_string(),
-            };
-            Err(format!(
-                "No {} found on {} — run 'hotdata indexes create' first.",
-                what, location
-            ))
-        }
-        [one] => {
-            let index_type = one.index_type.clone();
-            let column = one
-                .search_column()
-                .ok_or_else(|| format!("Index '{}' has no columns.", one.index_name))?;
-            Ok((index_type, column))
-        }
-        _ => {
-            let types: Vec<&str> = matches.iter().map(|i| i.index_type.as_str()).collect();
-            let cols: Vec<String> = matches
-                .iter()
-                .flat_map(|i| i.columns.iter().cloned())
-                .collect();
-            Err(format!(
-                "Multiple search indexes found (types: {}, columns: {}) — specify --type and --column.",
-                types.join(", "),
-                cols.join(", ")
-            ))
-        }
-    }
-}
-
-/// Infers `(index_type, column)` for `hotdata search` when `--type` or `--column` are omitted.
-///
-/// Fetches the indexes on `connection_name.schema.table`, filters to searchable types
-/// (`bm25`, `vector`), and narrows further by `hint_type` / `hint_column` when provided.
-/// Exits with an error when the result is ambiguous (multiple matches) or no index exists.
-pub fn infer_for_search(
-    workspace_id: &str,
-    connection_name: &str,
-    schema: &str,
-    table: &str,
-    hint_type: Option<&str>,
-    hint_column: Option<&str>,
-) -> (String, String) {
-    use crossterm::style::Stylize;
-
-    let api = Api::new(Some(workspace_id));
-
-    // Resolve connection name → ID (falls back to managed database catalog lookup)
-    let connection_id = crate::commands::connections::resolve_connection_id(&api, connection_name);
-
-    // Fetch indexes for this table
-    let indexes = list_one_table(&api, &connection_id, schema, table).unwrap_or_else(|e| e.exit());
-
-    let location = format!("{}.{}.{}", connection_name, schema, table);
-    match resolve_search_params(&indexes, hint_type, hint_column, &location) {
-        Ok(result) => result,
-        Err(msg) => {
-            eprintln!("{}", msg.red());
-            std::process::exit(1);
-        }
-    }
-}
-
 pub fn list(
     workspace_id: &str,
     connection_id: Option<&str>,
@@ -692,6 +507,71 @@ pub fn create(
         );
     } else {
         println!("{}", "Index created.".green());
+    }
+}
+
+/// A search index located by name, for `search`'s by-name addressing.
+pub struct LocatedIndex {
+    pub connection: String,
+    pub schema: String,
+    pub table: String,
+    pub index_type: String,
+    pub search_column: String,
+    pub status: String,
+    pub metric: Option<String>,
+}
+
+/// Find a search index by name — scoped to the active managed database when one
+/// is set, otherwise across the whole workspace. Errors on no match or on an
+/// ambiguous name (present on more than one table).
+pub fn locate_by_name(workspace_id: &str, name: &str) -> Result<LocatedIndex, String> {
+    let api = Api::new(Some(workspace_id));
+    // Scope to the active managed database when one is set. Its SQL catalog
+    // alias is what a query must name — the index listing reports the internal
+    // `__db_*` connection label, which `bm25_search`/`vector_distance` cannot
+    // address, so prefer the alias when building the located table below.
+    let active_db = crate::config::load_current_database("default", workspace_id)
+        .and_then(|db_id| databases::get_database(&api, &db_id).ok());
+    let connection_id = active_db
+        .as_ref()
+        .map(|db| db.default_connection_id.clone());
+    let rows = collect_connection_wide(&api, connection_id.as_deref(), None, None)
+        .unwrap_or_else(|e| e.exit());
+    let matches: Vec<&IndexRow> = rows.iter().filter(|r| r.inner.index_name == name).collect();
+    match matches.as_slice() {
+        [] => Err(format!(
+            "No search index named '{name}' — run 'hotdata search list' to see indexes."
+        )),
+        [one] => {
+            let loc = one.table.clone().unwrap_or_default();
+            let parts: Vec<&str> = loc.splitn(3, '.').collect();
+            let (label_conn, schema, table) = match parts.as_slice() {
+                [c, s, t] => (c.to_string(), s.to_string(), t.to_string()),
+                _ => return Err(format!("Could not resolve the table for index '{name}'.")),
+            };
+            // Prefer the active db's SQL catalog alias over the internal
+            // `__db_*` connection label that the index listing reports.
+            let connection = active_db
+                .as_ref()
+                .and_then(|db| db.default_catalog.clone())
+                .unwrap_or(label_conn);
+            let search_column = one
+                .inner
+                .search_column()
+                .ok_or_else(|| format!("Index '{name}' has no columns."))?;
+            Ok(LocatedIndex {
+                connection,
+                schema,
+                table,
+                index_type: one.inner.index_type.clone(),
+                search_column,
+                status: one.inner.status.clone(),
+                metric: one.inner.metric.clone(),
+            })
+        }
+        _ => Err(format!(
+            "Multiple indexes named '{name}' across tables — this by-name form needs a unique name."
+        )),
     }
 }
 
@@ -1186,251 +1066,5 @@ mod tests {
         let rows = list_one_table_scan(&api, "x", "s", "t").unwrap();
         mock.assert();
         assert!(rows.is_empty());
-    }
-
-    fn make_index(name: &str, index_type: &str, columns: &[&str]) -> Index {
-        Index {
-            index_name: name.into(),
-            index_type: index_type.into(),
-            columns: columns.iter().map(|c| c.to_string()).collect(),
-            metric: None,
-            source_column: None,
-            status: "ready".into(),
-            created_at: "2020-01-01T00:00:00Z".into(),
-            updated_at: "2020-01-01T00:00:00Z".into(),
-        }
-    }
-
-    /// An auto-embed vector index: `columns` holds the generated embedding
-    /// column, while the source text column lives in `source_column`.
-    fn make_embedding_index(name: &str, source: &str, output: &str) -> Index {
-        Index {
-            source_column: Some(source.into()),
-            ..make_index(name, "vector", &[output])
-        }
-    }
-
-    #[test]
-    fn resolve_search_params_single_bm25_returns_type_and_column() {
-        let indexes = vec![make_index("fts", "bm25", &["description"])];
-        let result = resolve_search_params(&indexes, None, None, "db.public.t");
-        assert_eq!(result, Ok(("bm25".into(), "description".into())));
-    }
-
-    #[test]
-    fn resolve_search_params_single_vector_returns_type_and_column() {
-        let indexes = vec![make_index("vec", "vector", &["embedding"])];
-        let result = resolve_search_params(&indexes, None, None, "db.public.t");
-        assert_eq!(result, Ok(("vector".into(), "embedding".into())));
-    }
-
-    #[test]
-    fn resolve_search_params_embedding_index_returns_source_column() {
-        // #162: auto-embed index — inference must yield the source column
-        // (`content`), not the generated embedding column (`content_embedding`),
-        // since the server's vector_distance rewrite matches the source column.
-        let indexes = vec![make_embedding_index("vec", "content", "content_embedding")];
-        let result = resolve_search_params(&indexes, None, None, "db.public.t");
-        assert_eq!(result, Ok(("vector".into(), "content".into())));
-    }
-
-    #[test]
-    fn resolve_search_params_deserializes_real_server_response() {
-        // #162: guard the serde contract end-to-end. This is a verbatim
-        // `GET .../indexes` body from a runtimedb auto-embed index (note the
-        // generated `content_embedding` in `columns` and the `source_column`
-        // field). Inference must parse it and resolve the source column.
-        let body = r#"{"indexes":[{"index_name":"embed_small_idx","index_type":"vector","columns":["content_embedding"],"status":"ready","updated_at":"2026-06-18T07:33:19.656Z","created_at":"2026-06-18T07:33:19.669550Z","metric":"cosine","source_column":"content"}]}"#;
-        let parsed: ListResponse = serde_json::from_str(body).expect("parse index list");
-        let result = resolve_search_params(&parsed.indexes, None, None, "vtest.public.embed_small");
-        assert_eq!(result, Ok(("vector".into(), "content".into())));
-    }
-
-    #[test]
-    fn resolve_search_params_embedding_index_hint_type_only() {
-        // #162: `--type vector` with `--column` omitted must still resolve the
-        // source column rather than the embedding output column.
-        let indexes = vec![make_embedding_index("vec", "content", "content_embedding")];
-        let result = resolve_search_params(&indexes, Some("vector"), None, "db.public.t");
-        assert_eq!(result, Ok(("vector".into(), "content".into())));
-    }
-
-    #[test]
-    fn resolve_search_params_embedding_index_hint_source_column() {
-        // #162: `--column content` (the source column) with `--type` omitted
-        // must match the auto-embed index even though `content` is not in
-        // `columns` (which holds `content_embedding`).
-        let indexes = vec![make_embedding_index("vec", "content", "content_embedding")];
-        let result = resolve_search_params(&indexes, None, Some("content"), "db.public.t");
-        assert_eq!(result, Ok(("vector".into(), "content".into())));
-    }
-
-    #[test]
-    fn resolve_search_params_non_search_indexes_ignored() {
-        let indexes = vec![
-            make_index("sorted_idx", "sorted", &["created_at"]),
-            make_index("fts", "bm25", &["body"]),
-        ];
-        let result = resolve_search_params(&indexes, None, None, "db.public.t");
-        assert_eq!(result, Ok(("bm25".into(), "body".into())));
-    }
-
-    #[test]
-    fn resolve_search_params_hint_type_narrows_to_single() {
-        let indexes = vec![
-            make_index("fts", "bm25", &["description"]),
-            make_index("vec", "vector", &["embedding"]),
-        ];
-        let result = resolve_search_params(&indexes, Some("bm25"), None, "db.public.t");
-        assert_eq!(result, Ok(("bm25".into(), "description".into())));
-    }
-
-    #[test]
-    fn resolve_search_params_hint_column_narrows_to_single() {
-        let indexes = vec![
-            make_index("fts_desc", "bm25", &["description"]),
-            make_index("fts_name", "bm25", &["name"]),
-        ];
-        let result = resolve_search_params(&indexes, None, Some("name"), "db.public.t");
-        assert_eq!(result, Ok(("bm25".into(), "name".into())));
-    }
-
-    #[test]
-    fn resolve_search_params_no_search_indexes_returns_error() {
-        let indexes = vec![make_index("sorted_idx", "sorted", &["id"])];
-        let result = resolve_search_params(&indexes, None, None, "db.public.t");
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("No BM25 or vector index found")
-        );
-    }
-
-    #[test]
-    fn resolve_search_params_no_index_error_mentions_hint_type() {
-        let indexes = vec![make_index("fts", "bm25", &["description"])];
-        let result = resolve_search_params(&indexes, Some("vector"), None, "db.public.t");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("vector index"));
-    }
-
-    #[test]
-    fn resolve_search_params_multiple_matches_returns_error() {
-        let indexes = vec![
-            make_index("fts_desc", "bm25", &["description"]),
-            make_index("fts_name", "bm25", &["name"]),
-        ];
-        let result = resolve_search_params(&indexes, None, None, "db.public.t");
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("Multiple search indexes found")
-        );
-    }
-
-    #[test]
-    fn resolve_search_params_index_with_no_columns_returns_error() {
-        let indexes = vec![make_index("fts", "bm25", &[])];
-        let result = resolve_search_params(&indexes, None, None, "db.public.t");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("has no columns"));
-    }
-
-    mod list_args {
-        use crate::commands::indexes::IndexesCommands;
-        use clap::Parser;
-
-        #[derive(Parser)]
-        struct Wrapper {
-            #[command(subcommand)]
-            cmd: IndexesCommands,
-        }
-
-        fn parse(args: &[&str]) -> Result<IndexesCommands, clap::Error> {
-            Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).map(|w| w.cmd)
-        }
-
-        #[test]
-        fn list_parses_with_no_flags() {
-            assert!(matches!(
-                parse(&["list"]).unwrap(),
-                IndexesCommands::List {
-                    schema: None,
-                    table: None,
-                    ..
-                }
-            ));
-        }
-
-        #[test]
-        fn list_rejects_connection_id_flag() {
-            assert!(parse(&["list", "--connection-id", "conn1"]).is_err());
-        }
-
-        #[test]
-        fn list_accepts_schema_and_table_filters() {
-            let cmd = parse(&["list", "--schema", "public", "--table", "orders"]).unwrap();
-            assert!(matches!(
-                cmd,
-                IndexesCommands::List { schema, table, .. }
-                if schema.as_deref() == Some("public") && table.as_deref() == Some("orders")
-            ));
-        }
-    }
-
-    mod delete_args {
-        use crate::commands::indexes::IndexesCommands;
-        use clap::Parser;
-
-        #[derive(Parser)]
-        struct Wrapper {
-            #[command(subcommand)]
-            cmd: IndexesCommands,
-        }
-
-        fn parse(args: &[&str]) -> Result<IndexesCommands, clap::Error> {
-            Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).map(|w| w.cmd)
-        }
-
-        #[test]
-        fn delete_catalog_defaults_schema_to_public() {
-            let cmd = parse(&[
-                "delete",
-                "--catalog",
-                "vtest",
-                "--table",
-                "hits",
-                "--name",
-                "idx",
-            ])
-            .unwrap();
-            match cmd {
-                IndexesCommands::Delete {
-                    catalog,
-                    schema,
-                    table,
-                    name,
-                } => {
-                    assert_eq!(catalog, "vtest");
-                    assert_eq!(schema, "public"); // defaulted, parity with `create`
-                    assert_eq!(table, "hits");
-                    assert_eq!(name, "idx");
-                }
-                _ => panic!("expected Delete"),
-            }
-        }
-
-        #[test]
-        fn delete_requires_catalog() {
-            // --catalog is now required
-            assert!(parse(&["delete", "--table", "hits", "--name", "idx"]).is_err());
-        }
-
-        #[test]
-        fn delete_requires_table() {
-            assert!(parse(&["delete", "--catalog", "x", "--name", "idx"]).is_err());
-        }
     }
 }

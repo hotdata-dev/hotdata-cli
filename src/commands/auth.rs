@@ -113,7 +113,7 @@ pub fn status(profile: &str) {
                     print_row("Workspace", &display);
                     print_row(
                         "",
-                        &"use 'hotdata workspaces set' to switch workspaces"
+                        &"use 'hotdata workspaces use' to switch workspaces"
                             .dark_grey()
                             .to_string(),
                     );
@@ -317,7 +317,7 @@ fn run_browser_auth(
                     );
                     print_row(
                         "",
-                        &"use 'hotdata workspaces set' to switch workspaces"
+                        &"use 'hotdata workspaces use' to switch workspaces"
                             .dark_grey()
                             .to_string(),
                     );

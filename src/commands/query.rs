@@ -393,8 +393,9 @@ fn cross_source_hint(error_msg: &str) -> Option<String> {
     if lower.contains("a database is required") {
         return Some(
             "Tip: a query runs inside one managed database. Set one with `hotdata databases \
-             set <id>`, then attach any catalog whose tables you need: `hotdata databases \
-             attach <catalog>`. See available catalogs and tables with `hotdata tables list`."
+             use <id>`, then attach any catalog whose tables you need: `hotdata databases \
+             attach <catalog>`. See available catalogs and tables with `hotdata databases \
+             tables list`."
                 .to_string(),
         );
     }
@@ -723,7 +724,7 @@ mod tests {
             "a database is required: set the X-Database-Id header or the database_id body field",
         )
         .expect("missing-database error should produce a hint");
-        assert!(tip.contains("hotdata databases set"), "tip: {tip}");
+        assert!(tip.contains("hotdata databases use"), "tip: {tip}");
         assert!(tip.contains("hotdata databases attach"), "tip: {tip}");
     }
 

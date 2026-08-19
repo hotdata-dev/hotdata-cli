@@ -613,7 +613,7 @@ impl Api {
             eprintln!(
                 "{}",
                 "Results and query runs are scoped to a managed database. Set one with \
-                 `hotdata databases set <id>`, or pass `--database <id>`."
+                 `hotdata databases use <id>`, or pass `--database <id>`."
                     .dark_grey()
             );
             std::process::exit(1);

@@ -135,6 +135,7 @@ pub enum DatabasesCommands {
     },
 
     /// Set the current database (used by default when no database is specified)
+    #[command(name = "use")]
     Set {
         /// Database id
         id: String,
@@ -144,6 +145,7 @@ pub enum DatabasesCommands {
     Unset,
 
     /// Delete a managed database and its tables
+    #[command(name = "remove")]
     Delete {
         /// Managed database id or name
         name_or_id: String,
@@ -191,6 +193,63 @@ pub enum DatabasesCommands {
         #[command(subcommand)]
         command: Option<DatabaseTablesCommands>,
     },
+
+    /// Sync database context with local Markdown (also at top-level `context`)
+    Context {
+        #[command(subcommand)]
+        command: crate::commands::context::ContextCommands,
+    },
+
+    /// Execute a SQL query against this database (also at top-level `query`)
+    Query {
+        /// SQL query string (omit when using a subcommand)
+        sql: Option<String>,
+
+        /// Managed database to run against (defaults to the current database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
+
+        #[command(subcommand)]
+        command: Option<crate::commands::query::QueryCommands>,
+    },
+
+    /// Inspect query run history (also at top-level `queries`)
+    Queries {
+        /// Query run ID to show details
+        id: Option<String>,
+
+        /// Managed database to scope to (defaults to the current database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+
+        #[command(subcommand)]
+        command: Option<crate::commands::queries::QueriesCommands>,
+    },
+
+    /// Retrieve stored query results (also at top-level `results`)
+    Results {
+        /// Result ID (omit to use a subcommand)
+        result_id: Option<String>,
+
+        /// Managed database to scope to (defaults to the current database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
+
+        #[command(subcommand)]
+        command: Option<crate::commands::results::ResultsCommands>,
+    },
 }
 
 /// Subcommands for `hotdata databases tables`.
@@ -205,6 +264,16 @@ pub enum DatabaseTablesCommands {
         /// Filter by schema name
         #[arg(long)]
         schema: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Show column definitions for a table (also at top-level `tables show`)
+    Show {
+        /// Table as catalog.schema.table (or schema.table with an active database)
+        table: String,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
@@ -245,6 +314,7 @@ pub enum DatabaseTablesCommands {
     },
 
     /// Delete a table from a managed database
+    #[command(name = "remove")]
     Delete {
         /// Database id or name (defaults to current database)
         #[arg(long)]
@@ -1505,7 +1575,7 @@ fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> Strin
             use crossterm::style::Stylize;
             eprintln!(
                 "{}",
-                "error: no current database set. Use 'hotdata databases set <id>' or pass a database id.".red()
+                "error: no current database set. Use 'hotdata databases use <id>' or pass a database id.".red()
             );
             std::process::exit(1);
         }

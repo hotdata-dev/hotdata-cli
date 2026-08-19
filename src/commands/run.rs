@@ -7,11 +7,12 @@
 //!
 //! It sits under `ingest` rather than at the top level because "run" on its own
 //! is not this subsystem's word to take: `hotdata jobs` is platform background
-//! jobs and `hotdata queries` is query run history. A bare `hotdata run` would
-//! have to be read as "which of those three?" — and it would spend a name whose
-//! obvious eventual meaning is runs of every kind, not ingest's alone.
+//! jobs, and `hotdata databases queries` is query run history. A bare
+//! `hotdata run` would have to be read as "which of those?" — and it would spend
+//! a name whose obvious eventual meaning is runs of every kind, not ingest's
+//! alone.
 //!
-//! `ingest runs <ingest-id>` lists; `ingest run <run-id>` shows one.
+//! `ingest logs <ingest-id>` lists; `ingest run <run-id>` shows one.
 //!
 //! **Script-friendly exit codes**, matching `query status`: 0 succeeded,
 //! 1 failed or cancelled, 2 still in flight. `-o json` still lands on stdout in

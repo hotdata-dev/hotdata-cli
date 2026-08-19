@@ -176,7 +176,7 @@ pub fn enforce_latest_or_exit() {
     if !confirmed {
         eprintln!(
             "{}",
-            "Upgrade required to continue. Run 'hotdata upgrade' when ready, or set HOTDATA_NO_UPDATE_CHECK=1 to bypass this check (e.g. when offline).".red()
+            "Upgrade required to continue. Run 'hotdata manage upgrade' when ready, or set HOTDATA_NO_UPDATE_CHECK=1 to bypass this check (e.g. when offline).".red()
         );
         std::process::exit(1);
     }
@@ -291,7 +291,7 @@ pub fn run_upgrade() {
 }
 
 /// Upgrade the running binary to a known-newer `latest`, dispatching on the
-/// install method. Shared by the explicit `hotdata upgrade` command and the
+/// install method. Shared by the explicit `hotdata manage upgrade` command and the
 /// pre-command upgrade gate. Returns an error instead of exiting so each
 /// caller decides whether a failure is fatal; status goes to stderr so it
 /// never pollutes a caller's redirected stdout. On success the new version
