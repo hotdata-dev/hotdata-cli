@@ -1,3 +1,34 @@
+## [0.26.0] - 2026-08-19
+
+### 🚀 Features
+
+- *(auth)* [**breaking**] Stop minting jwts from api tokens
+- *(sdk)* [**breaking**] Adopt hotdata 0.13.0 and restore the per-request bearer hook
+- *(databases)* [**breaking**] Remove the run command
+
+### 🐛 Bug Fixes
+
+- *(databases)* Stop tables load misrouting into wrong database
+- *(sdk)* Re-resolve bearer per call for CLI-owned request paths
+- *(sdk)* Diagnose expired-session upload failures, fix blocking probe
+- *(sdk)* Scope expired-session upload hint to real sessions
+- *(databases)* Treat a 403 existence check as unverifiable in set
+
+### 🚜 Refactor
+
+- *(auth)* Share the /workspaces fetch helper
+- *(databases)* [**breaking**] Drop guessed database-token detection
+
+### 📚 Documentation
+
+- *(ingest)* Create starts no run — correct the causality (#260)
+- *(jwt)* Correct stale JWT-exchange doc comments
+- *(credentials)* Correct stale empty-ids semantics
+
+### 🧪 Testing
+
+- *(sdk)* Prove the bearer re-resolves per request, not once
+- *(sdk)* Pin which mint answers which upload refresh
 ## [0.25.0] - 2026-08-14
 
 ### 🚀 Features
