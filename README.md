@@ -229,8 +229,6 @@ The CLI is built to be driven programmatically:
   script-friendly exit codes (`query status`, `ingest run`).
 - Authenticate non-interactively with an API key: `--api-key`, or
   `HOTDATA_API_KEY` in the environment or a `.env` file.
-- `hotdata databases run <cmd>` launches a child process (an agent, a script)
-  with credentials scoped to a single database.
 - `hotdata skills install` installs bundled agent skills — Markdown playbooks
   that teach AI coding agents (Claude Code and friends) the full CLI surface.
 - `hotdata context push|show DATAMODEL` stores your data model as shared,

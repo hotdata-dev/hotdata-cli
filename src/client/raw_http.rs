@@ -5,8 +5,6 @@
 //!
 //! * the PKCE / OAuth token endpoints (`/o/token/`, `/v1/auth/token`) — owned
 //!   by `jwt.rs`, no SDK equivalent for the `authorization_code` grant;
-//! * the database session-token mint (`/v1/auth/database`) — a distinct grant
-//!   on a distinct endpoint (`database_session.rs`);
 //! * `skill.rs`'s arbitrary-URL markdown fetch.
 //!
 //! This module owns the timeout-bounded blocking client builder and a thin

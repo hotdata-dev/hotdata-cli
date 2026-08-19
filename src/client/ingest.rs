@@ -270,10 +270,6 @@ impl IngestClient {
         });
         // Same trust filter as sdk::Api / credentials: an empty or template
         // key must fall through to the session JWT, not ship as a bearer.
-        // (HOTDATA_DATABASE_TOKEN is deliberately NOT consulted here:
-        // database-scoped tokens cannot serve as ingest destinations — the
-        // run's load fails Forbidden — so ingest always uses the workspace
-        // credential.)
         let api_key = profile
             .api_key
             .clone()

@@ -61,9 +61,6 @@ pub fn rt() -> &'static tokio::runtime::Runtime {
 #[derive(Clone)]
 pub struct Api {
     client: Arc<Client>,
-    /// API base URL as configured (carries the `/v1` suffix; used by the raw
-    /// session-token mints, which target `/v1/auth/*` directly).
-    pub api_url: String,
     workspace_id: Option<String>,
     database_id: Option<String>,
 }
@@ -398,8 +395,7 @@ pub fn none_if_404<T>(r: Result<T, ApiError>) -> Result<Option<T>, ApiError> {
 /// helpers ([`Api::get_json`] etc.) prepend `/v1` too. Passing the `/v1`-suffixed
 /// url through verbatim would produce `/v1/v1/...` on every call. Strip one
 /// trailing `/v1` (and any trailing slash) so both paths resolve to a single
-/// `/v1`. Session-token mints are unaffected: they use the full `self.api_url`
-/// to hit `/v1/auth/*` directly.
+/// `/v1`.
 fn sdk_base_path(api_url: &str) -> String {
     let trimmed = api_url.trim_end_matches('/');
     trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string()
@@ -451,47 +447,31 @@ impl Api {
         };
         let api_url = profile_config.api_url.to_string();
 
-        // Auth-source precedence:
-        //   1. HOTDATA_DATABASE_TOKEN env (databases run child)
-        //   2. ~/.hotdata/session.json + optional api_key fallback
+        // Auth source: ~/.hotdata/session.json + optional api_key fallback.
         //
         // We pre-flight (so a dead/unusable credential exits at startup with
-        // the right hint), then hand the CliTokenProvider the matching mode to
+        // the right hint), then hand the CliTokenProvider the mode to
         // re-resolve on every request.
-        let mode = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
-            if crate::client::database_session::refresh_from_env(&api_url).is_none() {
-                eprintln!(
-                    "{}",
-                    crossterm::style::Stylize::red("error: HOTDATA_DATABASE_TOKEN is empty")
-                );
-                std::process::exit(1);
-            }
-            AuthMode::DatabaseEnv {
-                api_url: api_url.clone(),
-            }
-        } else {
-            let api_key_fallback = profile_config
-                .api_key
-                .as_deref()
-                .filter(|k| !k.is_empty() && *k != "PLACEHOLDER")
-                .map(String::from);
+        let api_key_fallback = profile_config
+            .api_key
+            .as_deref()
+            .filter(|k| !k.is_empty() && *k != "PLACEHOLDER")
+            .map(String::from);
 
-            if let Err(e) = crate::client::jwt::ensure_access_token(
-                &profile_config,
-                api_key_fallback.as_deref(),
-            ) {
-                use crossterm::style::Stylize;
-                eprintln!("{}", format!("error: {e}").red());
-                eprintln!(
-                    "Run {} to log in, or pass --api-key.",
-                    "hotdata auth login".cyan()
-                );
-                std::process::exit(1);
-            }
-            AuthMode::Session {
-                profile: profile_config.clone(),
-                api_key_fallback,
-            }
+        if let Err(e) =
+            crate::client::jwt::ensure_access_token(&profile_config, api_key_fallback.as_deref())
+        {
+            use crossterm::style::Stylize;
+            eprintln!("{}", format!("error: {e}").red());
+            eprintln!(
+                "Run {} to log in, or pass --api-key.",
+                "hotdata auth login".cyan()
+            );
+            std::process::exit(1);
+        }
+        let mode = AuthMode {
+            profile: profile_config.clone(),
+            api_key_fallback,
         };
 
         let database_id = std::env::var("HOTDATA_DATABASE").ok().or_else(|| {
@@ -535,7 +515,6 @@ impl Api {
         }
         Api {
             client: Arc::new(Client::from_configuration(configuration)),
-            api_url: api_url.to_string(),
             workspace_id,
             database_id,
         }
@@ -564,7 +543,6 @@ impl Api {
         }
         Api {
             client: Arc::new(Client::from_configuration(configuration)),
-            api_url: api_url.to_string(),
             workspace_id,
             database_id: None,
         }
@@ -595,7 +573,6 @@ impl Api {
         }
         Api {
             client: Arc::new(Client::from_configuration(configuration)),
-            api_url: api_url.to_string(),
             workspace_id: workspace_id.map(String::from),
             database_id: database_id.map(String::from),
         }
@@ -1673,7 +1650,7 @@ mod tests {
             api_url,
             workspace_id.map(String::from),
             None,
-            CliTokenProvider::new(AuthMode::Session {
+            CliTokenProvider::new(AuthMode {
                 profile,
                 api_key_fallback: None,
             }),

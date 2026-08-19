@@ -102,8 +102,6 @@ hotdata databases set <id>
 hotdata databases unset
 hotdata databases <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases delete <id> [--workspace-id <workspace_id>]
-hotdata databases run [--database <id>] [--name <label>] [--schema public] [--table <table> ...] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] <cmd> [args...]
-hotdata databases <id> run <cmd> [args...]
 
 # Attach a catalog so its tables are queryable (enables cross-catalog queries — see below)
 hotdata databases attach <catalog|name> [--database <id>] [--alias <alias>]
@@ -130,7 +128,6 @@ hotdata databases tables delete <table> [--database <id>] [--schema public] [--w
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
 - `tables load` — publishes to a managed-database table (with **replace** mode) from a local parquet file (`--file`), a remote parquet URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`, must belong to the target database).
 - `tables delete` — drops a table from the managed database.
-- `run` — mints a database-scoped JWT (via `POST /v1/auth/database`) and execs `<cmd>` with `HOTDATA_DATABASE_TOKEN`, `HOTDATA_DATABASE_REFRESH_TOKEN`, `HOTDATA_DATABASE`, `HOTDATA_WORKSPACE`, and `HOTDATA_API_URL` injected. Pass a database id as a group positional (`hotdata databases <id> run ...`) or via `--database <id>`; omit both to auto-create a scratch database using `--name` / `--schema` / `--table` / `--expires-at`. Use this to launch an agent or child process whose API access is scoped to a single database. The minted JWT carries `database`, `workspaces`, `permissions:["read","write"]`, and `source:"database_token"` — read+write within the token's workspace, with that database as the default query scope. The child `hotdata` (or any tool) picks the token up from `HOTDATA_DATABASE_TOKEN`. The session is persisted at `~/.hotdata/database_session.json` (mode `0600`); the child's exit code is propagated.
 - `attach` — attaches a **catalog** to a managed database, so the catalog's **live** tables become visible inside that database's query scope. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name the catalog answers to (defaults to the catalog's name). This is how you query an attached catalog's tables and **join across catalogs** — see [Querying across catalogs](#querying-across-catalogs-attach).
 - `detach` — removes an attached catalog. Accepts the catalog name/id **or** the alias you attached it under. Defaults to the active database.
 - `create --attach <catalog>[=<alias>]` — attach one or more catalogs at creation time (repeatable), e.g. `--attach github --attach salesdb=sales`.
@@ -240,7 +237,7 @@ Pull data from external sources (SQL databases, APIs, S3/GCS/Azure buckets, Iceb
 
 - **datasource** (`ds_…`) — what a credential opens: a server, a bucket root, a catalog, a cluster. Holds config + credentials, loads no data.
 - **ingest** (`ing_…`) — a saved load definition: `datasource + selector + destination + type/schedule`. One datasource can back many ingests.
-- **run** (`run_…`) — one execution attempt, with snapshots of the config version, selector, and destination it used. Addressed under its ingest: `ingest runs <ing_…>` lists them, `ingest run <run_…>` shows one. There is no top-level `run` command — that word belongs to `databases run`, `jobs`, and `queries`.
+- **run** (`run_…`) — one execution attempt, with snapshots of the config version, selector, and destination it used. Addressed under its ingest: `ingest runs <ing_…>` lists them, `ingest run <run_…>` shows one. There is no top-level `run` command — that word belongs to `jobs` and `queries`.
 
 One flag softens that for typing, and only for typing: `ingest create --source` accepts a display name and resolves it to an id **client-side, before the request**, erroring with both ids if the name matches two datasources rather than picking one. Every other argument, and every request the CLI sends, takes ids only.
 

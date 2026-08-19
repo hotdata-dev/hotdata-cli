@@ -417,24 +417,19 @@ pub fn ensure_access_token(
     Err("session expired or revoked".into())
 }
 
-/// Which credential source the [`CliTokenProvider`] serves bearers from.
+/// The credential source the [`CliTokenProvider`] serves bearers from: the
+/// user-scoped CLI session in `~/.hotdata/session.json`, with an optional
+/// `hd_...` api-key fallback served verbatim.
 ///
-/// Mirrors the auth-source precedence the wrapper (`src/client/sdk.rs`) applies
-/// (database env -> user session/api_key). The wrapper picks the variant at
-/// construction time; the provider re-runs the corresponding *existing*
-/// blocking CLI function on every request so session.json, the 30s leeway
-/// table, no-clobber for Flag/Env, and clear-on-dead-refresh stay owned by
-/// the CLI — the SDK never mints or exchanges anything, it only asks.
+/// The wrapper (`src/client/sdk.rs`) builds it at construction time; the
+/// provider re-runs the *existing* blocking CLI function on every request so
+/// session.json, the 30s leeway table, no-clobber for Flag/Env, and
+/// clear-on-dead-refresh stay owned by the CLI — the SDK never mints or
+/// exchanges anything, it only asks.
 #[derive(Debug, Clone)]
-pub enum AuthMode {
-    /// `HOTDATA_DATABASE_TOKEN` env var (a `databases run` child).
-    DatabaseEnv { api_url: String },
-    /// Normal user-scoped CLI session in `~/.hotdata/session.json`, with an
-    /// optional `hd_...` api-key fallback to serve verbatim.
-    Session {
-        profile: config::ProfileConfig,
-        api_key_fallback: Option<String>,
-    },
+pub struct AuthMode {
+    pub profile: config::ProfileConfig,
+    pub api_key_fallback: Option<String>,
 }
 
 /// A CLI-owned [`BearerTokenProvider`](hotdata::auth::BearerTokenProvider)
@@ -469,20 +464,11 @@ impl CliTokenProvider {
     /// functions; returns the token to put on the wire, or an error string
     /// describing why none could be obtained.
     ///
-    /// Cheap in the common case: both branches early-return the cached
-    /// credential with no network call when it is still fresh, and a raw
-    /// `hd_...` api key is returned verbatim with no I/O at all.
+    /// Cheap in the common case: `ensure_access_token` early-returns the
+    /// cached credential with no network call while it is still fresh, and a
+    /// raw `hd_...` api key is returned verbatim with no I/O at all.
     fn resolve_blocking(mode: &AuthMode) -> Result<String, String> {
-        match mode {
-            AuthMode::DatabaseEnv { api_url } => {
-                crate::client::database_session::refresh_from_env(api_url)
-                    .ok_or_else(|| "HOTDATA_DATABASE_TOKEN is empty".to_string())
-            }
-            AuthMode::Session {
-                profile,
-                api_key_fallback,
-            } => ensure_access_token(profile, api_key_fallback.as_deref()),
-        }
+        ensure_access_token(&mode.profile, mode.api_key_fallback.as_deref())
     }
 }
 
@@ -1180,7 +1166,7 @@ mod tests {
     }
 
     fn session_provider(profile: &ProfileConfig, api_key: Option<&str>) -> CliTokenProvider {
-        CliTokenProvider::new(AuthMode::Session {
+        CliTokenProvider::new(AuthMode {
             profile: profile.clone(),
             api_key_fallback: api_key.map(String::from),
         })
