@@ -106,6 +106,10 @@ pub enum Commands {
         #[arg(long, visible_alias = "in")]
         index: Option<String>,
 
+        /// Database the index lives in (id; defaults to the active database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
         /// Columns to display (comma-separated, defaults to all)
         #[arg(long)]
         select: Option<String>,

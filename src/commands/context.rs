@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-/// Subcommands for `hotdata context`.
+/// Subcommands for `hotdata databases context`.
 #[derive(clap::Subcommand)]
 pub enum ContextCommands {
     /// List named contexts in the workspace
@@ -234,8 +234,10 @@ pub fn show(workspace_id: &str, database_id: &str, name: &str) {
             );
             eprintln!(
                 "{}",
-                format!("Create ./{name}.md locally, then run: hotdata context push {name}")
-                    .dark_grey()
+                format!(
+                    "Create ./{name}.md locally, then run: hotdata databases context push {name}"
+                )
+                .dark_grey()
             );
             std::process::exit(1);
         }

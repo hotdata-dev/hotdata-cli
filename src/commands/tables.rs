@@ -1,4 +1,5 @@
 use crate::client::sdk::{Api, block_with_wakeup};
+use hotdata::models::TableInfo;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -8,11 +9,99 @@ struct Column {
     nullable: bool,
 }
 
+fn full_name(t: &TableInfo) -> String {
+    format!("{}.{}.{}", t.connection, t.schema, t.table)
+}
+
+#[derive(Serialize)]
+struct TableRow {
+    table: String,
+    synced: bool,
+    last_sync: Option<String>,
+}
+
 #[derive(Serialize)]
 struct TableWithColumns {
     table: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     columns: Vec<Column>,
+}
+
+pub fn list(
+    workspace_id: &str,
+    schema: Option<&str>,
+    table_filter: Option<&str>,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+    format: &str,
+) {
+    let api = Api::new(Some(workspace_id));
+
+    let body = block_with_wakeup(
+        &api,
+        "Loading tables…",
+        api.client().information_schema().get(
+            None,
+            schema,
+            table_filter,
+            None,
+            limit.map(|l| l as i32),
+            cursor,
+        ),
+    )
+    .unwrap_or_else(|e| e.exit());
+
+    let has_more = body.has_more;
+    let next_cursor = body.next_cursor.flatten();
+
+    let mut out: Vec<TableRow> = body
+        .tables
+        .iter()
+        .map(|t| TableRow {
+            table: full_name(t),
+            synced: t.synced,
+            last_sync: t.last_sync.clone().flatten(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.table.cmp(&b.table));
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&out).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&out).unwrap()),
+        "table" => {
+            if out.is_empty() {
+                use crossterm::style::Stylize;
+                eprintln!("{}", "No tables found.".dark_grey());
+            } else {
+                let rows: Vec<Vec<String>> = out
+                    .iter()
+                    .map(|r| {
+                        vec![
+                            r.table.clone(),
+                            r.synced.to_string(),
+                            r.last_sync
+                                .as_deref()
+                                .map(crate::util::format_date)
+                                .unwrap_or_else(|| "-".to_string()),
+                        ]
+                    })
+                    .collect();
+                crate::output::table::print(&["TABLE", "SYNCED", "LAST_SYNC"], &rows);
+            }
+        }
+        _ => unreachable!(),
+    }
+
+    if has_more {
+        use crossterm::style::Stylize;
+        eprintln!(
+            "{}",
+            format!(
+                "More results available. Use --cursor {} to fetch the next page.",
+                next_cursor.as_deref().unwrap_or("")
+            )
+            .dark_grey()
+        );
+    }
 }
 
 pub fn show(workspace_id: &str, table_ref: &str, format: &str) {

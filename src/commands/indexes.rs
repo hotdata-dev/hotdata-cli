@@ -510,9 +510,12 @@ pub fn create(
     }
 }
 
-/// A search index located by name, for `search`'s by-name addressing.
+/// A search index located by name within a managed database, for `search`'s
+/// by-name addressing. Carries the database's real ids (never a `__db_*` label).
 pub struct LocatedIndex {
-    pub connection: String,
+    pub database_id: String,
+    pub connection_id: String,
+    pub catalog: String,
     pub schema: String,
     pub table: String,
     pub index_type: String,
@@ -521,46 +524,55 @@ pub struct LocatedIndex {
     pub metric: Option<String>,
 }
 
-/// Find a search index by name — scoped to the active managed database when one
-/// is set, otherwise across the whole workspace. Errors on no match or on an
-/// ambiguous name (present on more than one table).
-pub fn locate_by_name(workspace_id: &str, name: &str) -> Result<LocatedIndex, String> {
+/// Find a search index by name within a managed database.
+///
+/// The database is required and addressed by id — an explicit `--database`, or
+/// the active one set via `hotdata databases use <id>`. There is no
+/// workspace-wide scan and no fallback to the internal `__db_*` connection
+/// label: the database's own `default_connection_id` addresses the index API and
+/// its `default_catalog` builds search SQL. Errors on no database, no match, or
+/// an ambiguous name.
+pub fn locate_by_name(
+    workspace_id: &str,
+    database: Option<&str>,
+    name: &str,
+) -> Result<LocatedIndex, String> {
     let api = Api::new(Some(workspace_id));
-    // Scope to the active managed database when one is set. Its SQL catalog
-    // alias is what a query must name — the index listing reports the internal
-    // `__db_*` connection label, which `bm25_search`/`vector_distance` cannot
-    // address, so prefer the alias when building the located table below.
-    let active_db = crate::config::load_current_database("default", workspace_id)
-        .and_then(|db_id| databases::get_database(&api, &db_id).ok());
-    let connection_id = active_db
-        .as_ref()
-        .map(|db| db.default_connection_id.clone());
-    let rows = collect_connection_wide(&api, connection_id.as_deref(), None, None)
+    let db_id = database
+        .map(str::to_string)
+        .or_else(|| crate::config::load_current_database("default", workspace_id))
+        .ok_or_else(|| {
+            "no database — pass --database <id> or set one with `hotdata databases use <id>`"
+                .to_string()
+        })?;
+    let db = databases::get_database(&api, &db_id).unwrap_or_else(|e| e.exit());
+    let connection_id = db.default_connection_id;
+    let catalog = db
+        .default_catalog
+        .unwrap_or_else(|| db.name.unwrap_or_else(|| "default".to_string()));
+
+    let rows = collect_connection_wide(&api, Some(&connection_id), None, None)
         .unwrap_or_else(|e| e.exit());
     let matches: Vec<&IndexRow> = rows.iter().filter(|r| r.inner.index_name == name).collect();
     match matches.as_slice() {
         [] => Err(format!(
-            "No search index named '{name}' — run 'hotdata search list' to see indexes."
+            "No search index named '{name}' in this database — run 'hotdata search list' to see indexes."
         )),
         [one] => {
             let loc = one.table.clone().unwrap_or_default();
             let parts: Vec<&str> = loc.splitn(3, '.').collect();
-            let (label_conn, schema, table) = match parts.as_slice() {
-                [c, s, t] => (c.to_string(), s.to_string(), t.to_string()),
+            let (schema, table) = match parts.as_slice() {
+                [_conn, s, t] => (s.to_string(), t.to_string()),
                 _ => return Err(format!("Could not resolve the table for index '{name}'.")),
             };
-            // Prefer the active db's SQL catalog alias over the internal
-            // `__db_*` connection label that the index listing reports.
-            let connection = active_db
-                .as_ref()
-                .and_then(|db| db.default_catalog.clone())
-                .unwrap_or(label_conn);
             let search_column = one
                 .inner
                 .search_column()
                 .ok_or_else(|| format!("Index '{name}' has no columns."))?;
             Ok(LocatedIndex {
-                connection,
+                database_id: db_id,
+                connection_id,
+                catalog,
                 schema,
                 table,
                 index_type: one.inner.index_type.clone(),
@@ -570,7 +582,7 @@ pub fn locate_by_name(workspace_id: &str, name: &str) -> Result<LocatedIndex, St
             })
         }
         _ => Err(format!(
-            "Multiple indexes named '{name}' across tables — this by-name form needs a unique name."
+            "Multiple indexes named '{name}' on this database — this by-name form needs a unique name."
         )),
     }
 }

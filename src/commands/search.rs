@@ -1,10 +1,10 @@
 //! `hotdata search` — search indexes as named objects.
 //!
 //! A reshape of the former flag-based `search`, plus `indexes` and
-//! `embedding-providers`, into one namespace. An index is addressed by name;
-//! `--type vector|text` maps onto the underlying `vector` / `bm25` index types.
-//! The legacy flag form (`search "text" --table …`) is preserved via
-//! [`legacy`] during migration.
+//! `embedding-providers`, into one namespace. The search action is
+//! `search "<text>" --index <name>`; index management lives under `search
+//! create|list|show|remove`, and `--type text|vector|sorted` maps onto the
+//! underlying `bm25` / `vector` / `sorted` index types.
 
 use crate::client::sdk::Api;
 use crate::commands::embedding_providers::{self, EmbeddingProvidersCommands};
@@ -19,8 +19,8 @@ pub enum SearchCommands {
         /// Index name (derived from table, column, and type if omitted)
         name: Option<String>,
 
-        /// Search type: `vector` (semantic) or `text` (BM25 full-text)
-        #[arg(long, value_parser = ["vector", "text"])]
+        /// Search type: `vector` (semantic), `text` (BM25 full-text), or `sorted`
+        #[arg(long, value_parser = ["vector", "text", "sorted"])]
         r#type: String,
 
         /// Table to index (`catalog.schema.table`, or `schema.table` with an active database)
@@ -38,6 +38,18 @@ pub enum SearchCommands {
         /// Embedding provider ID (vector over a text column → auto-embeddings)
         #[arg(long = "provider")]
         provider: Option<String>,
+
+        /// Override embedding output dimensions (vector auto-embed only)
+        #[arg(long)]
+        dimensions: Option<u32>,
+
+        /// Custom name for the generated embedding column (defaults to `{column}_embedding`)
+        #[arg(long = "output-column")]
+        output_column: Option<String>,
+
+        /// Human-readable description of the embedding (e.g. "product titles")
+        #[arg(long)]
+        description: Option<String>,
 
         /// Create as a background job
         #[arg(long)]
@@ -64,6 +76,10 @@ pub enum SearchCommands {
         /// Index name
         name: String,
 
+        /// Database the index lives in (id; defaults to the active database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
@@ -73,6 +89,10 @@ pub enum SearchCommands {
     Remove {
         /// Index name
         name: String,
+
+        /// Database the index lives in (id; defaults to the active database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
     },
 
     /// Manage embedding providers — the models behind vector search
@@ -91,6 +111,9 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             column,
             metric,
             provider,
+            dimensions,
+            output_column,
+            description,
             r#async,
         } => create(
             workspace_id,
@@ -100,6 +123,9 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             &column,
             metric.as_deref(),
             provider.as_deref(),
+            dimensions,
+            output_column.as_deref(),
+            description.as_deref(),
             r#async,
         ),
         SearchCommands::List {
@@ -107,8 +133,14 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             table,
             output,
         } => list(workspace_id, schema.as_deref(), table.as_deref(), &output),
-        SearchCommands::Show { name, output } => show(workspace_id, &name, &output),
-        SearchCommands::Remove { name } => remove(workspace_id, &name),
+        SearchCommands::Show {
+            name,
+            database,
+            output,
+        } => show(workspace_id, database.as_deref(), &name, &output),
+        SearchCommands::Remove { name, database } => {
+            remove(workspace_id, database.as_deref(), &name)
+        }
         SearchCommands::Embeddings { command } => {
             embedding_providers::dispatch(workspace_id, command)
         }
@@ -151,7 +183,7 @@ fn parse_table(workspace_id: &str, table: &str) -> (String, String, String) {
 }
 
 /// Build the SQL a search runs: `bm25_search(...)` for text, server-side
-/// `vector_distance(...)` for vector. Shared by [`query_index`] and [`legacy`].
+/// `vector_distance(...)` for vector.
 fn build_search_sql(
     index_type: &str,
     table_fqn: &str,
@@ -198,9 +230,16 @@ fn create(
     column: &str,
     metric: Option<&str>,
     provider: Option<&str>,
+    dimensions: Option<u32>,
+    output_column: Option<&str>,
+    description: Option<&str>,
     async_mode: bool,
 ) {
-    let index_type = if type_ == "text" { "bm25" } else { "vector" };
+    let index_type = match type_ {
+        "text" => "bm25",
+        "sorted" => "sorted",
+        _ => "vector",
+    };
     let (conn_name, schema, table) = parse_table(workspace_id, from);
     let api = Api::new(Some(workspace_id));
     let conn_id = connections::resolve_connection_id(&api, &conn_name);
@@ -219,9 +258,9 @@ fn create(
         metric,
         async_mode,
         provider,
-        None,
-        None,
-        None,
+        dimensions,
+        output_column,
+        description,
     );
 }
 
@@ -242,22 +281,22 @@ fn list(workspace_id: &str, schema: Option<&str>, table: Option<&str>, output: &
     );
 }
 
-fn locate_or_exit(workspace_id: &str, name: &str) -> indexes::LocatedIndex {
-    indexes::locate_by_name(workspace_id, name).unwrap_or_else(|e| {
+fn locate_or_exit(workspace_id: &str, database: Option<&str>, name: &str) -> indexes::LocatedIndex {
+    indexes::locate_by_name(workspace_id, database, name).unwrap_or_else(|e| {
         use crossterm::style::Stylize;
         eprintln!("{}", e.red());
         std::process::exit(1);
     })
 }
 
-fn show(workspace_id: &str, name: &str, output: &str) {
-    let loc = locate_or_exit(workspace_id, name);
-    let kind = if loc.index_type == "bm25" {
-        "text"
-    } else {
-        "vector"
+fn show(workspace_id: &str, database: Option<&str>, name: &str, output: &str) {
+    let loc = locate_or_exit(workspace_id, database, name);
+    let kind = match loc.index_type.as_str() {
+        "bm25" => "text",
+        "sorted" => "sorted",
+        _ => "vector",
     };
-    let table_fqn = format!("{}.{}.{}", loc.connection, loc.schema, loc.table);
+    let table_fqn = format!("{}.{}.{}", loc.catalog, loc.schema, loc.table);
     let v = serde_json::json!({
         "name": name,
         "kind": kind,
@@ -286,14 +325,15 @@ fn show(workspace_id: &str, name: &str, output: &str) {
 /// Run a search against the named index (`search "text" --index <name>`).
 pub fn run(
     workspace_id: &str,
+    database: Option<&str>,
     name: &str,
     text: &str,
     select: Option<&str>,
     limit: u32,
     output: &str,
 ) {
-    let loc = locate_or_exit(workspace_id, name);
-    let table_fqn = format!("{}.{}.{}", loc.connection, loc.schema, loc.table);
+    let loc = locate_or_exit(workspace_id, database, name);
+    let table_fqn = format!("{}.{}.{}", loc.catalog, loc.schema, loc.table);
     let sql = build_search_sql(
         &loc.index_type,
         &table_fqn,
@@ -302,17 +342,15 @@ pub fn run(
         select,
         limit,
     );
-    query::execute(&sql, workspace_id, None, output);
+    query::execute(&sql, workspace_id, Some(&loc.database_id), output);
 }
 
-fn remove(workspace_id: &str, name: &str) {
-    let loc = locate_or_exit(workspace_id, name);
-    let api = Api::new(Some(workspace_id));
-    let conn_id = connections::resolve_connection_id(&api, &loc.connection);
+fn remove(workspace_id: &str, database: Option<&str>, name: &str) {
+    let loc = locate_or_exit(workspace_id, database, name);
     indexes::delete(
         workspace_id,
         IndexScope::Connection {
-            connection_id: &conn_id,
+            connection_id: &loc.connection_id,
             schema: &loc.schema,
             table: &loc.table,
         },

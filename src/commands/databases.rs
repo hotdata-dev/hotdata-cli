@@ -178,7 +178,7 @@ pub enum DatabasesCommands {
         upload_id: Option<String>,
 
         /// Load a saved query result by id (e.g. `--result-id rslt…`, from
-        /// `hotdata results` or a query's `[result-id: …]` footer) instead of a
+        /// `hotdata databases results` or a query's `[result-id: …]` footer) instead of a
         /// file. The result must belong to the target database — the one it was
         /// queried in.
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
@@ -194,7 +194,7 @@ pub enum DatabasesCommands {
         command: Option<DatabaseTablesCommands>,
     },
 
-    /// Sync database context with local Markdown (also at top-level `context`)
+    /// Sync database context with local Markdown
     Context {
         #[command(subcommand)]
         command: crate::commands::context::ContextCommands,
@@ -217,7 +217,7 @@ pub enum DatabasesCommands {
         command: Option<crate::commands::query::QueryCommands>,
     },
 
-    /// Inspect query run history (also at top-level `queries`)
+    /// Inspect query run history
     Queries {
         /// Query run ID to show details
         id: Option<String>,
@@ -234,7 +234,7 @@ pub enum DatabasesCommands {
         command: Option<crate::commands::queries::QueriesCommands>,
     },
 
-    /// Retrieve stored query results (also at top-level `results`)
+    /// Retrieve stored query results
     Results {
         /// Result ID (omit to use a subcommand)
         result_id: Option<String>,
@@ -261,16 +261,28 @@ pub enum DatabaseTablesCommands {
         #[arg(long)]
         database: Option<String>,
 
-        /// Filter by schema name
+        /// Filter by schema name (supports % wildcards)
         #[arg(long)]
         schema: Option<String>,
+
+        /// Filter by table name (supports % wildcards)
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Maximum number of results to return
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination cursor from a previous response
+        #[arg(long)]
+        cursor: Option<String>,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
     },
 
-    /// Show column definitions for a table (also at top-level `tables show`)
+    /// Show column definitions for a table
     Show {
         /// Table as catalog.schema.table (or schema.table with an active database)
         table: String,
@@ -306,7 +318,7 @@ pub enum DatabaseTablesCommands {
         upload_id: Option<String>,
 
         /// Load a saved query result by id (e.g. `--result-id rslt…`, from
-        /// `hotdata results` or a query's `[result-id: …]` footer) instead of a
+        /// `hotdata databases results` or a query's `[result-id: …]` footer) instead of a
         /// file. The result must belong to the target database — the one it was
         /// queried in.
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]

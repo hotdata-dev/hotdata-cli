@@ -176,7 +176,7 @@ hotdata databases load --catalog demo --table listings --file ./listings.parquet
 
 ```sh
 hotdata databases tables list                # every queryable table, as connection.schema.table
-hotdata databases tables list --connection-id <id>  # with column names and types
+hotdata databases tables show <table>        # column names and types for one table
 hotdata query "<sql>" [-o table|json|csv]    # PostgreSQL dialect
 ```
 

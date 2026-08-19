@@ -312,16 +312,42 @@ fn main() {
                             Some(DatabaseTablesCommands::List {
                                 database: db_flag,
                                 schema,
+                                table,
+                                limit,
+                                cursor,
                                 output,
-                            }) => databases::tables_list(
-                                &workspace_id,
-                                db_flag.as_deref().or(database.as_deref()),
-                                schema.as_deref(),
-                                None,
-                                None,
-                                None,
-                                &output,
-                            ),
+                            }) => {
+                                let db = db_flag.as_deref().or(database.as_deref());
+                                // Scope to a database when one is addressable
+                                // (flag / group positional / active), else list
+                                // every table in the workspace.
+                                if db.is_some()
+                                    || crate::config::load_current_database(
+                                        "default",
+                                        &workspace_id,
+                                    )
+                                    .is_some()
+                                {
+                                    databases::tables_list(
+                                        &workspace_id,
+                                        db,
+                                        schema.as_deref(),
+                                        table.as_deref(),
+                                        limit,
+                                        cursor.as_deref(),
+                                        &output,
+                                    )
+                                } else {
+                                    tables::list(
+                                        &workspace_id,
+                                        schema.as_deref(),
+                                        table.as_deref(),
+                                        limit,
+                                        cursor.as_deref(),
+                                        &output,
+                                    )
+                                }
+                            }
                             Some(DatabaseTablesCommands::Show { table, output }) => {
                                 tables::show(&workspace_id, &table, &output)
                             }
@@ -587,6 +613,7 @@ fn main() {
             Commands::Search {
                 query,
                 index,
+                database,
                 select,
                 limit,
                 workspace_id,
@@ -599,6 +626,7 @@ fn main() {
                     None => match (query, index) {
                         (Some(query), Some(index)) => commands::search::run(
                             &workspace_id,
+                            database.as_deref(),
                             &index,
                             &query,
                             select.as_deref(),
