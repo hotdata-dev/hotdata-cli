@@ -47,20 +47,23 @@ hotdata search "<query>" --in <name>
 
 ## Indexes (text and vector)
 
-Create names the index (positional) and attaches to a table via `--from <catalog.schema.table>` (a managed database or an attached catalog). `list` narrows to the **active database** when one is set; without one it scans the whole workspace. `remove` takes the index name.
+Indexes are a **managed-database** concept. Create names the index (positional) and attaches to a table on a managed database via `--from` — `catalog.schema.table` (the managed database's catalog), or `schema.table` with an active database set. A plain connection catalog is rejected. `list` narrows to the **active database** when one is set; without one it scans the whole workspace. `show`/`remove` resolve the index by name in the active database (or `--database <id>`).
 
 ```bash
 # List — active-database scope when a DB is set, else whole-workspace scan
 hotdata search list [--workspace-id <ws>] [--output table|json|yaml]
 
-# Create — index name is positional; --from is catalog.schema.table
+# Create — index name is positional; --from is a managed database's table
 hotdata search create <name> --type text|vector --from <catalog.schema.table> \
   --column <col> \
   [--metric l2|cosine|dot] [--async] \
   [--provider <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 
-# Remove — by index name
-hotdata search remove <name>
+# Show — by index name, in the active database (or -d/--database <id>)
+hotdata search show <name> [-d <db-id>] [--output table|json|yaml]
+
+# Remove — by index name, in the active database (or -d/--database <id>)
+hotdata search remove <name> [-d <db-id>]
 ```
 
 - **`--type` is required** on create: `text` (BM25; one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`** — [`../analytics/SKILL.md`](../analytics/SKILL.md).)

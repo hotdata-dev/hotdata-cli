@@ -9,7 +9,7 @@
 use crate::client::sdk::Api;
 use crate::commands::embedding_providers::{self, EmbeddingProvidersCommands};
 use crate::commands::indexes::{self, IndexScope};
-use crate::commands::{connections, databases, query};
+use crate::commands::{databases, query};
 
 /// Subcommands for `hotdata search`.
 #[derive(clap::Subcommand)]
@@ -240,9 +240,26 @@ fn create(
         "sorted" => "sorted",
         _ => "vector",
     };
-    let (conn_name, schema, table) = parse_table(workspace_id, from);
+    let (catalog, schema, table) = parse_table(workspace_id, from);
     let api = Api::new(Some(workspace_id));
-    let conn_id = connections::resolve_connection_id(&api, &conn_name);
+    // Indexes are a managed-database concept. Resolve --from's catalog to a
+    // managed database and use its connection; reject a plain connection (a
+    // legacy concept being removed) so create can't make an index that the
+    // managed-database-only `search show`/`search remove` can't reach.
+    let db = databases::try_resolve_database(&api, &catalog).unwrap_or_else(|_| {
+        use crossterm::style::Stylize;
+        eprintln!(
+            "{}",
+            format!(
+                "error: '{catalog}' is not a managed database. Search indexes are created on \
+                 managed databases — pass a managed database's catalog, or 'schema.table' with an \
+                 active database set via 'hotdata databases use <id>'."
+            )
+            .red()
+        );
+        std::process::exit(1);
+    });
+    let conn_id = db.default_connection_id;
     let auto_name = format!("{table}_{}_{index_type}", column.replace(',', "_"));
     let index_name = name.unwrap_or(auto_name.as_str());
     indexes::create(
@@ -333,6 +350,18 @@ pub fn run(
     output: &str,
 ) {
     let loc = locate_or_exit(workspace_id, database, name);
+    if loc.index_type == "sorted" {
+        use crossterm::style::Stylize;
+        eprintln!(
+            "{}",
+            format!(
+                "error: index '{name}' is a sorted index — not searchable. Use 'hotdata query' \
+                 with a WHERE/ORDER BY filter instead."
+            )
+            .red()
+        );
+        std::process::exit(1);
+    }
     let table_fqn = format!("{}.{}.{}", loc.catalog, loc.schema, loc.table);
     let sql = build_search_sql(
         &loc.index_type,
