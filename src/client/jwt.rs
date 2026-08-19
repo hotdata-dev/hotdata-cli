@@ -417,6 +417,96 @@ pub fn ensure_access_token(
     Err("session expired or revoked".into())
 }
 
+/// Which credential source the [`CliTokenProvider`] serves bearers from.
+///
+/// Mirrors the auth-source precedence the wrapper (`src/client/sdk.rs`) applies
+/// (database env -> user session/api_key). The wrapper picks the variant at
+/// construction time; the provider re-runs the corresponding *existing*
+/// blocking CLI function on every request so session.json, the 30s leeway
+/// table, no-clobber for Flag/Env, and clear-on-dead-refresh stay owned by
+/// the CLI — the SDK never mints or exchanges anything, it only asks.
+#[derive(Debug, Clone)]
+pub enum AuthMode {
+    /// `HOTDATA_DATABASE_TOKEN` env var (a `databases run` child).
+    DatabaseEnv { api_url: String },
+    /// Normal user-scoped CLI session in `~/.hotdata/session.json`, with an
+    /// optional `hd_...` api-key fallback to serve verbatim.
+    Session {
+        profile: config::ProfileConfig,
+        api_key_fallback: Option<String>,
+    },
+}
+
+/// A CLI-owned [`BearerTokenProvider`](hotdata::auth::BearerTokenProvider)
+/// installed on the SDK's `Configuration::token_provider`.
+///
+/// `bearer_value` delegates to the CLI's existing *synchronous* token
+/// functions, which own session.json, PKCE-minted refresh tokens, and the
+/// `/o/token/` `client_id=hotdata-cli` attribution. They hand back either a
+/// ready `eyJ...` session JWT or a raw `hd_...` API token, and the SDK sends
+/// whichever verbatim — the CLI keeps full ownership of auth.
+///
+/// The SDK calls this once per request, which is what lets a credential
+/// outlive its own TTL over a long command: a multi-gigabyte `upload_file`
+/// whose finalize lands well after the ~5 minute session token was issued, a
+/// long-running query, or the parallel `indexes.rs` rayon batch all refresh
+/// transparently instead of 401ing partway through.
+///
+/// The blocking functions run inside `spawn_blocking` so they don't stall the
+/// wrapper's async runtime — the provider sits on the hot path of every
+/// request, including futures raced under `select!`.
+#[derive(Debug, Clone)]
+pub struct CliTokenProvider {
+    mode: AuthMode,
+}
+
+impl CliTokenProvider {
+    pub fn new(mode: AuthMode) -> Self {
+        Self { mode }
+    }
+
+    /// Resolve a bearer synchronously. Pure delegation to the existing CLI auth
+    /// functions; returns the token to put on the wire, or an error string
+    /// describing why none could be obtained.
+    ///
+    /// Cheap in the common case: both branches early-return the cached
+    /// credential with no network call when it is still fresh, and a raw
+    /// `hd_...` api key is returned verbatim with no I/O at all.
+    fn resolve_blocking(mode: &AuthMode) -> Result<String, String> {
+        match mode {
+            AuthMode::DatabaseEnv { api_url } => {
+                crate::client::database_session::refresh_from_env(api_url)
+                    .ok_or_else(|| "HOTDATA_DATABASE_TOKEN is empty".to_string())
+            }
+            AuthMode::Session {
+                profile,
+                api_key_fallback,
+            } => ensure_access_token(profile, api_key_fallback.as_deref()),
+        }
+    }
+}
+
+#[hotdata::auth::async_trait]
+impl hotdata::auth::BearerTokenProvider for CliTokenProvider {
+    async fn bearer_value(&self) -> Result<String, hotdata::auth::BearerTokenError> {
+        let mode = self.mode.clone();
+        // The CLI auth functions are blocking (reqwest::blocking I/O + file
+        // writes). Run them on a blocking thread so the multi-thread runtime's
+        // worker threads (and concurrent rayon block_on calls) aren't stalled.
+        let resolved = tokio::task::spawn_blocking(move || Self::resolve_blocking(&mode))
+            .await
+            .unwrap_or_else(|e| Err(format!("token resolution task failed: {e}")));
+
+        resolved.map_err(|body| {
+            // Surface as a 401 so `Configuration::resolve_bearer_token` logs the
+            // cause and the request proceeds to a 401 the wrapper shapes into
+            // the "run hotdata auth login" hint (the same end-state as the old
+            // ApiClient refresher returning None).
+            hotdata::auth::BearerTokenError::Status { status: 401, body }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1072,6 +1162,134 @@ mod tests {
         assert!(err.contains("session"), "got: {err}");
         // Stale session must be cleared so the next attempt doesn't
         // burn a network call on the same dead refresh token.
+        assert!(load_session().is_none());
+    }
+
+    // --- CliTokenProvider (SDK BearerTokenProvider impl) ------------------
+    //
+    // These drive `bearer_value` through the shared multi-thread runtime,
+    // asserting the provider delegates to the existing CLI auth functions
+    // (so session.json, the 30s leeway, and `client_id=hotdata-cli` at
+    // `/o/token/` stay CLI-owned and the SDK only sees a ready credential).
+
+    use hotdata::auth::BearerTokenProvider;
+
+    /// Resolve a provider's bearer on the shared wrapper runtime.
+    fn bearer(provider: &CliTokenProvider) -> Result<String, hotdata::auth::BearerTokenError> {
+        crate::client::sdk::rt().block_on(provider.bearer_value())
+    }
+
+    fn session_provider(profile: &ProfileConfig, api_key: Option<&str>) -> CliTokenProvider {
+        CliTokenProvider::new(AuthMode::Session {
+            profile: profile.clone(),
+            api_key_fallback: api_key.map(String::from),
+        })
+    }
+
+    #[test]
+    fn provider_returns_cached_jwt_without_http() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_session(&cached_session(600, 7 * 24 * 3600)).unwrap();
+        // Dead port: a network call would error, proving the fast path.
+        let profile = mock_profile("http://127.0.0.1:1");
+        let provider = session_provider(&profile, None);
+        assert_eq!(bearer(&provider).unwrap(), "cached-jwt");
+    }
+
+    #[test]
+    fn provider_refreshes_inside_leeway_with_hotdata_cli_client_id() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("grant_type".into(), "refresh_token".into()),
+                mockito::Matcher::UrlEncoded("client_id".into(), "hotdata-cli".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"refreshed-jwt","expires_in":300}"#)
+            .create();
+
+        save_session(&cached_session(5, 86400)).unwrap();
+        let profile = mock_profile(&server.url());
+        let provider = session_provider(&profile, None);
+        assert_eq!(bearer(&provider).unwrap(), "refreshed-jwt");
+        m.assert();
+    }
+
+    /// A raw `hd_...` API token is the bearer, not something to trade in.
+    /// Before `hotdata` 0.12.0 this path minted a JWT at `/o/token/` with
+    /// `grant_type=api_token`; that exchange is gone, so the provider hands the
+    /// token back verbatim and no credential endpoint is touched at all.
+    #[test]
+    fn provider_returns_api_token_verbatim_without_minting() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        // Any hit on `/o/token/` means an exchange crept back in.
+        let mint = server.mock("POST", "/o/token/").expect(0).create();
+
+        let profile = mock_profile(&server.url());
+        let provider = session_provider(&profile, Some("hd_xyz"));
+        assert_eq!(bearer(&provider).unwrap(), "hd_xyz");
+        mint.assert();
+    }
+
+    #[test]
+    fn provider_persists_rotated_token_to_session_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "grant_type".into(),
+                "refresh_token".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"rotated-jwt","expires_in":300,"refresh_token":"r2"}"#)
+            .create();
+
+        save_session(&cached_session(-10, 86400)).unwrap();
+        let profile = mock_profile(&server.url());
+        let provider = session_provider(&profile, None);
+        assert_eq!(bearer(&provider).unwrap(), "rotated-jwt");
+
+        // The rotated token survives to disk for the next CLI invocation,
+        // still at 0600 (it carries a refresh token).
+        let loaded = load_session().unwrap();
+        assert_eq!(loaded.access_token, "rotated-jwt");
+        let path = session_path().unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn provider_surfaces_401_when_no_credential() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        // No session, no api_key fallback -> ensure_access_token errors, the
+        // provider maps it to a 401 so the request proceeds to the wrapper's
+        // "run hotdata auth login" hint.
+        let profile = mock_profile("http://127.0.0.1:1");
+        let provider = session_provider(&profile, None);
+        match bearer(&provider).unwrap_err() {
+            hotdata::auth::BearerTokenError::Status { status, .. } => assert_eq!(status, 401),
+            other => panic!("expected Status 401, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn provider_clears_session_when_refresh_dies_no_fallback() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let _m = server.mock("POST", "/o/token/").with_status(400).create();
+
+        save_session(&cached_session(-10, 86400)).unwrap();
+        let profile = mock_profile(&server.url());
+        let provider = session_provider(&profile, None);
+        assert!(bearer(&provider).is_err());
+        // Dead refresh with no fallback -> session cleared (no clobber loop).
         assert!(load_session().is_none());
     }
 }

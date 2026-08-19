@@ -17,51 +17,12 @@
 //!
 //! # Auth
 //!
-//! `hotdata` 0.12.0 dropped the SDK's own JWT-exchange machinery
-//! (`Configuration::token_provider`, `resolve_bearer_token`): a request now
-//! carries whatever static string sits in `Configuration.bearer_access_token`,
-//! baked in once when a `Client` is built. Construction reproduces the old
-//! `ApiClient::new` auth-source precedence, resolving that initial bearer via
-//! the CLI's existing `jwt::ensure_access_token` (session.json + PKCE refresh
-//! table) or `database_session::refresh_from_env`, and also captures which of
-//! the two as an [`AuthSource`] so it can be re-resolved later.
-//!
-//! **What re-resolves a fresh bearer per call, and what doesn't:** the
-//! CLI-owned request paths that build their own `reqwest::RequestBuilder` —
-//! [`apply_seam_headers`] (backing [`Api::get_json`]/[`post_raw`](Api::post_raw)/
-//! [`delete_raw`](Api::delete_raw)), [`Api::probe_runtime_status`],
-//! [`Api::get_result_arrow`] (calls the SDK's free `hotdata::arrow::get_result_arrow`
-//! against a freshly-stamped `Configuration` instead of the shared one), and
-//! [`Api::upload`] (refreshed once at the start of the upload) — all call
-//! [`Api::fresh_bearer`], which re-runs `ensure_access_token`/`refresh_from_env`
-//! (a cheap no-op when the cached credential is still fresh). **Generated SDK
-//! ops** (`self.client.<resource>()...`, used throughout the command modules,
-//! including the parallel `indexes.rs` rayon batch and a long-lived
-//! `databases run` child) still read the bearer baked into the shared
-//! `Arc<Client>`'s `Configuration` once at [`Api::new`] time — refreshing that
-//! would require making the shared client swappable under concurrent access,
-//! which this pass doesn't attempt. A command whose generated-op calls span
-//! longer than the resolved credential's TTL (a 5-minute PKCE-session JWT, or
-//! a ~300s `databases run` child token) will see those specific calls start
-//! failing with 401 mid-command; a raw `hd_...` API-key credential has no such
-//! TTL and isn't affected. Tracked as a known follow-up rather than solved
-//! here.
-//!
-//! Even where the bearer is re-resolved per call, [`Api::upload`]'s underlying
-//! `Client::upload_file` is one opaque SDK call spanning session-open, every
-//! part `PUT`, and finalize against a single fixed `Configuration` snapshot —
-//! a transfer that itself outlives the credential's TTL still fails at
-//! finalize, since there's no hook to refresh mid-flight without reimplementing
-//! that orchestration in the CLI. That specific failure is at least given a
-//! diagnosable message instead of a bare `401` — see
-//! [`ApiError::from_upload_error_for_session`] — because the generic 4xx path
-//! is actively misleading for it: a PKCE session's refresh token is usually
-//! still good, so `check_status`'s re-probe reports `Authenticated` and hides
-//! what actually happened.
-//!
-//! The remaining generated-SDK-op gap (a raw `hd_...` API-key credential has
-//! no TTL and isn't affected; only a PKCE session on a command dominated by
-//! generated ops is) is accepted as-is, not tracked as follow-up work.
+//! Construction reproduces the old `ApiClient::new` 4-level auth-source
+//! precedence by choosing the [`AuthMode`](crate::client::jwt::AuthMode) the installed
+//! [`CliTokenProvider`](crate::client::jwt::CliTokenProvider) will serve. The provider
+//! returns a ready CLI-minted JWT (`client_id=hotdata-cli`, `/o/token/`), which
+//! the SDK passes through unchanged; the CLI keeps full ownership of
+//! session.json and the refresh table.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -73,6 +34,7 @@ use hotdata::apis::{Error, ResponseContent};
 use hotdata::{UploadError, UploadOptions, UploadProgress};
 
 use crate::client::credentials;
+use crate::client::jwt::{AuthMode, CliTokenProvider};
 use crate::config;
 use crate::util;
 
@@ -95,7 +57,7 @@ pub fn rt() -> &'static tokio::runtime::Runtime {
 /// Synchronous handle over the Hotdata SDK `Client`.
 ///
 /// Cheap to clone (`Arc<Client>`); all clones share one `Configuration` — one
-/// bearer, one reqwest connection pool — across rayon workers.
+/// `token_provider`, one reqwest connection pool — across rayon workers.
 #[derive(Clone)]
 pub struct Api {
     client: Arc<Client>,
@@ -104,49 +66,6 @@ pub struct Api {
     pub api_url: String,
     workspace_id: Option<String>,
     database_id: Option<String>,
-    /// How to re-resolve a fresh bearer for the CLI-owned request paths below
-    /// ([`apply_seam_headers`], [`Api::probe_runtime_status`], [`Api::upload`],
-    /// [`Api::get_result_arrow`]) instead of reusing the one baked into
-    /// `Configuration` at construction. `None` for the test constructors,
-    /// which have a fixed static bearer and nothing to re-resolve.
-    ///
-    /// This does **not** cover generated SDK ops (`self.client.<resource>()...`,
-    /// e.g. the rayon batch in `indexes.rs` or a long-lived `databases run`
-    /// child) — those read the bearer baked into the shared `Arc<Client>`'s
-    /// `Configuration` once, and refreshing that would mean making the shared
-    /// client swappable under concurrent access. See the module-level `# Auth`
-    /// note.
-    auth_source: Option<AuthSource>,
-}
-
-/// A re-resolvable credential source, mirroring the auth-source precedence
-/// [`Api::new`] applies. `resolve` is cheap to call on every request: both
-/// underlying functions early-return the cached credential with no network
-/// call when it's still fresh, and only hit the wire when it's stale.
-#[derive(Debug, Clone)]
-enum AuthSource {
-    /// `HOTDATA_DATABASE_TOKEN` env var (a `databases run` child).
-    DatabaseEnv { api_url: String },
-    /// Normal user-scoped CLI session in `~/.hotdata/session.json`, with an
-    /// optional `hd_...` api-key fallback.
-    Session {
-        profile: config::ProfileConfig,
-        api_key_fallback: Option<String>,
-    },
-}
-
-impl AuthSource {
-    fn resolve(&self) -> Option<String> {
-        match self {
-            AuthSource::DatabaseEnv { api_url } => {
-                crate::client::database_session::refresh_from_env(api_url)
-            }
-            AuthSource::Session {
-                profile,
-                api_key_fallback,
-            } => crate::client::jwt::ensure_access_token(profile, api_key_fallback.as_deref()).ok(),
-        }
-    }
 }
 
 /// Request timeout for SDK-routed calls. Mirrors the old `ApiClient` so a hung
@@ -315,51 +234,6 @@ impl ApiError {
         }
     }
 
-    /// [`from_upload_error`](Self::from_upload_error), specialized for the one
-    /// case that needs a distinct diagnosis: `upload_file` runs create-session
-    /// → every part `PUT` → finalize against a single `Configuration` snapshot
-    /// stamped with whatever bearer was fresh when the upload started (see
-    /// [`Api::upload`]). A PKCE session credential is only good for ~5
-    /// minutes; an upload that runs longer than that gets its bytes fully
-    /// onto storage and then 401s at finalize, with no way for the CLI to
-    /// refresh mid-flight (`upload_file` is one opaque SDK call).
-    ///
-    /// The generic 4xx path is actively misleading here, not just unhelpful:
-    /// [`exit`](Self::exit)'s re-probe calls `check_status`, and for a PKCE
-    /// session the 7-day refresh token is usually still good, so the probe
-    /// comes back `Authenticated` and the bare server body is printed with no
-    /// explanation. `is_session_credential` must be true only for an actual
-    /// PKCE-derived bearer, never a raw `hd_...` API key — the caller
-    /// establishes that by comparing the resolved bearer against the
-    /// api-key fallback string, not by `AuthSource` variant alone, since
-    /// `AuthSource::Session` also covers the api-key case (see [`Api::upload`]).
-    /// A revoked or wrongly-scoped API key has no TTL to blame and `hotdata
-    /// auth login` isn't even a valid remedy for it (or available
-    /// non-interactively, where API keys are the norm), so misclassifying it
-    /// here would swallow the server's real error under a false diagnosis.
-    fn from_upload_error_for_session(err: UploadError, is_session_credential: bool) -> Self {
-        // Only 401: a 403 at finalize is much more likely a real
-        // authorization problem (e.g. a database-scoped credential denied
-        // from finalizing into the target database) than an expired token,
-        // and mislabeling it as "session expired" would hide the server's
-        // own explanation.
-        if is_session_credential
-            && let UploadError::Finalize(Error::ResponseError(ResponseContent { status, .. })) =
-                &err
-            && *status == reqwest::StatusCode::UNAUTHORIZED
-        {
-            return ApiError::Status {
-                status: *status,
-                body: "your login session expired while this upload was in progress (a large \
-                       upload can outlive the ~5 minute session token). The file finished \
-                       uploading to storage but could not be finalized. Run `hotdata auth \
-                       login` and retry the same command."
-                    .to_string(),
-            };
-        }
-        Self::from_upload_error(err)
-    }
-
     /// A printable, single-line description of the failure.
     ///
     /// Used where the error is surfaced inline (e.g. folded into a query
@@ -473,15 +347,6 @@ where
 {
     let pb = util::spinner(msg);
     let hint_pb = pb.clone();
-    // Resolved before entering the runtime, not inside `probe_runtime_status`
-    // itself: that function runs as one arm of the `select!` below, polled
-    // alongside the real request `fut`, and `fresh_bearer` can do blocking
-    // I/O (session-file reads/an `/o/token/` refresh call). Doing that inside
-    // a polled future would stall the whole task on the calling thread until
-    // it returns, delaying the real request's completion right along with
-    // it — exactly what `spawn_blocking` protected against in the old
-    // `CliTokenProvider` this replaced.
-    let probe_bearer = api.fresh_bearer(api.client.configuration());
     let result = rt().block_on(async {
         tokio::pin!(fut);
         // After the delay, probe once and (if cold) upgrade the message, then
@@ -490,12 +355,9 @@ where
         // `fut` wins.
         let hint = async {
             tokio::time::sleep(WAKE_PROBE_DELAY).await;
-            let state = tokio::time::timeout(
-                WAKE_PROBE_TIMEOUT,
-                api.probe_runtime_status(probe_bearer.as_deref()),
-            )
-            .await
-            .unwrap_or(RuntimeState::Unknown);
+            let state = tokio::time::timeout(WAKE_PROBE_TIMEOUT, api.probe_runtime_status())
+                .await
+                .unwrap_or(RuntimeState::Unknown);
             if state.is_cold() {
                 hint_pb.set_message(WAKE_MESSAGE);
             }
@@ -545,14 +407,13 @@ fn sdk_base_path(api_url: &str) -> String {
 
 /// Apply the seam's common request headers to a raw `RequestBuilder`: User-Agent,
 /// the `X-Workspace-Id` api_key, the database `X-Database-Id` scope, and the
-/// static bearer. Generated SDK ops inject the api_key headers themselves; the
+/// resolved bearer. Generated SDK ops inject the api_key headers themselves; the
 /// raw seam helpers ([`Api::get_json`] etc.) bypass the generated client, so
 /// they funnel through this one place rather than repeating the block per verb.
-fn apply_seam_headers(
+async fn apply_seam_headers(
     mut req: reqwest::RequestBuilder,
     cfg: &Configuration,
     database_id: Option<&str>,
-    bearer: Option<&str>,
 ) -> reqwest::RequestBuilder {
     if let Some(ref user_agent) = cfg.user_agent {
         req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
@@ -569,18 +430,17 @@ fn apply_seam_headers(
     if let Some(db) = database_id {
         req = req.header("X-Database-Id", db);
     }
-    if let Some(token) = bearer {
+    if let Some(token) = cfg.resolve_bearer_token().await {
         req = req.bearer_auth(token);
     }
     req
 }
 
 impl Api {
-    /// Build an [`Api`], reproducing `ApiClient::new`'s auth-source precedence.
-    /// Resolves the bearer once, synchronously, up front (see the module-level
-    /// `# Auth` note on why this is now a one-shot resolution rather than a
-    /// per-request hook) and exits with a diagnostic if config can't load or
-    /// no usable credential exists, matching the old startup behavior.
+    /// Build an [`Api`], reproducing `ApiClient::new`'s auth-source precedence
+    /// by selecting the [`AuthMode`] the installed provider will serve. Exits
+    /// with a diagnostic if config can't load or no usable credential exists,
+    /// matching the old startup behavior.
     pub fn new(workspace_id: Option<&str>) -> Self {
         let profile_config = match config::load("default") {
             Ok(c) => c,
@@ -595,24 +455,19 @@ impl Api {
         //   1. HOTDATA_DATABASE_TOKEN env (databases run child)
         //   2. ~/.hotdata/session.json + optional api_key fallback
         //
-        // Resolved once here for the diagnostic-on-failure behavior below, and
-        // captured as an `AuthSource` so later CLI-owned calls can re-resolve a
-        // fresh bearer instead of reusing this one for the process lifetime.
-        let (bearer, auth_source) = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
-            match crate::client::database_session::refresh_from_env(&api_url) {
-                Some(tok) => (
-                    tok,
-                    AuthSource::DatabaseEnv {
-                        api_url: api_url.clone(),
-                    },
-                ),
-                None => {
-                    eprintln!(
-                        "{}",
-                        crossterm::style::Stylize::red("error: HOTDATA_DATABASE_TOKEN is empty")
-                    );
-                    std::process::exit(1);
-                }
+        // We pre-flight (so a dead/unusable credential exits at startup with
+        // the right hint), then hand the CliTokenProvider the matching mode to
+        // re-resolve on every request.
+        let mode = if std::env::var("HOTDATA_DATABASE_TOKEN").is_ok() {
+            if crate::client::database_session::refresh_from_env(&api_url).is_none() {
+                eprintln!(
+                    "{}",
+                    crossterm::style::Stylize::red("error: HOTDATA_DATABASE_TOKEN is empty")
+                );
+                std::process::exit(1);
+            }
+            AuthMode::DatabaseEnv {
+                api_url: api_url.clone(),
             }
         } else {
             let api_key_fallback = profile_config
@@ -621,26 +476,21 @@ impl Api {
                 .filter(|k| !k.is_empty() && *k != "PLACEHOLDER")
                 .map(String::from);
 
-            match crate::client::jwt::ensure_access_token(
+            if let Err(e) = crate::client::jwt::ensure_access_token(
                 &profile_config,
                 api_key_fallback.as_deref(),
             ) {
-                Ok(tok) => (
-                    tok,
-                    AuthSource::Session {
-                        profile: profile_config.clone(),
-                        api_key_fallback,
-                    },
-                ),
-                Err(e) => {
-                    use crossterm::style::Stylize;
-                    eprintln!("{}", format!("error: {e}").red());
-                    eprintln!(
-                        "Run {} to log in, or pass --api-key.",
-                        "hotdata auth login".cyan()
-                    );
-                    std::process::exit(1);
-                }
+                use crossterm::style::Stylize;
+                eprintln!("{}", format!("error: {e}").red());
+                eprintln!(
+                    "Run {} to log in, or pass --api-key.",
+                    "hotdata auth login".cyan()
+                );
+                std::process::exit(1);
+            }
+            AuthMode::Session {
+                profile: profile_config.clone(),
+                api_key_fallback,
             }
         };
 
@@ -652,19 +502,17 @@ impl Api {
             &api_url,
             workspace_id.map(String::from),
             database_id,
-            bearer,
-            Some(auth_source),
+            CliTokenProvider::new(mode),
         )
     }
 
-    /// Build the SDK `Configuration` directly (base_path, static bearer,
+    /// Build the SDK `Configuration` directly (base_path, token_provider,
     /// X-Workspace-Id api_key) and wrap it. Shared by `new` and tests.
     fn from_configuration(
         api_url: &str,
         workspace_id: Option<String>,
         database_id: Option<String>,
-        bearer: String,
-        auth_source: Option<AuthSource>,
+        provider: CliTokenProvider,
     ) -> Self {
         let mut configuration = Configuration {
             base_path: sdk_base_path(api_url),
@@ -673,9 +521,9 @@ impl Api {
             // (`hotdata-rust/...`). The old ApiClient sent no User-Agent; an
             // explicit CLI agent is the correct attribution.
             user_agent: Some(format!("hotdata-cli/{}", env!("CARGO_PKG_VERSION"))),
-            bearer_access_token: Some(bearer),
             ..Configuration::default()
         };
+        configuration.token_provider = Some(Arc::new(provider));
         if let Some(ref ws) = workspace_id {
             configuration.api_keys.insert(
                 hotdata::client::WORKSPACE_ID_HEADER.to_string(),
@@ -690,26 +538,13 @@ impl Api {
             api_url: api_url.to_string(),
             workspace_id,
             database_id,
-            auth_source,
         }
     }
 
-    /// Re-resolve a fresh bearer for the CLI-owned request paths, falling back
-    /// to the one baked into `cfg` at construction when there's no
-    /// [`AuthSource`] to re-resolve from (the test constructors) or
-    /// re-resolution fails (the request then proceeds with the stale bearer
-    /// and fails naturally with the server's own 401, same as before this
-    /// existed).
-    fn fresh_bearer(&self, cfg: &Configuration) -> Option<String> {
-        self.auth_source
-            .as_ref()
-            .and_then(AuthSource::resolve)
-            .or_else(|| cfg.bearer_access_token.clone())
-    }
-
     /// Test-only constructor: build an [`Api`] against a mock server with a
-    /// static bearer (no config load), so requests carry
-    /// `Authorization: Bearer <jwt>`.
+    /// static bearer (no config load, no token provider). The SDK's
+    /// `resolve_bearer_token` falls back to `bearer_access_token` when no
+    /// provider is installed, so requests carry `Authorization: Bearer <jwt>`.
     #[cfg(test)]
     pub(crate) fn test_new(api_url: &str, bearer: &str, workspace_id: Option<&str>) -> Self {
         let mut configuration = Configuration {
@@ -732,7 +567,6 @@ impl Api {
             api_url: api_url.to_string(),
             workspace_id,
             database_id: None,
-            auth_source: None,
         }
     }
 
@@ -764,7 +598,6 @@ impl Api {
             api_url: api_url.to_string(),
             workspace_id: workspace_id.map(String::from),
             database_id: database_id.map(String::from),
-            auth_source: None,
         }
     }
 
@@ -822,12 +655,7 @@ impl Api {
     /// routing this probe there would wake the very worker we're asking about.
     /// Without it the request lands on the always-warm control plane, which
     /// answers from Kubernetes state.
-    ///
-    /// `bearer` is resolved by the caller *before* entering the runtime (see
-    /// [`block_with_wakeup`]), not here: this fn runs as a polled future
-    /// racing the real request via `select!`, and [`Api::fresh_bearer`] can do
-    /// blocking I/O that would otherwise stall that whole task.
-    async fn probe_runtime_status(&self, bearer: Option<&str>) -> RuntimeState {
+    async fn probe_runtime_status(&self) -> RuntimeState {
         let Some(ws) = self.workspace_id.as_deref() else {
             return RuntimeState::Unknown;
         };
@@ -843,7 +671,7 @@ impl Api {
         if let Some(ref user_agent) = cfg.user_agent {
             req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
         }
-        if let Some(token) = bearer {
+        if let Some(token) = cfg.resolve_bearer_token().await {
             req = req.bearer_auth(token);
         }
         let Ok(resp) = req.send().await else {
@@ -881,47 +709,16 @@ impl Api {
     /// client**: a 10 GB+ parquet far outlives the shared client's 300s request
     /// timeout, and the storage `PUT`s reuse `configuration.client`, so a
     /// wall-clock cap would abort a healthy-but-slow transfer. We clone the
-    /// configured `Configuration` (same base_path, bearer, scope
+    /// configured `Configuration` (same base_path, token_provider, scope
     /// api_keys, user-agent) and swap only the reqwest client, so the
     /// session/finalize calls carry the identical auth + headers.
     ///
     /// `progress` is the SDK [`UploadProgress`] callback, invoked with
     /// cumulative `(bytes_done, total)` as bytes flow; the caller drives a
     /// progress bar from it. The recorded content type is parquet (advisory).
-    ///
-    /// The bearer is re-resolved fresh right before the upload starts (rather
-    /// than reusing whatever [`Api::new`] resolved, which may already be
-    /// stale by the time a command reaches this call) — see [`Api::fresh_bearer`].
-    /// That covers the common case, but not a transfer that itself outlives
-    /// the credential's TTL: `upload_file` is one opaque SDK call spanning
-    /// session-open, every part `PUT`, and finalize against a single fixed
-    /// `Configuration`, so a token that expires mid-upload still fails at
-    /// finalize with no way for the CLI to intervene without reimplementing
-    /// that orchestration itself. That specific failure — a PKCE session
-    /// credential's ~5-minute TTL elapsing after the bytes are already on
-    /// storage but before finalize — is at least given a diagnosable message
-    /// instead of a bare `401`; see
-    /// [`from_upload_error_for_session`](ApiError::from_upload_error_for_session).
     pub fn upload(&self, path: &Path, progress: UploadProgress) -> Result<String, ApiError> {
         let mut cfg = self.client.configuration().clone();
         cfg.client = upload_reqwest_client();
-        let resolved = self.fresh_bearer(&cfg);
-        // `AuthSource::Session` covers both a PKCE browser login *and* a raw
-        // `hd_...` API key (`--api-key`/env/config) — only the former has the
-        // ~5-minute TTL this diagnosis is about. `ensure_access_token` returns
-        // an api-key fallback verbatim (no mint, no expiry), so a resolved
-        // bearer that equals the fallback string is that raw key, not a
-        // session JWT — compare against it rather than trusting the enum
-        // variant alone.
-        let is_session_credential = match &self.auth_source {
-            Some(AuthSource::Session {
-                api_key_fallback, ..
-            }) => resolved.as_deref() != api_key_fallback.as_deref(),
-            _ => false,
-        };
-        if let Some(token) = resolved {
-            cfg.bearer_access_token = Some(token);
-        }
         let upload_client = Client::from_configuration(cfg);
 
         let opts = UploadOptions {
@@ -932,7 +729,7 @@ impl Api {
         };
         let resp = rt()
             .block_on(upload_client.upload_file(path, opts))
-            .map_err(|e| ApiError::from_upload_error_for_session(e, is_session_credential))?;
+            .map_err(ApiError::from_upload_error)?;
         Ok(resp.upload_id)
     }
 
@@ -941,7 +738,7 @@ impl Api {
     ///
     /// Used where the generated SDK model is lossy (drops fields the CLI
     /// displays) so the seam still owns auth/transport — same reqwest client,
-    /// bearer, and `X-Workspace-Id` header as every
+    /// bearer via the `token_provider`, and `X-Workspace-Id` header as every
     /// other SDK call — while the CLI keeps its own typed deserialization. The
     /// `connections_new`-style "keep untyped parsing when the SDK model omits
     /// fields" escape hatch, applied here for `GET /results`.
@@ -956,13 +753,12 @@ impl Api {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
-        let bearer = self.fresh_bearer(cfg);
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::GET, &url);
             if !query.is_empty() {
                 req = req.query(query);
             }
-            req = apply_seam_headers(req, cfg, database_id.as_deref(), bearer.as_deref());
+            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
 
             let resp = req
                 .send()
@@ -997,10 +793,9 @@ impl Api {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
-        let bearer = self.fresh_bearer(cfg);
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::POST, &url).json(body);
-            req = apply_seam_headers(req, cfg, database_id.as_deref(), bearer.as_deref());
+            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
 
             let resp = req
                 .send()
@@ -1027,10 +822,9 @@ impl Api {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
-        let bearer = self.fresh_bearer(cfg);
         rt().block_on(async move {
             let mut req = cfg.client.request(reqwest::Method::DELETE, &url);
-            req = apply_seam_headers(req, cfg, database_id.as_deref(), bearer.as_deref());
+            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
 
             let resp = req
                 .send()
@@ -1048,32 +842,18 @@ impl Api {
     /// Fetch `/v1/results/{id}` as Arrow IPC and decode it through the SDK's
     /// `get_result_arrow`, returning the fully-buffered [`hotdata::ArrowResult`].
     ///
-    /// The SDK owns transport (same reqwest client, `X-Workspace-Id`) and
-    /// decode. Results are database-scoped, so the active database is
-    /// forwarded as the required `X-Database-Id`;
-    /// [`require_database`](Self::require_database) exits with a hint when none
-    /// is set. Its `ArrowError` (the Arrow-path error type, which is not an
-    /// `Error<T>`) is mapped to [`ApiError`] via [`from_arrow`](ApiError::from_arrow)
-    /// so callers keep the same `.exit()` handling.
-    ///
-    /// Calls the free `hotdata::arrow::get_result_arrow` against a cloned
-    /// `Configuration` carrying a freshly re-resolved bearer, rather than
-    /// `self.client.get_result_arrow` (which would read whatever bearer was
-    /// baked in at construction) — see [`Api::fresh_bearer`].
+    /// The SDK owns transport (same reqwest client, bearer via the
+    /// `token_provider`, `X-Workspace-Id`) and decode. Results are
+    /// database-scoped, so the active database is forwarded as the required
+    /// `X-Database-Id`; [`require_database`](Self::require_database) exits with a
+    /// hint when none is set. Its `ArrowError` (the Arrow-path error type, which
+    /// is not an `Error<T>`) is mapped to [`ApiError`] via
+    /// [`from_arrow`](ApiError::from_arrow) so callers keep the same `.exit()`
+    /// handling.
     pub fn get_result_arrow(&self, id: &str) -> Result<hotdata::ArrowResult, ApiError> {
-        let database_id = self.require_database().to_string();
-        let mut cfg = self.client.configuration().clone();
-        if let Some(token) = self.fresh_bearer(&cfg) {
-            cfg.bearer_access_token = Some(token);
-        }
-        rt().block_on(hotdata::arrow::get_result_arrow(
-            &cfg,
-            id,
-            &database_id,
-            None,
-            None,
-        ))
-        .map_err(ApiError::from_arrow)
+        let database_id = self.require_database();
+        rt().block_on(self.client.get_result_arrow(id, database_id, None, None))
+            .map_err(ApiError::from_arrow)
     }
 
     // --- Sample migrated call (workspace.rs uses this) -----------------------
@@ -1855,18 +1635,28 @@ mod tests {
         }
     }
 
-    /// Build an `Api` backed by a genuine cached PKCE session, so `upload`
-    /// resolves a real session JWT (not an api-key fallback returned
-    /// verbatim) and classifies it as session-sourced. Requires the caller
-    /// to be inside a `with_temp_config_dir` guard.
-    fn pkce_session_credential_api(api_url: &str, workspace_id: Option<&str>) -> Api {
+    // --- Per-request bearer resolution (end-to-end through the wrapper) ------
+    //
+    // `jwt.rs` covers `CliTokenProvider::bearer_value` in isolation. These
+    // assert the wrapper actually *installs* it on every path a command uses,
+    // which is what makes a credential survive longer than its own TTL. A
+    // request that never reaches the provider carries no `Authorization` at
+    // all (`from_configuration` leaves `bearer_access_token` unset), so every
+    // header match below fails if the hook is dropped.
+
+    /// The token the cached session serves.
+    const SESSION_JWT: &str = "fresh-session-jwt";
+
+    /// Build an `Api` backed by a genuine cached PKCE session, wired the same
+    /// way `Api::new` wires a real one. Requires a `with_temp_config_dir` guard.
+    fn session_backed_api(api_url: &str, workspace_id: Option<&str>) -> Api {
         use std::time::{SystemTime, UNIX_EPOCH};
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         crate::client::jwt::save_session(&crate::client::jwt::Session {
-            access_token: "session-jwt".to_string(),
+            access_token: SESSION_JWT.to_string(),
             access_expires_at: now + 300,
             refresh_token: "refresh-1".to_string(),
             refresh_expires_at: now + 7 * 24 * 3600,
@@ -1883,188 +1673,140 @@ mod tests {
             api_url,
             workspace_id.map(String::from),
             None,
-            "session-jwt".to_string(),
-            Some(AuthSource::Session {
+            CliTokenProvider::new(AuthMode::Session {
                 profile,
                 api_key_fallback: None,
             }),
         )
     }
 
-    /// Build an `Api` for a raw `hd_...` API key passed via `--api-key`
-    /// (`ApiKeySource::Flag`). This *also* uses `AuthSource::Session` — the
-    /// same enum variant a PKCE login uses — because `Api::new` only takes
-    /// the `DatabaseEnv` branch for `HOTDATA_DATABASE_TOKEN`; every other
-    /// credential, including a raw API key, is `Session { .. }`.
-    /// `ensure_access_token` returns `api_key_fallback` verbatim with no
-    /// network call for `Flag`/`Env` sources (see `jwt::ensure_access_token`),
-    /// so this needs no `/o/token/` mock — and, critically, means the
-    /// resolved bearer equals `api_key_fallback`, which is the signal
-    /// `upload` uses to tell this apart from an actual session JWT.
-    fn api_key_via_session_auth_source_api(api_url: &str, workspace_id: Option<&str>) -> Api {
-        let profile = config::ProfileConfig {
-            api_key_source: config::ApiKeySource::Flag,
-            api_url: config::ApiUrl(Some(api_url.to_string())),
-            ..Default::default()
-        };
-        Api::from_configuration(
-            api_url,
-            workspace_id.map(String::from),
-            None,
-            "hd_test_key".to_string(),
-            Some(AuthSource::Session {
-                profile,
-                api_key_fallback: Some("hd_test_key".to_string()),
-            }),
-        )
-    }
-
-    /// A finalize 401 on a genuine PKCE-session credential gets a specific
-    /// "your login session expired" diagnosis, not the bare server body —
-    /// the generic 4xx path is actively misleading here (the session's
-    /// refresh token is usually still good, so `check_status`'s re-probe
-    /// reports `Authenticated` and the real cause never surfaces).
+    /// Issue #120: a large `tables load` 401'd with "Invalid api key" because
+    /// the upload outlived the credential it started with. `upload_file` clones
+    /// the `Configuration` for its dedicated no-timeout client, so the clone
+    /// must carry the provider — otherwise create-session, the part `PUT`s, and
+    /// finalize all replay one bearer stamped when the transfer began.
+    ///
+    /// The storage `PUT` must *not* be authenticated: it targets a presigned
+    /// URL on object storage, which rejects a request carrying an unexpected
+    /// `Authorization` header. Asserted so a future "stamp the bearer
+    /// everywhere" change can't pass.
     #[test]
-    fn upload_maps_finalize_401_to_session_expired_message_for_pkce_session() {
+    fn upload_resolves_bearer_per_request() {
         let (_tmp, _guard) = config::test_helpers::with_temp_config_dir();
-        let (tf, _len) = upload_temp_file(64);
+        let (tf, len) = upload_temp_file(4096);
 
         let mut server = mockito::Server::new();
-        let put_url = format!("{}/storage/upload_expired", server.url());
-        let _create = server
+        let put_url = format!("{}/storage/upload_fresh", server.url());
+        let create = server
             .mock("POST", "/v1/uploads")
+            .match_header("Authorization", format!("Bearer {SESSION_JWT}").as_str())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(format!(
-                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_expired","url":"{put_url}"}}"#
+                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_fresh","url":"{put_url}"}}"#
             ))
             .create();
-        let _put = server
-            .mock("PUT", "/storage/upload_expired")
+        let put = server
+            .mock("PUT", "/storage/upload_fresh")
+            .match_header("Authorization", mockito::Matcher::Missing)
             .with_status(200)
             .with_header("ETag", "\"etag-1\"")
             .create();
-        let _finalize = server
-            .mock("POST", "/v1/uploads/upload_expired/finalize")
-            .with_status(401)
-            .with_body(r#"{"error":{"message":"token expired"}}"#)
+        let finalize = server
+            .mock("POST", "/v1/uploads/upload_fresh/finalize")
+            .match_header("Authorization", format!("Bearer {SESSION_JWT}").as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"upload_id":"upload_fresh","status":"ready","size_bytes":{len},"created_at":"2026-06-05T00:00:00Z"}}"#
+            ))
             .create();
 
-        let api = pkce_session_credential_api(&server.url(), Some("ws-1"));
-        let err = api
+        let api = session_backed_api(&server.url(), Some("ws-1"));
+        let id = api
             .upload(tf.path(), noop_progress())
-            .expect_err("a finalize 401 must map to an error");
+            .expect("upload must succeed when every leg resolves its own bearer");
 
-        match err {
-            ApiError::Status { status, body } => {
-                assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
-                assert!(
-                    body.contains("expired while this upload was in progress"),
-                    "expected the session-expiry diagnosis, got: {body}"
-                );
-                assert!(body.contains("hotdata auth login"), "got: {body}");
-            }
-            other => panic!("expected Status error, got {other:?}"),
-        }
+        assert_eq!(id, "upload_fresh");
+        create.assert();
+        put.assert();
+        finalize.assert();
     }
 
-    /// The same finalize 401, but for a raw `hd_...` API key passed via
-    /// `--api-key` — this shares `AuthSource::Session` with a PKCE login (see
-    /// `api_key_via_session_auth_source_api`), which is exactly the shape a
-    /// prior version of this check got wrong. An API key has no TTL, so the
-    /// generic bare-status message is correct and must NOT be replaced by
-    /// the session-expiry wording — `hotdata auth login` isn't even a valid
-    /// remedy for a revoked API key, or available non-interactively.
+    /// Generated SDK ops go through the shared `Arc<Client>` — what the command
+    /// modules use for almost everything, including the parallel `indexes.rs`
+    /// rayon batch and a long-lived `databases run` child.
     #[test]
-    fn upload_finalize_401_stays_generic_for_api_key_via_session_auth_source() {
-        let (tf, _len) = upload_temp_file(64);
+    fn generated_ops_resolve_bearer_per_request() {
+        let (_tmp, _guard) = config::test_helpers::with_temp_config_dir();
 
         let mut server = mockito::Server::new();
-        let put_url = format!("{}/storage/upload_revoked_key", server.url());
-        let _create = server
-            .mock("POST", "/v1/uploads")
+        let m = server
+            .mock("GET", "/v1/workspaces")
+            .match_header("Authorization", format!("Bearer {SESSION_JWT}").as_str())
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(format!(
-                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_revoked_key","url":"{put_url}"}}"#
-            ))
-            .create();
-        let _put = server
-            .mock("PUT", "/storage/upload_revoked_key")
-            .with_status(200)
-            .with_header("ETag", "\"etag-1\"")
-            .create();
-        let _finalize = server
-            .mock("POST", "/v1/uploads/upload_revoked_key/finalize")
-            .with_status(401)
-            .with_body(r#"{"error":{"message":"api key revoked"}}"#)
+            .with_body(WS_BODY)
+            .expect(2)
             .create();
 
-        let api = api_key_via_session_auth_source_api(&server.url(), Some("ws-1"));
-        let err = api
-            .upload(tf.path(), noop_progress())
-            .expect_err("a finalize 401 must map to an error");
+        let api = session_backed_api(&server.url(), None);
+        // Twice, since the mock matches the bearer on every request it serves:
+        // a client that resolved once and cached would still have to produce
+        // the right header on the second call.
+        api.list_workspaces(None)
+            .expect("first call must carry the session token");
+        api.list_workspaces(None)
+            .expect("second call must resolve again");
 
-        match err {
-            ApiError::Status { status, body } => {
-                assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
-                assert!(body.contains("api key revoked"), "got: {body}");
-                assert!(
-                    !body.contains("expired while this upload was in progress"),
-                    "must not apply the session-expiry wording to an api-key credential, \
-                     got: {body}"
-                );
-            }
-            other => panic!("expected Status error, got {other:?}"),
-        }
+        m.assert();
     }
 
-    /// The same finalize 401, but for a raw `hd_...` API-key credential (no
-    /// `AuthSource`, as built by `Api::test_new`) — no TTL, so the generic
-    /// bare-status message is correct and must NOT be replaced by the
-    /// session-expiry wording.
+    /// The CLI-owned seam helpers build their own `RequestBuilder`, bypassing
+    /// the generated client, so `apply_seam_headers` has to ask the
+    /// `Configuration` itself rather than read a baked-in field.
     #[test]
-    fn upload_finalize_401_stays_generic_for_non_session_credential() {
-        let (tf, _len) = upload_temp_file(64);
+    fn seam_helpers_resolve_bearer_per_request() {
+        #[derive(serde::Deserialize)]
+        struct Probe {
+            value: u32,
+        }
+
+        let (_tmp, _guard) = config::test_helpers::with_temp_config_dir();
 
         let mut server = mockito::Server::new();
-        let put_url = format!("{}/storage/upload_apikey", server.url());
-        let _create = server
-            .mock("POST", "/v1/uploads")
+        let get = server
+            .mock("GET", "/v1/results")
+            .match_header("Authorization", format!("Bearer {SESSION_JWT}").as_str())
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(format!(
-                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_apikey","url":"{put_url}"}}"#
-            ))
+            .with_body(r#"{"value":42}"#)
             .create();
-        let _put = server
-            .mock("PUT", "/storage/upload_apikey")
+        let post = server
+            .mock("POST", "/v1/refresh")
+            .match_header("Authorization", format!("Bearer {SESSION_JWT}").as_str())
             .with_status(200)
-            .with_header("ETag", "\"etag-1\"")
+            .with_body("{}")
             .create();
-        let _finalize = server
-            .mock("POST", "/v1/uploads/upload_apikey/finalize")
-            .with_status(401)
-            .with_body(r#"{"error":{"message":"invalid credential"}}"#)
+        let delete = server
+            .mock("DELETE", "/v1/things/t_1")
+            .match_header("Authorization", format!("Bearer {SESSION_JWT}").as_str())
+            .with_status(204)
             .create();
 
-        let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
-        let err = api
-            .upload(tf.path(), noop_progress())
-            .expect_err("a finalize 401 must map to an error");
+        let api = session_backed_api(&server.url(), Some("ws-1"));
+        let probe: Probe = api
+            .get_json("/results", &[])
+            .expect("get_json must succeed");
+        assert_eq!(probe.value, 42);
+        api.post_raw("/refresh", &serde_json::json!({}))
+            .expect("post_raw must succeed");
+        api.delete_raw("/things/t_1")
+            .expect("delete_raw must succeed");
 
-        match err {
-            ApiError::Status { status, body } => {
-                assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
-                assert!(body.contains("invalid credential"), "got: {body}");
-                assert!(
-                    !body.contains("expired while this upload was in progress"),
-                    "must not apply the session-expiry wording to a non-session credential, \
-                     got: {body}"
-                );
-            }
-            other => panic!("expected Status error, got {other:?}"),
-        }
+        get.assert();
+        post.assert();
+        delete.assert();
     }
 
     #[test]
@@ -2127,7 +1869,7 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("work-1"));
-        let state = rt().block_on(api.probe_runtime_status(Some("test-jwt")));
+        let state = rt().block_on(api.probe_runtime_status());
         assert_eq!(state, RuntimeState::Asleep);
         m.assert();
     }
@@ -2143,7 +1885,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("work-1"));
         assert_eq!(
-            rt().block_on(api.probe_runtime_status(Some("test-jwt"))),
+            rt().block_on(api.probe_runtime_status()),
             RuntimeState::Unknown
         );
     }
@@ -2156,7 +1898,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", None);
         assert_eq!(
-            rt().block_on(api.probe_runtime_status(Some("test-jwt"))),
+            rt().block_on(api.probe_runtime_status()),
             RuntimeState::Unknown
         );
         m.assert();
