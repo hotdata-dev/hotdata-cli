@@ -218,6 +218,10 @@ hotdata search create trips_notes_vec --type vector --from demo.public.trips \
 hotdata search "rides that mention lost items" --index trips_notes_vec
 ```
 
+The search commands resolve the index in the active database (`hotdata databases
+use <id>`); pass `-d/--database <id>` to target another, or when no active
+database is set.
+
 System embedding providers come pre-configured; bring your own with
 `hotdata search embeddings add`.
 

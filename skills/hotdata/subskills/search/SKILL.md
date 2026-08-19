@@ -21,11 +21,11 @@ Both run server-side. The search action addresses an index **by name** (`--index
 ```bash
 # BM25 / text (requires a text index; address it by name)
 hotdata search "<query>" --index <name> \
-  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
+  [--database <db-id>] [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 
 # Vector (requires a vector index; server auto-embeds the query text)
 hotdata search "<query>" --index <name> \
-  [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
+  [--database <db-id>] [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 
 # --in is an accepted alias for --index
 hotdata search "<query>" --in <name>
@@ -40,6 +40,7 @@ hotdata search "<query>" --in <name>
 - **Custom embedding model, raw query vector, or no vector index?** Use `hotdata query` directly (e.g. `cosine_distance(col, [<vec>])`) — `search` only auto-embeds the query text via the index's own provider.
 - **Before search:** create the right index (`search create <name> --type text` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
 - Default `--limit` is 10.
+- **Database:** the search commands resolve the index in the **active** database (`hotdata databases use <id>`). Pass `-d/--database <id>` to target a different database explicitly — it is required when no active database is set. The same `-d/--database` works on `search show` and `search remove`.
 - **Active database:** with `hotdata databases use <db>`, an index created with a `schema.table` `--from` resolves the active database's catalog automatically. Or create it with the full `catalog.schema.table` form. Do **not** use the internal `__db_<id>` label or raw catalog ID prefix — `bm25_search`/`vector_distance` resolve a catalog attached to the active database, so an `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
 
 ---
