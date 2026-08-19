@@ -191,34 +191,6 @@ pub enum DatabasesCommands {
         #[command(subcommand)]
         command: Option<DatabaseTablesCommands>,
     },
-
-    /// Run a command with a database-scoped token. Creates a new database unless --database is given.
-    Run {
-        /// Existing database id to scope the token to (omit to auto-create a database)
-        #[arg(long)]
-        database: Option<String>,
-
-        /// Name for the auto-created database (only used when --database is omitted)
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Schema for tables declared in the auto-created database (default: public)
-        #[arg(long, default_value = "public")]
-        schema: String,
-
-        /// Table to declare in the auto-created database (repeatable)
-        #[arg(long = "table")]
-        tables: Vec<String>,
-
-        /// When the auto-created database expires. Accepts a relative duration
-        /// (e.g. 24h, 7d, 90m) or an RFC 3339 timestamp. Defaults to 24h when omitted.
-        #[arg(long)]
-        expires_at: Option<String>,
-
-        /// Command to execute (everything after `--`)
-        #[arg(trailing_var_arg = true, required = true)]
-        cmd: Vec<String>,
-    },
 }
 
 /// Subcommands for `hotdata databases tables`.
@@ -359,16 +331,6 @@ struct CreateDatabaseResponse {
     default_connection_id: String,
     #[serde(default)]
     expires_at: Option<String>,
-}
-
-/// Response shape of `POST /v1/auth/database`.
-#[derive(Deserialize)]
-struct DatabaseTokenResponse {
-    token: String,
-    refresh_token: String,
-    database_id: String,
-    expires_in: u64,
-    refresh_expires_in: u64,
 }
 
 #[derive(Deserialize)]
@@ -1220,120 +1182,6 @@ pub fn detach(workspace_id: &str, catalog: &str, database: Option<&str>) {
         "{}",
         format!("Detached '{catalog}' from database '{where_}'.").green()
     );
-}
-
-/// Create a database and return its id. Used by `run` when no
-/// `--database` is given. Mirrors `create`'s request path but returns
-/// the id instead of printing.
-fn create_and_return_id(
-    api: &Api,
-    name: Option<&str>,
-    schema: &str,
-    tables: &[String],
-    expires_at: Option<&str>,
-) -> String {
-    let request = create_database_typed_request(name, None, schema, tables, expires_at);
-    block(api.client().databases().create(request))
-        .unwrap_or_else(|e| e.exit())
-        .id
-}
-
-/// Mint a database-scoped JWT for an existing database id via
-/// `POST /v1/auth/database` (grant_type=existing_database). The call
-/// doubles as an existence + access check (the server 404s an unknown
-/// or unreachable database).
-fn mint_database_token(api: &Api, database_id: &str) -> DatabaseTokenResponse {
-    let body = serde_json::json!({
-        "grant_type": "existing_database",
-        "database_id": database_id,
-    });
-    let (status, resp_body) = api
-        .post_raw("/auth/database", &body)
-        .unwrap_or_else(|e| e.exit());
-    if !status.is_success() {
-        // The old typed `api.post` routed non-success through `fail_response`,
-        // which upgrades a masked 401/403/404 into the re-auth hint. Reproduce
-        // that via the seam's auth-aware exit.
-        crate::client::sdk::ApiError::Status {
-            status,
-            body: resp_body,
-        }
-        .exit();
-    }
-    match serde_json::from_str(&resp_body) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
-/// Run a command with a database-scoped token. Creates a new database
-/// first when `database` is None, then mints a JWT and execs the
-/// command with it injected as HOTDATA_DATABASE_TOKEN.
-pub fn run(
-    database: Option<&str>,
-    workspace_id: &str,
-    name: Option<&str>,
-    schema: &str,
-    tables: &[String],
-    expires_at: Option<&str>,
-    cmd: &[String],
-) {
-    use crossterm::style::Stylize;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let api = Api::new(Some(workspace_id));
-
-    // Unlike `create`, we don't persist the auto-created database as the
-    // workspace's "current" database: a `run` database is scratch/ephemeral
-    // for the child process, addressed only by the token we mint below.
-    let database_id = match database {
-        Some(id) => id.to_string(),
-        None => create_and_return_id(&api, name, schema, tables, expires_at),
-    };
-
-    let resp = mint_database_token(&api, &database_id);
-    let db_id = resp.database_id.clone();
-    let db_jwt = resp.token.clone();
-    let db_refresh = resp.refresh_token.clone();
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let session = crate::client::database_session::DatabaseSession {
-        access_token: db_jwt.clone(),
-        refresh_token: db_refresh.clone(),
-        database_id: db_id.clone(),
-        workspace_id: workspace_id.to_string(),
-        access_expires_at: now + resp.expires_in,
-        refresh_expires_at: now + resp.refresh_expires_in,
-    };
-    if let Err(e) = crate::client::database_session::save(&session) {
-        eprintln!("warning: could not persist database session: {e}");
-    }
-
-    eprintln!("{} {}", "database:".dark_grey(), db_id);
-    eprintln!("{} {}", "workspace:".dark_grey(), workspace_id);
-
-    let status = std::process::Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .env("HOTDATA_DATABASE", &db_id)
-        .env("HOTDATA_WORKSPACE", workspace_id)
-        .env("HOTDATA_API_URL", &api.api_url)
-        .env("HOTDATA_DATABASE_TOKEN", &db_jwt)
-        .env("HOTDATA_DATABASE_REFRESH_TOKEN", &db_refresh)
-        .status();
-
-    match status {
-        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-        Err(e) => {
-            eprintln!("error: failed to execute '{}': {e}", cmd[0]);
-            std::process::exit(1);
-        }
-    }
 }
 
 /// Parse one `--attach` entry into `(connection, alias)`. `conn=alias` sets an
@@ -2934,59 +2782,6 @@ mod tests {
         assert_eq!(parsed.schema_name, "analytics");
         assert_eq!(parsed.table_name, "events");
         assert_eq!(parsed.row_count, 99);
-    }
-
-    #[test]
-    fn database_token_response_deserializes() {
-        let body = r#"{"ok":true,"token":"jwt-x","refresh_token":"rt-x","database_id":"dbid_abc","expires_in":300,"refresh_expires_in":259200}"#;
-        let resp: DatabaseTokenResponse = serde_json::from_str(body).unwrap();
-        assert_eq!(resp.token, "jwt-x");
-        assert_eq!(resp.database_id, "dbid_abc");
-        assert_eq!(resp.refresh_token, "rt-x");
-        assert_eq!(resp.expires_in, 300);
-    }
-
-    #[test]
-    fn create_and_return_id_parses_id() {
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/v1/databases")
-            .match_body(mockito::Matcher::Json(create_database_request(
-                Some("scratch"),
-                None,
-                "public",
-                &[],
-                None,
-            )))
-            .with_status(201)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"id":"dbid_new","name":"scratch","default_catalog":"default","default_schema":"main","default_connection_id":"conn_1"}"#,
-            )
-            .create();
-        let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let id = create_and_return_id(&api, Some("scratch"), "public", &[], None);
-        m.assert();
-        assert_eq!(id, "dbid_new");
-    }
-
-    #[test]
-    fn mint_database_token_posts_existing_database_grant() {
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/v1/auth/database")
-            .match_body(mockito::Matcher::JsonString(
-                r#"{"grant_type":"existing_database","database_id":"dbid_abc"}"#.to_string(),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"ok":true,"token":"jwt-x","refresh_token":"rt-x","database_id":"dbid_abc","expires_in":300,"refresh_expires_in":259200}"#)
-            .create();
-        let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let resp = mint_database_token(&api, "dbid_abc");
-        m.assert();
-        assert_eq!(resp.token, "jwt-x");
-        assert_eq!(resp.database_id, "dbid_abc");
     }
 
     // The `--url` path downloads to a temp file and then exits via

@@ -8,7 +8,7 @@ mod util;
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
 use cli::Commands;
-use client::{credentials, database_session, sdk};
+use client::{credentials, sdk};
 use commands::auth::{self, AuthCommands};
 use commands::connections;
 use commands::context::{self, ContextCommands};
@@ -111,11 +111,6 @@ extern "C" fn print_database_footer() {
     // callers (who may capture stderr alongside machine output) so the footer
     // never mixes into their stream.
     if !std::io::stdout().is_terminal() {
-        return;
-    }
-    // Inside a `databases run` child the parent already announced the
-    // database at spawn, so stay silent here.
-    if database_session::database_token_in_use().is_some() {
         return;
     }
     if let Some(ws_id) = ACTIVE_WORKSPACE_ID.get()
@@ -230,31 +225,8 @@ fn main() {
                 command,
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
-                // `databases <id> run ...` should mint a token for <id>, not
-                // short to `show`. Route Run before the name_or_id show-shorthand;
-                // --database on the subcommand takes precedence over the group
-                // positional. Other subcommands keep the existing semantics: a
-                // group-level name_or_id is treated as a `show` shorthand.
-                if let Some(DatabasesCommands::Run {
-                    database,
-                    name,
-                    schema,
-                    tables,
-                    expires_at,
-                    cmd,
-                }) = command
-                {
-                    let db = database.as_deref().or(name_or_id.as_deref());
-                    databases::run(
-                        db,
-                        &workspace_id,
-                        name.as_deref(),
-                        &schema,
-                        &tables,
-                        expires_at.as_deref(),
-                        &cmd,
-                    );
-                } else if let Some(name_or_id) = name_or_id {
+                // A group-level name_or_id is treated as a `show` shorthand.
+                if let Some(name_or_id) = name_or_id {
                     databases::get(&workspace_id, &name_or_id, &output);
                 } else {
                     match command {
@@ -401,10 +373,6 @@ fn main() {
                                 }
                             }
                         },
-                        Some(DatabasesCommands::Run { .. }) => {
-                            // Handled by the Run-first if-let above.
-                            unreachable!("Run handled before name_or_id shorthand");
-                        }
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();

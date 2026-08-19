@@ -129,8 +129,8 @@ pub(crate) fn api_key_jwt_source(profile_config: &config::ProfileConfig) -> Opti
 }
 
 /// Decode a JWT payload (no signature verification) and return the named
-/// string claim. Mirrors the decoder in `database_session` — the server
-/// validates signatures on receipt, so the CLI only peeks at claims.
+/// string claim. The server validates signatures on receipt, so the CLI only
+/// peeks at claims.
 fn jwt_string_claim(token: &str, claim: &str) -> Option<String> {
     let payload = token.split('.').nth(1)?;
     let bytes = URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
