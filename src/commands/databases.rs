@@ -652,21 +652,6 @@ pub fn managed_table_delete_path(connection_id: &str, schema: &str, table: &str)
     format!("/connections/{connection_id}/schemas/{schema}/tables/{table}")
 }
 
-/// Database-scoped managed-table endpoints (addressed by database id, not
-/// connection id). These are the paths a database API token is allowed to use —
-/// the connection-scoped variants above are denied for it.
-pub fn database_table_load_path(database_id: &str, schema: &str, table: &str) -> String {
-    format!("/databases/{database_id}/schemas/{schema}/tables/{table}/loads")
-}
-
-pub fn database_schemas_path(database_id: &str) -> String {
-    format!("/databases/{database_id}/schemas")
-}
-
-pub fn database_schema_tables_path(database_id: &str, schema: &str) -> String {
-    format!("/databases/{database_id}/schemas/{schema}/tables")
-}
-
 pub fn load_table_request(upload_id: &str) -> serde_json::Value {
     serde_json::json!({
         "mode": "replace",
@@ -1469,25 +1454,39 @@ pub fn unset(workspace_id: &str) {
     println!("{}", "Current database cleared.".green());
 }
 
+/// Classify `set`'s advisory existence check.
+///
+/// `Ok(true)` proceed, `Ok(false)` the database is definitively absent,
+/// `Err` a real failure worth surfacing.
+///
+/// A 403 counts as "proceed". The check exists only to catch a typo'd id
+/// before writing it to local config, and a database API token is denied
+/// `GET /v1/databases/{id}` by its allow-list — so for that credential a 403
+/// means "not allowed to look", never "not there". Treating it as fatal would
+/// lock the token out of `databases set`, and therefore out of everything
+/// downstream of `load_current_database`. Unlike the routing removed from
+/// `tables_load`, this needs no token-kind signal: "the server won't tell me"
+/// is safe to treat as unverifiable whatever the credential is.
+fn database_exists_or_unverifiable(result: Result<Database, ApiError>) -> Result<bool, ApiError> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(ApiError::Status { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
+            Ok(false)
+        }
+        Err(ApiError::Status { status, .. }) if status == reqwest::StatusCode::FORBIDDEN => {
+            Ok(true)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub fn set(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     // `set` only writes local config; the GET is just a friendly existence-check.
-    // A database API token can't call GET /v1/databases/{id} (denied by its
-    // allow-list), so skip the check for it and save the id directly.
-    let is_database_api_token = crate::config::load("default")
-        .ok()
-        .and_then(|profile| crate::client::credentials::api_key_jwt_source(&profile))
-        .as_deref()
-        == Some("database_api_token");
-    if !is_database_api_token {
-        let api = Api::new(Some(workspace_id));
-        if none_if_404(get_database(&api, id))
-            .unwrap_or_else(|e| e.exit())
-            .is_none()
-        {
-            eprintln!("{}", format!("error: no database with id '{id}'").red());
-            std::process::exit(1);
-        }
+    let api = Api::new(Some(workspace_id));
+    if !database_exists_or_unverifiable(get_database(&api, id)).unwrap_or_else(|e| e.exit()) {
+        eprintln!("{}", format!("error: no database with id '{id}'").red());
+        std::process::exit(1);
     }
     if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
@@ -1614,26 +1613,17 @@ pub fn tables_load(
 ) {
     use crossterm::style::Stylize;
 
-    // A database API token can't resolve names/catalogs or use the
-    // connection-scoped managed endpoints (all outside its allow-list). Route it
-    // through the database-scoped endpoints, addressed by database id.
-    if let Ok(profile) = crate::config::load("default")
-        && crate::client::credentials::api_key_jwt_source(&profile).as_deref()
-            == Some("database_api_token")
-    {
-        tables_load_database_scoped(
-            workspace_id,
-            database,
-            table,
-            schema,
-            file,
-            url,
-            upload_id,
-            result_id,
-        );
-        return;
-    }
-
+    // NOTE: this used to detect a database API token and route it through the
+    // database-scoped endpoints (the connection-scoped managed paths and the
+    // name/catalog resolve below are outside such a token's allow-list). That
+    // detection read the `source` claim off the JWT the CLI minted from the
+    // API token; with the exchange gone the claim no longer exists, and the
+    // server exposes no equivalent signal, so there is nothing authoritative
+    // left to branch on. A database API token now takes this path and gets the
+    // server's ACCESS_DENIED 403 (which `format_fail_message` annotates with a
+    // token-scope hint) rather than being silently routed. Restoring the
+    // database-scoped path needs a real signal first — a server-provided token
+    // kind, or an explicit opt-in flag.
     let database = resolve_current_database(database, workspace_id);
     let api = Api::new(Some(workspace_id));
     // Prefer the active database when its catalog or name matches the lookup key,
@@ -1857,155 +1847,6 @@ pub fn tables_load(
     );
 }
 
-/// Load path for a database API token: addresses the database by id and uses
-/// the database-scoped endpoints (the connection-scoped managed paths and the
-/// name/catalog resolve used by the standard flow are denied for this token).
-#[allow(clippy::too_many_arguments)]
-fn tables_load_database_scoped(
-    workspace_id: &str,
-    database: Option<&str>,
-    table: &str,
-    schema: Option<&str>,
-    file: Option<&str>,
-    url: Option<&str>,
-    upload_id: Option<&str>,
-    result_id: Option<&str>,
-) {
-    use crossterm::style::Stylize;
-
-    let api = Api::new(Some(workspace_id));
-    let schema = schema_name(schema);
-
-    // A database API token can't resolve names/catalog aliases (list/get are
-    // denied), so address by id: an explicitly-supplied database id, else the
-    // current-database context.
-    let db_id = database
-        .filter(|d| d.starts_with("dbid"))
-        .map(str::to_string)
-        .or_else(|| crate::config::load_current_database("default", workspace_id))
-        .unwrap_or_else(|| {
-            eprintln!(
-                "{}",
-                "error: a database id is required for a database API token. Pass the database \
-                 id, or set one with 'hotdata databases set <dbid…>'."
-                    .red()
-            );
-            std::process::exit(1);
-        });
-
-    // clap enforces mutual exclusion; only one source is ever Some. A file/URL is
-    // uploaded first and loaded by upload id; a result is loaded by reference. The
-    // database-scoped endpoint scopes the result by the path database id, so no
-    // X-Database-Id header is needed here.
-    let body = match (result_id, upload_id, file, url) {
-        (Some(rid), None, None, None) => load_table_request_from_result(rid),
-        (None, Some(id), None, None) => load_table_request(id),
-        (None, None, Some(path), None) => load_table_request(&upload_parquet_file(&api, path)),
-        (None, None, None, Some(u)) => load_table_request(&upload_parquet_url(&api, u)),
-        (None, None, None, None) => {
-            eprintln!(
-                "error: one of --file <path>, --url <url>, --upload-id <id>, or --result-id <id> is required"
-            );
-            std::process::exit(1);
-        }
-        _ => unreachable!(),
-    };
-
-    let load_path = database_table_load_path(&db_id, schema, table);
-
-    let load = || {
-        let spinner = crate::util::spinner("Loading table...");
-        let r = api.post_raw(&load_path, &body).unwrap_or_else(|e| {
-            spinner.finish_and_clear();
-            e.exit()
-        });
-        spinner.finish_and_clear();
-        r
-    };
-
-    let (mut status, mut resp_body) = load();
-
-    // Auto-declare the table (database-scoped) when it wasn't declared at create
-    // time, then retry — the db-scoped equivalent of the standard flow's declare
-    // step, with no delete/recreate (that endpoint is denied for this token).
-    if !status.is_success() && crate::util::api_error(resp_body.clone()).contains("not declared") {
-        declare_database_table(&api, &db_id, schema, table);
-        let (s, b) = load();
-        status = s;
-        resp_body = b;
-    }
-
-    if !status.is_success() {
-        eprintln!("{}", crate::util::api_error(resp_body).red());
-        std::process::exit(1);
-    }
-
-    let result: LoadManagedTableResponse = match serde_json::from_str(&resp_body) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error parsing response: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    // Display catalog: the supplied alias when it wasn't an id, else the default.
-    let catalog = database
-        .filter(|d| !d.starts_with("dbid"))
-        .unwrap_or("default");
-    let full_name = format!("{catalog}.{}.{}", result.schema_name, result.table_name);
-    println!("{}", "Table loaded".green());
-    println!("full_name: {}", full_name.clone().green());
-    println!("rows:      {}", result.row_count);
-    println!();
-    println!(
-        "{}",
-        format!(
-            concat!(
-                "Query it now:\n",
-                "  hotdata query \"SELECT * FROM {} LIMIT 10\"\n",
-                "\n  Tip: column names are case-sensitive.\n",
-                "  Wrap uppercase names in double quotes: SELECT \"MyColumn\" FROM {} LIMIT 10",
-            ),
-            full_name, full_name
-        )
-        .dark_grey()
-    );
-}
-
-/// Declare a table on a database's default catalog via the database-scoped
-/// endpoints (what a database API token may call). Creates the schema with the
-/// table when the schema doesn't exist; if it already exists (409), declares
-/// just the table. Treats "already exists" as success.
-fn declare_database_table(api: &Api, db_id: &str, schema: &str, table: &str) {
-    use crossterm::style::Stylize;
-
-    let (status, body) = api
-        .post_raw(
-            &database_schemas_path(db_id),
-            &serde_json::json!({"name": schema, "tables": [{"name": table}]}),
-        )
-        .unwrap_or_else(|e| e.exit());
-    if status.is_success() {
-        return;
-    }
-    if status == reqwest::StatusCode::CONFLICT {
-        // Schema already exists — declare just the table on it.
-        let (table_status, table_body) = api
-            .post_raw(
-                &database_schema_tables_path(db_id, schema),
-                &serde_json::json!({"name": table}),
-            )
-            .unwrap_or_else(|e| e.exit());
-        if table_status.is_success() || table_status == reqwest::StatusCode::CONFLICT {
-            return;
-        }
-        eprintln!("{}", crate::util::api_error(table_body).red());
-        std::process::exit(1);
-    }
-    eprintln!("{}", crate::util::api_error(body).red());
-    std::process::exit(1);
-}
-
 pub fn tables_delete(
     workspace_id: &str,
     database: Option<&str>,
@@ -2063,21 +1904,6 @@ mod tests {
         assert_eq!(
             parse_attach_spec("  salesdb = sales "),
             ("salesdb", Some("sales"))
-        );
-    }
-
-    #[test]
-    fn database_scoped_table_paths_address_by_database_id() {
-        // The database-scoped endpoints a database API token uses — addressed by
-        // database id, not connection id.
-        assert_eq!(
-            database_table_load_path("dbid_1", "public", "t"),
-            "/databases/dbid_1/schemas/public/tables/t/loads"
-        );
-        assert_eq!(database_schemas_path("dbid_1"), "/databases/dbid_1/schemas");
-        assert_eq!(
-            database_schema_tables_path("dbid_1", "public"),
-            "/databases/dbid_1/schemas/public/tables"
         );
     }
 
@@ -2822,5 +2648,69 @@ mod tests {
 
         assert_eq!(result.unwrap(), "upid_123");
         assert!(!path.exists(), "temp file must be removed on success");
+    }
+
+    // --- `set`'s advisory existence check -----------------------------------
+
+    /// A database API token is denied `GET /v1/databases/{id}` by its
+    /// allow-list. Since `set` only writes local config, that 403 means "can't
+    /// verify", not "doesn't exist" — treating it as fatal would lock such a
+    /// credential out of `databases set` entirely, and with it out of
+    /// `load_current_database`, which is the whole setup path.
+    #[test]
+    fn set_existence_check_treats_403_as_unverifiable() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/databases/dbid_x")
+            .with_status(403)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":{"code":"ACCESS_DENIED","message":"not allowed"}}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        assert!(
+            database_exists_or_unverifiable(get_database(&api, "dbid_x"))
+                .expect("a 403 must not abort the command"),
+            "403 must be treated as 'proceed', not 'missing'"
+        );
+    }
+
+    /// A 404 is the server positively saying the id is wrong — still fatal, so
+    /// a typo'd id doesn't get silently written into config.
+    #[test]
+    fn set_existence_check_treats_404_as_missing() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/databases/dbid_gone")
+            .with_status(404)
+            .with_body(r#"{"error":{"code":"NOT_FOUND","message":"no such database"}}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        assert!(
+            !database_exists_or_unverifiable(get_database(&api, "dbid_gone"))
+                .expect("a 404 is a clean answer, not a transport failure"),
+            "404 must report the database as missing"
+        );
+    }
+
+    /// Anything else still surfaces — a 500 or a transport failure shouldn't be
+    /// quietly reinterpreted as "can't verify, carry on".
+    #[test]
+    fn set_existence_check_propagates_other_errors() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/databases/dbid_boom")
+            .with_status(500)
+            .with_body("boom")
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        match database_exists_or_unverifiable(get_database(&api, "dbid_boom")) {
+            Err(ApiError::Status { status, .. }) => {
+                assert_eq!(status, reqwest::StatusCode::INTERNAL_SERVER_ERROR)
+            }
+            other => panic!("expected the 500 to propagate, got {other:?}"),
+        }
     }
 }

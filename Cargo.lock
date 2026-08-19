@@ -301,9 +301,9 @@ dependencies = [
 
 [[package]]
 name = "async-trait"
-version = "0.1.91"
+version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae36dc4177970ef04fde5178d3e2429882def40e57a451f919c098f72baa6cec"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1197,9 +1197,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hotdata"
-version = "0.11.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "001e3ffff61f7e741cb9cdd33637dd87d552f72c0582d776374eff00540b9b45"
+checksum = "df1bac8819dd42a75f7187f8fad9b38ff7e187c1846f76c4c63da44bb5413e0f"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -1224,7 +1224,6 @@ version = "0.25.0"
 dependencies = [
  "anstyle",
  "arrow",
- "async-trait",
  "base64",
  "clap",
  "clap_complete",

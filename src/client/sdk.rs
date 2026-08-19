@@ -1612,6 +1612,269 @@ mod tests {
         }
     }
 
+    // --- Per-request bearer resolution (end-to-end through the wrapper) ------
+    //
+    // `jwt.rs` covers `CliTokenProvider::bearer_value` in isolation. These
+    // assert the wrapper installs it on every path a command uses, *and* that
+    // the SDK consults it once per request rather than resolving once and
+    // caching — the property that makes a credential survive longer than its
+    // own TTL, and the actual fix for #120.
+    //
+    // Each test therefore rotates the cached credential mid-test and asserts a
+    // *different* bearer per request. Asserting one constant bearer would pass
+    // just as happily against a resolve-once client, so it would prove only
+    // that the provider is installed.
+
+    /// The token the cached session serves before any rotation.
+    const SESSION_JWT: &str = "session-jwt-1";
+    /// What it's rotated to partway through a test.
+    const ROTATED_JWT: &str = "session-jwt-2";
+
+    /// Overwrite the cached session so the provider's next resolve serves
+    /// `token`. `ttl` under the 30 s refresh leeway forces `ensure_access_token`
+    /// onto its `/o/token/` refresh path instead of the cache.
+    fn write_session(token: &str, ttl: u64) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        crate::client::jwt::save_session(&crate::client::jwt::Session {
+            access_token: token.to_string(),
+            access_expires_at: now + ttl,
+            refresh_token: "refresh-1".to_string(),
+            refresh_expires_at: now + 7 * 24 * 3600,
+            source: "pkce".to_string(),
+        })
+        .unwrap();
+    }
+
+    /// Build an `Api` backed by a genuine cached PKCE session, wired the same
+    /// way `Api::new` wires a real one. Requires a `with_temp_config_dir` guard.
+    fn session_backed_api(api_url: &str, workspace_id: Option<&str>) -> Api {
+        write_session(SESSION_JWT, 300);
+
+        let profile = config::ProfileConfig {
+            api_key_source: config::ApiKeySource::Config,
+            api_url: config::ApiUrl(Some(api_url.to_string())),
+            // The refresh path posts to `<app_url>/o/token/`.
+            app_url: config::AppUrl(Some(api_url.to_string())),
+            ..Default::default()
+        };
+        Api::from_configuration(
+            api_url,
+            workspace_id.map(String::from),
+            None,
+            CliTokenProvider::new(AuthMode {
+                profile,
+                api_key_fallback: None,
+            }),
+        )
+    }
+
+    /// Issue #120: a large `tables load` 401'd with "Invalid api key" because
+    /// the upload outlived the credential it started with. `upload_file` clones
+    /// the `Configuration` for its dedicated no-timeout client, so the clone
+    /// must carry the provider — otherwise create-session, the part `PUT`s, and
+    /// finalize all replay one bearer stamped when the transfer began.
+    ///
+    /// Reproduces that shape without waiting out a real TTL: the cached session
+    /// is parked *inside* the 30 s refresh leeway, so every resolve takes the
+    /// `/o/token/` path, and the two queued mints hand back different tokens.
+    /// Create-session must therefore carry the first and finalize the second —
+    /// the exact 401-at-finalize the issue reported, had the bearer been pinned.
+    ///
+    /// The storage `PUT` must *not* be authenticated: it targets a presigned
+    /// URL on object storage, which rejects a request carrying an unexpected
+    /// `Authorization` header. Asserted so a future "stamp the bearer
+    /// everywhere" change can't pass.
+    #[test]
+    fn upload_resolves_bearer_per_request() {
+        let (_tmp, _guard) = config::test_helpers::with_temp_config_dir();
+        let (tf, len) = upload_temp_file(4096);
+
+        let mut server = mockito::Server::new();
+        // Each mint is good for 5 s — under the leeway, so the next resolve
+        // refreshes again rather than reusing it.
+        //
+        // The first mint rotates the refresh token, and each mock matches on
+        // the one it expects to be presented. Without that the two requests
+        // are byte-identical (`refresh()` re-sends the stored token, and a
+        // response omitting one leaves it unchanged), so which mock answered
+        // which refresh would rest on mockito's same-route ordering — and a
+        // flip would surface as an unmatched-bearer 501 on `POST /v1/uploads`,
+        // reading like the provider broke rather than the harness. Matching on
+        // the token also proves the two legs ran against *successive*
+        // sessions, not just two canned responses.
+        let mint_first = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "refresh_token".into(),
+                "refresh-1".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"access_token":"upload-jwt-1","expires_in":5,"refresh_token":"refresh-2"}"#,
+            )
+            .expect(1)
+            .create();
+        let mint_second = server
+            .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "refresh_token".into(),
+                "refresh-2".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"upload-jwt-2","expires_in":5}"#)
+            .expect(1)
+            .create();
+
+        let put_url = format!("{}/storage/upload_fresh", server.url());
+        let create = server
+            .mock("POST", "/v1/uploads")
+            .match_header("Authorization", "Bearer upload-jwt-1")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"finalize_token":"ft_1","headers":{{}},"mode":"single","upload_id":"upload_fresh","url":"{put_url}"}}"#
+            ))
+            .expect(1)
+            .create();
+        let put = server
+            .mock("PUT", "/storage/upload_fresh")
+            .match_header("Authorization", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("ETag", "\"etag-1\"")
+            .expect(1)
+            .create();
+        let finalize = server
+            .mock("POST", "/v1/uploads/upload_fresh/finalize")
+            .match_header("Authorization", "Bearer upload-jwt-2")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"upload_id":"upload_fresh","status":"ready","size_bytes":{len},"created_at":"2026-06-05T00:00:00Z"}}"#
+            ))
+            .expect(1)
+            .create();
+
+        let api = session_backed_api(&server.url(), Some("ws-1"));
+        // Park the session inside the leeway so every resolve mints anew.
+        write_session(SESSION_JWT, 5);
+
+        let id = api
+            .upload(tf.path(), noop_progress())
+            .expect("upload must succeed when every leg resolves its own bearer");
+
+        assert_eq!(id, "upload_fresh");
+        mint_first.assert();
+        mint_second.assert();
+        create.assert();
+        put.assert();
+        finalize.assert();
+    }
+
+    /// Generated SDK ops go through the shared `Arc<Client>` — what the command
+    /// modules use for almost everything, including the parallel `indexes.rs`
+    /// rayon batch and a long-lived `databases run` child.
+    #[test]
+    fn generated_ops_resolve_bearer_per_request() {
+        let (_tmp, _guard) = config::test_helpers::with_temp_config_dir();
+
+        let mut server = mockito::Server::new();
+        // Two mocks on the same route, distinguished only by bearer. Each
+        // expects exactly one call, so serving both proves the client asked
+        // again after the credential changed underneath it.
+        let first = server
+            .mock("GET", "/v1/workspaces")
+            .match_header("Authorization", format!("Bearer {SESSION_JWT}").as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(WS_BODY)
+            .expect(1)
+            .create();
+        let second = server
+            .mock("GET", "/v1/workspaces")
+            .match_header("Authorization", format!("Bearer {ROTATED_JWT}").as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(WS_BODY)
+            .expect(1)
+            .create();
+
+        let api = session_backed_api(&server.url(), None);
+        api.list_workspaces(None)
+            .expect("first call must carry the original session token");
+
+        // Rotate the credential behind the client's back, exactly as a
+        // concurrent refresh (or another CLI process) would.
+        write_session(ROTATED_JWT, 300);
+
+        api.list_workspaces(None)
+            .expect("second call must re-resolve and carry the rotated token");
+
+        first.assert();
+        second.assert();
+    }
+
+    /// The CLI-owned seam helpers build their own `RequestBuilder`, bypassing
+    /// the generated client, so `apply_seam_headers` has to ask the
+    /// `Configuration` itself rather than read a baked-in field.
+    #[test]
+    fn seam_helpers_resolve_bearer_per_request() {
+        #[derive(serde::Deserialize)]
+        struct Probe {
+            value: u32,
+        }
+
+        let (_tmp, _guard) = config::test_helpers::with_temp_config_dir();
+
+        let mut server = mockito::Server::new();
+        // `get_json` runs against the original token; `post_raw`/`delete_raw`
+        // run after a rotation, so each verb is pinned to the credential that
+        // was current when it fired.
+        let get = server
+            .mock("GET", "/v1/results")
+            .match_header("Authorization", format!("Bearer {SESSION_JWT}").as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"value":42}"#)
+            .expect(1)
+            .create();
+        let post = server
+            .mock("POST", "/v1/refresh")
+            .match_header("Authorization", format!("Bearer {ROTATED_JWT}").as_str())
+            .with_status(200)
+            .with_body("{}")
+            .expect(1)
+            .create();
+        let delete = server
+            .mock("DELETE", "/v1/things/t_1")
+            .match_header("Authorization", format!("Bearer {ROTATED_JWT}").as_str())
+            .with_status(204)
+            .expect(1)
+            .create();
+
+        let api = session_backed_api(&server.url(), Some("ws-1"));
+        let probe: Probe = api
+            .get_json("/results", &[])
+            .expect("get_json must succeed");
+        assert_eq!(probe.value, 42);
+
+        write_session(ROTATED_JWT, 300);
+
+        api.post_raw("/refresh", &serde_json::json!({}))
+            .expect("post_raw must re-resolve and carry the rotated token");
+        api.delete_raw("/things/t_1")
+            .expect("delete_raw must re-resolve and carry the rotated token");
+
+        get.assert();
+        post.assert();
+        delete.assert();
+    }
+
     #[test]
     fn upload_concurrency_honors_env_else_defaults() {
         // Default when unset.
