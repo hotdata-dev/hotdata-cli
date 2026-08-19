@@ -1454,22 +1454,37 @@ pub fn unset(workspace_id: &str) {
     println!("{}", "Current database cleared.".green());
 }
 
+/// Classify `set`'s advisory existence check.
+///
+/// `Ok(true)` proceed, `Ok(false)` the database is definitively absent,
+/// `Err` a real failure worth surfacing.
+///
+/// A 403 counts as "proceed". The check exists only to catch a typo'd id
+/// before writing it to local config, and a database API token is denied
+/// `GET /v1/databases/{id}` by its allow-list — so for that credential a 403
+/// means "not allowed to look", never "not there". Treating it as fatal would
+/// lock the token out of `databases set`, and therefore out of everything
+/// downstream of `load_current_database`. Unlike the routing removed from
+/// `tables_load`, this needs no token-kind signal: "the server won't tell me"
+/// is safe to treat as unverifiable whatever the credential is.
+fn database_exists_or_unverifiable(result: Result<Database, ApiError>) -> Result<bool, ApiError> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(ApiError::Status { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
+            Ok(false)
+        }
+        Err(ApiError::Status { status, .. }) if status == reqwest::StatusCode::FORBIDDEN => {
+            Ok(true)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub fn set(workspace_id: &str, id: &str) {
     use crossterm::style::Stylize;
     // `set` only writes local config; the GET is just a friendly existence-check.
-    //
-    // NOTE: this check used to be skipped for a database API token, which can't
-    // call GET /v1/databases/{id} (denied by its allow-list). That detection
-    // read the `source` claim off the JWT the CLI minted from the API token;
-    // with the exchange gone the claim no longer exists and the server exposes
-    // no equivalent, so the check now runs unconditionally and such a token
-    // sees the server's 403 here. Skipping it again needs a real signal first —
-    // see the matching note in `tables_load`.
     let api = Api::new(Some(workspace_id));
-    if none_if_404(get_database(&api, id))
-        .unwrap_or_else(|e| e.exit())
-        .is_none()
-    {
+    if !database_exists_or_unverifiable(get_database(&api, id)).unwrap_or_else(|e| e.exit()) {
         eprintln!("{}", format!("error: no database with id '{id}'").red());
         std::process::exit(1);
     }
@@ -2633,5 +2648,69 @@ mod tests {
 
         assert_eq!(result.unwrap(), "upid_123");
         assert!(!path.exists(), "temp file must be removed on success");
+    }
+
+    // --- `set`'s advisory existence check -----------------------------------
+
+    /// A database API token is denied `GET /v1/databases/{id}` by its
+    /// allow-list. Since `set` only writes local config, that 403 means "can't
+    /// verify", not "doesn't exist" — treating it as fatal would lock such a
+    /// credential out of `databases set` entirely, and with it out of
+    /// `load_current_database`, which is the whole setup path.
+    #[test]
+    fn set_existence_check_treats_403_as_unverifiable() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/databases/dbid_x")
+            .with_status(403)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":{"code":"ACCESS_DENIED","message":"not allowed"}}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        assert!(
+            database_exists_or_unverifiable(get_database(&api, "dbid_x"))
+                .expect("a 403 must not abort the command"),
+            "403 must be treated as 'proceed', not 'missing'"
+        );
+    }
+
+    /// A 404 is the server positively saying the id is wrong — still fatal, so
+    /// a typo'd id doesn't get silently written into config.
+    #[test]
+    fn set_existence_check_treats_404_as_missing() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/databases/dbid_gone")
+            .with_status(404)
+            .with_body(r#"{"error":{"code":"NOT_FOUND","message":"no such database"}}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        assert!(
+            !database_exists_or_unverifiable(get_database(&api, "dbid_gone"))
+                .expect("a 404 is a clean answer, not a transport failure"),
+            "404 must report the database as missing"
+        );
+    }
+
+    /// Anything else still surfaces — a 500 or a transport failure shouldn't be
+    /// quietly reinterpreted as "can't verify, carry on".
+    #[test]
+    fn set_existence_check_propagates_other_errors() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/databases/dbid_boom")
+            .with_status(500)
+            .with_body("boom")
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        match database_exists_or_unverifiable(get_database(&api, "dbid_boom")) {
+            Err(ApiError::Status { status, .. }) => {
+                assert_eq!(status, reqwest::StatusCode::INTERNAL_SERVER_ERROR)
+            }
+            other => panic!("expected the 500 to propagate, got {other:?}"),
+        }
     }
 }
