@@ -1696,15 +1696,35 @@ mod tests {
         let mut server = mockito::Server::new();
         // Each mint is good for 5 s — under the leeway, so the next resolve
         // refreshes again rather than reusing it.
+        //
+        // The first mint rotates the refresh token, and each mock matches on
+        // the one it expects to be presented. Without that the two requests
+        // are byte-identical (`refresh()` re-sends the stored token, and a
+        // response omitting one leaves it unchanged), so which mock answered
+        // which refresh would rest on mockito's same-route ordering — and a
+        // flip would surface as an unmatched-bearer 501 on `POST /v1/uploads`,
+        // reading like the provider broke rather than the harness. Matching on
+        // the token also proves the two legs ran against *successive*
+        // sessions, not just two canned responses.
         let mint_first = server
             .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "refresh_token".into(),
+                "refresh-1".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"access_token":"upload-jwt-1","expires_in":5}"#)
+            .with_body(
+                r#"{"access_token":"upload-jwt-1","expires_in":5,"refresh_token":"refresh-2"}"#,
+            )
             .expect(1)
             .create();
         let mint_second = server
             .mock("POST", "/o/token/")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "refresh_token".into(),
+                "refresh-2".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"access_token":"upload-jwt-2","expires_in":5}"#)
