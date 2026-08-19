@@ -60,12 +60,18 @@ pub fn check_status(profile_config: &config::ProfileConfig) -> AuthStatus {
 /// actually run.
 ///
 /// An api-key credential scoped to exactly one workspace (a database API token)
-/// pins that workspace. For a multi-workspace or unrestricted api key we honor
-/// the saved default (`workspaces set` moves a workspace to the front of the
-/// config list) when the key can reach it, otherwise fall back to the
-/// credential's own first authorized workspace — never a workspace the gateway
-/// would reject. A CLI session uses the saved default. `None` means no default
-/// is known and the caller must pass `--workspace-id`.
+/// pins that workspace. For a multi-workspace api key we honor the saved
+/// default (`workspaces set` moves a workspace to the front of the config list)
+/// when the key can reach it, otherwise fall back to the credential's own first
+/// authorized workspace. A CLI session uses the saved default. `None` means no
+/// default is known and the caller must pass `--workspace-id`.
+///
+/// The scope comes from a live `GET /workspaces`, so this is best-effort rather
+/// than a guarantee: when that probe fails we fall back to the saved default
+/// and let the gateway be the one to reject it. Note the consequence for an
+/// unrestricted key with no saved default — previously it had no discoverable
+/// scope and the caller was forced to pass `--workspace-id`; now it resolves to
+/// whichever workspace the API lists first.
 pub(crate) fn default_workspace_id(profile_config: &config::ProfileConfig) -> Option<String> {
     let saved_default = || {
         profile_config
@@ -83,8 +89,14 @@ pub(crate) fn default_workspace_id(profile_config: &config::ProfileConfig) -> Op
     if let [only] = ids.as_slice() {
         return Some(only.clone());
     }
-    // Multi/unrestricted key: prefer the saved default when the key authorizes
-    // it (empty `ids` = unrestricted, reaches everything), else the key's first.
+    // Multi-workspace key: prefer the saved default when the key authorizes it,
+    // else the key's first.
+    //
+    // Empty `ids` no longer means "unrestricted". `api_key_workspace_ids` now
+    // asks the server, so an unrestricted key comes back with the full list;
+    // empty means only that we couldn't find out — no key, or the probe failed.
+    // Honoring the saved default in that case is a deliberate degradation: it's
+    // the best guess available, and the gateway still rejects it if wrong.
     if let Some(first) = saved_default()
         && (ids.is_empty() || ids.contains(&first))
     {
