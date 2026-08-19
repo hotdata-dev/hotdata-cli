@@ -7,14 +7,14 @@
 - **Query-run history** — recurring predicates or search-style SQL (`bm25_search`, `vector_distance`, or planned `hotdata search`):
 
   ```bash
-  hotdata queries list
-  hotdata queries <query_run_id>
+  hotdata databases queries list
+  hotdata databases queries <query_run_id>
   ```
 
 - **Columns** — confirm types:
 
   ```bash
-  hotdata tables list --schema <schema> --table <table>
+  hotdata databases tables list --schema <schema> --table <table>
   ```
 
 High-cardinality **text** (`title`, `body`, …) → **bm25**. **Embedding** / float list columns → **vector** (+ `--metric`).
@@ -22,41 +22,41 @@ High-cardinality **text** (`title`, `body`, …) → **bm25**. **Embedding** / f
 ## 2. Compare to existing indexes
 
 ```bash
-hotdata indexes list [--schema <schema>] [--table <table>]
+hotdata search list
 ```
 
 With no filters, this is a whole-workspace scan that **includes managed-database indexes** (shown under the internal `__db_<id>.<schema>.<table>` label). Skip duplicates (same table, column, and purpose).
 
 ## 3. Create indexes
 
-For managed databases (catalog alias — auto-selects the active database catalog):
+For managed databases (`--from` catalog alias — auto-selects the active database catalog):
 
 ```bash
-hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
-  --column body --type bm25
+hotdata search create <table>_body --type text \
+  --from <alias>.<schema>.<table> --column body
 
-hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
-  --column embedding --type vector --metric cosine
+hotdata search create <table>_embedding_vec --type vector \
+  --from <alias>.<schema>.<table> --column embedding --metric cosine
 ```
 
-For a regular catalog, pass its name or ID to `--catalog`:
+For a regular catalog, pass its name or ID in `--from`:
 
 ```bash
-hotdata indexes create --catalog <catalog-name-or-id> --schema <schema> --table <table> \
-  --name idx_posts_body_bm25 --column body --type bm25
+hotdata search create idx_posts_body_bm25 --type text \
+  --from <catalog-name-or-id>.<schema>.<table> --column body
 
-hotdata indexes create --catalog <catalog-name-or-id> --schema <schema> --table <table> \
-  --name idx_chunks_embedding --column embedding --type vector --metric cosine
+hotdata search create idx_chunks_embedding --type vector \
+  --from <catalog-name-or-id>.<schema>.<table> --column embedding --metric cosine
 ```
 
 Large builds: `--async`, then `hotdata jobs list` / `hotdata jobs <job_id>`.
 
 ## 4. Verify
 
-Re-run `hotdata search` or representative SQL. Update **context:DATAMODEL → Search & index summary** via `hotdata context push DATAMODEL` (core skill).
+Re-run `hotdata search "..." --index <name>` or representative SQL. Update **context:DATAMODEL → Search & index summary** via `hotdata databases context push DATAMODEL` (core skill).
 
 ## Guardrails
 
 - Prefer evidence (repeated search workloads) over speculative indexes.
-- Get approval before production `indexes create` when cost/impact is uncertain.
-- Align catalog/schema/table with `hotdata tables list` output.
+- Get approval before production `search create` when cost/impact is uncertain.
+- Align catalog/schema/table with `hotdata databases tables list` output.

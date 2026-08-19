@@ -8,7 +8,7 @@ version: 0.26.0
 
 Retrieval workloads in Hotdata: **BM25 full-text**, **vector similarity**, and the **indexes** and **embedding providers** that power them.
 
-**Prerequisites:** Authenticate, set a workspace, and set an active database (`hotdata databases set <id>`) — see the **`hotdata`** skill. Use fully qualified table names: `<catalog>.<schema>.<table>`.
+**Prerequisites:** Authenticate, set a workspace, and set an active database (`hotdata databases use <id>`) — see the **`hotdata`** skill. Use fully qualified table names: `<catalog>.<schema>.<table>`.
 
 **Related sub-skills** (bundled alongside this one — `Read` on demand): **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md) — OLAP SQL, query history, materialized chains), **`hotdata-geospatial`** ([`../geospatial/SKILL.md`](../geospatial/SKILL.md) — PostGIS-style functions).
 
@@ -16,19 +16,19 @@ Retrieval workloads in Hotdata: **BM25 full-text**, **vector similarity**, and t
 
 ## Search CLI
 
-Both run server-side. `--type` and `--column` are **optional** when the table has exactly one search index — they are inferred automatically. Specify them when multiple indexes exist.
+Both run server-side. The search action addresses an index **by name** (`--index`, alias `--in`); the index's type, column, and provider come from the index itself.
 
 ```bash
-# BM25 (requires a BM25 index on the column)
-hotdata search "<query>" --table <catalog.schema.table> [--type bm25] [--column <column>] \
+# BM25 / text (requires a text index; address it by name)
+hotdata search "<query>" --index <name> \
   [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 
 # Vector (requires a vector index; server auto-embeds the query text)
-hotdata search "<query>" --table <catalog.schema.table> [--type vector] [--column <source_text_column>] \
+hotdata search "<query>" --index <name> \
   [--select <columns>] [--limit <n>] [--workspace-id <workspace_id>] [--output table|json|csv]
 
-# With active database: schema.table is enough (catalog resolved from active DB)
-hotdata search "<query>" --table <schema.table> [--type bm25|vector] [--column <col>]
+# --in is an accepted alias for --index
+hotdata search "<query>" --in <name>
 ```
 
 | Type | Behavior |
@@ -36,36 +36,36 @@ hotdata search "<query>" --table <schema.table> [--type bm25|vector] [--column <
 | **`bm25`** | Server generates `bm25_search(table, col, 'text')`. Results sort by score (descending). |
 | **`vector`** | Pass plain-text query; name the **source text column** (e.g. `title`). Server embeds using the same provider/metric/dimensions as the index. SQL uses `vector_distance(col, 'text')`. Results sort by distance (ascending). |
 
-- **Inference:** when `--type` or `--column` are omitted, the CLI fetches the table's indexes and selects the only BM25/vector index. If multiple exist, you must specify both flags.
+- **Index name:** the index carries its own type, column, and provider — you only name the index. Use `search list` to see available index names.
 - **Custom embedding model, raw query vector, or no vector index?** Use `hotdata query` directly (e.g. `cosine_distance(col, [<vec>])`) — `search` only auto-embeds the query text via the index's own provider.
-- **Before search:** create the right index (`indexes create --type bm25` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
+- **Before search:** create the right index (`search create <name> --type text` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
 - Default `--limit` is 10.
-- **Active database:** with `hotdata databases set <db>`, you can pass `schema.table` directly (e.g. `--table public.articles`) — the active database's catalog is resolved automatically. Or use the full `catalog.schema.table` form. Do **not** use the internal `__db_<id>` label or raw catalog ID prefix — `bm25_search`/`vector_distance` resolve a catalog attached to the active database, so an `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
+- **Active database:** with `hotdata databases use <db>`, an index created with a `schema.table` `--from` resolves the active database's catalog automatically. Or create it with the full `catalog.schema.table` form. Do **not** use the internal `__db_<id>` label or raw catalog ID prefix — `bm25_search`/`vector_distance` resolve a catalog attached to the active database, so an `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
 
 ---
 
-## Indexes (BM25 and vector)
+## Indexes (text and vector)
 
-Create attaches to a table via its `--catalog` alias (a managed database or an attached catalog). `list` narrows to the **active database** when one is set; without one it scans the whole workspace. Filter further with `--schema` / `--table`. `delete` **requires all of** `--catalog` + `--schema` + `--table` + `--name`.
+Create names the index (positional) and attaches to a table via `--from <catalog.schema.table>` (a managed database or an attached catalog). `list` narrows to the **active database** when one is set; without one it scans the whole workspace. `remove` takes the index name.
 
 ```bash
 # List — active-database scope when a DB is set, else whole-workspace scan
-hotdata indexes list [--schema <schema>] [--table <table>] [--workspace-id <ws>] [--output table|json|yaml]
+hotdata search list [--workspace-id <ws>] [--output table|json|yaml]
 
-# Create — by catalog alias (resolves a managed database or an attached catalog)
-hotdata indexes create --catalog <alias> --schema <schema> --table <table> \
-  --column <col> --type bm25|vector \
-  [--name <name>] [--metric l2|cosine|dot] [--async] \
-  [--embedding-provider-id <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+# Create — index name is positional; --from is catalog.schema.table
+hotdata search create <name> --type text|vector --from <catalog.schema.table> \
+  --column <col> \
+  [--metric l2|cosine|dot] [--async] \
+  [--provider <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 
-# Delete — requires --catalog + --schema + --table + --name
-hotdata indexes delete --catalog <alias> --schema <schema> --table <table> --name <name>
+# Remove — by index name
+hotdata search remove <name>
 ```
 
-- **`--type` is required** on create: `bm25` (one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`** — [`../analytics/SKILL.md`](../analytics/SKILL.md).)
+- **`--type` is required** on create: `text` (BM25; one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`** — [`../analytics/SKILL.md`](../analytics/SKILL.md).)
 - **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md)) — this skill focuses on retrieval types.
 - **`--async`:** poll with `hotdata jobs <job_id>` (see **`hotdata`** skill **Jobs**).
-- **Auto-embedding:** `--type vector` on a **text** column generates embeddings server-side. Optional `--embedding-provider-id`; default output column `{column}_embedding` (override with `--output-column`).
+- **Auto-embedding:** `--type vector` on a **text** column generates embeddings server-side. Optional `--provider`; default output column `{column}_embedding` (override with `--output-column`).
 
 Full workflow (gather workload → compare existing → create → verify): [references/INDEXES.md](references/INDEXES.md).
 
@@ -74,23 +74,23 @@ Full workflow (gather workload → compare existing → create → verify): [ref
 ## Embedding providers
 
 ```bash
-hotdata embedding-providers list [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata embedding-providers get <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata embedding-providers create --name <name> --provider-type service|local \
+hotdata search embeddings list [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata search embeddings show <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata search embeddings add --name <name> --provider-type service|local \
   [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata embedding-providers update <id> [--name <name>] [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata embedding-providers delete <id> [--workspace-id <workspace_id>]
+hotdata search embeddings update <id> [--name <name>] [--config '<json>'] [--provider-api-key <key> | --secret-name <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata search embeddings remove <id> [--workspace-id <workspace_id>]
 ```
 
-- System providers (e.g. `sys_emb_openai`) are pre-configured; use `list` for IDs to pass to `--embedding-provider-id`.
+- System providers (e.g. `sys_emb_openai`) are pre-configured; use `list` for IDs to pass to `--provider`.
 - `--provider-api-key` is the **embedding service** key (not Hotdata `--api-key`). `--secret-name` references an existing secret.
 
 ---
 
 ## Quick workflow
 
-1. `hotdata databases set <id>` — set an active database, then `hotdata tables list` to confirm column types.
-2. `hotdata indexes list` — avoid duplicate indexes (scoped to active DB automatically).
-3. `hotdata indexes create --catalog <alias> --table <table> --column <col> --type bm25|vector` (add `--async` if large).
-4. `hotdata search "..." --table <schema.table>` — `--type` and `--column` are inferred when there is one search index.
+1. `hotdata databases use <id>` — set an active database, then `hotdata databases tables list` to confirm column types.
+2. `hotdata search list` — avoid duplicate indexes (scoped to active DB automatically).
+3. `hotdata search create <name> --type text|vector --from <catalog.schema.table> --column <col>` (add `--async` if large).
+4. `hotdata search "..." --index <name>` — address the index you created by name.
 5. Record what exists in **context:DATAMODEL** (core skill) when the workspace should remember index choices.
