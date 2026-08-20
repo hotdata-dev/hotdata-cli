@@ -147,13 +147,29 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
     }
 }
 
+/// The managed database an index create targets, as named by `--from`.
+enum FromTarget {
+    /// A `schema.table` `--from`: the active database, already resolved by id.
+    /// Carry the resolved database so `create` does **not** re-resolve it by
+    /// catalog — a fork shares its source's catalog alias, so a catalog lookup
+    /// is ambiguous even though the active-database id is unambiguous.
+    Database(Box<databases::Database>),
+    /// A `catalog.schema.table` `--from`: an explicit catalog alias still to be
+    /// resolved to a managed database.
+    Catalog(String),
+}
+
 /// Parse `catalog.schema.table` or `schema.table` (needs an active database) into
-/// (catalog/connection name, schema, table). Exits with a message on a bad shape.
-fn parse_table(workspace_id: &str, table: &str) -> (String, String, String) {
+/// (target database, schema, table). Exits with a message on a bad shape.
+fn parse_table(workspace_id: &str, table: &str) -> (FromTarget, String, String) {
     use crossterm::style::Stylize;
     let parts: Vec<&str> = table.splitn(3, '.').collect();
     match parts.as_slice() {
-        [catalog, schema, tbl] => (catalog.to_string(), schema.to_string(), tbl.to_string()),
+        [catalog, schema, tbl] => (
+            FromTarget::Catalog(catalog.to_string()),
+            schema.to_string(),
+            tbl.to_string(),
+        ),
         [schema, tbl] => {
             let db_id = crate::config::load_current_database("default", workspace_id)
                 .unwrap_or_else(|| {
@@ -167,10 +183,11 @@ fn parse_table(workspace_id: &str, table: &str) -> (String, String, String) {
                 });
             let api = Api::new(Some(workspace_id));
             let db = databases::get_database(&api, &db_id).unwrap_or_else(|e| e.exit());
-            let catalog = db
-                .default_catalog
-                .unwrap_or_else(|| db.name.unwrap_or_else(|| "default".to_string()));
-            (catalog, schema.to_string(), tbl.to_string())
+            (
+                FromTarget::Database(Box::new(db)),
+                schema.to_string(),
+                tbl.to_string(),
+            )
         }
         _ => {
             eprintln!(
@@ -240,25 +257,30 @@ fn create(
         "sorted" => "sorted",
         _ => "vector",
     };
-    let (catalog, schema, table) = parse_table(workspace_id, from);
+    let (target, schema, table) = parse_table(workspace_id, from);
     let api = Api::new(Some(workspace_id));
-    // Indexes are a managed-database concept. Resolve --from's catalog to a
-    // managed database and use its connection; reject a plain connection (a
-    // legacy concept being removed) so create can't make an index that the
-    // managed-database-only `search show`/`search remove` can't reach.
-    let db = databases::try_resolve_database(&api, &catalog).unwrap_or_else(|_| {
-        use crossterm::style::Stylize;
-        eprintln!(
-            "{}",
-            format!(
-                "error: '{catalog}' is not a managed database. Search indexes are created on \
-                 managed databases — pass a managed database's catalog, or 'schema.table' with an \
-                 active database set via 'hotdata databases use <id>'."
-            )
-            .red()
-        );
-        std::process::exit(1);
-    });
+    // Indexes are a managed-database concept (a plain connection is a legacy
+    // concept being removed), so create must land on a managed database — the
+    // same scope `search show`/`search remove` address. The active-database path
+    // is already resolved; only an explicit catalog still needs resolving, and
+    // its own error (e.g. an ambiguous forked-catalog alias) is surfaced as-is.
+    let db = match target {
+        FromTarget::Database(db) => *db,
+        FromTarget::Catalog(catalog) => databases::try_resolve_database(&api, &catalog)
+            .unwrap_or_else(|e| {
+                use crossterm::style::Stylize;
+                eprintln!(
+                    "{}",
+                    format!(
+                        "error: {e}\nSearch indexes are created on managed databases — pass a \
+                         managed database's catalog or id, or 'schema.table' with an active \
+                         database set via 'hotdata databases use <id>'."
+                    )
+                    .red()
+                );
+                std::process::exit(1);
+            }),
+    };
     let conn_id = db.default_connection_id;
     let auto_name = format!("{table}_{}_{index_type}", column.replace(',', "_"));
     let index_name = name.unwrap_or(auto_name.as_str());
