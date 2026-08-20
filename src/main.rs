@@ -192,6 +192,7 @@ fn main() {
                 sql,
                 workspace_id,
                 database,
+                dialect,
                 output,
                 command,
             } => {
@@ -201,9 +202,13 @@ fn main() {
                         query::poll(&id, &workspace_id, database.as_deref(), &output)
                     }
                     None => match sql {
-                        Some(sql) => {
-                            query::execute(&sql, &workspace_id, database.as_deref(), &output)
-                        }
+                        Some(sql) => query::execute(
+                            &sql,
+                            &workspace_id,
+                            database.as_deref(),
+                            &output,
+                            &dialect,
+                        ),
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
@@ -441,6 +446,7 @@ fn main() {
                         Some(DatabasesCommands::Query {
                             sql,
                             database,
+                            dialect,
                             output,
                             command,
                         }) => match command {
@@ -453,6 +459,7 @@ fn main() {
                                     &workspace_id,
                                     database.as_deref(),
                                     &output,
+                                    &dialect,
                                 ),
                                 None => {
                                     use clap::CommandFactory;

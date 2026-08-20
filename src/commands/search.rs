@@ -393,7 +393,8 @@ pub fn run(
         select,
         limit,
     );
-    query::execute(&sql, workspace_id, Some(&loc.database_id), output);
+    // Search generates HotSQL directly — never a foreign dialect.
+    query::execute(&sql, workspace_id, Some(&loc.database_id), output, "hotsql");
 }
 
 fn remove(workspace_id: &str, database: Option<&str>, name: &str) {
