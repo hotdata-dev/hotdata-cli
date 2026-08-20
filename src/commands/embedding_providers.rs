@@ -126,6 +126,25 @@ fn parse_config(raw: Option<&str>) -> Option<serde_json::Value> {
     })
 }
 
+/// Parse `--config` into the object map the create request expects. Exits on
+/// invalid JSON (via [`parse_config`]) or a JSON value that isn't an object.
+fn parse_config_map(
+    raw: Option<&str>,
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+    use crossterm::style::Stylize;
+    match parse_config(raw)? {
+        serde_json::Value::Object(map) => Some(map.into_iter().collect()),
+        _ => {
+            eprintln!(
+                "{}",
+                "--config must be a JSON object, e.g. '{\"model\": \"text-embedding-3-small\"}'"
+                    .red()
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 pub fn list(workspace_id: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
     let providers: Vec<Provider> = crate::client::sdk::block_with_wakeup(
@@ -210,8 +229,8 @@ pub fn create(
 
     let api = Api::new(Some(workspace_id));
     let mut req = CreateEmbeddingProviderRequest::new(name.to_string(), provider_type.to_string());
-    if let Some(cfg) = parse_config(config) {
-        req.config = Some(Some(cfg));
+    if let Some(cfg) = parse_config_map(config) {
+        req.config = Some(cfg);
     }
     if let Some(k) = api_key {
         req.api_key = Some(Some(k.to_string()));

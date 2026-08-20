@@ -190,6 +190,7 @@ fn main() {
                 sql,
                 workspace_id,
                 database,
+                dialect,
                 output,
                 command,
             } => {
@@ -199,9 +200,13 @@ fn main() {
                         query::poll(&id, &workspace_id, database.as_deref(), &output)
                     }
                     None => match sql {
-                        Some(sql) => {
-                            query::execute(&sql, &workspace_id, database.as_deref(), &output)
-                        }
+                        Some(sql) => query::execute(
+                            &sql,
+                            &workspace_id,
+                            database.as_deref(),
+                            &output,
+                            &dialect,
+                        ),
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
@@ -775,7 +780,8 @@ fn main() {
                     ),
                     _ => unreachable!(),
                 };
-                query::execute(&sql, &workspace_id, None, &output)
+                // Search generates HotSQL directly — never a foreign dialect.
+                query::execute(&sql, &workspace_id, None, &output, "hotsql")
             }
             Commands::Queries {
                 id,

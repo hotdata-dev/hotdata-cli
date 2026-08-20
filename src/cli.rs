@@ -35,6 +35,11 @@ pub enum Commands {
         #[arg(long, short = 'd')]
         database: Option<String>,
 
+        /// SQL dialect the query is written in — a non-`hotsql` dialect is
+        /// transpiled to HotSQL server-side before it runs (read-only only)
+        #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake"])]
+        dialect: String,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
         output: String,

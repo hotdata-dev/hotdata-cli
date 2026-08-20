@@ -177,8 +177,18 @@ hotdata databases load --catalog demo --table listings --file ./listings.parquet
 ```sh
 hotdata tables list                          # every queryable table, as connection.schema.table
 hotdata tables list --connection-id <id>     # with column names and types
-hotdata query "<sql>" [-o table|json|csv]    # PostgreSQL dialect
+hotdata query "<sql>" [-o table|json|csv]    # HotSQL (PostgreSQL dialect)
 ```
+
+Write your SQL in another dialect and have the server transpile it to HotSQL
+before it runs — use idioms like Snowflake `IFF(...)` or DuckDB `len(...)`:
+
+```sh
+hotdata query "SELECT IFF(n > 0, 'pos', 'neg') FROM t" --dialect snowflake
+```
+
+`--dialect` accepts `hotsql` (default, no transpilation), `duckdb`, `postgres`,
+or `snowflake`. Only read-only queries are accepted for a non-`hotsql` dialect.
 
 Long-running queries fall back to async and print a `query_run_id` — poll with
 `hotdata query status <id>` (exit codes: `0` done, `1` failed, `2` running).
