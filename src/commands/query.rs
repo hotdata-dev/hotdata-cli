@@ -439,7 +439,7 @@ fn fail_run(error_msg: &str) -> ! {
     std::process::exit(1);
 }
 
-pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &str) {
+pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &str, dialect: &str) {
     // Scope to the explicit --database flag, else the active database resolved
     // at construction (HOTDATA_DATABASE / current database). The scoped `Api`
     // carries the database into submit_query's `X-Database-Id` header and into
@@ -450,6 +450,11 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
     let mut request = hotdata::models::QueryRequest::new(sql.to_string());
     request.r#async = Some(true);
     request.async_after_ms = Some(Some(1000));
+    // `hotsql` is the server default and planned as-is; only send `dialect` for a
+    // non-default dialect so ordinary queries keep their existing request shape.
+    if dialect != "hotsql" {
+        request.dialect = Some(Some(dialect.to_string()));
+    }
 
     let outcome = crate::client::sdk::block_with_wakeup(
         &api,

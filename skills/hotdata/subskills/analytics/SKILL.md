@@ -17,11 +17,12 @@ version: 0.26.0
 ## Execute SQL
 
 ```bash
-hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--output table|json|csv]
+hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--dialect hotsql|duckdb|postgres|snowflake] [--output table|json|csv]
 hotdata query status <query_run_id>
 ```
 
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
+- **`--dialect`** (default `hotsql`): write SQL in `duckdb`/`postgres`/`snowflake` and the server transpiles it to HotSQL before running (e.g. Snowflake `IFF(...)`, DuckDB `len(...)`). Read-only queries only for a non-`hotsql` dialect.
 - Use **`hotdata tables list`** for schema discovery — not `information_schema` via `query`.
 - Fully qualified names: `<catalog>.<schema>.<table>`, `<database>.<schema>.<table>`.
 - **Query scope:** every query runs inside one managed database (active or `--database`); it sees that database's own catalog plus **attached** catalogs only. To query an attached catalog's table, or **join a managed table against an attached catalog's table**, attach the catalog first: `hotdata databases attach <catalog>` — see **`hotdata`** skill → [Querying across catalogs](../../SKILL.md#querying-across-catalogs-attach). No managed database set → *"a database is required."*
