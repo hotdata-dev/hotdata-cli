@@ -1,5 +1,49 @@
 ## [0.27.0] - 2026-08-21
 
+### ⚠️ Breaking — command surface reorganized (migration guide)
+
+The top level went from 19 groups to 8 (`auth`, `workspaces`, `databases`, `query`, `jobs`, `ingest`, `search`, `manage`). **Old command spellings are removed with no aliases** — update scripts and muscle memory. All behavior and results are unchanged; only the command paths moved.
+
+**Re-parented groups**
+
+| Old | New |
+| :-- | :-- |
+| `hotdata tables …` | `hotdata databases tables …` |
+| `hotdata queries …` | `hotdata databases queries …` |
+| `hotdata results …` | `hotdata databases results …` |
+| `hotdata context …` | `hotdata databases context …` |
+| `hotdata datasource …` | `hotdata ingest sources …` |
+| `hotdata indexes …` | `hotdata search …` (`create` / `list` / `remove`) |
+| `hotdata embedding-providers …` | `hotdata search embeddings …` |
+| `hotdata usage` / `completions` / `upgrade` / `skills …` | `hotdata manage …` |
+| `hotdata connections …` | **removed** — use `hotdata ingest sources` (external sources) + `hotdata databases attach` (join) |
+
+**Renamed verbs**
+
+| Old | New |
+| :-- | :-- |
+| `databases set` / `workspaces set` | `… use` |
+| `databases delete` | `databases remove` |
+| `ingest cancel` | `ingest pause` |
+| `ingest runs` | `ingest logs` |
+| `ingest delete` | `ingest remove` |
+| `datasource validate` | `ingest sources test` |
+| `datasource create` | `ingest sources add` |
+| `datasource delete` | `ingest sources remove` |
+| `results show` | `databases results get` |
+| `embedding-providers get` / `create` / `delete` | `search embeddings show` / `add` / `remove` |
+
+**Reshaped flags**
+
+- Search runs by **index name**: `search "<text>" --index <name>` (create the index first with `search create`). The old `search --table … --column … --type …` form is gone.
+- `indexes create --catalog … --schema … --table … --name <n>` → `search create <n> --from <catalog.schema.table>`; `--embedding-provider-id` → `--provider`.
+- Context targeting: `--database-id` → `--database` / `-d`.
+
+**New in this release**
+
+- `hotdata query --dialect duckdb|postgres|snowflake` — write SQL in another dialect; the server transpiles it to HotSQL (read-only).
+- `hotdata ingest create --stream` — shorthand for a continuous ingest.
+
 ### 🚀 Features
 
 - *(query)* Add --dialect to transpile DuckDB/Postgres/Snowflake SQL (#266)
