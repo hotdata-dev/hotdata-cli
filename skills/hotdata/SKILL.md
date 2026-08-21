@@ -89,7 +89,7 @@ Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_st
 
 **Parquet only:** `databases tables load` accepts **parquet** files (local `--file`, remote `--url`, or a pre-staged `--upload-id`).
 
-**Active database:** `hotdata databases use <id>` saves the active database to config. All `databases tables` subcommands and all `databases context` commands default to the active database; pass **`--database <id>`** to override per-command.
+**Active database:** `hotdata databases use <id>` saves the active database to config. `databases tables list`/`load`/`remove`, `databases queries`/`results`, and all `databases context` commands default to the active database; pass **`--database <id>`** to override per-command. (`databases tables show` instead takes a fully-qualified `catalog.schema.table`.)
 
 **Always select databases by id** (`dbid...`, from `databases list`). Display names and catalog aliases are not unique — several databases can share a name, and a fork answers to the same catalog as its source — so name-based selection is ambiguous.
 
