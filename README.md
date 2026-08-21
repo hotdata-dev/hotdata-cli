@@ -57,8 +57,8 @@ hotdata ingest sources fields sql             # config/credentials/selector a fa
 hotdata ingest sources add                     # create a datasource (prompts, or --config @src.json)
 
 hotdata ingest create --source "prod postgres" --table orders --database-id db_123
-hotdata ingest run <ing_…> --wait              # one attempt; exits 0 done / 1 failed / 2 in flight
-hotdata ingest logs <ing_…>                    # every attempt, newest first
+hotdata ingest logs <ing_…>                    # attempts for an ingest, newest first
+hotdata ingest run <run_…> --wait              # show one attempt; exits 0 done / 1 failed / 2 in flight
 ```
 
 `ingest sources update-config` rotates credentials; `ingest pause|resume|schedule`
