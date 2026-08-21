@@ -12,241 +12,115 @@
 
 ---
 
-Query, search, and join your data from one place — live databases, APIs, cloud
-storage, Iceberg catalogs, and files you upload — with plain SQL and a few
+Query, search, and join your data from one place — external databases, APIs,
+cloud storage, Iceberg catalogs, and files you upload — with plain SQL and a few
 commands.
 
 ## Install
 
-**Homebrew**
-
 ```sh
-brew install hotdata-dev/tap/cli
+brew install hotdata-dev/tap/cli        # Homebrew
+cargo install --path .                  # from source (requires Rust)
 ```
 
-**Binary (macOS, Linux)** — download from [Releases](https://github.com/hotdata-dev/hotdata-cli/releases).
-
-**From source** (requires Rust)
-
-```sh
-cargo install --path .
-```
-
-Stay current with `hotdata manage upgrade`, and enable tab completion with
+Or grab a binary from [Releases](https://github.com/hotdata-dev/hotdata-cli/releases).
+Stay current with `hotdata manage upgrade`; enable tab completion with
 `hotdata manage completions bash|zsh|fish`.
 
 ## Quickstart
 
 ```sh
-# 1. Sign in (or create an account with `hotdata auth register`)
-hotdata auth login
-
-# 2. Create a database and load some data — any parquet file, local or by URL
+hotdata auth login                            # or: hotdata auth register
 hotdata databases create --catalog demo
 hotdata databases load --catalog demo --table trips \
   --url https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
-
-# 3. Query it
-hotdata query "SELECT count(*) AS trips, round(avg(fare_amount), 2) AS avg_fare
-               FROM demo.public.trips"
+hotdata query "SELECT count(*) FROM demo.public.trips"
 ```
 
-That's the core loop: create a **managed database**, put data in it, query it
-with PostgreSQL-dialect SQL. Everything else builds on that.
+The core loop: create a **managed database**, put data in it, query it with
+PostgreSQL-dialect SQL. Everything else builds on that.
 
 ## Getting your data in
 
-There are two ways to make your data queryable, and they compose:
-
-- **Connect** — a live, synced view of an external source. The data stays
-  where it is; Hotdata keeps the schema and cache fresh.
-- **Import** — copy data *into* a managed database, either from a file you
-  have or from an external source via `hotdata ingest sources` + `hotdata ingest`.
-
-### Connect a live database
-
-```sh
-hotdata connections new                     # guided wizard
-# or non-interactively:
-hotdata connections create --name "prod-replica" --type postgres \
-  --config '{"host":"db.example.com","port":5432,"user":"reader","database":"app","password":"'"$DB_PASSWORD"'"}'
-
-hotdata databases tables list               # see what's now queryable
-```
-
-`hotdata connections create list` shows every supported type, and
-`hotdata connections create list <type> -o json` prints the exact config
-fields it takes.
-
-### Import from external sources (`ingest sources` + `ingest`)
-
-Three nouns, and each one has a stable id:
-
-- **datasource** (`ds_…`) — a reusable external source: what a credential
-  opens. A Postgres server, a bucket root, an Iceberg catalog, a Kafka cluster.
-- **ingest** (`ing_…`) — a saved load definition: which subset of a datasource
-  lands in which managed-database table, once or on a schedule.
-- **run** (`run_…`) — one execution attempt, recording the config version,
-  selector, and destination it used. Addressed under its ingest —
-  `ingest logs <ing_…>` lists them, `ingest run <run_…>` shows one.
-
-```sh
-hotdata ingest sources types                # browse: SQL dialects, ~150 API services,
-                                            # buckets, iceberg, kafka, api
-hotdata ingest sources fields sql           # the fields --config, --credentials and
-                                            # --selector take for one family, and
-                                            # what that family can do (-o json for
-                                            # the JSON Schema)
-
-# 1. Check credentials without creating anything — nothing is persisted:
-hotdata ingest sources test --family sql --config @source.json
-
-# 2. Create the datasource. Loads no data; returns a ds_… id.
-#    On a terminal, with no --config, it asks: which source type, then that
-#    family's own fields. The questions come from the service, and secrets are
-#    never echoed. --no-input, CI and a piped stdin skip the questions.
-hotdata ingest sources add
-
-#    Non-interactively — keep secrets out of argv with @file.json or @- (stdin):
-hotdata ingest sources add --family sql --config @source.json \
-  --display-name "prod postgres"
-hotdata ingest sources add --family filesystem --bucket-url s3://events-prod
-hotdata ingest sources list                 # ids, families, states
-
-# 3. Ingest — what to load, and where it lands. Once:
-hotdata ingest create --source "prod postgres" --table orders --database-id db_123
-
-#    Source tables keep their own names. Put several under a common prefix —
-#    orders lands as raw_orders, customers as raw_customers:
-hotdata ingest create --source "prod postgres" --database-id db_123 \
-  --table orders --table customers --dest-table-prefix raw
-
-#    A source that lands ONE table is told that table's name instead, and can
-#    be kept fresh on a schedule:
-hotdata ingest create --source ds_01J --type continuous --database-id db_123 \
-  --format parquet --glob "orders/**/*.parquet" --dest-table orders_raw --every 5m
-
-#    Anything the shorthands cannot say goes as JSON:
-hotdata ingest create --datasource-id ds_01J --type one-time \
-  --selector @selector.json --destination @destination.json
-
-#    SQL sources take two shorthands the CLI parses into that structured JSON:
-hotdata ingest create --datasource-id ds_01J --database-id db_123 \
-  --sql "SELECT * FROM public.orders WHERE status = 'open'"
-hotdata ingest create --datasource-id ds_01J --database-id db_123 \
-  --raw-sql "SELECT customer_id, sum(amount) FROM orders GROUP BY 1" \
-  --table order_totals             # runs at the source, in its own dialect
-
-# 4. Watch it. --wait polls; the scheduler decides when a run starts:
-hotdata ingest logs ing_01J                 # every attempt, newest first
-hotdata ingest run run_01J --wait           # one attempt; exits 0 succeeded /
-                                            # 1 failed / 2 in flight
-
-# The data lands in a managed database — query it like any other:
-hotdata query --database db_123 "SELECT count(*) FROM public.orders"
-```
-
-`source.json` is family-specific and carries both halves:
-
-```json
-{
-  "config": {"dialect": "postgres", "host": "pg.example.com", "database": "prod"},
-  "credentials": {"username": "reader", "password": "…"}
-}
-```
-
-Public buckets need no credentials. Config edits and credential rotation are
-`hotdata ingest sources update-config <ds-id>`, which appends an immutable config
-version under the same id — runs in flight keep the version they started with.
-
-`hotdata ingest pause <ing-id>` stops the current run **and** future ones;
-`hotdata ingest resume <ing-id>` clears the stop but starts nothing
-immediately. To make the next scheduled run happen now:
-`hotdata ingest schedule <ing-id> --next now`.
-
-### Upload files
-
-Managed databases load **parquet** directly (convert CSV/JSON first):
+**Upload a parquet file** directly (convert CSV/JSON first):
 
 ```sh
 hotdata databases load --catalog demo --table listings --file ./listings.parquet
 ```
 
+**Import from an external source** — Postgres/MySQL, S3/GCS buckets, Iceberg,
+Kafka, ~150 API services — via a datasource (`ds_…`) and a saved ingest (`ing_…`):
+
+```sh
+hotdata ingest sources types                  # browse source types and families
+hotdata ingest sources fields sql             # config/credentials/selector a family takes
+hotdata ingest sources add                     # create a datasource (prompts, or --config @src.json)
+
+hotdata ingest create --source "prod postgres" --table orders --database-id db_123
+hotdata ingest logs <ing_…>                    # attempts for an ingest, newest first
+hotdata ingest run <run_…> --wait              # show one attempt; exits 0 done / 1 failed / 2 in flight
+```
+
+`ingest sources update-config` rotates credentials; `ingest pause|resume|schedule`
+control a scheduled ingest. Data lands in a managed database — query it like any
+other.
+
 ## Query and explore
 
 ```sh
-hotdata databases tables list                # every queryable table, as connection.schema.table
-hotdata databases tables show <table>        # column names and types for one table
-hotdata query "<sql>" [-o table|json|csv]    # HotSQL (PostgreSQL dialect)
+hotdata databases tables list                  # every queryable table
+hotdata databases tables show <table>          # columns and types
+hotdata query "<sql>" [-o table|json|csv]      # HotSQL (PostgreSQL dialect)
 ```
 
-Write your SQL in another dialect and have the server transpile it to HotSQL
-before it runs — use idioms like Snowflake `IFF(...)` or DuckDB `len(...)`:
+Write SQL in another dialect and the server transpiles it to HotSQL —
+`--dialect` accepts `hotsql` (default), `duckdb`, `postgres`, `snowflake`
+(read-only for a non-default dialect):
 
 ```sh
 hotdata query "SELECT IFF(n > 0, 'pos', 'neg') FROM t" --dialect snowflake
 ```
 
-`--dialect` accepts `hotsql` (default, no transpilation), `duckdb`, `postgres`,
-or `snowflake`. Only read-only queries are accepted for a non-`hotsql` dialect.
-
-Long-running queries fall back to async and print a `query_run_id` — poll with
-`hotdata query status <id>` (exit codes: `0` done, `1` failed, `2` running).
-Every result gets a `result-id`; re-fetch past results with
-`hotdata databases results get <result-id>` instead of re-running, and browse history with
-`hotdata databases queries list`.
+Long queries go async and print a `query_run_id` — poll with
+`hotdata query status <id>` (exit `0` done / `1` failed / `2` running). Re-fetch
+past results with `hotdata databases results get <result-id>`; browse history
+with `hotdata databases queries list`.
 
 ## Join across sources
 
-A query runs inside one managed database and sees its own tables plus any
-**attached** connections — attach a live source to join against it directly,
+Attach another catalog to a managed database and join its live tables directly,
 no copying:
 
 ```sh
 hotdata databases attach prod-replica --alias prod
-
-hotdata query "
-  SELECT t.id, o.total
-  FROM demo.public.tickets t
-  JOIN prod.public.orders o ON o.ticket_id = t.id
-"
+hotdata query "SELECT t.id, o.total FROM demo.public.tickets t
+               JOIN prod.public.orders o ON o.ticket_id = t.id"
 ```
 
 ## Search
 
-Create an index once, then search server-side — no embedding keys or client
-setup needed for vector search (the column is auto-embedded, and queries use
-the same model automatically):
+Create an index once, then search server-side. Vector search auto-embeds the
+column and the query — no embedding keys or client setup:
 
 ```sh
-hotdata search create trips_notes --type text --from demo.public.trips \
-  --column notes
+hotdata search create trips_notes --type text --from demo.public.trips --column notes
 hotdata search "airport surcharge dispute" --index trips_notes
-
-hotdata search create trips_notes_vec --type vector --from demo.public.trips \
-  --column notes
-hotdata search "rides that mention lost items" --index trips_notes_vec
 ```
 
-The search commands resolve the index in the active database (`hotdata databases
-use <id>`); pass `-d/--database <id>` to target another, or when no active
-database is set.
-
-System embedding providers come pre-configured; bring your own with
-`hotdata search embeddings add`.
+Use `--type vector` for semantic search. Indexes resolve in the active database
+(`hotdata databases use <id>`); pass `-d/--database <id>` to target another.
+Bring your own model with `hotdata search embeddings add`.
 
 ## Use it from scripts and agents
 
-The CLI is built to be driven programmatically:
-
-- Every listing command takes `-o json|yaml`; long-running commands expose
-  script-friendly exit codes (`query status`, `ingest run`).
-- Authenticate non-interactively with an API key: `--api-key`, or
-  `HOTDATA_API_KEY` in the environment or a `.env` file.
-- `hotdata manage skills install` installs bundled agent skills — Markdown playbooks
-  that teach AI coding agents (Claude Code and friends) the full CLI surface.
-- `hotdata databases context push|show DATAMODEL` stores your data model as shared,
-  server-side Markdown so humans and agents query with the same map.
+- Every listing command takes `-o json|yaml`; `query status` and `ingest run`
+  expose script-friendly exit codes.
+- Authenticate non-interactively with `--api-key`, or `HOTDATA_API_KEY` in the
+  environment or a `.env` file.
+- `hotdata manage skills install` installs bundled agent skills — Markdown
+  playbooks that teach AI coding agents (Claude Code and friends) the full CLI.
+- `hotdata databases context push|show DATAMODEL` stores your data model as
+  shared, server-side Markdown so humans and agents query with the same map.
 
 ## Commands
 
@@ -256,21 +130,12 @@ Run `hotdata <command> --help` for full flags on any command.
 | :-- | :-- |
 | `auth` | `login`, `register`, `status`, `logout` |
 | `workspaces` | List workspaces, set the active one |
-| `connections` | Live external sources: create, list, refresh |
-| `databases` | Managed databases: create, load parquet, attach connections |
-| `databases tables` | List queryable tables and columns |
-| `query` | Run SQL; `status` polls async runs |
-| `databases queries` / `databases results` | Query history and stored results |
-| `search` | BM25 and vector search over indexed columns |
-| `search create`/`list`/`remove` | Create/list/remove `text`, `vector` indexes |
-| `search embeddings` | Manage embedding providers for vector indexes |
-| `ingest sources` | External sources: test, add, list, update-config, remove |
-| `ingest` | Saved load definitions: create, list, pause, resume, schedule, `logs` (list), `run` (show one) |
-| `databases context` | Shared server-side Markdown (`DATAMODEL`, glossaries) |
+| `databases` | Managed databases: create, load, fork, attach — plus `tables`, `query`, `queries`, `results`, `context` inside them |
+| `query` | Run SQL (`--dialect` transpiles DuckDB/Postgres/Snowflake); `status` polls async runs |
+| `search` | BM25 and vector search; `create`/`list`/`remove` indexes; `embeddings` |
+| `ingest` | External sources (`sources`) and saved load definitions |
 | `jobs` | Background jobs (refreshes, index builds) |
-| `manage skills` | Install/inspect the bundled agent skills |
-| `manage completions` | Shell tab-completion scripts |
-| `manage upgrade` | Upgrade the CLI in place |
+| `manage` | `skills`, `completions`, `upgrade`, `usage` |
 
 ## Configuration
 
@@ -283,7 +148,7 @@ Config lives at `~/.hotdata/config.yml` (profile-keyed). Environment variables:
 | `HOTDATA_API_URL` | API base URL | `https://api.hotdata.dev/v1` |
 | `HOTDATA_APP_URL` | App URL for browser login | `https://app.hotdata.dev` |
 
-Precedence for the API key, lowest to highest: config file → `HOTDATA_API_KEY` → `--api-key`.
+API-key precedence, lowest to highest: config file → `HOTDATA_API_KEY` → `--api-key`.
 
 ## Development
 
