@@ -196,6 +196,10 @@ pub enum DatabasesCommands {
 
     /// Sync database context with local Markdown
     Context {
+        /// Managed database to scope to (defaults to the current database)
+        #[arg(long, short = 'd', global = true)]
+        database: Option<String>,
+
         #[command(subcommand)]
         command: crate::commands::context::ContextCommands,
     },
@@ -228,7 +232,7 @@ pub enum DatabasesCommands {
         id: Option<String>,
 
         /// Managed database to scope to (defaults to the current database)
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
         /// Output format
@@ -245,7 +249,7 @@ pub enum DatabasesCommands {
         result_id: Option<String>,
 
         /// Managed database to scope to (defaults to the current database)
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
         /// Output format
