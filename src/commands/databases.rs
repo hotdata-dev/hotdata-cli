@@ -395,8 +395,6 @@ struct DatabaseAttachment {
 
 #[derive(Deserialize)]
 struct InfoTable {
-    #[allow(dead_code)]
-    connection: String,
     schema: String,
     table: String,
     synced: bool,
@@ -426,13 +424,9 @@ struct CreateDatabaseResponse {
 
 #[derive(Deserialize)]
 struct LoadManagedTableResponse {
-    #[allow(dead_code)]
-    connection_id: String,
     schema_name: String,
     table_name: String,
     row_count: u64,
-    #[allow(dead_code)]
-    arrow_schema_json: String,
 }
 
 impl From<hotdata::models::DatabaseDetailResponse> for Database {
@@ -955,7 +949,6 @@ fn collect_tables(
             .tables
             .into_iter()
             .map(|t| InfoTable {
-                connection: t.connection,
                 schema: t.schema,
                 table: t.table,
                 synced: t.synced,
@@ -979,7 +972,6 @@ fn collect_tables(
         ))
         .unwrap_or_else(|e| e.exit());
         out.extend(resp.tables.into_iter().map(|t| InfoTable {
-            connection: t.connection,
             schema: t.schema,
             table: t.table,
             synced: t.synced,
@@ -2258,7 +2250,6 @@ mod tests {
         let rows = table_rows(
             "default",
             vec![InfoTable {
-                connection: "ignored".into(),
                 schema: "public".into(),
                 table: "orders".into(),
                 synced: true,

@@ -146,10 +146,8 @@ pub fn maybe_auto_update_after_cli_upgrade() {
     }
 
     let current = Version::parse(CURRENT_VERSION).expect("invalid package version");
-    let needs_refresh = match read_installed_version() {
-        Some(v) if v >= current && all_skill_stores_present() => false,
-        _ => true,
-    };
+    let needs_refresh =
+        !matches!(read_installed_version(), Some(v) if v >= current && all_skill_stores_present());
     if !needs_refresh {
         clear_skill_auto_update_suppression();
         return;
@@ -170,10 +168,8 @@ pub fn maybe_auto_update_after_cli_upgrade() {
     let _symlinks = ensure_symlinks();
     remove_retired_skills_global();
 
-    let still_needed = match read_installed_version() {
-        Some(v) if v >= current && all_skill_stores_present() => false,
-        _ => true,
-    };
+    let still_needed =
+        !matches!(read_installed_version(), Some(v) if v >= current && all_skill_stores_present());
 
     if still_needed {
         suppress_skill_auto_update_for_this_cli();

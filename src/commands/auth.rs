@@ -244,6 +244,7 @@ fn is_already_signed_in(profile_config: &config::ProfileConfig) -> bool {
 /// 3. Opens the browser and waits for the OAuth/registration callback.
 /// 4. Calls `exchange(code, code_verifier, port)` to mint a JWT session.
 /// 5. Saves the session, prints `success_print`, and displays the workspace.
+#[allow(clippy::too_many_arguments)]
 fn run_browser_auth(
     profile_config: &config::ProfileConfig,
     opening_msg: &str,

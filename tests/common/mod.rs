@@ -204,10 +204,10 @@ pub fn shared_database_id(cli: &Cli) -> String {
     let listing = cli.json(&["databases", "list", "-o", "json"]);
     if let Some(arr) = listing.as_array() {
         for db in arr {
-            if db.get("name").and_then(|v| v.as_str()) == Some(SHARED_DATABASE_NAME) {
-                if let Some(id) = db.get("id").and_then(|v| v.as_str()) {
-                    return id.to_string();
-                }
+            if db.get("name").and_then(|v| v.as_str()) == Some(SHARED_DATABASE_NAME)
+                && let Some(id) = db.get("id").and_then(|v| v.as_str())
+            {
+                return id.to_string();
             }
         }
     }

@@ -8,6 +8,9 @@ use crate::commands::skill::SkillCommands;
 use crate::commands::workspace::WorkspaceCommands;
 use clap::Subcommand;
 
+// Variant sizes differ, but a clap command tree is parsed once per invocation
+// and boxing subcommand variants would complicate the derive and match arms.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum Commands {
     /// Authenticate or manage auth settings

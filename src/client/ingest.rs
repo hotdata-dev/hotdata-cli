@@ -32,7 +32,6 @@
 //!
 //! The result-reading endpoints are intentionally absent — once a run lands,
 //! that path is the core `query`/`databases`/`results` commands.
-#![allow(dead_code)] // Response structs are read only through serde/printing.
 
 use crate::client::jwt;
 use crate::config;
@@ -967,9 +966,6 @@ pub struct ConnectorEntry {
     /// Kafka entries: `kafka` or `debezium`.
     #[serde(default)]
     pub connector_type: Option<String>,
-    /// Filesystem entries: the file format the entry is named for.
-    #[serde(default)]
-    pub file_format: Option<String>,
     /// Which keys belong in this entry's deliberately free-form config map.
     #[serde(default)]
     pub options_hint: Option<OptionsHint>,

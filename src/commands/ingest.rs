@@ -71,6 +71,8 @@ use crate::util;
 /// Wire values for the ingest type; the CLI spells the first one `one-time`.
 const TYPES: [&str; 3] = ["one-time", "scheduled", "continuous"];
 
+// Parsed once per invocation; boxing clap variants isn't worth the churn.
+#[allow(clippy::large_enum_variant)]
 #[derive(clap::Subcommand)]
 pub enum IngestCommands {
     /// Create a load definition
