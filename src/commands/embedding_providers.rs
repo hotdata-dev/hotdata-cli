@@ -4,7 +4,7 @@ use hotdata::models::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Subcommands for `hotdata embedding-providers`.
+/// Subcommands for `hotdata search embeddings`.
 #[derive(clap::Subcommand)]
 pub enum EmbeddingProvidersCommands {
     /// List embedding providers
@@ -15,6 +15,7 @@ pub enum EmbeddingProvidersCommands {
     },
 
     /// Show details for a specific embedding provider
+    #[command(name = "show")]
     Get {
         /// Provider ID
         id: String,
@@ -25,6 +26,7 @@ pub enum EmbeddingProvidersCommands {
     },
 
     /// Create a new embedding provider
+    #[command(name = "add")]
     Create {
         /// Provider name (must be unique within the workspace)
         #[arg(long)]
@@ -68,7 +70,7 @@ pub enum EmbeddingProvidersCommands {
         config: Option<String>,
 
         /// New provider API key (replaces or creates the managed secret).
-        /// See `embedding-providers create --provider-api-key` for naming rationale.
+        /// See `search embeddings add --provider-api-key` for naming rationale.
         #[arg(long = "provider-api-key", conflicts_with = "secret_name")]
         provider_api_key: Option<String>,
 
@@ -82,10 +84,53 @@ pub enum EmbeddingProvidersCommands {
     },
 
     /// Delete an embedding provider
+    #[command(name = "remove")]
     Delete {
         /// Provider ID
         id: String,
     },
+}
+
+/// Route an `EmbeddingProvidersCommands` to its handler, reached as
+/// `search embeddings`.
+pub fn dispatch(workspace_id: &str, command: EmbeddingProvidersCommands) {
+    match command {
+        EmbeddingProvidersCommands::List { output } => list(workspace_id, &output),
+        EmbeddingProvidersCommands::Get { id, output } => get(workspace_id, &id, &output),
+        EmbeddingProvidersCommands::Create {
+            name,
+            provider_type,
+            config,
+            provider_api_key,
+            secret_name,
+            output,
+        } => create(
+            workspace_id,
+            &name,
+            &provider_type,
+            config.as_deref(),
+            provider_api_key.as_deref(),
+            secret_name.as_deref(),
+            &output,
+        ),
+        EmbeddingProvidersCommands::Update {
+            id,
+            name,
+            config,
+            provider_api_key,
+            secret_name,
+            output,
+        } => update(
+            workspace_id,
+            &id,
+            name.as_deref(),
+            config.as_deref(),
+            provider_api_key.as_deref(),
+            secret_name.as_deref(),
+            &output,
+        ),
+        EmbeddingProvidersCommands::Delete { id } => delete(workspace_id, &id),
+    }
 }
 
 #[derive(Deserialize, Serialize)]

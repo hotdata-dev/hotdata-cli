@@ -1,6 +1,6 @@
 //! Presentation and argument helpers shared by the two ingest-side command
-//! groups: `hotdata datasource` and `hotdata ingest` (which is where a run is
-//! shown, as `ingest run <run-id>`).
+//! groups: `hotdata ingest sources` and `hotdata ingest` (which is where a run
+//! is shown, as `ingest run <run-id>`).
 //!
 //! They were one group before the datasource/ingest/run split, and the output
 //! conventions must not drift now that they are separate: one `render`, one

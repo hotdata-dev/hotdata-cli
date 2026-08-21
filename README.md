@@ -32,8 +32,8 @@ brew install hotdata-dev/tap/cli
 cargo install --path .
 ```
 
-Stay current with `hotdata upgrade`, and enable tab completion with
-`hotdata completions bash|zsh|fish`.
+Stay current with `hotdata manage upgrade`, and enable tab completion with
+`hotdata manage completions bash|zsh|fish`.
 
 ## Quickstart
 
@@ -61,7 +61,7 @@ There are two ways to make your data queryable, and they compose:
 - **Connect** — a live, synced view of an external source. The data stays
   where it is; Hotdata keeps the schema and cache fresh.
 - **Import** — copy data *into* a managed database, either from a file you
-  have or from an external source via `hotdata datasource` + `hotdata ingest`.
+  have or from an external source via `hotdata ingest sources` + `hotdata ingest`.
 
 ### Connect a live database
 
@@ -71,14 +71,14 @@ hotdata connections new                     # guided wizard
 hotdata connections create --name "prod-replica" --type postgres \
   --config '{"host":"db.example.com","port":5432,"user":"reader","database":"app","password":"'"$DB_PASSWORD"'"}'
 
-hotdata tables list                         # see what's now queryable
+hotdata databases tables list               # see what's now queryable
 ```
 
 `hotdata connections create list` shows every supported type, and
 `hotdata connections create list <type> -o json` prints the exact config
 fields it takes.
 
-### Import from external sources (`datasource` + `ingest`)
+### Import from external sources (`ingest sources` + `ingest`)
 
 Three nouns, and each one has a stable id:
 
@@ -88,30 +88,30 @@ Three nouns, and each one has a stable id:
   lands in which managed-database table, once or on a schedule.
 - **run** (`run_…`) — one execution attempt, recording the config version,
   selector, and destination it used. Addressed under its ingest —
-  `ingest runs <ing_…>` lists them, `ingest run <run_…>` shows one.
+  `ingest logs <ing_…>` lists them, `ingest run <run_…>` shows one.
 
 ```sh
-hotdata datasource types                    # browse: SQL dialects, ~150 API services,
+hotdata ingest sources types                # browse: SQL dialects, ~150 API services,
                                             # buckets, iceberg, kafka, api
-hotdata datasource fields sql               # the fields --config, --credentials and
+hotdata ingest sources fields sql           # the fields --config, --credentials and
                                             # --selector take for one family, and
                                             # what that family can do (-o json for
                                             # the JSON Schema)
 
 # 1. Check credentials without creating anything — nothing is persisted:
-hotdata datasource validate --family sql --config @source.json
+hotdata ingest sources test --family sql --config @source.json
 
 # 2. Create the datasource. Loads no data; returns a ds_… id.
 #    On a terminal, with no --config, it asks: which source type, then that
 #    family's own fields. The questions come from the service, and secrets are
 #    never echoed. --no-input, CI and a piped stdin skip the questions.
-hotdata datasource create
+hotdata ingest sources add
 
 #    Non-interactively — keep secrets out of argv with @file.json or @- (stdin):
-hotdata datasource create --family sql --config @source.json \
+hotdata ingest sources add --family sql --config @source.json \
   --display-name "prod postgres"
-hotdata datasource create --family filesystem --bucket-url s3://events-prod
-hotdata datasource list                     # ids, families, states
+hotdata ingest sources add --family filesystem --bucket-url s3://events-prod
+hotdata ingest sources list                 # ids, families, states
 
 # 3. Ingest — what to load, and where it lands. Once:
 hotdata ingest create --source "prod postgres" --table orders --database-id db_123
@@ -138,7 +138,7 @@ hotdata ingest create --datasource-id ds_01J --database-id db_123 \
   --table order_totals             # runs at the source, in its own dialect
 
 # 4. Watch it. --wait polls; the scheduler decides when a run starts:
-hotdata ingest runs ing_01J                 # every attempt, newest first
+hotdata ingest logs ing_01J                 # every attempt, newest first
 hotdata ingest run run_01J --wait           # one attempt; exits 0 succeeded /
                                             # 1 failed / 2 in flight
 
@@ -156,10 +156,10 @@ hotdata query --database db_123 "SELECT count(*) FROM public.orders"
 ```
 
 Public buckets need no credentials. Config edits and credential rotation are
-`hotdata datasource update-config <ds-id>`, which appends an immutable config
+`hotdata ingest sources update-config <ds-id>`, which appends an immutable config
 version under the same id — runs in flight keep the version they started with.
 
-`hotdata ingest cancel <ing-id>` stops the current run **and** future ones;
+`hotdata ingest pause <ing-id>` stops the current run **and** future ones;
 `hotdata ingest resume <ing-id>` clears the stop but starts nothing
 immediately. To make the next scheduled run happen now:
 `hotdata ingest schedule <ing-id> --next now`.
@@ -175,8 +175,8 @@ hotdata databases load --catalog demo --table listings --file ./listings.parquet
 ## Query and explore
 
 ```sh
-hotdata tables list                          # every queryable table, as connection.schema.table
-hotdata tables list --connection-id <id>     # with column names and types
+hotdata databases tables list                # every queryable table, as connection.schema.table
+hotdata databases tables show <table>        # column names and types for one table
 hotdata query "<sql>" [-o table|json|csv]    # HotSQL (PostgreSQL dialect)
 ```
 
@@ -193,8 +193,8 @@ or `snowflake`. Only read-only queries are accepted for a non-`hotsql` dialect.
 Long-running queries fall back to async and print a `query_run_id` — poll with
 `hotdata query status <id>` (exit codes: `0` done, `1` failed, `2` running).
 Every result gets a `result-id`; re-fetch past results with
-`hotdata results <result-id>` instead of re-running, and browse history with
-`hotdata queries list`.
+`hotdata databases results get <result-id>` instead of re-running, and browse history with
+`hotdata databases queries list`.
 
 ## Join across sources
 
@@ -219,17 +219,21 @@ setup needed for vector search (the column is auto-embedded, and queries use
 the same model automatically):
 
 ```sh
-hotdata indexes create --catalog demo --schema public --table trips \
-  --column notes --type bm25
-hotdata search "airport surcharge dispute" --table demo.public.trips
+hotdata search create trips_notes --type text --from demo.public.trips \
+  --column notes
+hotdata search "airport surcharge dispute" --index trips_notes
 
-hotdata indexes create --catalog demo --schema public --table trips \
-  --column notes --type vector
-hotdata search "rides that mention lost items" --table demo.public.trips --type vector
+hotdata search create trips_notes_vec --type vector --from demo.public.trips \
+  --column notes
+hotdata search "rides that mention lost items" --index trips_notes_vec
 ```
 
+The search commands resolve the index in the active database (`hotdata databases
+use <id>`); pass `-d/--database <id>` to target another, or when no active
+database is set.
+
 System embedding providers come pre-configured; bring your own with
-`hotdata embedding-providers create`.
+`hotdata search embeddings add`.
 
 ## Use it from scripts and agents
 
@@ -239,9 +243,9 @@ The CLI is built to be driven programmatically:
   script-friendly exit codes (`query status`, `ingest run`).
 - Authenticate non-interactively with an API key: `--api-key`, or
   `HOTDATA_API_KEY` in the environment or a `.env` file.
-- `hotdata skills install` installs bundled agent skills — Markdown playbooks
+- `hotdata manage skills install` installs bundled agent skills — Markdown playbooks
   that teach AI coding agents (Claude Code and friends) the full CLI surface.
-- `hotdata context push|show DATAMODEL` stores your data model as shared,
+- `hotdata databases context push|show DATAMODEL` stores your data model as shared,
   server-side Markdown so humans and agents query with the same map.
 
 ## Commands
@@ -253,20 +257,20 @@ Run `hotdata <command> --help` for full flags on any command.
 | `auth` | `login`, `register`, `status`, `logout` |
 | `workspaces` | List workspaces, set the active one |
 | `connections` | Live external sources: create, list, refresh |
-| `databases` | Managed databases: create, load parquet, attach connections, scoped `run` |
-| `tables` | List queryable tables and columns |
+| `databases` | Managed databases: create, load parquet, attach connections |
+| `databases tables` | List queryable tables and columns |
 | `query` | Run SQL; `status` polls async runs |
-| `queries` / `results` | Query history and stored results |
+| `databases queries` / `databases results` | Query history and stored results |
 | `search` | BM25 and vector search over indexed columns |
-| `indexes` | Create/list/delete `sorted`, `bm25`, `vector` indexes |
-| `embedding-providers` | Manage embedding providers for vector indexes |
-| `datasource` | External sources: validate, create, list, update-config, delete |
-| `ingest` | Saved load definitions: create, list, cancel, resume, schedule, `runs` (list), `run` (show one) |
-| `context` | Shared server-side Markdown (`DATAMODEL`, glossaries) |
+| `search create`/`list`/`remove` | Create/list/remove `text`, `vector` indexes |
+| `search embeddings` | Manage embedding providers for vector indexes |
+| `ingest sources` | External sources: test, add, list, update-config, remove |
+| `ingest` | Saved load definitions: create, list, pause, resume, schedule, `logs` (list), `run` (show one) |
+| `databases context` | Shared server-side Markdown (`DATAMODEL`, glossaries) |
 | `jobs` | Background jobs (refreshes, index builds) |
-| `skills` | Install/inspect the bundled agent skills |
-| `completions` | Shell tab-completion scripts |
-| `upgrade` | Upgrade the CLI in place |
+| `manage skills` | Install/inspect the bundled agent skills |
+| `manage completions` | Shell tab-completion scripts |
+| `manage upgrade` | Upgrade the CLI in place |
 
 ## Configuration
 

@@ -8,21 +8,17 @@ mod util;
 use anstyle::AnsiColor;
 use clap::{Parser, builder::Styles};
 use cli::Commands;
-use client::{credentials, sdk};
+use client::credentials;
 use commands::auth::{self, AuthCommands};
-use commands::connections;
 use commands::context::{self, ContextCommands};
 use commands::databases::{self, DatabaseTablesCommands, DatabasesCommands};
-use commands::datasource;
-use commands::embedding_providers::{self, EmbeddingProvidersCommands};
-use commands::indexes::{self, IndexesCommands};
 use commands::ingest;
 use commands::jobs::{self, JobsCommands};
 use commands::queries::{self, QueriesCommands};
 use commands::query::{self, QueryCommands};
 use commands::results::{self, ResultsCommands};
 use commands::skill::{self, SkillCommands};
-use commands::tables::{self, TablesCommands};
+use commands::tables;
 use commands::workspace::{self, WorkspaceCommands};
 use commands::{update, usage};
 
@@ -118,7 +114,7 @@ extern "C" fn print_database_footer() {
     {
         eprintln!(
             "{}",
-            format!("current database: {id}  use 'hotdata databases set' to change").dark_grey(),
+            format!("current database: {id}  use 'hotdata databases use' to change").dark_grey(),
         );
     }
 }
@@ -142,8 +138,13 @@ fn main() {
         util::set_no_input(true);
     }
 
-    let skip_skill_auto_update =
-        cli.command.is_none() || matches!(&cli.command, Some(Commands::Skills { .. }));
+    let skip_skill_auto_update = cli.command.is_none()
+        || matches!(
+            &cli.command,
+            Some(Commands::Manage {
+                command: cli::ManageCommands::Skills { .. }
+            })
+        );
     if !skip_skill_auto_update {
         skill::maybe_auto_update_after_cli_upgrade();
     }
@@ -156,9 +157,10 @@ fn main() {
     // never blocked (see `update::should_check`).
     let gate_update = !matches!(
         &cli.command,
-        None | Some(Commands::Upgrade)
-            | Some(Commands::Completions { .. })
-            | Some(Commands::Auth { command: None })
+        None | Some(Commands::Auth { command: None })
+            | Some(Commands::Manage {
+                command: cli::ManageCommands::Completions { .. } | cli::ManageCommands::Upgrade,
+            })
     );
     if gate_update {
         update::enforce_latest_or_exit();
@@ -230,7 +232,6 @@ fn main() {
                 command,
             } => {
                 let workspace_id = resolve_workspace(workspace_id);
-                // A group-level name_or_id is treated as a `show` shorthand.
                 if let Some(name_or_id) = name_or_id {
                     databases::get(&workspace_id, &name_or_id, &output);
                 } else {
@@ -316,16 +317,45 @@ fn main() {
                             Some(DatabaseTablesCommands::List {
                                 database: db_flag,
                                 schema,
+                                table,
+                                limit,
+                                cursor,
                                 output,
-                            }) => databases::tables_list(
-                                &workspace_id,
-                                db_flag.as_deref().or(database.as_deref()),
-                                schema.as_deref(),
-                                None,
-                                None,
-                                None,
-                                &output,
-                            ),
+                            }) => {
+                                let db = db_flag.as_deref().or(database.as_deref());
+                                // Scope to a database when one is addressable
+                                // (flag / group positional / active), else list
+                                // every table in the workspace.
+                                if db.is_some()
+                                    || crate::config::load_current_database(
+                                        "default",
+                                        &workspace_id,
+                                    )
+                                    .is_some()
+                                {
+                                    databases::tables_list(
+                                        &workspace_id,
+                                        db,
+                                        schema.as_deref(),
+                                        table.as_deref(),
+                                        limit,
+                                        cursor.as_deref(),
+                                        &output,
+                                    )
+                                } else {
+                                    tables::list(
+                                        &workspace_id,
+                                        schema.as_deref(),
+                                        table.as_deref(),
+                                        limit,
+                                        cursor.as_deref(),
+                                        &output,
+                                    )
+                                }
+                            }
+                            Some(DatabaseTablesCommands::Show { table, output }) => {
+                                tables::show(&workspace_id, &table, &output)
+                            }
                             Some(DatabaseTablesCommands::Load {
                                 database: db_flag,
                                 table,
@@ -378,6 +408,148 @@ fn main() {
                                 }
                             }
                         },
+                        Some(DatabasesCommands::Context { database, command }) => {
+                            let database_id = database
+                                .or_else(|| {
+                                    config::load_current_database("default", &workspace_id)
+                                })
+                                .unwrap_or_else(|| {
+                                    eprintln!(
+                                        "error: no active database. Pass -d/--database <id> or set one with 'hotdata databases use <id>'."
+                                    );
+                                    std::process::exit(1);
+                                });
+                            match command {
+                                ContextCommands::List { output, prefix } => context::list(
+                                    &workspace_id,
+                                    &database_id,
+                                    prefix.as_deref(),
+                                    &output,
+                                ),
+                                ContextCommands::Show { name } => {
+                                    context::show(&workspace_id, &database_id, &name)
+                                }
+                                ContextCommands::Pull {
+                                    name,
+                                    force,
+                                    dry_run,
+                                } => context::pull(
+                                    &workspace_id,
+                                    &database_id,
+                                    &name,
+                                    force,
+                                    dry_run,
+                                ),
+                                ContextCommands::Push { name, dry_run } => {
+                                    context::push(&workspace_id, &database_id, &name, dry_run)
+                                }
+                            }
+                        }
+                        Some(DatabasesCommands::Query {
+                            sql,
+                            database,
+                            dialect,
+                            output,
+                            command,
+                        }) => match command {
+                            Some(QueryCommands::Status { id }) => {
+                                query::poll(&id, &workspace_id, database.as_deref(), &output)
+                            }
+                            None => match sql {
+                                Some(sql) => query::execute(
+                                    &sql,
+                                    &workspace_id,
+                                    database.as_deref(),
+                                    &output,
+                                    &dialect,
+                                ),
+                                None => {
+                                    use clap::CommandFactory;
+                                    let mut cmd = Cli::command();
+                                    cmd.build();
+                                    cmd.find_subcommand_mut("databases")
+                                        .unwrap()
+                                        .find_subcommand_mut("query")
+                                        .unwrap()
+                                        .print_help()
+                                        .unwrap();
+                                }
+                            },
+                        },
+                        Some(DatabasesCommands::Queries {
+                            id,
+                            database,
+                            output,
+                            command,
+                        }) => {
+                            if let Some(id) = id {
+                                queries::get(&id, &workspace_id, database.as_deref(), &output)
+                            } else {
+                                match command {
+                                    Some(QueriesCommands::List {
+                                        limit,
+                                        cursor,
+                                        status,
+                                        output,
+                                    }) => queries::list(
+                                        &workspace_id,
+                                        database.as_deref(),
+                                        Some(limit),
+                                        cursor.as_deref(),
+                                        status.as_deref(),
+                                        &output,
+                                    ),
+                                    None => {
+                                        use clap::CommandFactory;
+                                        let mut cmd = Cli::command();
+                                        cmd.build();
+                                        cmd.find_subcommand_mut("databases")
+                                            .unwrap()
+                                            .find_subcommand_mut("queries")
+                                            .unwrap()
+                                            .print_help()
+                                            .unwrap();
+                                    }
+                                }
+                            }
+                        }
+                        Some(DatabasesCommands::Results {
+                            result_id,
+                            database,
+                            output,
+                            command,
+                        }) => match command {
+                            Some(ResultsCommands::Show { id, output }) => {
+                                results::get(&id, &workspace_id, database.as_deref(), &output)
+                            }
+                            Some(ResultsCommands::List {
+                                limit,
+                                offset,
+                                output,
+                            }) => results::list(
+                                &workspace_id,
+                                database.as_deref(),
+                                limit,
+                                offset,
+                                &output,
+                            ),
+                            None => match result_id {
+                                Some(id) => {
+                                    results::get(&id, &workspace_id, database.as_deref(), &output)
+                                }
+                                None => {
+                                    use clap::CommandFactory;
+                                    let mut cmd = Cli::command();
+                                    cmd.build();
+                                    cmd.find_subcommand_mut("databases")
+                                        .unwrap()
+                                        .find_subcommand_mut("results")
+                                        .unwrap()
+                                        .print_help()
+                                        .unwrap();
+                                }
+                            },
+                        },
                         None => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
@@ -388,83 +560,6 @@ fn main() {
                                 .unwrap();
                         }
                     }
-                }
-            }
-            Commands::Tables { command } => match command {
-                TablesCommands::Show { table, output } => {
-                    let workspace_id = resolve_workspace(None);
-                    tables::show(&workspace_id, &table, &output)
-                }
-                TablesCommands::List {
-                    workspace_id,
-                    schema,
-                    table,
-                    limit,
-                    cursor,
-                    output,
-                } => {
-                    let workspace_id = resolve_workspace(workspace_id);
-                    if crate::config::load_current_database("default", &workspace_id).is_some() {
-                        databases::tables_list(
-                            &workspace_id,
-                            None,
-                            schema.as_deref(),
-                            table.as_deref(),
-                            limit,
-                            cursor.as_deref(),
-                            &output,
-                        )
-                    } else {
-                        tables::list(
-                            &workspace_id,
-                            schema.as_deref(),
-                            table.as_deref(),
-                            limit,
-                            cursor.as_deref(),
-                            &output,
-                        )
-                    }
-                }
-            },
-            Commands::Skills { command } => match command {
-                SkillCommands::Install { project } => {
-                    if project {
-                        skill::install_project()
-                    } else {
-                        skill::install()
-                    }
-                }
-                SkillCommands::Status | SkillCommands::List => skill::status(),
-            },
-            Commands::Results {
-                result_id,
-                workspace_id,
-                database,
-                output,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                match command {
-                    Some(ResultsCommands::Show { id, output }) => {
-                        results::get(&id, &workspace_id, database.as_deref(), &output)
-                    }
-                    Some(ResultsCommands::List {
-                        limit,
-                        offset,
-                        output,
-                    }) => results::list(&workspace_id, database.as_deref(), limit, offset, &output),
-                    None => match result_id {
-                        Some(id) => results::get(&id, &workspace_id, database.as_deref(), &output),
-                        None => {
-                            use clap::CommandFactory;
-                            let mut cmd = Cli::command();
-                            cmd.build();
-                            cmd.find_subcommand_mut("results")
-                                .unwrap()
-                                .print_help()
-                                .unwrap();
-                        }
-                    },
                 }
             }
             Commands::Jobs {
@@ -506,14 +601,6 @@ fn main() {
                     }
                 }
             }
-            Commands::Datasource {
-                workspace_id,
-                output,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                datasource::dispatch(&workspace_id, &output, command);
-            }
             Commands::Ingest {
                 workspace_id,
                 output,
@@ -532,340 +619,77 @@ fn main() {
                 let workspace_id = resolve_workspace(workspace_id);
                 ingest::dispatch(&workspace_id, &output, command);
             }
-            Commands::Indexes {
-                workspace_id,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                match command {
-                    IndexesCommands::List {
-                        schema,
-                        table,
-                        output,
-                    } => {
-                        let connection_id =
-                            crate::config::load_current_database("default", &workspace_id)
-                                .and_then(|db_id| {
-                                    let api = sdk::Api::new(Some(&workspace_id));
-                                    crate::commands::databases::get_database(&api, &db_id)
-                                        .ok()
-                                        .map(|db| db.default_connection_id)
-                                });
-                        indexes::list(
-                            &workspace_id,
-                            connection_id.as_deref(),
-                            schema.as_deref(),
-                            table.as_deref(),
-                            &output,
-                        )
-                    }
-                    IndexesCommands::Create {
-                        catalog,
-                        schema,
-                        table,
-                        column,
-                        name,
-                        r#type,
-                        metric,
-                        r#async,
-                        embedding_provider_id,
-                        dimensions,
-                        output_column,
-                        description,
-                    } => {
-                        let api = sdk::Api::new(Some(&workspace_id));
-                        let catalog_or_conn = catalog.as_deref().unwrap_or_else(|| {
-                            eprintln!("error: --catalog is required");
-                            std::process::exit(1);
-                        });
-                        let tbl = table.as_deref().unwrap_or_else(|| {
-                            eprintln!("error: --table is required");
-                            std::process::exit(1);
-                        });
-                        let cols = column.as_deref().unwrap_or_else(|| {
-                            eprintln!("error: --column is required");
-                            std::process::exit(1);
-                        });
-                        let conn_id = connections::resolve_connection_id(&api, catalog_or_conn);
-                        let auto_name = format!(
-                            "{tbl}_{cols}_{type}",
-                            cols = cols.replace(',', "_"),
-                            type = r#type
-                        );
-                        let index_name = name.unwrap_or(auto_name);
-                        indexes::create(
-                            &workspace_id,
-                            indexes::IndexScope::Connection {
-                                connection_id: &conn_id,
-                                schema: &schema,
-                                table: tbl,
-                            },
-                            &index_name,
-                            cols,
-                            &r#type,
-                            metric.as_deref(),
-                            r#async,
-                            embedding_provider_id.as_deref(),
-                            dimensions,
-                            output_column.as_deref(),
-                            description.as_deref(),
-                        )
-                    }
-                    IndexesCommands::Delete {
-                        catalog,
-                        schema,
-                        table,
-                        name,
-                    } => {
-                        let api = sdk::Api::new(Some(&workspace_id));
-                        let conn_id = connections::resolve_connection_id(&api, &catalog);
-                        indexes::delete(
-                            &workspace_id,
-                            indexes::IndexScope::Connection {
-                                connection_id: &conn_id,
-                                schema: &schema,
-                                table: &table,
-                            },
-                            &name,
-                        );
-                    }
-                }
-            }
-            Commands::EmbeddingProviders {
-                workspace_id,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                match command {
-                    EmbeddingProvidersCommands::List { output } => {
-                        embedding_providers::list(&workspace_id, &output)
-                    }
-                    EmbeddingProvidersCommands::Get { id, output } => {
-                        embedding_providers::get(&workspace_id, &id, &output)
-                    }
-                    EmbeddingProvidersCommands::Create {
-                        name,
-                        provider_type,
-                        config,
-                        provider_api_key,
-                        secret_name,
-                        output,
-                    } => embedding_providers::create(
-                        &workspace_id,
-                        &name,
-                        &provider_type,
-                        config.as_deref(),
-                        provider_api_key.as_deref(),
-                        secret_name.as_deref(),
-                        &output,
-                    ),
-                    EmbeddingProvidersCommands::Update {
-                        id,
-                        name,
-                        config,
-                        provider_api_key,
-                        secret_name,
-                        output,
-                    } => embedding_providers::update(
-                        &workspace_id,
-                        &id,
-                        name.as_deref(),
-                        config.as_deref(),
-                        provider_api_key.as_deref(),
-                        secret_name.as_deref(),
-                        &output,
-                    ),
-                    EmbeddingProvidersCommands::Delete { id } => {
-                        embedding_providers::delete(&workspace_id, &id)
-                    }
-                }
-            }
             Commands::Search {
                 query,
-                r#type,
-                table,
-                column,
+                index,
+                database,
                 select,
                 limit,
                 workspace_id,
                 output,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-
-                // Parse `catalog.schema.table` or `schema.table` (requires active database).
-                let parts: Vec<&str> = table.splitn(3, '.').collect();
-                let (conn_name, schema, table_name) = match parts.as_slice() {
-                    [catalog, schema, tbl] => {
-                        (catalog.to_string(), schema.to_string(), tbl.to_string())
-                    }
-                    [schema, tbl] => {
-                        // Two-part: use active database's catalog.
-                        let db_id = crate::config::load_current_database("default", &workspace_id)
-                            .unwrap_or_else(|| {
-                                use crossterm::style::Stylize;
-                                eprintln!(
-                                    "{}",
-                                    "error: use catalog.schema.table, or set an active database \
-                                     with `hotdata databases set <id>`."
-                                        .red()
-                                );
-                                std::process::exit(1);
-                            });
-                        let api = sdk::Api::new(Some(&workspace_id));
-                        let db = crate::commands::databases::get_database(&api, &db_id)
-                            .unwrap_or_else(|e| e.exit());
-                        let catalog = db
-                            .default_catalog
-                            .unwrap_or_else(|| db.name.unwrap_or_else(|| "default".to_string()));
-                        (catalog, schema.to_string(), tbl.to_string())
-                    }
-                    _ => {
-                        use crossterm::style::Stylize;
-                        eprintln!(
-                            "{}",
-                            "error: --table must be 'schema.table' or 'catalog.schema.table'".red()
-                        );
-                        std::process::exit(1);
-                    }
-                };
-                let normalized_table = format!("{}.{}.{}", conn_name, schema, table_name);
-
-                // Infer --type and --column from the table's indexes when either is omitted.
-                let (resolved_type, resolved_column) = if r#type.is_some() && column.is_some() {
-                    (r#type.unwrap(), column.unwrap())
-                } else {
-                    let (inferred_type, inferred_column) = indexes::infer_for_search(
-                        &workspace_id,
-                        &conn_name,
-                        &schema,
-                        &table_name,
-                        r#type.as_deref(),
-                        column.as_deref(),
-                    );
-                    (
-                        r#type.unwrap_or(inferred_type),
-                        column.unwrap_or(inferred_column),
-                    )
-                };
-
-                let select_cols = select.as_deref().unwrap_or("*");
-
-                let sql = match resolved_type.as_str() {
-                    "bm25" => {
-                        let bm25_columns = match select.as_deref() {
-                            Some(cols) if cols.split(',').any(|c| c.trim() == "score") => {
-                                cols.to_string()
-                            }
-                            Some(cols) => format!("{}, score", cols),
-                            None => "*".to_string(),
-                        };
-                        format!(
-                            "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
-                            bm25_columns,
-                            normalized_table.replace('\'', "''"),
-                            resolved_column.replace('\'', "''"),
-                            query.replace('\'', "''"),
-                            limit,
-                        )
-                    }
-                    // Server-side vector_distance: resolves the embedding column, model,
-                    // and metric from the index metadata. The user names the source text column.
-                    "vector" => format!(
-                        "SELECT {}, vector_distance({}, '{}') AS dist FROM {} ORDER BY dist LIMIT {}",
-                        select_cols,
-                        resolved_column,
-                        query.replace('\'', "''"),
-                        normalized_table,
-                        limit,
-                    ),
-                    _ => unreachable!(),
-                };
-                // Search generates HotSQL directly — never a foreign dialect.
-                query::execute(&sql, &workspace_id, None, &output, "hotsql")
-            }
-            Commands::Queries {
-                id,
-                database,
-                output,
                 command,
             } => {
-                let workspace_id = resolve_workspace(None);
-                if let Some(id) = id {
-                    queries::get(&id, &workspace_id, database.as_deref(), &output)
-                } else {
-                    match command {
-                        Some(QueriesCommands::List {
-                            limit,
-                            cursor,
-                            status,
-                            output,
-                        }) => queries::list(
+                let workspace_id = resolve_workspace(workspace_id);
+                match command {
+                    Some(command) => commands::search::dispatch(&workspace_id, command),
+                    None => match (query, index) {
+                        (Some(query), Some(index)) => commands::search::run(
                             &workspace_id,
                             database.as_deref(),
-                            Some(limit),
-                            cursor.as_deref(),
-                            status.as_deref(),
+                            &index,
+                            &query,
+                            select.as_deref(),
+                            limit,
                             &output,
                         ),
-                        None => {
+                        (Some(_), None) => {
+                            use crossterm::style::Stylize;
+                            eprintln!(
+                                "{}",
+                                "error: pass --index <name> to run a search (see `hotdata search list`), or use a subcommand: create, list, show, remove, embeddings.".red()
+                            );
+                            std::process::exit(2);
+                        }
+                        (None, _) => {
                             use clap::CommandFactory;
                             let mut cmd = Cli::command();
                             cmd.build();
-                            cmd.find_subcommand_mut("queries")
+                            cmd.find_subcommand_mut("search")
                                 .unwrap()
                                 .print_help()
                                 .unwrap();
                         }
-                    }
+                    },
                 }
             }
-            Commands::Context {
-                workspace_id,
-                database_id,
-                command,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                let database_id = database_id
-                    .or_else(|| config::load_current_database("default", &workspace_id))
-                    .unwrap_or_else(|| {
-                        eprintln!(
-                            "error: no active database. Use 'hotdata databases set <id>' to set one, or pass --database-id."
-                        );
-                        std::process::exit(1);
-                    });
-                match command {
-                    ContextCommands::List { output, prefix } => {
-                        context::list(&workspace_id, &database_id, prefix.as_deref(), &output)
-                    }
-                    ContextCommands::Show { name } => {
-                        context::show(&workspace_id, &database_id, &name)
-                    }
-                    ContextCommands::Pull {
-                        name,
-                        force,
-                        dry_run,
-                    } => context::pull(&workspace_id, &database_id, &name, force, dry_run),
-                    ContextCommands::Push { name, dry_run } => {
-                        context::push(&workspace_id, &database_id, &name, dry_run)
-                    }
+            Commands::Manage { command } => match command {
+                cli::ManageCommands::Usage {
+                    since,
+                    workspace_id,
+                    output,
+                } => {
+                    let workspace_id = resolve_workspace(workspace_id);
+                    usage::usage(&workspace_id, since.as_deref(), &output);
                 }
-            }
-            Commands::Usage {
-                since,
-                workspace_id,
-                output,
-            } => {
-                let workspace_id = resolve_workspace(workspace_id);
-                usage::usage(&workspace_id, since.as_deref(), &output);
-            }
-            Commands::Completions { shell } => {
-                use clap::CommandFactory;
-                use clap_complete::generate;
-                let shell: clap_complete::Shell = shell.into();
-                let mut cmd = Cli::command();
-                generate(shell, &mut cmd, "hotdata", &mut std::io::stdout());
-            }
-            Commands::Upgrade => update::run_upgrade(),
+                cli::ManageCommands::Completions { shell } => {
+                    use clap::CommandFactory;
+                    use clap_complete::generate;
+                    let shell: clap_complete::Shell = shell.into();
+                    let mut cmd = Cli::command();
+                    generate(shell, &mut cmd, "hotdata", &mut std::io::stdout());
+                }
+                cli::ManageCommands::Upgrade => update::run_upgrade(),
+                cli::ManageCommands::Skills { command } => match command {
+                    SkillCommands::Install { project } => {
+                        if project {
+                            skill::install_project()
+                        } else {
+                            skill::install()
+                        }
+                    }
+                    SkillCommands::Status | SkillCommands::List => skill::status(),
+                },
+            },
         },
     }
 }

@@ -19,7 +19,7 @@ struct Usage {
     storage_captured_at: Option<String>,
 }
 
-/// `hotdata usage` — workspace usage for the current billing window (or since a
+/// `hotdata manage usage` — workspace usage for the current billing window (or since a
 /// caller-supplied timestamp).
 pub fn usage(workspace_id: &str, since: Option<&str>, format: &str) {
     let api = Api::new(Some(workspace_id));

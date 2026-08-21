@@ -15,6 +15,7 @@ pub mod query;
 pub mod results;
 pub mod run;
 pub mod schema_form;
+pub mod search;
 pub mod skill;
 pub mod tables;
 pub mod update;

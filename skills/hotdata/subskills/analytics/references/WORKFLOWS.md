@@ -12,30 +12,30 @@ OLAP-style SQL, **History** (query runs and stored results), and **Chain** (mate
 
 ### Query runs
 
-Uses the **active workspace only** — no `--workspace-id` on `queries`. Set default workspace with `hotdata workspaces set` first.
+Uses the **active workspace only** — no `--workspace-id` on `databases queries`. Set default workspace with `hotdata workspaces use` first.
 
 ```bash
-hotdata queries list [--limit N] [--cursor <token>] [--status <csv>]
-hotdata queries <query_run_id>
+hotdata databases queries list [--limit N] [--cursor <token>] [--status <csv>]
+hotdata databases queries <query_run_id>
 ```
 
 - `list` — status, creation time, duration, row count, truncated SQL preview (default limit 20).
 - `--status` — filter comma-separated values, e.g. `--status running,failed`.
 - `<query_run_id>` — full metadata (timings, `result_id`, snapshot, hashes) and formatted SQL.
-- If a run has a `result_id`, fetch rows with `hotdata results <result_id>` below.
+- If a run has a `result_id`, fetch rows with `hotdata databases results get <result_id>` below.
 
 Use history to spot recurring `WHERE`, `JOIN`, `GROUP BY`, or search-style SQL before adding indexes (**`hotdata-search`**) or new Chain tables.
 
 ### Stored results
 
 ```bash
-hotdata results list [--workspace-id <workspace_id>] [--limit N] [--offset N]
-hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]
+hotdata databases results list [--workspace-id <workspace_id>] [--limit N] [--offset N]
+hotdata databases results get <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]
 ```
 
 - Query footers may include `[result-id: rslt...]` — record it for later.
-- Pick up `result_id` from `queries <query_run_id>` when present.
-- **Prefer `hotdata results <result_id>` over re-running identical heavy SQL.** Re-runs waste resources and may return different data.
+- Pick up `result_id` from `databases queries <query_run_id>` when present.
+- **Prefer `hotdata databases results get <result_id>` over re-running identical heavy SQL.** Re-runs waste resources and may return different data.
 
 Results are paginated; the CLI hints the next `--offset` when more rows exist.
 

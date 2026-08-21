@@ -4,7 +4,7 @@ use semver::Version;
 use std::fs;
 use std::path::PathBuf;
 
-/// Subcommands for `hotdata skills`.
+/// Subcommands for `hotdata manage skills`.
 #[derive(clap::Subcommand)]
 pub enum SkillCommands {
     /// Install or update the hotdata skill into agent directories
@@ -180,7 +180,7 @@ pub fn maybe_auto_update_after_cli_upgrade() {
         eprintln!(
             "{}",
             format!(
-                "warning: agent skills still do not match this CLI after download (release tarball may lag the binary). Automatic refresh is suppressed for CLI v{CURRENT_VERSION}; remove {} to retry, or run `hotdata skills install`.",
+                "warning: agent skills still do not match this CLI after download (release tarball may lag the binary). Automatic refresh is suppressed for CLI v{CURRENT_VERSION}; remove {} to retry, or run `hotdata manage skills install`.",
                 skill_auto_update_suppress_path().display()
             )
             .yellow()
@@ -617,7 +617,7 @@ pub fn status() {
 
     if !any_exist {
         row("Installed", &"No".red().to_string());
-        println!("\nRun 'hotdata skills install' to install.");
+        println!("\nRun 'hotdata manage skills install' to install.");
         return;
     }
 
@@ -675,9 +675,9 @@ pub fn status() {
     }
 
     if !all_exist {
-        println!("\nRun 'hotdata skills install' to install.");
+        println!("\nRun 'hotdata manage skills install' to install.");
     } else if installed_version.is_some_and(|v| v < current) {
-        println!("\nRun 'hotdata skills install' to update.");
+        println!("\nRun 'hotdata manage skills install' to update.");
     }
 }
 

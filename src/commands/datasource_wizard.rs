@@ -1,4 +1,4 @@
-//! The guided `hotdata datasource create` flow: pick a source type, answer for
+//! The guided `hotdata ingest sources add` flow: pick a source type, answer for
 //! its fields, get a datasource.
 //!
 //! **The questions come from the service.** Labels, help text, accepted values,

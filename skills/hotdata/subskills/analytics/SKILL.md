@@ -8,7 +8,7 @@ version: 0.26.0
 
 **OLAP-style analytics** in Hotdata: PostgreSQL-dialect SQL, query execution, run history, stored results, **Chain** materializations, and **sorted** indexes for filters and joins.
 
-**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`datasource`/`ingest`, `tables`, `databases`).
+**Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`ingest sources`/`ingest`, `databases tables`, `databases`).
 
 **Related sub-skills** (bundled alongside this one — `Read` on demand): **`hotdata-search`** ([`../search/SKILL.md`](../search/SKILL.md) — BM25, vector, retrieval indexes), **`hotdata-geospatial`** ([`../geospatial/SKILL.md`](../geospatial/SKILL.md) — spatial SQL).
 
@@ -23,11 +23,11 @@ hotdata query status <query_run_id>
 
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
 - **`--dialect`** (default `hotsql`): write SQL in `duckdb`/`postgres`/`snowflake` and the server transpiles it to HotSQL before running (e.g. Snowflake `IFF(...)`, DuckDB `len(...)`). Read-only queries only for a non-`hotsql` dialect.
-- Use **`hotdata tables list`** for schema discovery — not `information_schema` via `query`.
+- Use **`hotdata databases tables list`** for schema discovery — not `information_schema` via `query`.
 - Fully qualified names: `<catalog>.<schema>.<table>`, `<database>.<schema>.<table>`.
 - **Query scope:** every query runs inside one managed database (active or `--database`); it sees that database's own catalog plus **attached** catalogs only. To query an attached catalog's table, or **join a managed table against an attached catalog's table**, attach the catalog first: `hotdata databases attach <catalog>` — see **`hotdata`** skill → [Querying across catalogs](../../SKILL.md#querying-across-catalogs-attach). No managed database set → *"a database is required."*
 - Long-running queries may return `query_run_id` → poll with **`query status`** (exit `2` = still running). Do not re-run identical heavy SQL while polling.
-- For **workspace-wide** joins and naming, load **context:DATAMODEL** when listed (`hotdata context list` → `show DATAMODEL`) — see **`hotdata`** skill.
+- For **workspace-wide** joins and naming, load **context:DATAMODEL** when listed (`hotdata databases context list` → `show DATAMODEL`) — see **`hotdata`** skill.
 
 ### OLAP patterns
 
@@ -45,11 +45,11 @@ Column names from CSV uploads may be case-sensitive — use double quotes when n
 
 ## Query run history
 
-Uses the **active workspace only** (no `--workspace-id`; set with `hotdata workspaces set`).
+Uses the **active workspace only** (no `--workspace-id`; set with `hotdata workspaces use`).
 
 ```bash
-hotdata queries list [--limit <int>] [--cursor <token>] [--status <csv>] [--output table|json|yaml]
-hotdata queries <query_run_id> [--output table|json|yaml]
+hotdata databases queries list [--limit <int>] [--cursor <token>] [--status <csv>] [--output table|json|yaml]
+hotdata databases queries <query_run_id> [--output table|json|yaml]
 ```
 
 - `list` — status, duration, row count, SQL preview (default limit 20). Filter: `--status running,failed`.
@@ -61,14 +61,13 @@ hotdata queries <query_run_id> [--output table|json|yaml]
 ## Stored results
 
 ```bash
-hotdata results list [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--output table|json|yaml]
-hotdata results show <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]
-hotdata results <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]  # shorthand
+hotdata databases results list [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--output table|json|yaml]
+hotdata databases results get <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]
 ```
 
-- Prefer **`results show <id>`** over re-running identical heavy queries. The positional shorthand `results <id>` also works.
-- Query footers may include `[result-id: rslt...]`; also available from `queries <query_run_id>`.
-- `results list --limit` defaults to **100** (max **1000**) — unlike `queries list`, which defaults to **20**.
+- Prefer **`databases results get <id>`** over re-running identical heavy queries.
+- Query footers may include `[result-id: rslt...]`; also available from `databases queries <query_run_id>`.
+- `databases results list --limit` defaults to **100** (max **1000**) — unlike `databases queries list`, which defaults to **20**.
 
 ---
 
@@ -107,9 +106,9 @@ Full procedure: [references/WORKFLOWS.md](references/WORKFLOWS.md).
 For equality, range, and sort-heavy OLAP — not full-text or vector (see **`hotdata-search`**):
 
 ```bash
-hotdata indexes create --catalog <catalog-alias> --schema <schema> --table <table> \
-  --name idx_orders_created --column created_at --type sorted [--async]
+hotdata search create idx_orders_created --type sorted \
+  --from <catalog-alias>.<schema>.<table> --column created_at [--async]
 ```
 
-List and delete use the same `hotdata indexes` commands as in the search skill; only **`--type sorted`** is the analytics focus here. With `--async`, track the build via **`hotdata jobs list`** (see **`hotdata`** skill → Jobs).
+List and remove use the same `hotdata search` commands as in the search skill; only **`--type sorted`** is the analytics focus here. With `--async`, track the build via **`hotdata jobs list`** (see **`hotdata`** skill → Jobs).
 

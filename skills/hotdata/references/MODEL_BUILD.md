@@ -2,9 +2,9 @@
 
 Optional **deep pass** for a single authoritative markdown document stored as **`context:DATAMODEL`** (database-scoped **context API** — the active database). For a short checklist only, use the **Model** section in [WORKFLOWS.md](WORKFLOWS.md) and [DATA_MODEL.template.md](DATA_MODEL.template.md).
 
-**Notation:** **`context:DATAMODEL`** is the live server document; **not** the same phrase as “building a data model” for a one-off analysis. **CLI** uses the bare stem: `hotdata context show DATAMODEL`.
+**Notation:** **`context:DATAMODEL`** is the live server document; **not** the same phrase as “building a data model” for a one-off analysis. **CLI** uses the bare stem: `hotdata databases context show DATAMODEL`.
 
-**Output:** After **`hotdata context list`** confirms `DATAMODEL` exists, read **context:DATAMODEL** with `hotdata context show DATAMODEL`; edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store database-specific model text inside agent skill folders.
+**Output:** After **`hotdata databases context list`** confirms `DATAMODEL` exists, read **context:DATAMODEL** with `hotdata databases context show DATAMODEL`; edit `./DATAMODEL.md` in the **project directory** where you run `hotdata`, then **`hotdata databases context push DATAMODEL`**. Do not use `docs/`, `DATA_MODEL.md`, or other repo-only paths as the system of record. Never store database-specific model text inside agent skill folders.
 
 ---
 
@@ -13,22 +13,22 @@ Optional **deep pass** for a single authoritative markdown document stored as **
 List the catalogs you can query — managed databases you own and any attached catalogs — and the tables they expose:
 
 ```bash
-hotdata databases list       # managed databases (catalogs you own)
-hotdata tables list          # every workspace table, as <catalog>.<schema>.<table>
+hotdata databases list           # managed databases (catalogs you own)
+hotdata databases tables list    # every workspace table, as <catalog>.<schema>.<table>
 ```
 
-For each catalog, record its name and the tables it exposes. (Pulling *new* external data into a managed database is a separate step — see the `datasource` and `ingest` commands in the core skill.)
+For each catalog, record its name and the tables it exposes. (Pulling *new* external data into a managed database is a separate step — see the `ingest sources` and `ingest` commands in the core skill.)
 
 ---
 
 ## 2. Enumerate tables and columns
 
-A datasource's schema is discovered when it is added. If the source schema may have changed (recent DDL, new tables), re-check the currently discovered tables/columns with **`hotdata datasource show <datasource_id>`** **before** relying on `tables list`.
+A datasource's schema is discovered when it is added. If the source schema may have changed (recent DDL, new tables), re-check the currently discovered tables/columns with **`hotdata ingest sources show <datasource_id>`** **before** relying on `databases tables list`.
 
 **Workspace tables** (list all, narrow with filters):
 
 ```bash
-hotdata tables list --schema <schema> --table <table>
+hotdata databases tables list --schema <schema> --table <table>
 ```
 
 **Managed databases:**
@@ -43,7 +43,7 @@ Capture schema for each managed-database table (columns, types) from the table l
 You can also re-check a datasource's discovered schema after enumeration if you suspect drift:
 
 ```bash
-hotdata datasource show <datasource_id>
+hotdata ingest sources show <datasource_id>
 ```
 
 ---
@@ -85,17 +85,17 @@ For **small** schemas (e.g. ≤5 tables in a domain), a short **ASCII diagram** 
 Inventory indexes (whole workspace or filtered):
 
 ```bash
-hotdata indexes list [-w <workspace_id>]
-hotdata indexes list [--schema <schema>] [--table <table>] [-w <workspace_id>]
+hotdata search list [-w <workspace_id>]
+hotdata search list [--schema <schema>] [--table <table>] [-w <workspace_id>]
 ```
 
 Per table when you only need one:
 
 ```bash
-hotdata indexes list --schema <schema> --table <table> [-w <workspace_id>]
+hotdata search list --schema <schema> --table <table> [-w <workspace_id>]
 ```
 
-Managed-database indexes are included in the no-flag whole-workspace `indexes list` (shown under the internal `__db_<id>.<schema>.<table>` label); narrow to one with `--schema` / `--table` as above.
+Managed-database indexes are included in the no-flag whole-workspace `search list` (shown under the internal `__db_<id>.<schema>.<table>` label); narrow to one with `--schema` / `--table` as above.
 
 Note:
 
@@ -103,13 +103,13 @@ Note:
 - **Time** columns — event grain vs slowly changing dimensions.
 - **Facts vs dimensions** — for analytics-oriented workspaces.
 
-When suggesting a new index, use the same catalog/schema/table/column names as in `tables list` and **`hotdata-search`** / **`hotdata-analytics`** `indexes create` examples (bm25/vector vs sorted).
+When suggesting a new index, use the same catalog/schema/table/column names as in `databases tables list` and **`hotdata-search`** / **`hotdata-analytics`** `search create` examples (text/vector vs sorted).
 
 ---
 
 ## 6. Document structure
 
-This Markdown body is what you store as **context:DATAMODEL** (`hotdata context push DATAMODEL`). Start from [DATA_MODEL.template.md](DATA_MODEL.template.md) and extend as needed:
+This Markdown body is what you store as **context:DATAMODEL** (`hotdata databases context push DATAMODEL`). Start from [DATA_MODEL.template.md](DATA_MODEL.template.md) and extend as needed:
 
 - **Overview** — Domains and what the workspace is for.
 - **Per catalog** — Optional subsection per source; for **deep** models, **repeat** one block per `catalog.schema.table` (grain, column table with name/type/nullable/PK-FK/notes, relationships, queryability, caveats)—the template’s single `####` heading is a pattern to copy for each table.
@@ -136,4 +136,4 @@ If the workspace has **many** tables (e.g. 50+), add a **table of contents** aft
 - Flag **test/dev** tables (`test`, `tmp`, `dev`, `staging` in names) as non-production when applicable.
 - Note **Utf8-stored numbers** and cast requirements where relevant.
 - Do not leave column **Notes** empty when domain knowledge or docs apply; “—” is weak unless the column is opaque/internal.
-- Align table names with **`hotdata tables list`** output (`catalog.schema.table`).
+- Align table names with **`hotdata databases tables list`** output (`catalog.schema.table`).

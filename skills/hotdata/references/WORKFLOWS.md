@@ -1,6 +1,6 @@
 # Hotdata CLI workflows
 
-**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the database-scoped document stored via the **context API** (active database; `-d`/`--database-id` to target another)—CLI uses bare stems: `hotdata context show DATAMODEL`.
+**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the database-scoped document stored via the **context API** (active database; `-d`/`--database` to target another)—CLI uses bare stems: `hotdata databases context show DATAMODEL`.
 
 ---
 
@@ -10,10 +10,10 @@ The `hotdata` skill is always loaded first (auth and workspace setup). The three
 
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
-| Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `datasource`, `ingest`, `tables`, `context` |
+| Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `ingest sources`, `ingest`, `databases tables`, `databases context` |
 | Load parquet files into a managed database | **`hotdata`** | `databases create` + `databases load` |
-| SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** (`subskills/analytics/SKILL.md`) | `query`, `queries`, `results` |
-| BM25 / vector search, retrieval indexes | **`hotdata-search`** (`subskills/search/SKILL.md`) | `search`, `indexes create`, `embedding-providers` |
+| SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** (`subskills/analytics/SKILL.md`) | `query`, `databases queries`, `databases results` |
+| BM25 / vector search, retrieval indexes | **`hotdata-search`** (`subskills/search/SKILL.md`) | `search`, `search create`, `search embeddings` |
 | Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** (`subskills/geospatial/SKILL.md`) | `query` with `ST_*`, WKB columns |
 
 | Concept | Where documented |
@@ -35,11 +35,11 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 **Skill:** **`hotdata`** (optional **`hotdata-analytics`** for first queries)
 
 1. [ ] `hotdata auth login`
-2. [ ] `hotdata workspaces list` → `hotdata workspaces set` if not on the right workspace
-3. [ ] `hotdata databases list` and `hotdata tables list` — see the catalogs and tables you can query (tables print as `<catalog>.<schema>.<table>`)
-4. [ ] `hotdata tables show <table>` for columns (add `--schema`/`--table` filters to `tables list` to narrow)
-5. [ ] (Optional, to pull external data) `hotdata datasource list`; add one with `hotdata datasource create --family <f> --config @source.json`, then re-check its discovered schema with `hotdata datasource show <datasource_id>`. Load rows with `hotdata ingest create --datasource-id <id>` — see **`hotdata`** skill → **Ingest external data**
-6. [ ] (Optional) `hotdata context list` — if `DATAMODEL` is listed, `hotdata context show DATAMODEL`; else skip `show`
+2. [ ] `hotdata workspaces list` → `hotdata workspaces use` if not on the right workspace
+3. [ ] `hotdata databases list` and `hotdata databases tables list` — see the catalogs and tables you can query (tables print as `<catalog>.<schema>.<table>`)
+4. [ ] `hotdata databases tables show <table>` for columns (add `--schema`/`--table` filters to `databases tables list` to narrow)
+5. [ ] (Optional, to pull external data) `hotdata ingest sources list`; add one with `hotdata ingest sources add --family <f> --config @source.json`, then re-check its discovered schema with `hotdata ingest sources show <datasource_id>`. Load rows with `hotdata ingest create --datasource-id <id>` — see **`hotdata`** skill → **Ingest external data**
+6. [ ] (Optional) `hotdata databases context list` — if `DATAMODEL` is listed, `hotdata databases context show DATAMODEL`; else skip `show`
 7. [ ] (Optional) Bootstrap **context:DATAMODEL** — [Model](#model), [DATA_MODEL.template.md](DATA_MODEL.template.md)
 
 **Next:** upload data ([Managed databases](#managed-databases)) or run analytics (**Chain** below).
@@ -60,15 +60,13 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 **Skill:** **`hotdata-search`** (schema via **`hotdata`**)
 
-1. [ ] `hotdata tables list` (filter with `--schema`/`--table`) — pick text column (BM25) or embedding/text column (vector)
-2. [ ] `hotdata indexes list` — avoid duplicate bm25/vector indexes on the same column
-3. [ ] Create index:
-   - [ ] **Managed DB:** `hotdata indexes create --catalog <alias> --table <tbl> --column <text_col> --type bm25|vector`
-   - [ ] **Catalog:** `hotdata indexes create --catalog <catalog-name-or-id> --schema <s> --table <t> --column <col> --type bm25|vector [--metric cosine|l2|dot]`
+1. [ ] `hotdata databases tables list` (filter with `--schema`/`--table`) — pick text column (BM25) or embedding/text column (vector)
+2. [ ] `hotdata search list` — avoid duplicate text/vector indexes on the same column
+3. [ ] Create index (address by name):
+   - [ ] **Managed DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). An external catalog must be attached to a managed database first (`hotdata databases attach`).
    - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
-4. [ ] Search (--type and --column inferred when one search index exists):
-   - [ ] `hotdata search "…" --table <catalog.schema.table>` (auto-infer)
-   - [ ] `hotdata search "…" --table … --type bm25 --column <col>` (explicit)
+4. [ ] Search (address the index by name):
+   - [ ] `hotdata search "…" --index <tbl>_<col>`
 5. [ ] (Optional) Note indexes in **context:DATAMODEL → Search & index summary**
 
 **Detail:** [hotdata-search INDEXES.md](../subskills/search/references/INDEXES.md)
@@ -79,7 +77,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 A `hotdata query` runs inside **one** managed database; its scope sees that database's own catalog plus **attached** catalog catalogs only. To query a catalog's tables — or join a managed table against a live catalog table in one query — attach the catalog. (No managed database set → *"a database is required."*; an unattached catalog → *"table not found."*)
 
-1. [ ] Pick/create the managed database that will be the query context (`hotdata databases set <id>` or `databases create --catalog <alias>`)
+1. [ ] Pick/create the managed database that will be the query context (`hotdata databases use <id>` or `databases create --catalog <alias>`)
 2. [ ] Attach the catalog(s) you need (live, sync intact): `hotdata databases attach <catalog> [--alias <a>]`
    - Or attach at creation: `hotdata databases create --catalog <alias> --attach <catalog>[=<alias>]`
 3. [ ] Confirm scope: `hotdata databases <id>` lists attached catalogs
@@ -137,12 +135,12 @@ Before destructive experimentation (bulk replaces, schema rework, testing a load
 
 ```bash
 hotdata databases list                    # note the source database id (dbid...)
-hotdata databases set <source_id>         # source to protect (`set` takes an id)
+hotdata databases use <source_id>         # source to protect (`use` takes an id)
 hotdata databases fork --expires-at 24h   # deep copy; becomes the active database — note the fork id it prints
 hotdata databases load --catalog sales --table orders --file ./risky.parquet  # hits the fork
 ```
 
-**Capture both ids.** After the fork, both databases answer to the same catalog alias (here `sales`), so ids are the only unambiguous way to refer to either one — the source id comes from `databases list` up front, the fork id from the `fork` output. The shared alias means experimental SQL runs unchanged against the fork. Attached catalogs are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases set <source_id>` to switch back to the source) or delete it (`databases delete <fork_id>`). Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
+**Capture both ids.** After the fork, both databases answer to the same catalog alias (here `sales`), so ids are the only unambiguous way to refer to either one — the source id comes from `databases list` up front, the fork id from the `fork` output. The shared alias means experimental SQL runs unchanged against the fork. Attached catalogs are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases use <source_id>` to switch back to the source) or delete it (`databases remove <fork_id>`). Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
 
 ---
 
@@ -153,8 +151,8 @@ hotdata databases load --catalog sales --table orders --file ./risky.parquet  # 
 ### Initialize
 
 1. Use [DATA_MODEL.template.md](DATA_MODEL.template.md) as the **structure** for **context:DATAMODEL**.
-2. Run **`hotdata context list`**. **Only if** `DATAMODEL` appears, use `show` or `pull`. If absent, start from the template—**do not** run `show` (exits 1).
-3. Edit `./DATAMODEL.md` in the project directory, then **`hotdata context push DATAMODEL`**.
+2. Run **`hotdata databases context list`**. **Only if** `DATAMODEL` appears, use `show` or `pull`. If absent, start from the template—**do not** run `show` (exits 1).
+3. Edit `./DATAMODEL.md` in the project directory, then **`hotdata databases context push DATAMODEL`**.
 
 ### Deep model pass (optional)
 
@@ -162,23 +160,23 @@ Follow **[MODEL_BUILD.md](MODEL_BUILD.md)** for connector enrichment, per-table 
 
 ### Refresh catalog facts
 
-A datasource's schema is discovered when it is added (`hotdata datasource create`); inspect the current discovered tables/columns with `hotdata datasource show <datasource_id>`. After **`databases tables load`**, no refresh is required for the new table—use `databases tables list` or `tables list`.
+A datasource's schema is discovered when it is added (`hotdata ingest sources add`); inspect the current discovered tables/columns with `hotdata ingest sources show <datasource_id>`. After **`databases tables load`**, no refresh is required for the new table—use `databases tables list`.
 
 ```bash
 hotdata workspaces list
-hotdata datasource list
-hotdata datasource show <datasource_id>   # re-check discovered schema after source DDL
-hotdata tables list
-hotdata tables list --schema <schema> --table <table>   # narrow the workspace-wide listing
+hotdata ingest sources list
+hotdata ingest sources show <datasource_id>   # re-check discovered schema after source DDL
+hotdata databases tables list
+hotdata databases tables list --schema <schema> --table <table>   # narrow the workspace-wide listing
 hotdata databases list
 ```
 
-Use `hotdata tables list` for discovery; do not query `information_schema` for that.
+Use `hotdata databases tables list` for discovery; do not query `information_schema` for that.
 
 ---
 
 ## Cross-cutting
 
-- **Workspace:** Active workspace or `--workspace-id`. **`hotdata queries`** uses the active workspace only (no `--workspace-id`).
+- **Workspace:** Active workspace or `--workspace-id`. **`hotdata databases queries`** uses the active workspace only (no `--workspace-id`).
 - **Jobs:** `hotdata jobs list` / `jobs <id>` for async refreshes and index builds.
-- **Discovery:** `hotdata tables list` — not `query` on `information_schema`.
+- **Discovery:** `hotdata databases tables list` — not `query` on `information_schema`.

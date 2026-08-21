@@ -67,16 +67,9 @@ fn combined(args: &[&str]) -> (bool, String) {
 
 #[test]
 fn datasource_help_lists_the_lifecycle_verbs() {
-    let (ok, help) = combined(&["datasource", "--help"]);
+    let (ok, help) = combined(&["ingest", "sources", "--help"]);
     assert!(ok, "{help}");
-    for verb in [
-        "validate",
-        "create",
-        "list",
-        "show",
-        "update-config",
-        "delete",
-    ] {
+    for verb in ["test", "add", "list", "show", "update-config", "remove"] {
         assert!(help.contains(verb), "missing {verb}: {help}");
     }
 }
@@ -86,25 +79,25 @@ fn ingest_help_lists_the_lifecycle_verbs_and_no_run_now() {
     let (ok, help) = combined(&["ingest", "--help"]);
     assert!(ok, "{help}");
     for verb in [
-        "create", "list", "show", "cancel", "resume", "schedule", "runs",
+        "create", "list", "show", "pause", "resume", "schedule", "logs",
     ] {
         assert!(help.contains(verb), "missing {verb}: {help}");
     }
     // The removal is documented where someone looking for it would look.
-    assert!(help.contains("trigger-import"), "{help}");
+    assert!(help.contains("run-now"), "{help}");
     assert!(help.contains("--next now"), "{help}");
 }
 
 #[test]
 fn datasource_help_offers_the_field_reference_verb() {
-    let (ok, help) = combined(&["datasource", "--help"]);
+    let (ok, help) = combined(&["ingest", "sources", "--help"]);
     assert!(ok, "{help}");
     assert!(help.contains("fields"), "{help}");
 }
 
 #[test]
 fn datasource_fields_takes_an_optional_family_and_documents_json_output() {
-    let (ok, help) = combined(&["datasource", "fields", "--help"]);
+    let (ok, help) = combined(&["ingest", "sources", "fields", "--help"]);
     assert!(ok, "{help}");
     // Optional: with no family it lists them, so clap must not require one.
     assert!(help.contains("[FAMILY]"), "{help}");
@@ -123,14 +116,14 @@ fn the_payload_flags_point_at_the_field_reference_by_name() {
     // The one thing this command exists for: a caller who needs field names
     // must be sent to the generated reference, from the flags that take them.
     for (args, flag) in [
-        (["datasource", "create", "--help"], "--config"),
-        (["ingest", "create", "--help"], "--selector"),
+        (vec!["ingest", "sources", "add", "--help"], "--config"),
+        (vec!["ingest", "create", "--help"], "--selector"),
     ] {
         let (ok, help) = combined(&args);
         assert!(ok, "{help}");
         assert!(help.contains(flag), "{flag} missing: {help}");
         assert!(
-            help.contains("datasource fields"),
+            help.contains("ingest sources fields"),
             "{args:?} must name the field reference: {help}"
         );
     }
@@ -154,7 +147,7 @@ fn a_run_is_shown_under_ingest_and_the_bare_noun_stays_unclaimed() {
 
 #[test]
 fn ingest_runs_requires_an_ingest_id() {
-    let (ok, out) = combined(&["ingest", "runs"]);
+    let (ok, out) = combined(&["ingest", "logs"]);
     assert!(!ok, "should not parse: {out}");
     assert!(
         out.contains("required") || out.contains("INGEST_ID"),
@@ -166,14 +159,14 @@ fn ingest_runs_requires_an_ingest_id() {
 fn ingest_runs_accepts_the_id_as_a_flag_instead_of_a_positional() {
     // Parse-only proof: with neither form clap errors on the missing argument,
     // so reaching a *different* failure means --ingest-id satisfied it.
-    let (ok, out) = combined(&["ingest", "runs", "--ingest-id", "ing_1", "--help"]);
+    let (ok, out) = combined(&["ingest", "logs", "--ingest-id", "ing_1", "--help"]);
     assert!(ok, "{out}");
     assert!(out.contains("--ingest-id"), "{out}");
 }
 
 #[test]
 fn ingest_runs_rejects_the_id_given_twice() {
-    let (ok, out) = combined(&["ingest", "runs", "ing_1", "--ingest-id", "ing_2"]);
+    let (ok, out) = combined(&["ingest", "logs", "ing_1", "--ingest-id", "ing_2"]);
     assert!(!ok, "should not parse: {out}");
     assert!(out.contains("cannot be used with"), "{out}");
 }
@@ -187,7 +180,7 @@ fn ingest_create_requires_a_datasource_id() {
 
 #[test]
 fn datasource_show_requires_a_datasource_id() {
-    let (ok, out) = combined(&["datasource", "show"]);
+    let (ok, out) = combined(&["ingest", "sources", "show"]);
     assert!(!ok, "should not parse: {out}");
     assert!(
         out.contains("required") || out.contains("DATASOURCE_ID"),
@@ -256,7 +249,8 @@ fn ingest_schedule_rejects_schedule_json_alongside_every() {
 #[test]
 fn datasource_update_config_rejects_both_credential_flags() {
     let (ok, out) = combined(&[
-        "datasource",
+        "ingest",
+        "sources",
         "update-config",
         "ds_1",
         "--config",
@@ -282,7 +276,7 @@ fn ingest_list_accepts_the_datasource_id_filter() {
 
 #[test]
 fn datasource_list_accepts_family_and_state_filters() {
-    let (ok, help) = combined(&["datasource", "list", "--help"]);
+    let (ok, help) = combined(&["ingest", "sources", "list", "--help"]);
     assert!(ok, "{help}");
     assert!(help.contains("--family"), "{help}");
     assert!(help.contains("--state"), "{help}");
@@ -318,13 +312,15 @@ fn create_without_a_terminal_asks_for_flags_instead_of_prompting() {
     // The whole contract for scripts: no TTY means no questions, and the
     // arguments are demanded in the order a caller can act on them — the family
     // first, since it decides what the config even contains.
-    let (ok, out) = combined(&["datasource", "create", "-w", "ws_test"]);
+    let (ok, out) = combined(&["ingest", "sources", "add", "-w", "ws_test"]);
     assert!(!ok, "should fail: {out}");
     assert!(out.contains("--family is required"), "{out}");
     // And it says where the questions ARE, so the gate is discoverable.
     assert!(out.contains("terminal"), "{out}");
 
-    let (ok, out) = combined(&["datasource", "create", "-w", "ws_test", "--family", "sql"]);
+    let (ok, out) = combined(&[
+        "ingest", "sources", "add", "-w", "ws_test", "--family", "sql",
+    ]);
     assert!(!ok, "should fail: {out}");
     assert!(out.contains("--config is required"), "{out}");
 }
@@ -332,8 +328,9 @@ fn create_without_a_terminal_asks_for_flags_instead_of_prompting() {
 #[test]
 fn no_input_takes_the_flag_path_even_on_a_terminal() {
     let (ok, out) = combined(&[
-        "datasource",
-        "create",
+        "ingest",
+        "sources",
+        "add",
         "-w",
         "ws_test",
         "--no-input",
@@ -346,7 +343,7 @@ fn no_input_takes_the_flag_path_even_on_a_terminal() {
 
 #[test]
 fn create_help_describes_the_guided_flow_and_what_turns_it_off() {
-    let (ok, help) = combined(&["datasource", "create", "--help"]);
+    let (ok, help) = combined(&["ingest", "sources", "add", "--help"]);
     assert!(ok, "{help}");
     assert!(help.contains("--no-input"), "{help}");
     // The two things someone automating needs to know: it asks, and it does
@@ -359,7 +356,7 @@ fn create_help_describes_the_guided_flow_and_what_turns_it_off() {
 
 #[test]
 fn the_datasource_shorthands_live_on_datasource_create() {
-    let (ok, help) = combined(&["datasource", "create", "--help"]);
+    let (ok, help) = combined(&["ingest", "sources", "add", "--help"]);
     assert!(ok, "{help}");
     for flag in ["--bucket-url", "--catalog-type"] {
         assert!(help.contains(flag), "{flag} missing: {help}");
@@ -498,7 +495,7 @@ fn create_help_does_not_promise_a_run_id() {
     assert!(!help.contains("initial_run_id"), "{help}");
     assert!(!help.contains("runs immediately"), "{help}");
     assert!(help.contains("scheduler dispatches every run"), "{help}");
-    assert!(help.contains("hotdata ingest runs"), "{help}");
+    assert!(help.contains("hotdata ingest logs"), "{help}");
 }
 
 #[test]
@@ -588,9 +585,9 @@ fn every_wait_flag_says_it_cannot_make_a_run_start_sooner() {
     // model. Each of the three surfaces has to say it where it is read.
     for (args, needle) in [
         (vec!["ingest", "run", "--help"], "does not make it start"),
-        (vec!["ingest", "runs", "--help"], "cannot bring one forward"),
+        (vec!["ingest", "logs", "--help"], "cannot bring one forward"),
         (
-            vec!["datasource", "create", "--help"],
+            vec!["ingest", "sources", "add", "--help"],
             "cannot make anything happen sooner",
         ),
     ] {
@@ -606,14 +603,15 @@ fn every_wait_flag_says_it_cannot_make_a_run_start_sooner() {
 
 #[test]
 fn datasource_create_offers_both_halves_of_the_wait() {
-    let (ok, help) = combined(&["datasource", "create", "--help"]);
+    let (ok, help) = combined(&["ingest", "sources", "add", "--help"]);
     assert!(ok, "{help}");
     assert!(help.contains("--wait"), "{help}");
     assert!(help.contains("--no-wait"), "{help}");
     // They are opposite answers to one question, not two switches.
     let (ok, out) = combined(&[
-        "datasource",
-        "create",
+        "ingest",
+        "sources",
+        "add",
         "--family",
         "sql",
         "--config",
@@ -678,6 +676,11 @@ fn the_fallback_hint_lists_every_verb_clap_accepts() {
         .filter(|l| !l.starts_with("   "))
         .filter_map(|l| l.split_whitespace().next())
         .filter(|v| *v != "help")
+        // `sources` is the folded-in datasource subtree, not a lifecycle verb.
+        // The hint surfaces it in its own sentence ("Datasources are 'hotdata
+        // ingest sources'.") rather than in the comma list, so it is checked
+        // separately below and excluded from the verb-for-verb comparison.
+        .filter(|v| *v != "sources")
         .map(str::to_string)
         .collect();
     assert!(from_clap.len() > 5, "parsed too few verbs: {from_clap:?}");
@@ -690,6 +693,12 @@ fn the_fallback_hint_lists_every_verb_clap_accepts() {
         a, b,
         "the hint's verb list and clap's disagree\n  hint: {listed:?}\n  clap: {from_clap:?}"
     );
+    // The datasource subtree is not dropped: it is surfaced by name in its own
+    // sentence rather than the verb list.
+    assert!(
+        hint.contains("hotdata ingest sources"),
+        "hint must point at the datasource subtree: {hint}"
+    );
     // And it must not send anyone to a command that no longer parses.
     assert!(!hint.contains("hotdata run'"), "{hint}");
 }
@@ -697,10 +706,10 @@ fn the_fallback_hint_lists_every_verb_clap_accepts() {
 #[test]
 fn renamed_verbs_point_at_their_replacements() {
     for (old, expected) in [
-        ("new-datasource", "hotdata datasource create"),
-        ("list-datasources", "hotdata datasource list"),
-        ("show-datasource", "hotdata datasource show"),
-        ("delete-datasource", "hotdata datasource delete"),
+        ("new-datasource", "hotdata ingest sources add"),
+        ("list-datasources", "hotdata ingest sources list"),
+        ("show-datasource", "hotdata ingest sources show"),
+        ("delete-datasource", "hotdata ingest sources remove"),
         ("new-import", "hotdata ingest create"),
         ("list-imports", "hotdata ingest list"),
         ("status", "hotdata ingest run"),

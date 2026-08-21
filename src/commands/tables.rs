@@ -2,47 +2,6 @@ use crate::client::sdk::{Api, block_with_wakeup};
 use hotdata::models::TableInfo;
 use serde::Serialize;
 
-/// Subcommands for `hotdata tables`.
-#[derive(clap::Subcommand)]
-pub enum TablesCommands {
-    /// Show column definitions for a specific table (catalog.schema.table or schema.table)
-    Show {
-        /// Table as catalog.schema.table (or schema.table when a database is active)
-        table: String,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-
-    /// List tables in the active database, or all workspace tables if none is set
-    List {
-        /// Workspace ID (defaults to first workspace from login)
-        #[arg(long, short = 'w')]
-        workspace_id: Option<String>,
-
-        /// Filter by schema name (supports % wildcards)
-        #[arg(long)]
-        schema: Option<String>,
-
-        /// Filter by table name (supports % wildcards)
-        #[arg(long)]
-        table: Option<String>,
-
-        /// Maximum number of results to return
-        #[arg(long)]
-        limit: Option<u32>,
-
-        /// Pagination cursor from a previous response
-        #[arg(long)]
-        cursor: Option<String>,
-
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
-        output: String,
-    },
-}
-
 #[derive(Serialize)]
 struct Column {
     name: String,
@@ -159,7 +118,7 @@ pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
                     eprintln!(
                         "{}",
                         "error: use catalog.schema.table, or set an active database with \
-                         `hotdata databases set <id>`."
+                         `hotdata databases use <id>`."
                             .red()
                     );
                     std::process::exit(1);

@@ -166,7 +166,7 @@ impl IngestError {
                         "--dest-table names ONE table (buckets, Delta, a --raw-sql result); \
                          --dest-table-prefix prefixes the tables a source that lands several \
                          produces (SQL --table/--sql, Iceberg, DuckLake, Kafka, REST). The \
-                         family's own field reference: hotdata datasource fields <family>."
+                         family's own field reference: hotdata ingest sources fields <family>."
                             .dark_grey()
                     );
                 }
@@ -182,7 +182,7 @@ impl IngestError {
                     eprintln!(
                         "{}",
                         "Delete the datasource's ingests first: hotdata ingest list \
-                         --datasource-id <id>, then 'hotdata ingest delete <ingest-id>'."
+                         --datasource-id <id>, then 'hotdata ingest remove <ingest-id>'."
                             .dark_grey()
                     );
                 }
@@ -195,7 +195,7 @@ impl IngestError {
                     eprintln!(
                         "{}",
                         "The families, and what each one supports: \
-                         hotdata datasource fields."
+                         hotdata ingest sources fields."
                             .dark_grey()
                     );
                 }
@@ -236,11 +236,11 @@ fn table_conflict_hint(body: &str) -> String {
              hotdata ingest show {conflicting}"
         )
     } else {
-        format!("Free the table with: hotdata ingest delete {conflicting}")
+        format!("Free the table with: hotdata ingest remove {conflicting}")
     };
     if unprefixed || releases_itself {
         hint.push_str(&format!(
-            ", or take the table now with: hotdata ingest delete {conflicting}"
+            ", or take the table now with: hotdata ingest remove {conflicting}"
         ));
     }
     hint
@@ -1270,7 +1270,7 @@ mod tests {
     #[test]
     fn conflict_hint_prescribes_a_delete_only_where_nothing_else_frees_the_table() {
         let hint = table_conflict_hint(&conflict_body("continuous", "orders_raw"));
-        assert_eq!(hint, "Free the table with: hotdata ingest delete ing_held");
+        assert_eq!(hint, "Free the table with: hotdata ingest remove ing_held");
     }
 
     #[test]
@@ -1283,7 +1283,7 @@ mod tests {
             );
             // Delete stays reachable — it is the way to take the table NOW —
             // but as the second option rather than the prescription.
-            assert!(hint.ends_with("hotdata ingest delete ing_held"), "{hint}");
+            assert!(hint.ends_with("hotdata ingest remove ing_held"), "{hint}");
         }
     }
 
@@ -1307,7 +1307,7 @@ mod tests {
                        "details":{"conflicting_ingest_id":"ing_held"}}}"#;
         assert_eq!(
             table_conflict_hint(body),
-            "Free the table with: hotdata ingest delete ing_held"
+            "Free the table with: hotdata ingest remove ing_held"
         );
     }
 

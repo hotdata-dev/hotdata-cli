@@ -135,6 +135,7 @@ pub enum DatabasesCommands {
     },
 
     /// Set the current database (used by default when no database is specified)
+    #[command(name = "use")]
     Set {
         /// Database id
         id: String,
@@ -144,6 +145,7 @@ pub enum DatabasesCommands {
     Unset,
 
     /// Delete a managed database and its tables
+    #[command(name = "remove")]
     Delete {
         /// Managed database id or name
         name_or_id: String,
@@ -176,7 +178,7 @@ pub enum DatabasesCommands {
         upload_id: Option<String>,
 
         /// Load a saved query result by id (e.g. `--result-id rslt…`, from
-        /// `hotdata results` or a query's `[result-id: …]` footer) instead of a
+        /// `hotdata databases results` or a query's `[result-id: …]` footer) instead of a
         /// file. The result must belong to the target database — the one it was
         /// queried in.
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
@@ -191,6 +193,72 @@ pub enum DatabasesCommands {
         #[command(subcommand)]
         command: Option<DatabaseTablesCommands>,
     },
+
+    /// Sync database context with local Markdown
+    Context {
+        /// Managed database to scope to (defaults to the current database)
+        #[arg(long, short = 'd', global = true)]
+        database: Option<String>,
+
+        #[command(subcommand)]
+        command: crate::commands::context::ContextCommands,
+    },
+
+    /// Execute a SQL query against this database (also at top-level `query`)
+    Query {
+        /// SQL query string (omit when using a subcommand)
+        sql: Option<String>,
+
+        /// Managed database to run against (defaults to the current database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
+        /// SQL dialect the query is written in — a non-`hotsql` dialect is
+        /// transpiled to HotSQL server-side before it runs (read-only only)
+        #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake"])]
+        dialect: String,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
+
+        #[command(subcommand)]
+        command: Option<crate::commands::query::QueryCommands>,
+    },
+
+    /// Inspect query run history
+    Queries {
+        /// Query run ID to show details
+        id: Option<String>,
+
+        /// Managed database to scope to (defaults to the current database)
+        #[arg(long, short = 'd', global = true)]
+        database: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+
+        #[command(subcommand)]
+        command: Option<crate::commands::queries::QueriesCommands>,
+    },
+
+    /// Retrieve stored query results
+    Results {
+        /// Result ID (omit to use a subcommand)
+        result_id: Option<String>,
+
+        /// Managed database to scope to (defaults to the current database)
+        #[arg(long, short = 'd', global = true)]
+        database: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        output: String,
+
+        #[command(subcommand)]
+        command: Option<crate::commands::results::ResultsCommands>,
+    },
 }
 
 /// Subcommands for `hotdata databases tables`.
@@ -202,9 +270,31 @@ pub enum DatabaseTablesCommands {
         #[arg(long)]
         database: Option<String>,
 
-        /// Filter by schema name
+        /// Filter by schema name (supports % wildcards)
         #[arg(long)]
         schema: Option<String>,
+
+        /// Filter by table name (supports % wildcards)
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Maximum number of results to return
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Pagination cursor from a previous response
+        #[arg(long)]
+        cursor: Option<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
+    /// Show column definitions for a table
+    Show {
+        /// Table as catalog.schema.table (or schema.table with an active database)
+        table: String,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
@@ -237,7 +327,7 @@ pub enum DatabaseTablesCommands {
         upload_id: Option<String>,
 
         /// Load a saved query result by id (e.g. `--result-id rslt…`, from
-        /// `hotdata results` or a query's `[result-id: …]` footer) instead of a
+        /// `hotdata databases results` or a query's `[result-id: …]` footer) instead of a
         /// file. The result must belong to the target database — the one it was
         /// queried in.
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
@@ -245,6 +335,7 @@ pub enum DatabaseTablesCommands {
     },
 
     /// Delete a table from a managed database
+    #[command(name = "remove")]
     Delete {
         /// Database id or name (defaults to current database)
         #[arg(long)]
@@ -1505,7 +1596,7 @@ fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> Strin
             use crossterm::style::Stylize;
             eprintln!(
                 "{}",
-                "error: no current database set. Use 'hotdata databases set <id>' or pass a database id.".red()
+                "error: no current database set. Use 'hotdata databases use <id>' or pass a database id.".red()
             );
             std::process::exit(1);
         }

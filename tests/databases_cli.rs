@@ -16,7 +16,7 @@ fn databases_help_lists_subcommands() {
     assert!(help.contains("list"));
     assert!(help.contains("count"));
     assert!(help.contains("create"));
-    assert!(help.contains("delete"));
+    assert!(help.contains("remove"));
     assert!(help.contains("tables"));
     assert!(help.contains("attach"));
     assert!(help.contains("detach"));

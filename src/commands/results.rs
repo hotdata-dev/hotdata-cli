@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(clap::Subcommand)]
 pub enum ResultsCommands {
     /// Show a stored result by ID (downloads and prints the data)
+    #[command(name = "get")]
     Show {
         /// Result ID
         id: String,
@@ -172,25 +173,25 @@ mod tests {
     }
 
     #[test]
-    fn show_parses_id_and_defaults_output_to_table() {
-        let cmd = parse(&["show", "rslt_abc123"]).unwrap();
+    fn get_parses_id_and_defaults_output_to_table() {
+        let cmd = parse(&["get", "rslt_abc123"]).unwrap();
         match cmd {
             ResultsCommands::Show { id, output } => {
                 assert_eq!(id, "rslt_abc123");
                 assert_eq!(output, "table");
             }
-            _ => panic!("expected Show"),
+            _ => panic!("expected Show (cli name `get`)"),
         }
     }
 
     #[test]
-    fn show_accepts_output_flag() {
-        let cmd = parse(&["show", "rslt_abc123", "--output", "csv"]).unwrap();
+    fn get_accepts_output_flag() {
+        let cmd = parse(&["get", "rslt_abc123", "--output", "csv"]).unwrap();
         assert!(matches!(cmd, ResultsCommands::Show { output, .. } if output == "csv"));
     }
 
     #[test]
-    fn show_requires_id() {
-        assert!(parse(&["show"]).is_err());
+    fn get_requires_id() {
+        assert!(parse(&["get"]).is_err());
     }
 }
