@@ -1,3 +1,21 @@
+## [0.27.0] - 2026-08-21
+
+### 🚀 Features
+
+- *(query)* Add --dialect to transpile DuckDB/Postgres/Snowflake SQL (#266)
+
+### 💼 Other
+
+- Remove dead code and clear all clippy warnings (#268)
+
+### 🚜 Refactor
+
+- *(cli)* [**breaking**] Reorganize command surface (#263)
+
+### 📚 Documentation
+
+- Shorten README and drop the removed connections command (#267)
+- *(skills)* Correct the --database claim for databases tables show (#269)
 ## [0.26.0] - 2026-08-19
 
 ### 🚀 Features
