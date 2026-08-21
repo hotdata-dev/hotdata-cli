@@ -39,15 +39,7 @@ hotdata search create <table>_embedding_vec --type vector \
   --from <alias>.<schema>.<table> --column embedding --metric cosine
 ```
 
-For a regular catalog, pass its name or ID in `--from`:
-
-```bash
-hotdata search create idx_posts_body_bm25 --type text \
-  --from <catalog-name-or-id>.<schema>.<table> --column body
-
-hotdata search create idx_chunks_embedding --type vector \
-  --from <catalog-name-or-id>.<schema>.<table> --column embedding --metric cosine
-```
+Indexes are created on **managed databases** only. To index a table that lives in an external catalog, attach the catalog to a managed database first (`hotdata databases attach <catalog>`), then create the index with the managed database's catalog in `--from` — a bare connection/catalog is rejected.
 
 Large builds: `--async`, then `hotdata jobs list` / `hotdata jobs <job_id>`.
 

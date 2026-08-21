@@ -55,7 +55,7 @@ A workspace's query worker scales to zero after inactivity. The **first** comman
 
 ## Database context (API)
 
-**`context:<STEM>`** (e.g. **context:DATAMODEL**, **context:GLOSSARY**) is an authoritative Markdown document stored server-side under that stem via the context API — *not* generic English ("a data model"), and *not* a local `./DATAMODEL.md` (local files are only `push`/`pull` transport). CLI commands take the bare stem: `hotdata databases context show DATAMODEL`. Context is scoped to the **active database** (`hotdata databases use <id>`); target another with `--database-id` / `-d`. Stems follow SQL identifier rules and accept a trailing `.md` (stored without it). Command reference: [Database context (named Markdown)](#database-context-named-markdown).
+**`context:<STEM>`** (e.g. **context:DATAMODEL**, **context:GLOSSARY**) is an authoritative Markdown document stored server-side under that stem via the context API — *not* generic English ("a data model"), and *not* a local `./DATAMODEL.md` (local files are only `push`/`pull` transport). CLI commands take the bare stem: `hotdata databases context show DATAMODEL`. Context is scoped to the **active database** (`hotdata databases use <id>`); target another with `--database` / `-d`. Stems follow SQL identifier rules and accept a trailing `.md` (stored without it). Command reference: [Database context (named Markdown)](#database-context-named-markdown).
 
 **Agents — list before show.** Run `hotdata databases context list` (optionally `--prefix DATAMODEL`) first; run `hotdata databases context show DATAMODEL` *only if* the stem is listed. A missing stem makes `show` exit 1 — normal for a fresh database, not a failure: don't retry in a loop or run speculative `show` in parallel with other tools. Proceed without context:DATAMODEL until one exists.
 
@@ -188,13 +188,13 @@ hotdata databases tables show <catalog.schema.table|schema.table> [--output tabl
 
 ### Database context (named Markdown)
 
-Reads and writes **database-scoped context API** documents. Context is tied to the **active database** (set via `hotdata databases use`); pass **`--database-id <id>`** (short: **`-d`**) to target a specific database. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Database context (API)](#database-context-api).
+Reads and writes **database-scoped context API** documents. Context is tied to the **active database** (set via `hotdata databases use`); pass **`--database <id>`** (short: **`-d`**) to target a specific database. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Database context (API)](#database-context-api).
 
 ```
-hotdata databases context list [--database-id <id>] [--prefix <stem>] [--output table|json|yaml]
-hotdata databases context show <name> [--database-id <id>]
-hotdata databases context pull <name> [--database-id <id>] [--force] [--dry-run]
-hotdata databases context push <name> [--database-id <id>] [--dry-run]
+hotdata databases context list [--database <id>] [--prefix <stem>] [--output table|json|yaml]
+hotdata databases context show <name> [--database <id>]
+hotdata databases context pull <name> [--database <id>] [--force] [--dry-run]
+hotdata databases context push <name> [--database <id>] [--dry-run]
 ```
 
 - `list` — names, `updated_at`, and character counts for each stored context in the active database. Use `--prefix` to narrow names (case-sensitive). **Agents:** call **`list` before `show`** for `DATAMODEL` (or any stem) so you do not rely on `show` failing when the document does not exist yet.

@@ -1,6 +1,6 @@
 # Hotdata CLI workflows
 
-**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the database-scoped document stored via the **context API** (active database; `-d`/`--database-id` to target another)—CLI uses bare stems: `hotdata databases context show DATAMODEL`.
+**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the database-scoped document stored via the **context API** (active database; `-d`/`--database` to target another)—CLI uses bare stems: `hotdata databases context show DATAMODEL`.
 
 ---
 
@@ -63,8 +63,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 1. [ ] `hotdata databases tables list` (filter with `--schema`/`--table`) — pick text column (BM25) or embedding/text column (vector)
 2. [ ] `hotdata search list` — avoid duplicate text/vector indexes on the same column
 3. [ ] Create index (address by name):
-   - [ ] **Managed DB:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>`
-   - [ ] **Catalog:** `hotdata search create <t>_<col> --type text --from <catalog-name-or-id>.<s>.<t> --column <col>` (vector: `--type vector [--provider <p>]`)
+   - [ ] **Managed DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). An external catalog must be attached to a managed database first (`hotdata databases attach`).
    - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
 4. [ ] Search (address the index by name):
    - [ ] `hotdata search "…" --index <tbl>_<col>`
