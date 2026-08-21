@@ -407,9 +407,10 @@ impl IndexScope<'_> {
         }
     }
 
-    // Retained for path-shape regression tests; delete now routes through the
-    // SDK `indexes()` handle by scope variant rather than a formatted path.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // Retained only for path-shape regression tests; delete now routes through
+    // the SDK `indexes()` handle by scope variant rather than a formatted path.
+    // `#[cfg(test)]` keeps it as a test guard without shipping it in the binary.
+    #[cfg(test)]
     fn delete_path(&self, index_name: &str) -> String {
         match self {
             IndexScope::Connection {

@@ -14,8 +14,6 @@
 
 // Not every helper here is wired to a call site yet; the allow keeps the build
 // warning-free.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 /// Cap on any single (non-upload) HTTP request. Connection create + synchronous
@@ -28,9 +26,6 @@ const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 /// surfaces it as "error sending request" even though the request completed
 /// server-side.
 const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
-
-/// JSON keys whose values are redacted in debug request/response logging.
-pub const TOKEN_REDACT_KEYS: &[&str] = &["access_token", "refresh_token", "api_token", "code"];
 
 /// A timeout-bounded blocking client for ordinary raw requests (token mints,
 /// session mints, arbitrary GETs).
@@ -49,13 +44,5 @@ mod tests {
     #[test]
     fn http_client_builds() {
         let _ = build_http_client();
-    }
-
-    #[test]
-    fn redact_keys_cover_token_fields() {
-        // Guards against silently dropping a sensitive key from debug logs.
-        assert!(TOKEN_REDACT_KEYS.contains(&"access_token"));
-        assert!(TOKEN_REDACT_KEYS.contains(&"refresh_token"));
-        assert!(TOKEN_REDACT_KEYS.contains(&"api_token"));
     }
 }
