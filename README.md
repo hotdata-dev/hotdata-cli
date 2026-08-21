@@ -124,18 +124,77 @@ Bring your own model with `hotdata search embeddings add`.
 
 ## Commands
 
-Run `hotdata <command> --help` for full flags on any command.
+The full command surface. The top level has eight groups — `auth`, `workspaces`, `databases`, `query`, `jobs`, `ingest`, `search`, and `manage`. Run `hotdata <command> --help` for full flags on any command.
 
 | Command | What it does |
 | :-- | :-- |
-| `auth` | `login`, `register`, `status`, `logout` |
-| `workspaces` | List workspaces, set the active one |
-| `databases` | Managed databases: create, load, fork, attach — plus `tables`, `query`, `queries`, `results`, `context` inside them |
-| `query` | Run SQL (`--dialect` transpiles DuckDB/Postgres/Snowflake); `status` polls async runs |
-| `search` | BM25 and vector search; `create`/`list`/`remove` indexes; `embeddings` |
-| `ingest` | External sources (`sources`) and saved load definitions |
-| `jobs` | Background jobs (refreshes, index builds) |
-| `manage` | `skills`, `completions`, `upgrade`, `usage` |
+| `auth login` | Log in via browser |
+| `auth register` | Create a new account via browser (GitHub OAuth; `--email` for email + password) |
+| `auth logout` | Remove authentication for a profile |
+| `auth status` | Show authentication status |
+| `workspaces list` | List all workspaces |
+| `workspaces use` | Set the default workspace |
+| `databases list` | List managed databases in the workspace |
+| `databases count` | Count managed databases in the workspace |
+| `databases show` | Show details for a managed database |
+| `databases create` | Create a new managed database |
+| `databases fork` | Fork a database into a new, independent database |
+| `databases attach` | Attach a catalog so its tables are queryable |
+| `databases detach` | Detach a previously attached catalog |
+| `databases use` | Set the current (default) database |
+| `databases unset` | Clear the current database |
+| `databases remove` | Delete a database and all its tables |
+| `databases load` | Load a parquet file or saved result into a table |
+| `databases tables list` | List tables in a database |
+| `databases tables show` | Show column definitions for a table |
+| `databases tables load` | Load parquet/result into a table (create or replace) |
+| `databases tables remove` | Delete a table from a database |
+| `databases context list` | List named contexts in a database |
+| `databases context show` | Print context content to stdout |
+| `databases context pull` | Download context to `./<NAME>.md` |
+| `databases context push` | Upload `./<NAME>.md` as named context |
+| `databases query` | Execute a SQL query against a database |
+| `databases query status` | Check a running query and retrieve results |
+| `databases queries list` | List query runs |
+| `databases results get` | Show a stored query result by ID |
+| `databases results list` | List stored query results |
+| `query "<sql>"` | Execute a SQL query (shortcut for `databases query`) |
+| `query status` | Check a running query and retrieve results |
+| `jobs list` | List background jobs (active by default) |
+| `jobs <id>` | Show one background job |
+| `ingest create` | Create a load definition |
+| `ingest list` | List the ingests in the workspace |
+| `ingest show` | Show one ingest: state, selector, destination, schedule |
+| `ingest pause` | Stop an ingest (cancel the active run and future runs) |
+| `ingest resume` | Clear a stop and let the schedule dispatch again |
+| `ingest schedule` | Change when a scheduled/continuous ingest runs next |
+| `ingest logs` | List the runs of one ingest |
+| `ingest run` | Show one run: status, snapshots, timings |
+| `ingest remove` | Delete an ingest and release its destination table |
+| `ingest sources test` | Check a config and credentials without creating anything |
+| `ingest sources add` | Create a datasource and its first config version |
+| `ingest sources list` | List the datasources in the workspace |
+| `ingest sources show` | Show one datasource: state, config, discovery |
+| `ingest sources update-config` | Append a config version (rotate credentials) |
+| `ingest sources remove` | Delete a datasource |
+| `ingest sources types` | Browse the catalog of source types |
+| `ingest sources fields` | Show the fields a source family accepts |
+| `search "<text>" --index <name>` | Run a full-text or vector search against an index |
+| `search create` | Create a search index over a table column |
+| `search list` | List search indexes |
+| `search show` | Show one search index by name |
+| `search remove` | Remove a search index by name |
+| `search embeddings list` | List embedding providers |
+| `search embeddings show` | Show one embedding provider |
+| `search embeddings add` | Create a new embedding provider |
+| `search embeddings update` | Update an embedding provider |
+| `search embeddings remove` | Delete an embedding provider |
+| `manage usage` | Show workspace usage: queries, bytes scanned, stored bytes |
+| `manage completions` | Generate shell completions (`bash`, `zsh`, `fish`) |
+| `manage upgrade` | Upgrade the CLI to the latest release |
+| `manage skills install` | Install/update the agent skill into agent directories |
+| `manage skills status` | Show the agent skill's installation status |
+| `manage skills list` | List installed skills (alias for `status`) |
 
 ## Configuration
 
