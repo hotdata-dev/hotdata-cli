@@ -253,7 +253,15 @@ impl ApiError {
     pub fn print(&self) {
         match self {
             ApiError::Status { status, body } => {
-                let auth_status = if status.is_client_error() {
+                // Probe the stored credential only when auth plausibly caused the
+                // failure (401/403). Other 4xx carry their own explanation, and the
+                // probe checks the *stored profile* — which can be stale even while
+                // the request's own credential (e.g. `--api-key`) is fine — so
+                // probing there both wastes a round-trip and risks a misleading hint.
+                let auth_status = if matches!(
+                    *status,
+                    reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+                ) {
                     config::load("default")
                         .ok()
                         .map(|pc| credentials::check_status(&pc))
@@ -845,38 +853,47 @@ impl Api {
 }
 
 /// Decide what error text to print for a failed response. Pure function so the
-/// 4xx-to-re-auth-hint heuristic is unit-testable without HTTP or `exit`.
+/// re-auth-hint heuristic is unit-testable without HTTP or `exit`.
 ///
-/// Relocated verbatim from the old `api.rs`.
+/// The server's own explanation is never discarded: hints (token-scope, re-auth)
+/// are *appended* to it. The re-auth hint fires only on 401/403 — the statuses
+/// where a broken credential is a plausible cause. It used to fire on any 4xx
+/// and *replace* the body, which masked real errors: a 400 planning error
+/// ("Invalid function 'st_quadkey'") printed as "API key is invalid" whenever
+/// the stored-profile probe failed — even though the request itself (e.g. via
+/// `--api-key`) had authenticated fine and reached the engine.
 pub fn format_fail_message(
     status: reqwest::StatusCode,
     body: &str,
     auth_status: Option<&credentials::AuthStatus>,
 ) -> String {
-    if status.is_client_error()
-        && let Some(credentials::AuthStatus::Invalid(_)) = auth_status
-    {
-        return "error: API key is invalid. Run 'hotdata auth login' to re-authenticate."
-            .to_string();
-    }
+    // Base: the server's own explanation, or the status line when there is none.
+    let mut msg = if body.trim().is_empty() {
+        format!("error: HTTP {status} (empty response body)")
+    } else {
+        util::api_error(body.to_string())
+    };
     // A 403 ACCESS_DENIED is the allow-list guard rejecting an operation the
     // credential can't perform — typically a database API token (which is
     // limited to create/query/upload) hitting a workspace-level endpoint. Keep
     // the server's explanation and add an actionable hint about token scope.
     if status == reqwest::StatusCode::FORBIDDEN && util::is_access_denied(body) {
-        return format!(
-            "{}\nIf you're using a database API token, it can only create databases, run \
+        msg = format!(
+            "{msg}\nIf you're using a database API token, it can only create databases, run \
              queries, and upload data — other operations need a standard API key (run \
-             'hotdata auth login').",
-            util::api_error(body.to_string())
+             'hotdata auth login')."
         );
     }
-    // An empty body carries no explanation of its own — the status line is
-    // the only signal there is, so surface it instead of a blank message.
-    if body.trim().is_empty() {
-        return format!("error: HTTP {status} (empty response body)");
+    // Auth-plausible statuses only: when the credential probe says the stored
+    // credential is broken, append the re-auth hint after the server's message.
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) && matches!(auth_status, Some(credentials::AuthStatus::Invalid(_)))
+    {
+        msg = format!("{msg}\nAPI key is invalid - run 'hotdata auth login' to re-authenticate.");
     }
-    util::api_error(body.to_string())
+    msg
 }
 
 #[cfg(test)]
@@ -912,13 +929,36 @@ mod tests {
     }
 
     #[test]
-    fn format_fail_message_404_with_invalid_key_shows_reauth_hint() {
+    fn format_fail_message_404_never_gets_reauth_hint() {
+        // A 404 means the request *authenticated* and the resource wasn't
+        // found — a stale stored-profile probe must not repaint it as an auth
+        // problem. (Formerly asserted the opposite; that behavior masked real
+        // errors.)
         let msg = format_fail_message(
             reqwest::StatusCode::NOT_FOUND,
             "",
             Some(&AuthStatus::Invalid(401)),
         );
-        assert!(msg.contains("API key is invalid"), "got: {msg}");
+        assert!(!msg.contains("API key is invalid"), "got: {msg}");
+        assert!(msg.contains("404"), "got: {msg}");
+    }
+
+    #[test]
+    fn format_fail_message_400_planning_error_not_masked_by_stale_probe() {
+        // Regression: 2026-08-22 prod incident. A query using a valid
+        // `--api-key` reached the engine and got a 400 planning error, but the
+        // stored-profile probe (checking a *different*, expired credential)
+        // returned Invalid — and the CLI printed "API key is invalid" instead
+        // of the server's message, for every unknown-function query.
+        let body =
+            r#"{"error":{"message":"Error during planning: Invalid function 'st_quadkey'."}}"#;
+        let msg = format_fail_message(
+            reqwest::StatusCode::BAD_REQUEST,
+            body,
+            Some(&AuthStatus::Invalid(401)),
+        );
+        assert!(msg.contains("Invalid function 'st_quadkey'"), "got: {msg}");
+        assert!(!msg.contains("API key is invalid"), "got: {msg}");
     }
 
     #[test]
@@ -1015,8 +1055,9 @@ mod tests {
     }
 
     #[test]
-    fn format_fail_message_403_access_denied_invalid_key_prefers_reauth() {
-        // A genuinely broken credential still gets the re-auth hint first.
+    fn format_fail_message_403_access_denied_invalid_key_appends_reauth() {
+        // A genuinely broken credential still gets the re-auth hint — appended
+        // after the server's explanation, which is never discarded.
         let body = r#"{"error":{"code":"ACCESS_DENIED","message":"x"}}"#;
         let msg = format_fail_message(
             reqwest::StatusCode::FORBIDDEN,
@@ -1024,6 +1065,7 @@ mod tests {
             Some(&AuthStatus::Invalid(403)),
         );
         assert!(msg.contains("API key is invalid"), "got: {msg}");
+        assert!(msg.contains('x'), "server message must be kept: {msg}");
     }
 
     #[test]
