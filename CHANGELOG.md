@@ -1,3 +1,8 @@
+## [0.27.1] - 2026-08-22
+
+### 🐛 Bug Fixes
+
+- *(errors)* Never mask a 4xx server message with the re-auth hint (#273)
 ## [0.27.0] - 2026-08-21
 
 ### ⚠️ Breaking — command surface reorganized (migration guide)
