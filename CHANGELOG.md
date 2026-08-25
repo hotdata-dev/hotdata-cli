@@ -1,4 +1,8 @@
-## [Unreleased]
+## [0.28.0] - 2026-08-25
+
+### 🚀 Features
+
+- *(databases)* Support append mode for table loads (#276)
 
 ### 📚 Documentation
 
