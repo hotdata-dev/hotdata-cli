@@ -383,7 +383,7 @@ fn incomplete_preview(resp: hotdata::models::QueryResponse, note: &str) -> Query
 /// `databases set` / `databases attach`. Pure string inspection of the server
 /// error so it's unit-testable and adds no network round-trip on success.
 ///
-/// A `query` runs inside exactly one managed database; that context exposes the
+/// A `query` runs inside exactly one instant database; that context exposes the
 /// database's own catalog plus any *attached* connection catalogs. The two
 /// failure modes a user hits when they don't know this are "a database is
 /// required" (no context set) and "table '<catalog>.<schema>.<table>' not
@@ -392,7 +392,7 @@ fn cross_source_hint(error_msg: &str) -> Option<String> {
     let lower = error_msg.to_lowercase();
     if lower.contains("a database is required") {
         return Some(
-            "Tip: a query runs inside one managed database. Set one with `hotdata databases \
+            "Tip: a query runs inside one instant database. Set one with `hotdata databases \
              use <id>`, then attach any catalog whose tables you need: `hotdata databases \
              attach <catalog>`. See available catalogs and tables with `hotdata databases \
              tables list`."

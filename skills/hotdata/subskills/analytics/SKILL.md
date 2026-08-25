@@ -1,6 +1,6 @@
 ---
 name: hotdata-analytics
-description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into managed databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for tables and auth.
+description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into instant databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for tables and auth.
 version: 0.27.1
 ---
 
@@ -25,7 +25,7 @@ hotdata query status <query_run_id>
 - **`--dialect`** (default `hotsql`): write SQL in `duckdb`/`postgres`/`snowflake` and the server transpiles it to HotSQL before running (e.g. Snowflake `IFF(...)`, DuckDB `len(...)`). Read-only queries only for a non-`hotsql` dialect.
 - Use **`hotdata databases tables list`** for schema discovery — not `information_schema` via `query`.
 - Fully qualified names: `<catalog>.<schema>.<table>`, `<database>.<schema>.<table>`.
-- **Query scope:** every query runs inside one managed database (active or `--database`); it sees that database's own catalog plus **attached** catalogs only. To query an attached catalog's table, or **join a managed table against an attached catalog's table**, attach the catalog first: `hotdata databases attach <catalog>` — see **`hotdata`** skill → [Querying across catalogs](../../SKILL.md#querying-across-catalogs-attach). No managed database set → *"a database is required."*
+- **Query scope:** every query runs inside one instant database (active or `--database`); it sees that database's own catalog plus **attached** catalogs only. To query an attached catalog's table, or **join an instant database's table against an attached catalog's table**, attach the catalog first: `hotdata databases attach <catalog>` — see **`hotdata`** skill → [Querying across catalogs](../../SKILL.md#querying-across-catalogs-attach). No instant database set → *"a database is required."*
 - Long-running queries may return `query_run_id` → poll with **`query status`** (exit `2` = still running). Do not re-run identical heavy SQL while polling.
 - For **workspace-wide** joins and naming, load **context:DATAMODEL** when listed (`hotdata databases context list` → `show DATAMODEL`) — see **`hotdata`** skill.
 
@@ -34,7 +34,7 @@ hotdata query status <query_run_id>
 Typical analytics SQL (all via `hotdata query`):
 
 - **Aggregations:** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` with `GROUP BY`
-- **Joins:** `INNER` / `LEFT JOIN` across `<catalog>.<schema>.<table>` names — every referenced catalog (the managed database's own or an attached one) must be in the active database's scope; attach catalogs first (`hotdata databases attach`)
+- **Joins:** `INNER` / `LEFT JOIN` across `<catalog>.<schema>.<table>` names — every referenced catalog (the instant database's own or an attached one) must be in the active database's scope; attach catalogs first (`hotdata databases attach`)
 - **Filtering:** `WHERE` on partition-friendly columns (consider **sorted** indexes below)
 - **Ordering:** `ORDER BY` on metrics or dimensions
 - **Bounded exploration:** always `LIMIT` while iterating; widen once validated
@@ -82,7 +82,7 @@ hotdata databases results get <result_id> [--workspace-id <workspace_id>] [--out
    hotdata query status <query_run_id>   # if async
    ```
 
-2. **Materialize** into a managed database (parquet)
+2. **Materialize** into an instant database (parquet)
 
    ```bash
    hotdata databases create --catalog analytics

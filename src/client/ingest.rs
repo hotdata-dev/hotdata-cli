@@ -376,7 +376,7 @@ impl IngestClient {
     // --- datasources -----------------------------------------------------
 
     /// Validate a datasource config without persisting a datasource, config
-    /// version, managed database, or secret. The credentials are used for the
+    /// version, instant database, or secret. The credentials are used for the
     /// validation request only, so this route takes a session JWT too.
     pub fn validate_datasource(
         &self,
@@ -444,7 +444,7 @@ impl IngestClient {
 
     /// Soft-delete a datasource. The server returns `409
     /// active_ingests_exist` while any non-deleted ingest references it —
-    /// destination tables and managed databases are never touched.
+    /// destination tables and instant databases are never touched.
     pub fn delete_datasource(&self, datasource_id: &str) -> Result<DeleteAck, IngestError> {
         self.send(
             self.authed(

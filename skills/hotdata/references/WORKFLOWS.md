@@ -11,7 +11,7 @@ The `hotdata` skill is always loaded first (auth and workspace setup). The three
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
 | Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `ingest sources`, `ingest`, `databases tables`, `databases context` |
-| Load parquet files into a managed database | **`hotdata`** | `databases create` + `databases load` |
+| Load parquet files into an instant database | **`hotdata`** | `databases create` + `databases load` |
 | SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** (`subskills/analytics/SKILL.md`) | `query`, `databases queries`, `databases results` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** (`subskills/search/SKILL.md`) | `search`, `search create`, `search embeddings` |
 | Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** (`subskills/geospatial/SKILL.md`) | `query` with `ST_*`, WKB columns |
@@ -19,7 +19,7 @@ The `hotdata` skill is always loaded first (auth and workspace setup). The three
 | Concept | Where documented |
 |--------|------------------|
 | **Model** | This file — [Model](#model) |
-| **Upload path (managed databases)** | This file — [Managed databases](#managed-databases) |
+| **Upload path (instant databases)** | This file — [Instant databases](#instant-databases) |
 | **History / Chain** | **`hotdata-analytics`** — [WORKFLOWS.md](../subskills/analytics/references/WORKFLOWS.md) |
 | **Search indexes** | **`hotdata-search`** — [INDEXES.md](../subskills/search/references/INDEXES.md) |
 | **Epic flows** | This file — [Epic flows](#epic-flows) |
@@ -42,14 +42,14 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 6. [ ] (Optional) `hotdata databases context list` — if `DATAMODEL` is listed, `hotdata databases context show DATAMODEL`; else skip `show`
 7. [ ] (Optional) Bootstrap **context:DATAMODEL** — [Model](#model), [DATA_MODEL.template.md](DATA_MODEL.template.md)
 
-**Next:** upload data ([Managed databases](#managed-databases)) or run analytics (**Chain** below).
+**Next:** upload data ([Instant databases](#instant-databases)) or run analytics (**Chain** below).
 
 ### Chain (materialize then query)
 
 **Skill:** **`hotdata-analytics`** (catalog via **`hotdata`**)
 
 1. [ ] Run base SQL: `hotdata query "SELECT …"` — poll `hotdata query status <id>` if async
-2. [ ] Materialize into a managed database: `hotdata databases create --catalog <alias> --table <name>` then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
+2. [ ] Materialize into an instant database: `hotdata databases create --catalog <alias> --table <name>` then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
 3. [ ] Query with the catalog-qualified name `<alias>.public.<name>`
 4. [ ] Chain: `hotdata query "SELECT … FROM <alias>.public.<name> WHERE …"`
 5. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
@@ -63,7 +63,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 1. [ ] `hotdata databases tables list` (filter with `--schema`/`--table`) — pick text column (BM25) or embedding/text column (vector)
 2. [ ] `hotdata search list` — avoid duplicate text/vector indexes on the same column
 3. [ ] Create index (address by name):
-   - [ ] **Managed DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). An external catalog must be attached to a managed database first (`hotdata databases attach`).
+   - [ ] **Instant DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). An external catalog must be attached to an instant database first (`hotdata databases attach`).
    - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
 4. [ ] Search (address the index by name):
    - [ ] `hotdata search "…" --index <tbl>_<col>`
@@ -75,9 +75,9 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 **Skill:** **`hotdata`**
 
-A `hotdata query` runs inside **one** managed database; its scope sees that database's own catalog plus **attached** catalog catalogs only. To query a catalog's tables — or join a managed table against a live catalog table in one query — attach the catalog. (No managed database set → *"a database is required."*; an unattached catalog → *"table not found."*)
+A `hotdata query` runs inside **one** instant database; its scope sees that database's own catalog plus **attached** catalog catalogs only. To query a catalog's tables — or join an instant database's table against a live catalog table in one query — attach the catalog. (No instant database set → *"a database is required."*; an unattached catalog → *"table not found."*)
 
-1. [ ] Pick/create the managed database that will be the query context (`hotdata databases use <id>` or `databases create --catalog <alias>`)
+1. [ ] Pick/create the instant database that will be the query context (`hotdata databases use <id>` or `databases create --catalog <alias>`)
 2. [ ] Attach the catalog(s) you need (live, sync intact): `hotdata databases attach <catalog> [--alias <a>]`
    - Or attach at creation: `hotdata databases create --catalog <alias> --attach <catalog>[=<alias>]`
 3. [ ] Confirm scope: `hotdata databases <id>` lists attached catalogs
@@ -88,11 +88,11 @@ A `hotdata query` runs inside **one** managed database; its scope sees that data
 
 ---
 
-## Managed databases
+## Instant databases
 
-**Managed databases** land queryable tables you own in the workspace, addressed in SQL as `<catalog>.<schema>.<table>` where the catalog is the `--catalog` alias.
+**Instant databases** land queryable tables you own in the workspace, addressed in SQL as `<catalog>.<schema>.<table>` where the catalog is the `--catalog` alias.
 
-| | **Managed databases** |
+| | **Instant databases** |
 |---|------------------------|
 | **Best for** | Parquet files you own; catalog-style `alias.schema.table` |
 | **SQL prefix** | `<catalog>.<schema>.<table>` where catalog = `--catalog` alias |
@@ -101,9 +101,9 @@ A `hotdata query` runs inside **one** managed database; its scope sees that data
 | **Parquet file uploads** | `databases load --file` / `--url` / `--upload-id` |
 | **Refresh** | Replace via `databases load` again |
 
-**Rule of thumb:** Parquet files you control as **`mydb.public.orders`** → **managed databases**.
+**Rule of thumb:** Parquet files you control as **`mydb.public.orders`** → **instant databases**.
 
-### Workflow: managed database (parquet)
+### Workflow: instant database (parquet)
 
 1. Create the database with a catalog alias:
 
@@ -127,7 +127,7 @@ A `hotdata query` runs inside **one** managed database; its scope sees that data
    hotdata query "SELECT count(*) FROM sales.public.orders"
    ```
 
-For **Chain** materializations into managed databases, see **`hotdata-analytics`**.
+For **Chain** materializations into instant databases, see **`hotdata-analytics`**.
 
 ### Workflow: fork before risky changes
 

@@ -52,7 +52,7 @@ use crate::util;
 pub enum DatasourceCommands {
     /// Check a config and credentials without creating anything
     ///
-    /// Persists no datasource, config version, managed database, or secret —
+    /// Persists no datasource, config version, instant database, or secret —
     /// run it before `create` to see what the credentials can reach. The
     /// response carries family-specific discovery (schemas/tables, topics, …).
     ///
@@ -158,7 +158,7 @@ pub enum DatasourceCommands {
     /// Delete a datasource (its ingests must be deleted first)
     ///
     /// Soft-delete. Returns 409 while any non-deleted ingest references it —
-    /// destination tables, their data, and managed databases are never touched.
+    /// destination tables, their data, and instant databases are never touched.
     #[command(name = "remove")]
     Delete {
         /// Datasource id (from `hotdata ingest sources list`)

@@ -194,7 +194,7 @@ pub fn parse_json(bytes: &[u8], args: &[&str]) -> serde_json::Value {
     })
 }
 
-/// Find-or-create the shared `sdkci-shared` managed database and return its id.
+/// Find-or-create the shared `sdkci-shared` instant database and return its id.
 ///
 /// Queries require a database scope (the `-d` flag / `X-Database-Id` header);
 /// a bare query returns 400 "a database is required". Mirroring sdk-python's

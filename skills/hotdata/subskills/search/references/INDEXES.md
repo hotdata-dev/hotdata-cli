@@ -25,11 +25,11 @@ High-cardinality **text** (`title`, `body`, …) → **bm25**. **Embedding** / f
 hotdata search list
 ```
 
-With no filters, this is a whole-workspace scan that **includes managed-database indexes** (shown under the internal `__db_<id>.<schema>.<table>` label). Skip duplicates (same table, column, and purpose).
+With no filters, this is a whole-workspace scan that **includes instant-database indexes** (shown under the internal `__db_<id>.<schema>.<table>` label). Skip duplicates (same table, column, and purpose).
 
 ## 3. Create indexes
 
-For managed databases (`--from` catalog alias — auto-selects the active database catalog):
+For instant databases (`--from` catalog alias — auto-selects the active database catalog):
 
 ```bash
 hotdata search create <table>_body --type text \
@@ -39,7 +39,7 @@ hotdata search create <table>_embedding_vec --type vector \
   --from <alias>.<schema>.<table> --column embedding --metric cosine
 ```
 
-Indexes are created on **managed databases** only. To index a table that lives in an external catalog, attach the catalog to a managed database first (`hotdata databases attach <catalog>`), then create the index with the managed database's catalog in `--from` — a bare connection/catalog is rejected.
+Indexes are created on **instant databases** only. To index a table that lives in an external catalog, attach the catalog to an instant database first (`hotdata databases attach <catalog>`), then create the index with the instant database's catalog in `--from` — a bare connection/catalog is rejected.
 
 Large builds: `--async`, then `hotdata jobs list` / `hotdata jobs <job_id>`.
 
