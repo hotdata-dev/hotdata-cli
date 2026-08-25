@@ -107,12 +107,12 @@ hotdata databases remove <id> [--workspace-id <workspace_id>]
 hotdata databases attach <catalog|name> [--database <id>] [--alias <alias>]
 hotdata databases detach <catalog|name|alias> [--database <id>]
 
-# Preferred: load by catalog alias (auto-declares table if needed)
-hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--workspace-id <workspace_id>]
+# Preferred: load by catalog alias (auto-declares table if needed). --append adds rows instead of replacing.
+hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--append] [--workspace-id <workspace_id>]
 
 # Also available via tables subcommand
 hotdata databases tables list [--database <id>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases tables load <table> [--database <id>] [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--workspace-id <workspace_id>]
+hotdata databases tables load <table> [--database <id>] [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--append] [--workspace-id <workspace_id>]
 hotdata databases tables remove <table> [--database <id>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
@@ -124,9 +124,9 @@ hotdata databases tables remove <table> [--database <id>] [--schema public] [--w
 - `unset` — clears the active database from config.
 - `<id>` — inspect one database (returns id, catalog, name, expires_at).
 - `remove` — removes the instant database; clears the active-database config if it matched.
-- `load` (top-level shorthand) — loads parquet into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
+- `load` (top-level shorthand) — loads parquet into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). Replaces the table by default; pass `--append` to add rows to the existing table instead. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
-- `tables load` — publishes to an instant-database table (with **replace** mode) from a local parquet file (`--file`), a remote parquet URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`, must belong to the target database).
+- `tables load` — publishes to an instant-database table from a local parquet file (`--file`), a remote parquet URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`, must belong to the target database). Defaults to **replace** mode; pass `--append` to add rows to the existing table instead.
 - `tables remove` — drops a table from the instant database.
 - `attach` — attaches a **catalog** to an instant database, so the catalog's **live** tables become visible inside that database's query scope. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name the catalog answers to (defaults to the catalog's name). This is how you query an attached catalog's tables and **join across catalogs** — see [Querying across catalogs](#querying-across-catalogs-attach).
 - `detach` — removes an attached catalog. Accepts the catalog name/id **or** the alias you attached it under. Defaults to the active database.

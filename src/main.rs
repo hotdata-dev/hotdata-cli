@@ -303,6 +303,7 @@ fn main() {
                             url,
                             upload_id,
                             result_id,
+                            append,
                         }) => databases::tables_load(
                             &workspace_id,
                             Some(catalog.as_str()),
@@ -312,6 +313,7 @@ fn main() {
                             url.as_deref(),
                             upload_id.as_deref(),
                             result_id.as_deref(),
+                            append,
                         ),
                         Some(DatabasesCommands::Tables { database, command }) => match command {
                             Some(DatabaseTablesCommands::List {
@@ -364,6 +366,7 @@ fn main() {
                                 url,
                                 upload_id,
                                 result_id,
+                                append,
                             }) => databases::tables_load(
                                 &workspace_id,
                                 db_flag.as_deref().or(database.as_deref()),
@@ -373,6 +376,7 @@ fn main() {
                                 url.as_deref(),
                                 upload_id.as_deref(),
                                 result_id.as_deref(),
+                                append,
                             ),
                             Some(DatabaseTablesCommands::Delete {
                                 database: db_flag,
