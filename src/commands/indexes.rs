@@ -780,7 +780,7 @@ mod tests {
         // #168: unscoped `indexes list` in an instant-database-only workspace (the real
         // production shape — `connections list` is empty because it hides
         // database-scoped connections, and the workspace-wide
-        // `information_schema` returns no instant-database tables). The scan must
+        // `information_schema` returns no managed tables). The scan must
         // rediscover the instant database via `databases list` → `databases get`
         // → default_connection_id, then a connection-scoped `information_schema`
         // surfaces its `__db_*` table and the per-table indexes call resolves.
@@ -819,7 +819,7 @@ mod tests {
                 "default_connection_id":"conn-managed","attachments":[]}"#,
             )
             .create();
-        // Connection-scoped enumeration surfaces the instant database's table.
+        // Connection-scoped enumeration surfaces the managed table.
         let info_scoped = server
             .mock("GET", "/v1/information_schema")
             .match_query(mockito::Matcher::UrlEncoded(

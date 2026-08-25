@@ -807,7 +807,7 @@ fn upload_parquet_path(api: &Api, path: &Path, size: u64) -> Result<String, ApiE
 fn upload_parquet_file(api: &Api, path: &str) -> String {
     if !is_parquet_path(path) {
         eprintln!(
-            "error: instant database table loads require a parquet file (got '{}'). \
+            "error: managed table loads require a parquet file (got '{}'). \
              Convert your data to parquet first.",
             path
         );
@@ -828,7 +828,7 @@ fn upload_parquet_file(api: &Api, path: &str) -> String {
 fn upload_parquet_url(api: &Api, url: &str) -> String {
     if !is_parquet_path(url) {
         eprintln!(
-            "error: instant database table loads require a parquet URL ending in .parquet (got '{url}')."
+            "error: managed table loads require a parquet URL ending in .parquet (got '{url}')."
         );
         std::process::exit(1);
     }

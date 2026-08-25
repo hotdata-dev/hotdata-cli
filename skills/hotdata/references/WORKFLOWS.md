@@ -75,7 +75,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 **Skill:** **`hotdata`**
 
-A `hotdata query` runs inside **one** instant database; its scope sees that database's own catalog plus **attached** catalog catalogs only. To query a catalog's tables — or join an instant database's table against a live catalog table in one query — attach the catalog. (No instant database set → *"a database is required."*; an unattached catalog → *"table not found."*)
+A `hotdata query` runs inside **one** instant database; its scope sees that database's own catalog plus **attached** catalog catalogs only. To query a catalog's tables — or join a managed table against a live catalog table in one query — attach the catalog. (No instant database set → *"a database is required."*; an unattached catalog → *"table not found."*)
 
 1. [ ] Pick/create the instant database that will be the query context (`hotdata databases use <id>` or `databases create --catalog <alias>`)
 2. [ ] Attach the catalog(s) you need (live, sync intact): `hotdata databases attach <catalog> [--alias <a>]`

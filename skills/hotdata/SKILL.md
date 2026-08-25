@@ -144,7 +144,7 @@ hotdata query "SELECT count(*) FROM airbnb.public.listings"
 
 **A `hotdata query` runs inside exactly one instant database** — the active database (`hotdata databases use <id>`) or the one named by `--database`. With none set, the query fails with *"a database is required."* That database's query scope sees **only its own catalog plus any catalogs explicitly attached to it** — a workspace catalog is **not** visible just because it exists. Referencing an unattached catalog fails with *"table '\<catalog\>.\<schema\>.\<table\>' not found."*
 
-To query an attached catalog's tables, or **join an instant database's table against an attached catalog's table in one query**, attach the catalog to the database first. The catalog's data stays **live** (synced) — this is not a copy:
+To query an attached catalog's tables, or **join a managed table against an attached catalog's table in one query**, attach the catalog to the database first. The catalog's data stays **live** (synced) — this is not a copy:
 
 ```
 # Attach the 'github' catalog (live) to the active database under alias 'gh'
@@ -153,7 +153,7 @@ hotdata databases attach github --alias gh
 # Now both the database's own tables and the attached catalog are in scope:
 hotdata query "SELECT * FROM gh.github.issues WHERE state = 'OPEN' LIMIT 10"
 
-# Cross-catalog join: an instant database's table JOINed against the live attached-catalog table
+# Cross-catalog join: a managed table JOINed against the live attached-catalog table
 hotdata query "
   SELECT t.id, i.title
   FROM mycatalog.public.tickets t
