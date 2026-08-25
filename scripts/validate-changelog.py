@@ -48,6 +48,12 @@ def main() -> None:
 
     failed = False
     for ver, body in base_sections.items():
+        # The [Unreleased] section is a staging area, not a released version:
+        # at release time it is renamed into a concrete ## [x.y.z] section, so
+        # it legitimately disappears from the base ref. Only guard released
+        # versions against having their bullets rewritten or dropped.
+        if ver.lower() == "unreleased":
+            continue
         if ver not in cur_sections:
             print(
                 f"CHANGELOG.md: missing section [{ver}] that exists on {base}",
