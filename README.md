@@ -48,6 +48,13 @@ PostgreSQL-dialect SQL. Everything else builds on that.
 hotdata databases load --catalog demo --table listings --file ./listings.parquet
 ```
 
+A load **replaces** the table by default. Add `--append` to add rows to an
+existing table instead:
+
+```sh
+hotdata databases load --catalog demo --table listings --file ./more-listings.parquet --append
+```
+
 **Import from an external source** — Postgres/MySQL, S3/GCS buckets, Iceberg,
 Kafka, ~150 API services — via a datasource (`ds_…`) and a saved ingest (`ing_…`):
 
@@ -144,10 +151,10 @@ The full command surface. The top level has eight groups — `auth`, `workspaces
 | `databases use` | Set the current (default) database |
 | `databases unset` | Clear the current database |
 | `databases remove` | Delete a database and all its tables |
-| `databases load` | Load a parquet file or saved result into a table |
+| `databases load` | Load a parquet file or saved result into a table (replace, or `--append`) |
 | `databases tables list` | List tables in a database |
 | `databases tables show` | Show column definitions for a table |
-| `databases tables load` | Load parquet/result into a table (create or replace) |
+| `databases tables load` | Load parquet/result into a table (replace, or `--append`) |
 | `databases tables remove` | Delete a table from a database |
 | `databases context list` | List named contexts in a database |
 | `databases context show` | Print context content to stdout |

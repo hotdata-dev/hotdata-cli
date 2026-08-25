@@ -183,6 +183,10 @@ pub enum DatabasesCommands {
         /// queried in.
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
         result_id: Option<String>,
+
+        /// Append rows to the table instead of replacing it (default: replace)
+        #[arg(long)]
+        append: bool,
     },
 
     /// Manage tables inside an instant database
@@ -301,7 +305,7 @@ pub enum DatabaseTablesCommands {
         output: String,
     },
 
-    /// Load a parquet file or a saved query result into a table (creates or replaces the table)
+    /// Load a parquet file or a saved query result into a table (replaces or appends)
     Load {
         /// Database id or name (defaults to current database)
         #[arg(long)]
@@ -332,6 +336,10 @@ pub enum DatabaseTablesCommands {
         /// queried in.
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
         result_id: Option<String>,
+
+        /// Append rows to the table instead of replacing it (default: replace)
+        #[arg(long)]
+        append: bool,
     },
 
     /// Delete a table from an instant database
@@ -737,16 +745,16 @@ pub fn managed_table_delete_path(connection_id: &str, schema: &str, table: &str)
     format!("/connections/{connection_id}/schemas/{schema}/tables/{table}")
 }
 
-pub fn load_table_request(upload_id: &str) -> serde_json::Value {
+pub fn load_table_request(upload_id: &str, mode: &str) -> serde_json::Value {
     serde_json::json!({
-        "mode": "replace",
+        "mode": mode,
         "upload_id": upload_id,
     })
 }
 
-pub fn load_table_request_from_result(result_id: &str) -> serde_json::Value {
+pub fn load_table_request_from_result(result_id: &str, mode: &str) -> serde_json::Value {
     serde_json::json!({
-        "mode": "replace",
+        "mode": mode,
         "result_id": result_id,
     })
 }
@@ -1693,8 +1701,11 @@ pub fn tables_load(
     url: Option<&str>,
     upload_id: Option<&str>,
     result_id: Option<&str>,
+    append: bool,
 ) {
     use crossterm::style::Stylize;
+
+    let mode = if append { "append" } else { "replace" };
 
     // NOTE: this used to detect a database API token and route it through the
     // database-scoped endpoints (the connection-scoped managed paths and the
@@ -1740,10 +1751,10 @@ pub fn tables_load(
     // uploaded first and loaded by upload id; a result is loaded by reference with
     // no upload step.
     let body = match (result_id, upload_id, file, url) {
-        (Some(rid), None, None, None) => load_table_request_from_result(rid),
-        (None, Some(id), None, None) => load_table_request(id),
-        (None, None, Some(path), None) => load_table_request(&upload_parquet_file(&api, path)),
-        (None, None, None, Some(u)) => load_table_request(&upload_parquet_url(&api, u)),
+        (Some(rid), None, None, None) => load_table_request_from_result(rid, mode),
+        (None, Some(id), None, None) => load_table_request(id, mode),
+        (None, None, Some(path), None) => load_table_request(&upload_parquet_file(&api, path), mode),
+        (None, None, None, Some(u)) => load_table_request(&upload_parquet_url(&api, u), mode),
         (None, None, None, None) => {
             eprintln!(
                 "error: one of --file <path>, --url <url>, --upload-id <id>, or --result-id <id> is required"
@@ -2221,18 +2232,27 @@ mod tests {
     }
 
     #[test]
-    fn load_table_request_is_replace_mode() {
-        let body = load_table_request("upl_abc");
+    fn load_table_request_carries_mode() {
+        let body = load_table_request("upl_abc", "replace");
         assert_eq!(body["mode"], "replace");
+        assert_eq!(body["upload_id"], "upl_abc");
+
+        let body = load_table_request("upl_abc", "append");
+        assert_eq!(body["mode"], "append");
         assert_eq!(body["upload_id"], "upl_abc");
     }
 
     #[test]
-    fn load_table_request_from_result_is_replace_mode() {
-        let body = load_table_request_from_result("rslt_abc");
+    fn load_table_request_from_result_carries_mode() {
+        let body = load_table_request_from_result("rslt_abc", "replace");
         assert_eq!(body["mode"], "replace");
         assert_eq!(body["result_id"], "rslt_abc");
         // A result load must not send an upload_id (the server rejects both).
+        assert!(body.get("upload_id").is_none());
+
+        let body = load_table_request_from_result("rslt_abc", "append");
+        assert_eq!(body["mode"], "append");
+        assert_eq!(body["result_id"], "rslt_abc");
         assert!(body.get("upload_id").is_none());
     }
 
@@ -2573,7 +2593,7 @@ mod tests {
                 "/v1/connections/conn_default/schemas/public/tables/orders/loads",
             )
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&load_table_request("upl_123")).unwrap(),
+                serde_json::to_string(&load_table_request("upl_123", "replace")).unwrap(),
             ))
             .with_status(200)
             .with_body(
@@ -2590,7 +2610,7 @@ mod tests {
         let api = Api::test_new(&server.url(), "k", Some("ws1"));
         let db = resolve_database(&api, "db_1");
         let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
-        let body = load_table_request("upl_123");
+        let body = load_table_request("upl_123", "replace");
         let (status, resp_body) = api.post_raw(&path, &body).unwrap();
         assert!(status.is_success());
         let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();
@@ -2620,7 +2640,7 @@ mod tests {
             )
             .match_header("X-Database-Id", "db_1")
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&load_table_request_from_result("rslt_123")).unwrap(),
+                serde_json::to_string(&load_table_request_from_result("rslt_123", "replace")).unwrap(),
             ))
             .with_status(200)
             .with_body(
@@ -2640,7 +2660,7 @@ mod tests {
         // carries X-Database-Id.
         let api = api.scoped_to_database_opt(Some(db.id.as_str()));
         let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
-        let body = load_table_request_from_result("rslt_123");
+        let body = load_table_request_from_result("rslt_123", "replace");
         let (status, resp_body) = api.post_raw(&path, &body).unwrap();
         assert!(status.is_success());
         let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();
