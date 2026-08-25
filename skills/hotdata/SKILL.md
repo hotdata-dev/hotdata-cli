@@ -301,7 +301,9 @@ hotdata ingest create --datasource-id ds_01J --type one-time \
 # selector.json is family-specific (what subset to read) — its fields, and the
 #   write modes this family accepts: hotdata ingest sources fields <family>.
 # destination.json is {"database_id", "schema", "table", "write_mode"} —
-#   write_mode: replace | upsert (upsert needs a continuous bucket ingest).
+#   write_mode (default replace): replace|append work on any table; the key-based
+#   modes upsert|update|delete need the destination table to have a declared key.
+#   `hotdata ingest sources fields <family>` reports which modes the family accepts.
 #   Selector and destination are both IMMUTABLE after creation.
 # CREATE STARTS NOTHING, for every type. It returns no run id, and
 # `ingest logs <id>` is EMPTY until the scheduler claims the ingest — normal,
@@ -328,7 +330,9 @@ hotdata ingest create --source "prod postgres" --table orders --schema public \
 #   --limit N              stop after N source rows
 # Destination flags instead of --destination:
 #   --database-id (required)  --dest-table (defaults to the single --table)
-#   --dest-schema (default public)  --write-mode (default replace)
+#   --dest-schema (default public)
+#   --write-mode replace|append|upsert|update|delete (default replace; upsert/
+#                update/delete need the destination table to have a declared key)
 
 hotdata ingest create --datasource-id ds_01J --database-id db_123 \
   --sql "SELECT id, status FROM public.orders WHERE status = 'open' LIMIT 1000"
