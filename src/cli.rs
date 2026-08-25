@@ -25,7 +25,7 @@ pub enum Commands {
         command: WorkspaceCommands,
     },
 
-    /// Managed databases, plus the tables, queries, results, and context inside them
+    /// Instant databases, plus the tables, queries, results, and context inside them
     Databases {
         /// Database id or name (omit to use a subcommand)
         name_or_id: Option<String>,
@@ -51,7 +51,7 @@ pub enum Commands {
         #[arg(long, short = 'w')]
         workspace_id: Option<String>,
 
-        /// Run against a specific managed database (defaults to the current database set via `databases use`)
+        /// Run against a specific instant database (defaults to the current database set via `databases use`)
         #[arg(long, short = 'd')]
         database: Option<String>,
 

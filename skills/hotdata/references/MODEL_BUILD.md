@@ -10,14 +10,14 @@ Optional **deep pass** for a single authoritative markdown document stored as **
 
 ## 1. Discover catalogs and tables
 
-List the catalogs you can query — managed databases you own and any attached catalogs — and the tables they expose:
+List the catalogs you can query — instant databases you own and any attached catalogs — and the tables they expose:
 
 ```bash
-hotdata databases list           # managed databases (catalogs you own)
+hotdata databases list           # instant databases (catalogs you own)
 hotdata databases tables list    # every workspace table, as <catalog>.<schema>.<table>
 ```
 
-For each catalog, record its name and the tables it exposes. (Pulling *new* external data into a managed database is a separate step — see the `ingest sources` and `ingest` commands in the core skill.)
+For each catalog, record its name and the tables it exposes. (Pulling *new* external data into an instant database is a separate step — see the `ingest sources` and `ingest` commands in the core skill.)
 
 ---
 
@@ -31,14 +31,14 @@ A datasource's schema is discovered when it is added. If the source schema may h
 hotdata databases tables list --schema <schema> --table <table>
 ```
 
-**Managed databases:**
+**Instant databases:**
 
 ```bash
 hotdata databases list
 hotdata databases tables list
 ```
 
-Capture schema for each managed-database table (columns, types) from the table listing.
+Capture schema for each instant-database table (columns, types) from the table listing.
 
 You can also re-check a datasource's discovered schema after enumeration if you suspect drift:
 
@@ -95,7 +95,7 @@ Per table when you only need one:
 hotdata search list --schema <schema> --table <table> [-w <workspace_id>]
 ```
 
-Managed-database indexes are included in the no-flag whole-workspace `search list` (shown under the internal `__db_<id>.<schema>.<table>` label); narrow to one with `--schema` / `--table` as above.
+Instant-database indexes are included in the no-flag whole-workspace `search list` (shown under the internal `__db_<id>.<schema>.<table>` label); narrow to one with `--schema` / `--table` as above.
 
 Note:
 
@@ -113,7 +113,7 @@ This Markdown body is what you store as **context:DATAMODEL** (`hotdata database
 
 - **Overview** — Domains and what the workspace is for.
 - **Per catalog** — Optional subsection per source; for **deep** models, **repeat** one block per `catalog.schema.table` (grain, column table with name/type/nullable/PK-FK/notes, relationships, queryability, caveats)—the template’s single `####` heading is a pattern to copy for each table.
-- **Managed databases** — Same treatment as catalog tables where relevant.
+- **Instant databases** — Same treatment as catalog tables where relevant.
 - **Cross-catalog joins** — Keys, semantics, type caveats.
 - **Search / index summary** — Table, column, index status, intended use.
 

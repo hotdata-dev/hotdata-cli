@@ -7,7 +7,7 @@
 //! `queries list`, and `results <id>`.
 //!
 //! Queries require a database scope, so we target the shared `sdkci-shared`
-//! managed database (otherwise the server returns 400 "a database is required").
+//! instant database (otherwise the server returns 400 "a database is required").
 
 mod common;
 

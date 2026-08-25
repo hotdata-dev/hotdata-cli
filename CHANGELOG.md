@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### 📚 Documentation
+
+- Rename the user-facing term "managed database" to "instant database" across help text, README, and skill docs. Command names, flags, and server wire-format values (such as the `managed_load` job type) are intentionally unchanged.
+
 ## [0.27.1] - 2026-08-22
 
 ### 🐛 Bug Fixes

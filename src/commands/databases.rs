@@ -6,7 +6,7 @@ use std::path::Path;
 /// Subcommands for `hotdata databases`.
 #[derive(clap::Subcommand)]
 pub enum DatabasesCommands {
-    /// List managed databases in the workspace
+    /// List instant databases in the workspace
     List {
         /// Maximum number of databases to return
         #[arg(long)]
@@ -21,14 +21,14 @@ pub enum DatabasesCommands {
         output: String,
     },
 
-    /// Count managed databases in the workspace
+    /// Count instant databases in the workspace
     Count {
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
     },
 
-    /// Show details for a specific managed database
+    /// Show details for a specific instant database
     Show {
         /// Database name or ID
         name_or_id: String,
@@ -38,7 +38,7 @@ pub enum DatabasesCommands {
         output: String,
     },
 
-    /// Create a new managed database
+    /// Create a new instant database
     Create {
         /// Human-readable display name for the database (e.g. "Sales reporting").
         #[arg(long)]
@@ -77,7 +77,7 @@ pub enum DatabasesCommands {
         output: String,
     },
 
-    /// Fork a managed database into a new, independent database.
+    /// Fork an instant database into a new, independent database.
     ///
     /// The fork contains the same schemas, tables, and data as the source, and
     /// answers to the same SQL catalog alias inside its own query scope; the
@@ -104,9 +104,9 @@ pub enum DatabasesCommands {
         output: String,
     },
 
-    /// Attach a catalog to a managed database so its tables are queryable.
+    /// Attach a catalog to an instant database so its tables are queryable.
     ///
-    /// A `query` runs inside one managed database; attaching a catalog makes
+    /// A `query` runs inside one instant database; attaching a catalog makes
     /// its live tables visible in that database's scope, so you can join across
     /// catalogs in a single query without exporting data. Reachable in SQL as
     /// `<alias>.<schema>.<table>`, or `<catalog-name>.<schema>.<table>` when
@@ -124,7 +124,7 @@ pub enum DatabasesCommands {
         alias: Option<String>,
     },
 
-    /// Detach a previously attached catalog from a managed database.
+    /// Detach a previously attached catalog from an instant database.
     Detach {
         /// Catalog name or id to detach
         catalog: String,
@@ -144,14 +144,14 @@ pub enum DatabasesCommands {
     /// Clear the current database
     Unset,
 
-    /// Delete a managed database and its tables
+    /// Delete an instant database and its tables
     #[command(name = "remove")]
     Delete {
-        /// Managed database id or name
+        /// Instant database id or name
         name_or_id: String,
     },
 
-    /// Load a parquet file or a saved query result into a managed database table
+    /// Load a parquet file or a saved query result into an instant database table
     Load {
         /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
         #[arg(long)]
@@ -185,7 +185,7 @@ pub enum DatabasesCommands {
         result_id: Option<String>,
     },
 
-    /// Manage tables inside a managed database
+    /// Manage tables inside an instant database
     Tables {
         /// Database id or name — shorthand for `tables list` when no subcommand is given
         database: Option<String>,
@@ -196,7 +196,7 @@ pub enum DatabasesCommands {
 
     /// Sync database context with local Markdown
     Context {
-        /// Managed database to scope to (defaults to the current database)
+        /// Instant database to scope to (defaults to the current database)
         #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
@@ -209,7 +209,7 @@ pub enum DatabasesCommands {
         /// SQL query string (omit when using a subcommand)
         sql: Option<String>,
 
-        /// Managed database to run against (defaults to the current database)
+        /// Instant database to run against (defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
@@ -231,7 +231,7 @@ pub enum DatabasesCommands {
         /// Query run ID to show details
         id: Option<String>,
 
-        /// Managed database to scope to (defaults to the current database)
+        /// Instant database to scope to (defaults to the current database)
         #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
@@ -248,7 +248,7 @@ pub enum DatabasesCommands {
         /// Result ID (omit to use a subcommand)
         result_id: Option<String>,
 
-        /// Managed database to scope to (defaults to the current database)
+        /// Instant database to scope to (defaults to the current database)
         #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
@@ -264,7 +264,7 @@ pub enum DatabasesCommands {
 /// Subcommands for `hotdata databases tables`.
 #[derive(clap::Subcommand)]
 pub enum DatabaseTablesCommands {
-    /// List tables in a managed database
+    /// List tables in an instant database
     List {
         /// Database id or name (defaults to current database)
         #[arg(long)]
@@ -334,7 +334,7 @@ pub enum DatabaseTablesCommands {
         result_id: Option<String>,
     },
 
-    /// Delete a table from a managed database
+    /// Delete a table from an instant database
     #[command(name = "remove")]
     Delete {
         /// Database id or name (defaults to current database)
@@ -527,12 +527,12 @@ fn list_database_summaries(api: &Api) -> Result<Vec<DatabaseSummary>, ApiError> 
         .map(|dbs| dbs.into_iter().map(DatabaseSummary::from).collect())
 }
 
-/// List the ids of every managed database in the workspace.
+/// List the ids of every instant database in the workspace.
 ///
-/// Exposed for the whole-workspace `indexes list` scan (#168): a managed
+/// Exposed for the whole-workspace `indexes list` scan (#168): an instant
 /// database's connection is hidden from `connections list` and its tables are
 /// absent from the unscoped `information_schema` enumeration, so that scan
-/// rediscovers managed databases here and resolves each one's
+/// rediscovers instant databases here and resolves each one's
 /// `default_connection_id` via [`get_database`]. The list summary omits the
 /// connection id, hence ids only.
 ///
@@ -1077,7 +1077,7 @@ struct DatabaseCount {
     count: i64,
 }
 
-/// Total number of managed databases in the workspace.
+/// Total number of instant databases in the workspace.
 ///
 /// One request. The list endpoint's `count` field is a page size, not a
 /// workspace total, so this used to drain every page and take the length —
@@ -1172,7 +1172,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
     }
 }
 
-/// Attach a connection as a queryable catalog on a managed database, so its
+/// Attach a connection as a queryable catalog on an instant database, so its
 /// live tables are visible inside that database's query scope (cross-source
 /// joins without exporting data). Defaults to the current database.
 pub fn attach(workspace_id: &str, catalog: &str, database: Option<&str>, alias: Option<&str>) {
@@ -1214,7 +1214,7 @@ pub fn attach(workspace_id: &str, catalog: &str, database: Option<&str>, alias: 
     }
 }
 
-/// Detach a previously attached catalog from a managed database.
+/// Detach a previously attached catalog from an instant database.
 /// Defaults to the current database.
 pub fn detach(workspace_id: &str, catalog: &str, database: Option<&str>) {
     use crossterm::style::Stylize;
@@ -1857,7 +1857,7 @@ pub fn tables_load(
             }
         };
         let _ = crate::config::save_current_database("default", workspace_id, &new_db.id);
-        // Managed databases have no add-table endpoint, so declaring a new table
+        // Instant databases have no add-table endpoint, so declaring a new table
         // is a delete + recreate — which mints a NEW database id. Surface that
         // explicitly: the id printed by `databases create` is now stale, and
         // id-based automation (e.g. `databases delete <create-time-id>`) would
@@ -1873,7 +1873,7 @@ pub fn tables_load(
                 "{}",
                 format!(
                     "note: table '{table}' was not declared — recreated database '{catalog}' to add it \
-                     (id {} → {}). Managed databases are recreated when a new table is loaded; \
+                     (id {} → {}). Instant databases are recreated when a new table is loaded; \
                      reference them by catalog ('{catalog}'), not the create-time id.",
                     db.id, new_db.id
                 )

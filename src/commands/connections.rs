@@ -5,7 +5,7 @@ use crate::client::sdk::{Api, block, none_if_404};
 ///
 /// If `name_or_id` looks like a raw connection ID (starts with "conn"), tries
 /// `GET /connections/{id}` directly first to avoid listing the full workspace.
-/// Falls back to listing and matching by name, then to managed-database catalog
+/// Falls back to listing and matching by name, then to instant-database catalog
 /// aliases. Only the "no match" outcome is an `Err`; a transport/API failure
 /// during resolution still exits (the API is unreachable — not "this name is
 /// wrong"), preserving the auth-aware error from [`ApiError::exit`].
@@ -47,7 +47,7 @@ pub fn try_resolve_connection_id(api: &Api, name_or_id: &str) -> Result<String, 
         return Ok(conn.id.clone());
     }
 
-    // Fall back to managed databases: treat name_or_id as a catalog alias.
+    // Fall back to instant databases: treat name_or_id as a catalog alias.
     if let Ok(db) = crate::commands::databases::try_resolve_database(api, name_or_id) {
         return Ok(db.default_connection_id);
     }

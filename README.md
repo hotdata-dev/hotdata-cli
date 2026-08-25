@@ -37,7 +37,7 @@ hotdata databases load --catalog demo --table trips \
 hotdata query "SELECT count(*) FROM demo.public.trips"
 ```
 
-The core loop: create a **managed database**, put data in it, query it with
+The core loop: create an **instant database**, put data in it, query it with
 PostgreSQL-dialect SQL. Everything else builds on that.
 
 ## Getting your data in
@@ -62,7 +62,7 @@ hotdata ingest run <run_…> --wait              # show one attempt; exits 0 don
 ```
 
 `ingest sources update-config` rotates credentials; `ingest pause|resume|schedule`
-control a scheduled ingest. Data lands in a managed database — query it like any
+control a scheduled ingest. Data lands in an instant database — query it like any
 other.
 
 ## Query and explore
@@ -88,7 +88,7 @@ with `hotdata databases queries list`.
 
 ## Join across sources
 
-Attach another catalog to a managed database and join its live tables directly,
+Attach another catalog to an instant database and join its live tables directly,
 no copying:
 
 ```sh
@@ -134,10 +134,10 @@ The full command surface. The top level has eight groups — `auth`, `workspaces
 | `auth status` | Show authentication status |
 | `workspaces list` | List all workspaces |
 | `workspaces use` | Set the default workspace |
-| `databases list` | List managed databases in the workspace |
-| `databases count` | Count managed databases in the workspace |
-| `databases show` | Show details for a managed database |
-| `databases create` | Create a new managed database |
+| `databases list` | List instant databases in the workspace |
+| `databases count` | Count instant databases in the workspace |
+| `databases show` | Show details for an instant database |
+| `databases create` | Create a new instant database |
 | `databases fork` | Fork a database into a new, independent database |
 | `databases attach` | Attach a catalog so its tables are queryable |
 | `databases detach` | Detach a previously attached catalog |

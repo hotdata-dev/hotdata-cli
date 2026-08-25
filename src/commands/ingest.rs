@@ -209,7 +209,7 @@ pub enum IngestCommands {
         )]
         destination: Option<String>,
 
-        /// Destination managed database id
+        /// Destination instant database id
         #[arg(long = "database-id")]
         database_id: Option<String>,
 

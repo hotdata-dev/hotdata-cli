@@ -147,7 +147,7 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
     }
 }
 
-/// The managed database an index create targets, as named by `--from`.
+/// The instant database an index create targets, as named by `--from`.
 enum FromTarget {
     /// A `schema.table` `--from`: the active database, already resolved by id.
     /// Carry the resolved database so `create` does **not** re-resolve it by
@@ -155,7 +155,7 @@ enum FromTarget {
     /// is ambiguous even though the active-database id is unambiguous.
     Database(Box<databases::Database>),
     /// A `catalog.schema.table` `--from`: an explicit catalog alias still to be
-    /// resolved to a managed database.
+    /// resolved to an instant database.
     Catalog(String),
 }
 
@@ -259,8 +259,8 @@ fn create(
     };
     let (target, schema, table) = parse_table(workspace_id, from);
     let api = Api::new(Some(workspace_id));
-    // Indexes are a managed-database concept (a plain connection is a legacy
-    // concept being removed), so create must land on a managed database — the
+    // Indexes are an instant-database concept (a plain connection is a legacy
+    // concept being removed), so create must land on an instant database — the
     // same scope `search show`/`search remove` address. The active-database path
     // is already resolved; only an explicit catalog still needs resolving, and
     // its own error (e.g. an ambiguous forked-catalog alias) is surfaced as-is.
@@ -272,8 +272,8 @@ fn create(
                 eprintln!(
                     "{}",
                     format!(
-                        "error: {e}\nSearch indexes are created on managed databases — pass a \
-                         managed database's catalog or id, or 'schema.table' with an active \
+                        "error: {e}\nSearch indexes are created on instant databases — pass a \
+                         instant database's catalog or id, or 'schema.table' with an active \
                          database set via 'hotdata databases use <id>'."
                     )
                     .red()

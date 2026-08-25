@@ -52,7 +52,7 @@ For each business entity:
 
 Document safe join paths and caveats (fan-out, timing, different refresh cadence, type mismatches).
 
-> A cross-catalog join runs inside one managed database; each catalog it touches must be **attached** to that database (`hotdata databases attach <catalog>`) so its live tables are in query scope. Note here which catalogs a join requires attached, and the alias each is attached under. See **`hotdata`** skill → Querying across catalogs.
+> A cross-catalog join runs inside one instant database; each catalog it touches must be **attached** to that database (`hotdata databases attach <catalog>`) so its live tables are in query scope. Note here which catalogs a join requires attached, and the alias each is attached under. See **`hotdata`** skill → Querying across catalogs.
 
 ## Search & index summary (optional)
 
@@ -60,9 +60,9 @@ Document safe join paths and caveats (fan-out, timing, different refresh cadence
 |-------|--------|--------------------------|--------------|-------|
 | | | | | |
 
-_Use `hotdata search list` (no flags — covers catalog tables **and** managed databases; see **hotdata-search** skill). Record text/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
+_Use `hotdata search list` (no flags — covers catalog tables **and** instant databases; see **hotdata-search** skill). Record text/vector indexes here; sorted indexes for OLAP filters in **hotdata-analytics**._
 
-## Managed databases (uploaded)
+## Instant databases (uploaded)
 
 Catalog from `hotdata databases list` / `hotdata databases tables list`:
 
@@ -72,7 +72,7 @@ Catalog from `hotdata databases list` / `hotdata databases tables list`:
 
 ## Derived tables (Chain)
 
-Stable `<catalog>.public.*` tables built for **Chain** workflows (materialized into managed databases):
+Stable `<catalog>.public.*` tables built for **Chain** workflows (materialized into instant databases):
 
 | Table name | Built from | Purpose | Owner / TTL |
 |------------|------------|---------|-------------|

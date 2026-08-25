@@ -609,7 +609,7 @@ impl Api {
     /// The active database scope, or exit with actionable guidance when none is
     /// set.
     ///
-    /// Results and query runs are scoped to a managed database (the required
+    /// Results and query runs are scoped to an instant database (the required
     /// `X-Database-Id` header). Commands that hit those endpoints call this to
     /// resolve the scope — set via `--database`, `HOTDATA_DATABASE`, or
     /// `databases set` — and to fail with a hint rather than surfacing the raw
@@ -620,7 +620,7 @@ impl Api {
             eprintln!("{}", "error: no active database.".red());
             eprintln!(
                 "{}",
-                "Results and query runs are scoped to a managed database. Set one with \
+                "Results and query runs are scoped to an instant database. Set one with \
                  `hotdata databases use <id>`, or pass `--database <id>`."
                     .dark_grey()
             );

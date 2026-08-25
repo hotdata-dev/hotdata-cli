@@ -104,14 +104,14 @@ fn scan_connection_id<'a>(
 
 /// One table to scan for indexes, paired with the connection id its per-table
 /// index call must address. The `table.connection` field carries the display
-/// label (a connection name, or a managed database's internal `__db_*` label),
+/// label (a connection name, or an instant database's internal `__db_*` label),
 /// which can differ from the real `conn_id` used for the API call.
 struct ScanTarget {
     conn_id: String,
     table: InfoTable,
 }
 
-/// Resolve the `default_connection_id` of every managed database in the
+/// Resolve the `default_connection_id` of every instant database in the
 /// workspace, in parallel.
 ///
 /// These are exactly the connections the whole-workspace `information_schema`
@@ -135,11 +135,11 @@ fn managed_db_connection_ids(api: &Api) -> Result<Vec<String>, ApiError> {
 /// list`.
 ///
 /// The workspace-wide `information_schema` enumeration returns only
-/// regular-connection tables — managed-database catalogs never appear there, and
-/// `connections list` hides their connections (#168). So managed databases are
+/// regular-connection tables — instant-database catalogs never appear there, and
+/// `connections list` hides their connections (#168). So instant databases are
 /// discovered separately via [`managed_db_connection_ids`] and each is scanned
 /// with a connection-scoped `information_schema` call, exactly like the
-/// `--connection-id` path. The two table sets are disjoint: a managed database's
+/// `--connection-id` path. The two table sets are disjoint: an instant database's
 /// connection is never returned by `connections list`.
 fn workspace_scan_targets(
     api: &Api,
@@ -157,7 +157,7 @@ fn workspace_scan_targets(
         })
         .collect();
 
-    // Managed databases: discover their hidden connections, then scan each
+    // Instant databases: discover their hidden connections, then scan each
     // scoped (the per-connection enumeration is what surfaces `__db_*` tables).
     let db_conns = managed_db_connection_ids(api)?;
     let managed: Result<Vec<Vec<ScanTarget>>, ApiError> = db_conns
@@ -184,7 +184,7 @@ fn workspace_scan_targets(
 /// With a `--connection-id`, enumerates that connection's tables and fetches
 /// each table's indexes against it (the database-scoped case fixed in #161).
 /// Without one, [`workspace_scan_targets`] assembles the list across both
-/// regular connections and managed databases (#168). Skipped connections /
+/// regular connections and instant databases (#168). Skipped connections /
 /// missing tables surface as no rows for that table, not an error.
 fn collect_connection_wide(
     api: &Api,
@@ -511,7 +511,7 @@ pub fn create(
     }
 }
 
-/// A search index located by name within a managed database, for `search`'s
+/// A search index located by name within an instant database, for `search`'s
 /// by-name addressing. Carries the database's real ids (never a `__db_*` label).
 pub struct LocatedIndex {
     pub database_id: String,
@@ -525,7 +525,7 @@ pub struct LocatedIndex {
     pub metric: Option<String>,
 }
 
-/// Find a search index by name within a managed database.
+/// Find a search index by name within an instant database.
 ///
 /// The database is required and addressed by id — an explicit `--database`, or
 /// the active one set via `hotdata databases use <id>`. There is no
@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn scan_connection_id_prefers_supplied_id_over_label_map() {
-        // #161: a managed database's catalog surfaces under an internal
+        // #161: an instant database's catalog surfaces under an internal
         // `__db_*` label that `connections list` hides, so the name→id map is
         // empty for it. The supplied --connection-id must win regardless.
         let empty = HashMap::new();
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn collect_connection_wide_uses_supplied_id_for_db_scoped_label() {
-        // #161 regression: information_schema reports a managed database's
+        // #161 regression: information_schema reports an instant database's
         // catalog under an internal `__db_*` label, but the per-table index
         // call must use the supplied --connection-id. The indexes endpoint is
         // mocked ONLY for the real id (`conn-real`); had the scan used the
@@ -777,11 +777,11 @@ mod tests {
 
     #[test]
     fn collect_connection_wide_unscoped_discovers_managed_db_indexes() {
-        // #168: unscoped `indexes list` in a managed-only workspace (the real
+        // #168: unscoped `indexes list` in an instant-database-only workspace (the real
         // production shape — `connections list` is empty because it hides
         // database-scoped connections, and the workspace-wide
         // `information_schema` returns no managed tables). The scan must
-        // rediscover the managed database via `databases list` → `databases get`
+        // rediscover the instant database via `databases list` → `databases get`
         // → default_connection_id, then a connection-scoped `information_schema`
         // surfaces its `__db_*` table and the per-table indexes call resolves.
         let mut server = mockito::Server::new();
@@ -801,7 +801,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(r#"{"count":0,"limit":100,"tables":[],"has_more":false,"next_cursor":null}"#)
             .create();
-        // The managed database is discovered here.
+        // The instant database is discovered here.
         let dbs = server
             .mock("GET", "/v1/databases")
             .with_status(200)
@@ -864,7 +864,7 @@ mod tests {
     #[test]
     fn collect_connection_wide_unscoped_unions_regular_and_managed() {
         // The unscoped scan unions regular-connection tables (workspace-wide
-        // enumeration, label = connection name mapped to its id) with managed
+        // enumeration, label = connection name mapped to its id) with instant
         // databases (discovered separately, #168). The two sets are disjoint, so
         // both indexes appear exactly once.
         let mut server = mockito::Server::new();
