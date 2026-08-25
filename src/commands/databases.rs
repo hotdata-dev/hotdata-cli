@@ -1753,7 +1753,9 @@ pub fn tables_load(
     let body = match (result_id, upload_id, file, url) {
         (Some(rid), None, None, None) => load_table_request_from_result(rid, mode),
         (None, Some(id), None, None) => load_table_request(id, mode),
-        (None, None, Some(path), None) => load_table_request(&upload_parquet_file(&api, path), mode),
+        (None, None, Some(path), None) => {
+            load_table_request(&upload_parquet_file(&api, path), mode)
+        }
         (None, None, None, Some(u)) => load_table_request(&upload_parquet_url(&api, u), mode),
         (None, None, None, None) => {
             eprintln!(
@@ -2640,7 +2642,8 @@ mod tests {
             )
             .match_header("X-Database-Id", "db_1")
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&load_table_request_from_result("rslt_123", "replace")).unwrap(),
+                serde_json::to_string(&load_table_request_from_result("rslt_123", "replace"))
+                    .unwrap(),
             ))
             .with_status(200)
             .with_body(
