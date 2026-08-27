@@ -413,16 +413,19 @@ fn main() {
                             }
                         },
                         Some(DatabasesCommands::Context { database, command }) => {
-                            let database_id = database
-                                .or_else(|| {
-                                    config::load_current_database("default", &workspace_id)
-                                })
-                                .unwrap_or_else(|| {
-                                    eprintln!(
-                                        "error: no active database. Pass -d/--database <id> or set one with 'hotdata databases use <id>'."
-                                    );
-                                    std::process::exit(1);
-                                });
+                            // The context endpoints take the database id as a path
+                            // segment; resolve a catalog/name flag to it first.
+                            let database_id =
+                                databases::resolve_database_flag(&workspace_id, database.as_deref())
+                                    .or_else(|| {
+                                        config::load_current_database("default", &workspace_id)
+                                    })
+                                    .unwrap_or_else(|| {
+                                        eprintln!(
+                                            "error: no active database. Pass -d/--database <id> or set one with 'hotdata databases use <id>'."
+                                        );
+                                        std::process::exit(1);
+                                    });
                             match command {
                                 ContextCommands::List { output, prefix } => context::list(
                                     &workspace_id,

@@ -209,7 +209,8 @@ pub fn list(
     status: Option<&str>,
     format: &str,
 ) {
-    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
+    let database = crate::commands::databases::resolve_database_flag(workspace_id, database);
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database.as_deref());
     let database_id = api.require_database();
 
     let resp = crate::client::sdk::block_with_wakeup(
@@ -269,7 +270,8 @@ pub fn list(
 }
 
 pub fn get(query_run_id: &str, workspace_id: &str, database: Option<&str>, format: &str) {
-    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
+    let database = crate::commands::databases::resolve_database_flag(workspace_id, database);
+    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database.as_deref());
     let database_id = api.require_database();
     let run: QueryRun = crate::client::sdk::block_with_wakeup(
         &api,
