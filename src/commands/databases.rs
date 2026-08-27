@@ -386,6 +386,11 @@ pub struct Database {
     pub name: Option<String>,
     #[serde(default)]
     pub default_catalog: Option<String>,
+    /// Internal handle for the database's own catalog — used to build the
+    /// managed-load/delete API paths and by the connection resolver. Connections
+    /// are an internal concept now (ingest creates catalogs), so it's never
+    /// serialized into `-o json`/`-o yaml` output.
+    #[serde(skip_serializing)]
     pub default_connection_id: String,
     #[serde(default)]
     pub expires_at: Option<String>,
@@ -397,6 +402,15 @@ pub struct Database {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct DatabaseAttachment {
+    /// Catalog name this attachment is reachable as inside the database — the
+    /// alias when set, else the connection's name. `None` until resolved by
+    /// [`resolve_attachment_catalogs`] (only `get` displays attachments, so
+    /// only it pays the lookup).
+    catalog: Option<String>,
+    /// Internal handle, kept for the detach-by-alias fallback and the resolver;
+    /// never shown — connections are an internal concept now (ingest creates
+    /// catalogs).
+    #[serde(skip_serializing)]
     connection_id: String,
     alias: Option<String>,
 }
@@ -425,6 +439,10 @@ struct CreateDatabaseResponse {
     name: Option<String>,
     #[serde(default)]
     default_catalog: Option<String>,
+    /// Internal handle (see [`Database::default_connection_id`]): deserialized
+    /// from the create/fork response for the managed-load path, never emitted
+    /// into `-o json`/`-o yaml` output.
+    #[serde(skip_serializing)]
     default_connection_id: String,
     #[serde(default)]
     expires_at: Option<String>,
@@ -452,9 +470,16 @@ impl From<hotdata::models::DatabaseDetailResponse> for Database {
             attachments: d
                 .attachments
                 .into_iter()
-                .map(|a| DatabaseAttachment {
-                    connection_id: a.connection_id,
-                    alias: a.alias.flatten(),
+                .map(|a| {
+                    let alias = a.alias.flatten();
+                    DatabaseAttachment {
+                        // The alias is the reachable catalog name when set; a
+                        // non-aliased attachment needs a connections lookup
+                        // (resolve_attachment_catalogs) to learn its name.
+                        catalog: alias.clone(),
+                        connection_id: a.connection_id,
+                        alias,
+                    }
                 })
                 .collect(),
         }
@@ -1121,9 +1146,37 @@ pub fn count(workspace_id: &str, format: &str) {
     }
 }
 
+/// Fill each attachment's display `catalog` name: the alias when set (already
+/// stamped by the `From` mapping), else the connection's name from one
+/// `connections list` call. Skips the call entirely when every attachment is
+/// aliased (or there are none). A connection the listing doesn't cover (or a
+/// failed listing) falls back to the raw id — a degraded but still usable
+/// handle for `databases detach`.
+fn resolve_attachment_catalogs(api: &Api, db: &mut Database) {
+    if db.attachments.iter().all(|a| a.catalog.is_some()) {
+        return;
+    }
+    let names: std::collections::HashMap<String, String> =
+        match block(api.client().connections().list()) {
+            Ok(resp) => resp.connections.into_iter().map(|c| (c.id, c.name)).collect(),
+            Err(_) => Default::default(),
+        };
+    for a in &mut db.attachments {
+        if a.catalog.is_none() {
+            a.catalog = Some(
+                names
+                    .get(&a.connection_id)
+                    .cloned()
+                    .unwrap_or_else(|| a.connection_id.clone()),
+            );
+        }
+    }
+}
+
 pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
     let api = Api::new(Some(workspace_id));
-    let db = resolve_database(&api, id_or_name);
+    let mut db = resolve_database(&api, id_or_name);
+    resolve_attachment_catalogs(&api, &mut db);
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&db).unwrap()),
@@ -1145,11 +1198,6 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                     crate::util::format_date(ts).dark_grey()
                 );
             }
-            println!(
-                "{}{}",
-                label("catalog id:"),
-                db.default_connection_id.clone().dark_cyan()
-            );
             let catalog = db
                 .default_catalog
                 .as_deref()
@@ -1163,16 +1211,11 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
             if !db.attachments.is_empty() {
                 println!("{}({})", label("attached catalogs:"), db.attachments.len());
                 for a in &db.attachments {
-                    let alias = a
-                        .alias
-                        .as_deref()
-                        .map(|al| format!(" as {al}"))
-                        .unwrap_or_default();
-                    println!(
-                        "  {}{}",
-                        a.connection_id.clone().dark_cyan(),
-                        alias.dark_grey()
-                    );
+                    // The resolved catalog name is what the attachment is
+                    // reachable as in SQL (and what detach accepts) — the
+                    // internal connection id is deliberately not shown.
+                    let name = a.catalog.as_deref().unwrap_or("(unknown)");
+                    println!("  {}", name.cyan());
                 }
             }
         }
@@ -2131,6 +2174,113 @@ mod tests {
         format!(
             r#"{{"id":"{id}","name":"{name}","default_catalog":"default","default_schema":"main","default_connection_id":"{conn_id}","attachments":[]}}"#
         )
+    }
+
+    /// A `Database` for serialization tests, with one aliased and one bare
+    /// attachment.
+    fn db_with_attachments() -> Database {
+        Database {
+            id: "db_1".to_string(),
+            name: Some("sales".to_string()),
+            default_catalog: Some("sales".to_string()),
+            default_connection_id: "conn_own".to_string(),
+            expires_at: None,
+            created_at: None,
+            attachments: vec![
+                DatabaseAttachment {
+                    catalog: Some("gh".to_string()),
+                    connection_id: "conn_a".to_string(),
+                    alias: Some("gh".to_string()),
+                },
+                DatabaseAttachment {
+                    catalog: None,
+                    connection_id: "conn_b".to_string(),
+                    alias: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn database_json_output_hides_connection_ids() {
+        // Connections are internal now (ingest creates catalogs): neither the
+        // database's own connection id nor an attachment's may reach `-o json`.
+        let json = serde_json::to_value(db_with_attachments()).unwrap();
+        assert!(json.get("default_connection_id").is_none(), "json: {json}");
+        let attachments = json["attachments"].as_array().unwrap();
+        for a in attachments {
+            assert!(a.get("connection_id").is_none(), "attachment: {a}");
+        }
+        // The reachable catalog name is what's exposed instead.
+        assert_eq!(attachments[0]["catalog"], serde_json::json!("gh"));
+    }
+
+    #[test]
+    fn create_response_json_output_hides_connection_id() {
+        let result = CreateDatabaseResponse {
+            id: "db_new".to_string(),
+            name: Some("mydb".to_string()),
+            default_catalog: Some("default".to_string()),
+            default_connection_id: "conn_abc".to_string(),
+            expires_at: None,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json.get("default_connection_id").is_none(), "json: {json}");
+    }
+
+    #[test]
+    fn resolve_attachment_catalogs_fills_names_from_connections_list() {
+        let mut server = mockito::Server::new();
+        let list = server
+            .mock("GET", "/v1/connections")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"connections":[{"id":"conn_b","name":"github","source_type":"postgres"}]}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let mut db = db_with_attachments();
+        resolve_attachment_catalogs(&api, &mut db);
+
+        // Aliased attachment keeps its alias; the bare one gets the listed name.
+        assert_eq!(db.attachments[0].catalog.as_deref(), Some("gh"));
+        assert_eq!(db.attachments[1].catalog.as_deref(), Some("github"));
+        list.assert();
+    }
+
+    #[test]
+    fn resolve_attachment_catalogs_skips_lookup_when_all_aliased() {
+        // Every attachment already has a catalog name → no connections call.
+        // Point at a server with no mocks so a stray call fails loudly.
+        let server = mockito::Server::new();
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let mut db = db_with_attachments();
+        db.attachments.remove(1); // keep only the aliased one
+        resolve_attachment_catalogs(&api, &mut db);
+        assert_eq!(db.attachments[0].catalog.as_deref(), Some("gh"));
+    }
+
+    #[test]
+    fn resolve_attachment_catalogs_falls_back_to_id_when_unlisted() {
+        // The listing doesn't cover the connection (e.g. database-scoped, or the
+        // call failed): degrade to the raw id — still a usable detach handle.
+        let mut server = mockito::Server::new();
+        let list = server
+            .mock("GET", "/v1/connections")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"connections":[]}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let mut db = db_with_attachments();
+        resolve_attachment_catalogs(&api, &mut db);
+        assert_eq!(db.attachments[1].catalog.as_deref(), Some("conn_b"));
+        list.assert();
     }
 
     #[test]
