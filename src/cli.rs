@@ -114,7 +114,7 @@ pub enum Commands {
         #[arg(long, visible_alias = "in")]
         index: Option<String>,
 
-        /// Database the index lives in (id; defaults to the active database)
+        /// Database the index lives in (id, catalog, or name; defaults to the active database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 

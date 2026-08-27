@@ -675,18 +675,18 @@ fn is_database_id(value: &str) -> bool {
 
 /// Resolve a `--database` flag value to the id request scoping needs (the
 /// `X-Database-Id` header or a database-scoped path segment). An id passes
-/// through untouched — the common path pays no extra round trip — while a
-/// catalog or name resolves like every other database lookup (preferring the
-/// active database on an ambiguous catalog), so `-d <name>` works everywhere
-/// `-d <id>` does instead of the server rejecting the raw name. Exits with the
-/// resolver's message when nothing matches.
-pub fn resolve_database_flag(workspace_id: &str, database: Option<&str>) -> Option<String> {
-    let key = database?;
+/// through untouched — the common path pays no round trip — while a catalog
+/// or name resolves like every other database lookup (preferring the active
+/// database on an ambiguous catalog), so `-d <name>` works everywhere
+/// `-d <id>` does instead of the server rejecting the raw name. Takes the
+/// caller's `Api` (callers all have one, or are about to build one to scope)
+/// rather than constructing a second. Exits with the resolver's message when
+/// nothing matches.
+pub fn resolve_database_flag(api: &Api, key: &str) -> String {
     if is_database_id(key) {
-        return Some(key.to_string());
+        return key.to_string();
     }
-    let api = Api::new(Some(workspace_id));
-    Some(resolve_database_preferring_active(&api, key).id)
+    resolve_database_preferring_active(api, key).id
 }
 
 fn schema_name(schema: Option<&str>) -> &str {
@@ -1205,8 +1205,9 @@ pub fn count(workspace_id: &str, format: &str) {
 /// stamped by the `From` mapping), else the connection's name from one
 /// `connections list` call. Skips the call entirely when every attachment is
 /// aliased (or there are none). A connection the listing doesn't cover (or a
-/// failed listing) falls back to the raw id — a degraded but still usable
-/// handle for `databases detach`.
+/// failed listing) stays `None`: the JSON must not pass the internal id off as
+/// a SQL catalog name — an FQN built from it wouldn't be queryable. The table
+/// view falls back to the raw id itself, as a usable `detach` handle.
 fn resolve_attachment_catalogs(api: &Api, db: &mut Database) {
     if db.attachments.iter().all(|a| a.catalog.is_some()) {
         return;
@@ -1218,12 +1219,7 @@ fn resolve_attachment_catalogs(api: &Api, db: &mut Database) {
         };
     for a in &mut db.attachments {
         if a.catalog.is_none() {
-            a.catalog = Some(
-                names
-                    .get(&a.connection_id)
-                    .cloned()
-                    .unwrap_or_else(|| a.connection_id.clone()),
-            );
+            a.catalog = names.get(&a.connection_id).cloned();
         }
     }
 }
@@ -1267,9 +1263,12 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                 println!("{}({})", label("attached catalogs:"), db.attachments.len());
                 for a in &db.attachments {
                     // The resolved catalog name is what the attachment is
-                    // reachable as in SQL (and what detach accepts) — the
-                    // internal connection id is deliberately not shown.
-                    let name = a.catalog.as_deref().unwrap_or("(unknown)");
+                    // reachable as in SQL (and what detach accepts). When it
+                    // couldn't be resolved, the raw connection id is the only
+                    // handle `detach` still takes — show it here (table only;
+                    // JSON keeps `catalog: null` rather than disguising the
+                    // id as a catalog).
+                    let name = a.catalog.as_deref().unwrap_or(&a.connection_id);
                     println!("  {}", name.cyan());
                 }
             }
@@ -2315,9 +2314,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_attachment_catalogs_falls_back_to_id_when_unlisted() {
-        // The listing doesn't cover the connection (e.g. database-scoped, or the
-        // call failed): degrade to the raw id — still a usable detach handle.
+    fn resolve_attachment_catalogs_leaves_unlisted_unresolved() {
+        // The listing doesn't cover the connection (e.g. database-scoped, or
+        // the call failed): `catalog` stays None so `-o json` emits null
+        // rather than disguising the internal id as a SQL catalog name (an
+        // FQN built from it wouldn't be queryable). The table view falls back
+        // to the raw id itself as a detach handle.
         let mut server = mockito::Server::new();
         let list = server
             .mock("GET", "/v1/connections")
@@ -2330,7 +2332,9 @@ mod tests {
         let api = Api::test_new(&server.url(), "k", Some("ws"));
         let mut db = db_with_attachments();
         resolve_attachment_catalogs(&api, &mut db);
-        assert_eq!(db.attachments[1].catalog.as_deref(), Some("conn_b"));
+        assert_eq!(db.attachments[1].catalog, None);
+        let json = serde_json::to_value(&db).unwrap();
+        assert_eq!(json["attachments"][1]["catalog"], serde_json::Value::Null);
         list.assert();
     }
 
@@ -2419,16 +2423,45 @@ mod tests {
 
     #[test]
     fn database_flag_passes_ids_through_without_resolving() {
-        // An id needs no lookup (and must not construct an Api, which would
-        // read real user config in this test).
-        assert_eq!(
-            resolve_database_flag("ws", Some("dbid123abc")),
-            Some("dbid123abc".to_string())
-        );
-        assert_eq!(resolve_database_flag("ws", None), None);
+        // An id needs no lookup: point the Api at a server with no mocks so
+        // any resolve attempt fails loudly.
+        let server = mockito::Server::new();
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        assert_eq!(resolve_database_flag(&api, "dbid123abc"), "dbid123abc");
         assert!(is_database_id("dbideutulm48nc5l28ikc6u53gmjzr"));
         assert!(!is_database_id("littlesis"));
         assert!(!is_database_id("default"));
+    }
+
+    #[test]
+    fn database_flag_resolves_names_to_ids() {
+        // A non-id flag resolves through the normal lookup and returns the id.
+        let mut server = mockito::Server::new();
+        let not_id = server
+            .mock("GET", "/v1/databases/sales")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        let list = server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[{"id":"db_s","name":"sales","default_catalog":"sales_cat","default_schema":"main"}]}"#,
+            )
+            .create();
+        let detail = server
+            .mock("GET", "/v1/databases/db_s")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(detail_with_catalog("db_s", "sales", "sales_cat"))
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        assert_eq!(resolve_database_flag(&api, "sales"), "db_s");
+        not_id.assert();
+        list.assert();
+        detail.assert();
     }
 
     #[test]

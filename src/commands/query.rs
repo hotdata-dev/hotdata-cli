@@ -446,8 +446,9 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
     // (HOTDATA_DATABASE / current database). The scoped `Api` carries the
     // database into submit_query's `X-Database-Id` header and into the
     // database-scoped follow-up fetches (query-run poll, Arrow result).
-    let database = crate::commands::databases::resolve_database_flag(workspace_id, database);
-    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database.as_deref());
+    let api = Api::new(Some(workspace_id));
+    let database = database.map(|d| crate::commands::databases::resolve_database_flag(&api, d));
+    let api = api.scoped_to_database_opt(database.as_deref());
     let database = api.database_id();
 
     let mut request = hotdata::models::QueryRequest::new(sql.to_string());
@@ -553,8 +554,9 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
 
 /// Poll a query run by ID. If succeeded and has a result_id, fetch and display the result.
 pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, format: &str) {
-    let database = crate::commands::databases::resolve_database_flag(workspace_id, database);
-    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database.as_deref());
+    let api = Api::new(Some(workspace_id));
+    let database = database.map(|d| crate::commands::databases::resolve_database_flag(&api, d));
+    let api = api.scoped_to_database_opt(database.as_deref());
 
     let run = crate::client::sdk::block(
         api.client()

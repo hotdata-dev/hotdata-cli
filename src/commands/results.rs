@@ -59,8 +59,9 @@ pub fn list(
     offset: Option<u32>,
     format: &str,
 ) {
-    let database = crate::commands::databases::resolve_database_flag(workspace_id, database);
-    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database.as_deref());
+    let api = Api::new(Some(workspace_id));
+    let database = database.map(|d| crate::commands::databases::resolve_database_flag(&api, d));
+    let api = api.scoped_to_database_opt(database.as_deref());
     // Results are database-scoped (the required `X-Database-Id` header the seam
     // sends from the active database). Fail early with a hint when none is set,
     // rather than surfacing the raw server error.
@@ -153,8 +154,9 @@ pub fn list(
 }
 
 pub fn get(result_id: &str, workspace_id: &str, database: Option<&str>, format: &str) {
-    let database = crate::commands::databases::resolve_database_flag(workspace_id, database);
-    let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database.as_deref());
+    let api = Api::new(Some(workspace_id));
+    let database = database.map(|d| crate::commands::databases::resolve_database_flag(&api, d));
+    let api = api.scoped_to_database_opt(database.as_deref());
     let result = crate::commands::query::fetch_arrow_result(&api, result_id);
     crate::commands::query::print_result(&result, format);
 }
