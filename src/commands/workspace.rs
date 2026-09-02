@@ -50,15 +50,23 @@ impl From<&hotdata::models::WorkspaceListItem> for Workspace {
 }
 
 /// The workspace commands act on when none is passed: `HOTDATA_WORKSPACE`,
-/// else the front of the configured list (`workspaces use` moves its pick
-/// there).
+/// else the loaded profile's default via [`profile_default_workspace_id`].
 fn default_workspace_id() -> String {
     std::env::var("HOTDATA_WORKSPACE").unwrap_or_else(|_| {
         config::load("default")
             .ok()
-            .and_then(|c| c.workspaces.first().map(|w| w.public_id.clone()))
+            .and_then(|c| profile_default_workspace_id(&c))
             .unwrap_or_default()
     })
+}
+
+/// The workspace the `default` marker names: resolved by the same helper
+/// `main`'s `resolve_workspace` uses, so it's the workspace commands actually
+/// hit — NOT the front of the config cache. An `--api-key`/`HOTDATA_API_KEY`
+/// credential pins its own authorized workspace, which the cache front (what
+/// `workspaces use` saved for a session) need not match or even reach.
+fn profile_default_workspace_id(profile: &config::ProfileConfig) -> Option<String> {
+    crate::client::credentials::default_workspace_id(profile)
 }
 
 fn fetch_workspaces() -> Vec<Workspace> {
@@ -189,6 +197,40 @@ mod tests {
         let json = serde_json::to_value(&ws).unwrap();
         assert_eq!(json["default"], serde_json::json!(true));
         assert_eq!(json["active"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn default_follows_the_credential_not_the_config_cache_front() {
+        // An env/flag api key resolves through credentials::default_workspace_id,
+        // which pins the credential's own authorized workspace. The config
+        // cache front (what `workspaces use` saved for a session) may be a
+        // workspace this key can't even reach; marking it — or, since `list`
+        // only returns the key's workspaces, marking nothing at all — would
+        // break the "exactly one default: true" contract scripts rely on.
+        let (_tmp, _guard) = config::test_helpers::with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let probe = server
+            .mock("GET", "/workspaces")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"workspaces":[{"public_id":"work_only","name":"Only"}]}"#)
+            .create();
+        let profile = config::ProfileConfig {
+            api_key: Some("hd_dbtoken".to_string()),
+            api_key_source: config::ApiKeySource::Env,
+            api_url: config::ApiUrl(Some(server.url())),
+            app_url: config::AppUrl(Some(server.url())),
+            workspaces: vec![config::WorkspaceEntry {
+                public_id: "work_saved".to_string(),
+                name: "Saved".to_string(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            profile_default_workspace_id(&profile).as_deref(),
+            Some("work_only")
+        );
+        probe.assert();
     }
 
     #[test]
