@@ -386,6 +386,11 @@ pub struct Database {
     pub name: Option<String>,
     #[serde(default)]
     pub default_catalog: Option<String>,
+    /// Id of the database's own catalog. runtimedb removed connections as a
+    /// concept (the engine is push-only; every connection row IS a catalog),
+    /// but the wire field is still named `default_connection_id` — the CLI's
+    /// own output already speaks catalog.
+    #[serde(rename = "default_catalog_id")]
     pub default_connection_id: String,
     #[serde(default)]
     pub expires_at: Option<String>,
@@ -397,6 +402,9 @@ pub struct Database {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct DatabaseAttachment {
+    /// Catalog id under its post-connections-removal name (see
+    /// [`Database::default_connection_id`]); also the `detach` handle.
+    #[serde(rename = "catalog_id")]
     connection_id: String,
     alias: Option<String>,
 }
@@ -425,6 +433,9 @@ struct CreateDatabaseResponse {
     name: Option<String>,
     #[serde(default)]
     default_catalog: Option<String>,
+    /// Parses the server's `default_connection_id`, but `-o json`/`-o yaml`
+    /// emit it as `default_catalog_id` (see [`Database::default_connection_id`]).
+    #[serde(rename(serialize = "default_catalog_id"))]
     default_connection_id: String,
     #[serde(default)]
     expires_at: Option<String>,
@@ -2184,6 +2195,48 @@ mod tests {
         format!(
             r#"{{"id":"{id}","name":"{name}","default_catalog":"default","default_schema":"main","default_connection_id":"{conn_id}","attachments":[]}}"#
         )
+    }
+
+    #[test]
+    fn database_json_names_catalog_ids_as_catalog() {
+        // runtimedb removed connections as a concept (push-only engine: every
+        // connection row IS a catalog), so the CLI exposes the ids — they're
+        // real handles, e.g. for detach — under the catalog name they'll keep.
+        // Only the wire still says `default_connection_id`.
+        let db = Database {
+            id: "db_1".to_string(),
+            name: Some("sales".to_string()),
+            default_catalog: Some("sales".to_string()),
+            default_connection_id: "conn_own".to_string(),
+            expires_at: None,
+            created_at: None,
+            attachments: vec![DatabaseAttachment {
+                connection_id: "conn_a".to_string(),
+                alias: Some("gh".to_string()),
+            }],
+        };
+        let json = serde_json::to_value(&db).unwrap();
+        assert_eq!(json["default_catalog_id"], serde_json::json!("conn_own"));
+        assert!(json.get("default_connection_id").is_none(), "json: {json}");
+        assert_eq!(
+            json["attachments"][0]["catalog_id"],
+            serde_json::json!("conn_a")
+        );
+        assert!(
+            json["attachments"][0].get("connection_id").is_none(),
+            "json: {json}"
+        );
+    }
+
+    #[test]
+    fn create_response_parses_wire_name_but_emits_catalog_id() {
+        // The server's create/fork responses still say `default_connection_id`;
+        // the CLI's own -o json/yaml renames it on the way out.
+        let resp: CreateDatabaseResponse =
+            serde_json::from_str(r#"{"id":"db_new","default_connection_id":"conn_abc"}"#).unwrap();
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["default_catalog_id"], serde_json::json!("conn_abc"));
+        assert!(json.get("default_connection_id").is_none(), "json: {json}");
     }
 
     /// Like [`full_detail`] but with an explicit catalog, for ambiguity tests.
