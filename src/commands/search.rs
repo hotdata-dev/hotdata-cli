@@ -327,11 +327,10 @@ fn list(workspace_id: &str, schema: Option<&str>, table: Option<&str>, output: &
 
 fn locate_or_exit(workspace_id: &str, database: Option<&str>, name: &str) -> indexes::LocatedIndex {
     // `--database` accepts a catalog or name as well as an id, like every
-    // other database flag; locate_by_name needs the id. The Api is built only
-    // when there's a non-id flag to resolve — the id fast-path never needs it.
-    let database = database.map(|d| {
-        databases::resolve_database_flag(&Api::new(Some(workspace_id)), d)
-    });
+    // other database flag; locate_by_name needs the id. Ids short-circuit in
+    // resolve_database_flag, so the Api built here costs no round trip then.
+    let database =
+        database.map(|d| databases::resolve_database_flag(&Api::new(Some(workspace_id)), d));
     indexes::locate_by_name(workspace_id, database.as_deref(), name).unwrap_or_else(|e| {
         use crossterm::style::Stylize;
         eprintln!("{}", e.red());
