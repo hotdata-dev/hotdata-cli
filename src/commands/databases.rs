@@ -104,26 +104,21 @@ pub enum DatabasesCommands {
         output: String,
     },
 
-    /// Show a database's fork lineage: its ancestor chain and direct forks.
+    /// Show a database's fork family tree, walked from the root down.
     ///
-    /// Lineage is a historical record, not a live link — a fork and its source
-    /// are independent, and a deleted generation stays in the chain. Forks made
-    /// before the server recorded lineage carry none.
+    /// Every reachable generation is included (one lineage request per
+    /// database), with this database marked in place. Lineage is a historical
+    /// record, not a live link — a fork and its source are independent, and a
+    /// deleted generation stays in the chain, though what it forked cannot be
+    /// listed. Forks made before the server recorded lineage carry none.
     Lineage {
         /// Database id, catalog, or name (defaults to the current database)
         database: Option<String>,
 
-        /// How many direct forks to list (server clamps to 1-100; the reported
-        /// fork_count is always the true total)
+        /// How many direct forks to list per database (server clamps to
+        /// 1-100; a truncated branch closes with '⋯ N more')
         #[arg(long)]
         forks_limit: Option<u32>,
-
-        /// Walk the whole family tree: from the root down through every
-        /// reachable generation, one lineage request per database — not just
-        /// this database's ancestors and direct forks. With --forks-limit, the
-        /// limit applies per database.
-        #[arg(long)]
-        tree: bool,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
@@ -1681,17 +1676,18 @@ impl From<ForkedFrom> for LineageEntry {
     }
 }
 
-/// Response of `GET /databases/{id}/lineage`, flattened from the SDK model —
-/// the CLI owns its `-o json`/`-o yaml` shape (see [`Database`]).
-#[derive(Serialize)]
+/// Response of `GET /databases/{id}/lineage`, flattened from the SDK model.
+/// One walk step's worth of the family: the assembled tree is what the
+/// command outputs (see [`LineageTreeResponse`]).
 struct LineageResponse {
     database_id: String,
     /// Top of the family tree; equals `database_id` when this database is not
     /// a fork.
     root_id: String,
-    /// Nearest parent first, ending at `root_id` unless truncated.
+    /// Nearest parent first, ending at `root_id` unless the server truncated
+    /// the chain (the walk detects that structurally: the top of the chain
+    /// won't match `root_id`).
     ancestors: Vec<LineageEntry>,
-    ancestors_truncated: bool,
     /// Direct forks only — a fork of a fork appears in its own parent's lineage.
     forks: Vec<LineageEntry>,
     fork_count: i64,
@@ -1703,7 +1699,6 @@ impl From<hotdata::models::DatabaseLineageResponse> for LineageResponse {
             database_id: r.database_id,
             root_id: r.root_id,
             ancestors: r.ancestors.into_iter().map(LineageEntry::from).collect(),
-            ancestors_truncated: r.ancestors_truncated,
             forks: r.forks.into_iter().map(LineageEntry::from).collect(),
             fork_count: r.fork_count,
         }
@@ -1754,125 +1749,33 @@ fn lineage_row(e: &LineageEntry, root: bool) -> String {
     s
 }
 
-pub fn lineage(
-    workspace_id: &str,
-    database: Option<&str>,
-    forks_limit: Option<u32>,
-    tree: bool,
-    format: &str,
-) {
+pub fn lineage(workspace_id: &str, database: Option<&str>, forks_limit: Option<u32>, format: &str) {
     let source = resolve_current_database(database, workspace_id);
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &source);
     let lin = fetch_lineage(&api, &db.id, forks_limit).unwrap_or_else(|e| e.exit());
 
-    if tree {
-        let t = build_lineage_tree(&api, db.name.as_deref(), lin, forks_limit);
-        if !tree_contains(&t.tree, &t.database_id) {
-            eprintln!(
-                "warning: could not reach {} walking down from the root; showing the reachable tree",
-                t.database_id
-            );
-        }
-        match format {
-            "json" => println!("{}", serde_json::to_string_pretty(&t).unwrap()),
-            "yaml" => print!("{}", serde_yaml::to_string(&t).unwrap()),
-            "table" => {
-                let mut out = String::new();
-                render_lineage_tree(&t.tree, "", "", true, &t.database_id, &t.root_id, &mut out);
-                print!("{out}");
-            }
-            _ => unreachable!(),
-        }
-        return;
+    let t = build_lineage_tree(&api, db.name.as_deref(), lin, forks_limit);
+    if !tree_contains(&t.tree, &t.database_id) {
+        eprintln!(
+            "warning: could not reach {} walking down from the root; showing the reachable tree",
+            t.database_id
+        );
     }
-
     match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&lin).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&lin).unwrap()),
+        "json" => println!("{}", serde_json::to_string_pretty(&t).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&t).unwrap()),
         "table" => {
-            use crossterm::style::Stylize;
-            // A tree, root at the top: fork lineage never merges, so each
-            // generation is one `└─` deeper. Nesting glyphs live in the prefix;
-            // depth 0 is bare.
-            let row = |depth: usize, glyph: &str, body: String| {
-                if depth == 0 {
-                    println!("{body}");
-                } else {
-                    println!("{}{}{body}", "   ".repeat(depth - 1), glyph.dark_grey());
-                }
-            };
-            let mut depth = 0usize;
-            if lin.ancestors_truncated {
-                // The chain stops before reaching the root; name the root from
-                // the id (its label isn't in the response) and mark the gap.
-                row(
-                    depth,
-                    "",
-                    format!(
-                        "{} {}",
-                        lin.root_id.clone().dark_cyan(),
-                        "— root".dark_grey()
-                    ),
-                );
-                depth += 1;
-                row(
-                    depth,
-                    "└─ ",
-                    "⋯ (ancestry truncated)".dark_grey().to_string(),
-                );
-                depth += 1;
-            }
-            // Ancestors arrive nearest-parent-first and end at the root when
-            // not truncated, so display walks them in reverse.
-            for (i, a) in lin.ancestors.iter().rev().enumerate() {
-                let is_root = !lin.ancestors_truncated && i == 0;
-                row(depth, "└─ ", lineage_row(a, is_root));
-                depth += 1;
-            }
-            // The queried database itself, name from the resolve that scoped
-            // the request (the lineage record doesn't repeat it).
-            let mut me = lin.database_id.clone().dark_cyan().to_string();
-            if let Some(n) = &db.name {
-                me.push(' ');
-                me.push_str(&format!("({n})").cyan().to_string());
-            }
-            me.push(' ');
-            me.push_str(&"← this database".green().to_string());
-            if lin.root_id == lin.database_id {
-                me.push(' ');
-                me.push_str(&"— root".dark_grey().to_string());
-            }
-            row(depth, "└─ ", me);
-            depth += 1;
-            // Direct forks, one level under the queried database. `├─` until
-            // the closing row — the last fork, or the more-marker when the
-            // server listed only a page of them.
-            let unlisted = lin.fork_count - lin.forks.len() as i64;
-            for (i, f) in lin.forks.iter().enumerate() {
-                let closes = unlisted <= 0 && i + 1 == lin.forks.len();
-                row(
-                    depth,
-                    if closes { "└─ " } else { "├─ " },
-                    lineage_row(f, false),
-                );
-            }
-            if unlisted > 0 {
-                row(
-                    depth,
-                    "└─ ",
-                    format!("⋯ {unlisted} more — see --forks-limit")
-                        .dark_grey()
-                        .to_string(),
-                );
-            }
+            let mut out = String::new();
+            render_lineage_tree(&t.tree, "", "", true, &t.database_id, &t.root_id, &mut out);
+            print!("{out}");
         }
         _ => unreachable!(),
     }
 }
 
-/// One database in a `lineage --tree` walk: its lineage entry plus the forks
-/// found under it. The CLI owns this `-o json`/`-o yaml` shape.
+/// One database in the lineage walk: its lineage entry plus the forks found
+/// under it. The CLI owns this `-o json`/`-o yaml` shape.
 #[derive(Serialize)]
 struct LineageTreeNode {
     #[serde(flatten)]
@@ -1892,7 +1795,7 @@ fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
-/// Response of `lineage --tree`: the family tree walked from the root.
+/// Response of `databases lineage`: the family tree walked from the root.
 #[derive(Serialize)]
 struct LineageTreeResponse {
     database_id: String,
