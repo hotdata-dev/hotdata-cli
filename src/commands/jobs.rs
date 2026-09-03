@@ -8,7 +8,7 @@ pub enum JobsCommands {
     /// List background jobs (shows active jobs by default)
     List {
         /// Filter by job type
-        #[arg(long, value_parser = ["data_refresh_table", "data_refresh_connection", "create_index", "managed_load"])]
+        #[arg(long, value_parser = ["create_index", "managed_load"])]
         job_type: Option<String>,
 
         /// Filter by status
@@ -69,8 +69,8 @@ impl From<JobStatusResponse> for Job {
 fn parse_job_type(s: &str) -> Option<JobType> {
     match s {
         "noop" => Some(JobType::Noop),
-        "data_refresh_table" => Some(JobType::DataRefreshTable),
-        "data_refresh_connection" => Some(JobType::DataRefreshConnection),
+        // data_refresh_table / data_refresh_connection were retired with the
+        // connections removal (the engine is push-only; nothing refreshes).
         "create_index" => Some(JobType::CreateIndex),
         "managed_load" => Some(JobType::ManagedLoad),
         _ => None,
