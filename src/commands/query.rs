@@ -1,6 +1,11 @@
 use crate::client::sdk::{Api, ApiError};
+#[cfg(test)]
+use arrow::datatypes::FieldRef;
+use arrow::error::ArrowError;
+use arrow::json::writer::{EncoderOptions, NullableEncoder, make_encoder};
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::LazyLock;
 
 /// Subcommands for `hotdata query`.
 #[derive(clap::Subcommand)]
@@ -111,169 +116,73 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
-/// Warn that a column could not be rendered, once per data type.
+/// Encoder options, matched to the service's inline path.
 ///
-/// Keyed on the type rather than a single global flag: the failure is a
-/// property of the type, so a million-row result must not print a million
-/// lines — but a result with two unformattable types has to report both, or
-/// the second one goes back to nulling silently.
-fn warn_unformattable_once(data_type: &arrow::datatypes::DataType, err: &arrow::error::ArrowError) {
-    use crossterm::style::Stylize;
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
+/// `explicit_nulls` keeps null fields inside struct values (`{"a":1,"b":null}`
+/// rather than dropping `b`). It has to agree with the service or the same
+/// query would describe a struct differently depending on which side rendered
+/// it — the divergence this module exists to remove.
+static ENCODER_OPTIONS: LazyLock<EncoderOptions> =
+    LazyLock::new(|| EncoderOptions::default().with_explicit_nulls(true));
 
-    static WARNED: OnceLock<Mutex<HashSet<arrow::datatypes::DataType>>> = OnceLock::new();
-    let seen = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
-    // A poisoned lock only means another thread panicked mid-warn; recover the
-    // set rather than take the process down over a diagnostic.
-    let mut seen = match seen.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if !seen.insert(data_type.clone()) {
-        return;
+/// Encode one already-prepared cell to a `serde_json::Value`.
+///
+/// `buf` is reused across cells so a wide result does not allocate per value.
+fn encode_cell(
+    enc: &mut NullableEncoder<'_>,
+    row: usize,
+    buf: &mut Vec<u8>,
+) -> Result<Value, ArrowError> {
+    // A null the service really did send. Distinct from a value we could not
+    // render, which is an error below and never a null.
+    if enc.is_null(row) {
+        return Ok(Value::Null);
     }
-    eprintln!(
-        "{}",
-        format!("warning: could not format a {data_type} value, so it is shown as null: {err}")
-            .yellow()
-    );
+    buf.clear();
+    enc.encode(row, buf);
+    serde_json::from_slice(buf).map_err(|e| {
+        ArrowError::JsonError(format!(
+            "arrow-json produced text that is not valid JSON ({e}): {}",
+            String::from_utf8_lossy(buf)
+        ))
+    })
 }
 
-/// Convert one cell of an Arrow array to a `serde_json::Value`.
-fn arrow_cell(col: &dyn arrow::array::Array, row: usize) -> Value {
-    use arrow::array::*;
-    use arrow::datatypes::DataType::*;
-    use serde_json::Number;
+/// Render one cell of an Arrow array, building an encoder for it.
+///
+/// The batch path builds encoders once per column; this is for a single cell,
+/// and shares [`encode_cell`] with it so the two cannot diverge.
+#[cfg(test)]
+fn arrow_cell(
+    col: &dyn arrow::array::Array,
+    field: &FieldRef,
+    row: usize,
+) -> Result<Value, ArrowError> {
+    let mut enc = make_encoder(field, col, &ENCODER_OPTIONS)?;
+    let mut buf = Vec::new();
+    encode_cell(&mut enc, row, &mut buf)
+}
 
-    if col.is_null(row) {
-        return Value::Null;
-    }
-
-    match col.data_type() {
-        Boolean => Value::Bool(
-            col.as_any()
-                .downcast_ref::<BooleanArray>()
-                .unwrap()
-                .value(row),
-        ),
-        Int8 => Value::Number(
-            col.as_any()
-                .downcast_ref::<Int8Array>()
-                .unwrap()
-                .value(row)
-                .into(),
-        ),
-        Int16 => Value::Number(
-            col.as_any()
-                .downcast_ref::<Int16Array>()
-                .unwrap()
-                .value(row)
-                .into(),
-        ),
-        Int32 => Value::Number(
-            col.as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap()
-                .value(row)
-                .into(),
-        ),
-        Int64 => Value::Number(
-            col.as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap()
-                .value(row)
-                .into(),
-        ),
-        UInt8 => Value::Number(
-            col.as_any()
-                .downcast_ref::<UInt8Array>()
-                .unwrap()
-                .value(row)
-                .into(),
-        ),
-        UInt16 => Value::Number(
-            col.as_any()
-                .downcast_ref::<UInt16Array>()
-                .unwrap()
-                .value(row)
-                .into(),
-        ),
-        UInt32 => Value::Number(
-            col.as_any()
-                .downcast_ref::<UInt32Array>()
-                .unwrap()
-                .value(row)
-                .into(),
-        ),
-        UInt64 => Value::Number(
-            col.as_any()
-                .downcast_ref::<UInt64Array>()
-                .unwrap()
-                .value(row)
-                .into(),
-        ),
-        Float32 => {
-            let v = col
-                .as_any()
-                .downcast_ref::<Float32Array>()
-                .unwrap()
-                .value(row) as f64;
-            Number::from_f64(v)
-                .map(Value::Number)
-                .unwrap_or(Value::Null)
-        }
-        Float64 => {
-            let v = col
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap()
-                .value(row);
-            Number::from_f64(v)
-                .map(Value::Number)
-                .unwrap_or(Value::Null)
-        }
-        Utf8 => Value::String(
-            col.as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap()
-                .value(row)
-                .to_owned(),
-        ),
-        LargeUtf8 => Value::String(
-            col.as_any()
-                .downcast_ref::<LargeStringArray>()
-                .unwrap()
-                .value(row)
-                .to_owned(),
-        ),
-        // Dates, timestamps, decimals, etc. — format via Arrow's display helper.
-        _ => {
-            use arrow::util::display::{ArrayFormatter, FormatOptions};
-            let opts = FormatOptions::default();
-            // `col.is_null(row)` was checked above, so the cell *has* a value.
-            // Reporting it as `null` claims the opposite and is
-            // indistinguishable from a real null to anything reading the
-            // output — which is how a whole class of unformattable column went
-            // unnoticed. Keep the shape (callers rely on a value per column)
-            // but say so on stderr, deduplicated per type.
-            //
-            // Both failure levels are handled. `try_new` reports a type Arrow
-            // cannot format at all; `try_to_string` reports a single value it
-            // cannot format. The latter matters because the plain `Display`
-            // impl, under the default `safe: true`, writes the text
-            // "ERROR: <msg>" into the cell — an error message wearing the
-            // costume of data — and panics outright when the inner write fails.
-            let formatted =
-                ArrayFormatter::try_new(col, &opts).and_then(|f| f.value(row).try_to_string());
-            match formatted {
-                Ok(s) => Value::String(s),
-                Err(e) => {
-                    warn_unformattable_once(col.data_type(), &e);
-                    Value::Null
-                }
-            }
-        }
+/// Describe a rendering failure, naming the column when one is known.
+///
+/// A value that cannot be rendered is a client-side failure, not absent data.
+/// Reporting it as `null` would invent an absence the service never sent, and
+/// nothing downstream could tell the two apart — so this becomes an error.
+fn render_failure(
+    schema: &arrow::datatypes::Schema,
+    col: Option<usize>,
+    err: &ArrowError,
+) -> ApiError {
+    match col.and_then(|c| schema.fields().get(c)) {
+        Some(f) => ApiError::Transport(format!(
+            "could not render column '{}' of type {} from the fetched result: {err}. \
+             The value is present in the result — refusing to report it as null.",
+            f.name(),
+            f.data_type()
+        )),
+        None => ApiError::Transport(format!(
+            "could not build a renderer for the fetched result: {err}"
+        )),
     }
 }
 
@@ -282,7 +191,7 @@ fn arrow_cell(col: &dyn arrow::array::Array, row: usize) -> Value {
 fn arrow_result_to_query_response(
     result: hotdata::ArrowResult,
     result_id: String,
-) -> QueryResponse {
+) -> Result<QueryResponse, ApiError> {
     let columns: Vec<String> = result
         .schema
         .fields()
@@ -291,13 +200,28 @@ fn arrow_result_to_query_response(
         .collect();
     let mut rows: Vec<Vec<Value>> = Vec::new();
 
+    let mut buf: Vec<u8> = Vec::new();
     for batch in &result.batches {
+        let schema = batch.schema();
+        // One encoder per column per batch, as the service does — building one
+        // per cell would repeat the type dispatch for every value.
+        let mut encoders: Vec<NullableEncoder<'_>> = batch
+            .columns()
+            .iter()
+            .zip(schema.fields())
+            .map(|(col, field)| make_encoder(field, col.as_ref(), &ENCODER_OPTIONS))
+            .collect::<Result<_, _>>()
+            .map_err(|e| render_failure(&schema, None, &e))?;
+
         for row in 0..batch.num_rows() {
-            rows.push(
-                (0..batch.num_columns())
-                    .map(|c| arrow_cell(batch.column(c).as_ref(), row))
-                    .collect(),
-            );
+            let mut cells: Vec<Value> = Vec::with_capacity(encoders.len());
+            for (c, enc) in encoders.iter_mut().enumerate() {
+                cells.push(
+                    encode_cell(enc, row, &mut buf)
+                        .map_err(|e| render_failure(&schema, Some(c), &e))?,
+                );
+            }
+            rows.push(cells);
         }
     }
 
@@ -309,7 +233,7 @@ fn arrow_result_to_query_response(
         .total_row_count
         .and_then(|t| u64::try_from(t).ok())
         .or(Some(row_count));
-    QueryResponse {
+    Ok(QueryResponse {
         // The Arrow fetch is keyed by result_id and carries no run id; the
         // async/poll callers that know it stamp it after this returns.
         query_run_id: None,
@@ -321,7 +245,7 @@ fn arrow_result_to_query_response(
         truncated: false,
         execution_time_ms: None,
         warning: None,
-    }
+    })
 }
 
 /// Fetch `/results/{result_id}` as Arrow and return a `QueryResponse`, returning
@@ -339,7 +263,7 @@ pub(crate) fn try_fetch_arrow_result(
     result_id: &str,
 ) -> Result<QueryResponse, ApiError> {
     let result = api.get_result_arrow(result_id)?;
-    Ok(arrow_result_to_query_response(result, result_id.to_owned()))
+    arrow_result_to_query_response(result, result_id.to_owned())
 }
 
 /// Fetch `/results/{result_id}` as Arrow, exiting the process on failure.
@@ -771,6 +695,55 @@ mod tests {
         resp
     }
 
+    /// A field describing `col`, for the single-cell helper.
+    fn field_for(col: &dyn arrow::array::Array) -> FieldRef {
+        use arrow::datatypes::Field;
+        Arc::new(Field::new("v", col.data_type().clone(), true))
+    }
+
+    /// Rendering a cell must produce the same JSON the service produces for the
+    /// inline path — a list as a JSON array, a struct as a JSON object, not
+    /// arrow's human-readable debug text.
+    ///
+    /// This is the invariant that failed before: the service encodes with
+    /// arrow-json while this rendered with the display formatter, so the same
+    /// query returned `[1,2,3]` under one second and the *string* `"[1, 2, 3]"`
+    /// over it. Anything doing `.v[0]` on the output broke on a slow day.
+    #[test]
+    fn nested_types_render_as_json_not_display_text() {
+        use arrow::array::{ArrayRef, Int64Builder, ListBuilder, StructArray};
+        use arrow::datatypes::{DataType, Field};
+
+        let mut lb = ListBuilder::new(Int64Builder::new());
+        lb.values().append_value(1);
+        lb.values().append_value(2);
+        lb.append(true);
+        let list: ArrayRef = Arc::new(lb.finish());
+        let got = arrow_cell(list.as_ref(), &field_for(list.as_ref()), 0).expect("list renders");
+        assert_eq!(
+            got,
+            serde_json::json!([1, 2]),
+            "list must be a JSON array, got {got:?}"
+        );
+
+        let st: ArrayRef = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new("a", DataType::Int64, true)),
+                Arc::new(arrow::array::Int64Array::from(vec![1])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("b", DataType::Utf8, true)),
+                Arc::new(arrow::array::StringArray::from(vec!["x"])) as ArrayRef,
+            ),
+        ]));
+        let got = arrow_cell(st.as_ref(), &field_for(st.as_ref()), 0).expect("struct renders");
+        assert_eq!(
+            got,
+            serde_json::json!({"a": 1, "b": "x"}),
+            "struct must be a JSON object, got {got:?}"
+        );
+    }
+
     /// A timestamp carrying a *named* IANA zone must render, not come back as
     /// null. Rendering it needs a timezone database compiled in; without one
     /// Arrow's formatter errors, and this cell used to swallow that error and
@@ -785,24 +758,35 @@ mod tests {
 
         for zone in ["UTC", "America/New_York", "Europe/London"] {
             let col = TimestampMicrosecondArray::from(vec![micros]).with_timezone(zone);
-            let cell = arrow_cell(&col, 0);
+            let cell = arrow_cell(&col, &field_for(&col), 0)
+                .unwrap_or_else(|e| panic!("zone {zone} failed: {e}"));
             assert!(
                 cell.is_string(),
                 "zone {zone} rendered as {cell:?}, expected a formatted string"
             );
-            assert_ne!(cell, Value::Null, "zone {zone} rendered as null");
         }
 
         // The two forms that worked even without a timezone database, kept here
         // so a regression narrows to the named-zone case rather than all timestamps.
         let offset = TimestampMicrosecondArray::from(vec![micros]).with_timezone("+00:00");
-        assert!(arrow_cell(&offset, 0).is_string());
+        assert!(
+            arrow_cell(&offset, &field_for(&offset), 0)
+                .unwrap()
+                .is_string()
+        );
         let naive = TimestampMicrosecondArray::from(vec![micros]);
-        assert!(arrow_cell(&naive, 0).is_string());
+        assert!(
+            arrow_cell(&naive, &field_for(&naive), 0)
+                .unwrap()
+                .is_string()
+        );
 
-        // A genuine null is still a null.
+        // A genuine null is still a null — that one the service really did send.
         let with_null = TimestampMicrosecondArray::from(vec![None::<i64>]).with_timezone("UTC");
-        assert_eq!(arrow_cell(&with_null, 0), Value::Null);
+        assert_eq!(
+            arrow_cell(&with_null, &field_for(&with_null), 0).unwrap(),
+            Value::Null
+        );
     }
 
     /// No column type we can be handed may turn a present value into `null`.
@@ -892,7 +876,9 @@ mod tests {
         ];
 
         for (label, col) in cases {
-            let cell = arrow_cell(col.as_ref(), 0);
+            let cell = arrow_cell(col.as_ref(), &field_for(col.as_ref()), 0).unwrap_or_else(|e| {
+                panic!("{label} has a value at row 0 but failed to render: {e}")
+            });
             assert_ne!(
                 cell,
                 Value::Null,
@@ -901,34 +887,32 @@ mod tests {
         }
     }
 
-    /// A single value Arrow cannot format must not panic, and must not put an
-    /// error message into the data.
+    /// A value that cannot be converted is rendered the same way the service
+    /// renders it — never as a `null`.
     ///
-    /// Two distinct failure levels exist: a type Arrow cannot format at all
-    /// (caught by `try_new`) and one value inside a formattable type that is
-    /// out of range. For the latter, the plain `Display` impl under the default
-    /// `safe: true` writes the literal text "ERROR: <msg>" as the cell value,
-    /// and panics when the inner write itself fails. Neither is acceptable in a
-    /// data column, so the value path is rendered fallibly.
+    /// `null` is the outcome this must not produce: it would invent an absence
+    /// the service never sent, indistinguishable downstream from a real null.
+    /// What arrow-json actually does with an out-of-range timestamp is write
+    /// `ERROR: <msg>` into the cell and report success, which is its own
+    /// silent-wrong-value problem — but it is *upstream* behaviour and the
+    /// service exhibits it identically, so correcting it only here would
+    /// recreate the client/service divergence this renderer exists to remove.
+    /// Pinned so a future change to it is a deliberate one, made on both sides.
     #[test]
-    fn an_unformattable_value_is_null_not_a_panic_or_an_error_string() {
+    fn an_unconvertible_value_matches_the_service_and_is_never_null() {
         use arrow::array::TimestampSecondArray;
 
-        // Far outside the range a second-resolution timestamp can render.
+        // Far outside the range a second-resolution timestamp can represent.
         let col = TimestampSecondArray::from(vec![i64::MAX]);
-        let cell = arrow_cell(&col, 0);
+        let cell = arrow_cell(&col, &field_for(&col), 0).expect("arrow-json reports success here");
 
-        if let Value::String(s) = &cell {
-            assert!(
-                !s.contains("ERROR"),
-                "an error message reached the data as a value: {s}"
-            );
-        } else {
-            assert_eq!(
-                cell,
-                Value::Null,
-                "expected either a rendered value or null"
-            );
+        match &cell {
+            Value::Null => panic!("a present value was reported as null"),
+            Value::String(s) => assert!(
+                s.starts_with("ERROR:"),
+                "expected arrow-json's error-in-cell text, got {s:?}"
+            ),
+            other => panic!("unexpected rendering: {other:?}"),
         }
     }
 

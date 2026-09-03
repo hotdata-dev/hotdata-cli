@@ -41,6 +41,12 @@ arrow = { version = "55", default-features = false, features = [
   # without it. Results are fetched as Arrow and formatted here, so
   # without this feature every named-zone timestamp fails to render.
   "chrono-tz",
+  # Render cells with arrow-json, the same encoder the service uses for the
+  # inline path. A hand-rolled renderer here drifts from it — the display
+  # formatter turns a list into the string "[1, 2, 3]" where the service
+  # returns a JSON array — so the same query answered from memory and from
+  # storage disagreed on shape. One encoder, one answer.
+  "json",
 ] }
 serde_yaml = "0.9"
 base64 = "0.22"
