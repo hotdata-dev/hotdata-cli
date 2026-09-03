@@ -32,6 +32,13 @@ directories = "6"
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
+# NOT `arbitrary_precision`, deliberately. It would keep a wide decimal's
+# digits (see `a_wide_decimal_is_rounded_a_known_limitation`), but the feature
+# is crate-wide: with it on, `serde_json::Number` serializes as the private
+# struct `$serde_json::private::Number`, which serde_json's own serializer
+# intercepts and serde_yaml does not — so every `-o yaml` output carrying a
+# `Value` number turns into a nested mapping. That breaks commands unrelated to
+# this one, which costs more than the rounding it buys.
 serde_json = "1"
 arrow = { version = "55", default-features = false, features = [
   "ipc",
@@ -41,6 +48,12 @@ arrow = { version = "55", default-features = false, features = [
   # without it. Results are fetched as Arrow and formatted here, so
   # without this feature every named-zone timestamp fails to render.
   "chrono-tz",
+  # Render cells with arrow-json, the same encoder the service uses for the
+  # inline path. A hand-rolled renderer here drifts from it — the display
+  # formatter turns a list into the string "[1, 2, 3]" where the service
+  # returns a JSON array — so the same query answered from memory and from
+  # storage disagreed on shape. One encoder, one answer.
+  "json",
 ] }
 serde_yaml = "0.9"
 base64 = "0.22"
