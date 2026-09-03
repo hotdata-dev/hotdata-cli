@@ -33,7 +33,15 @@ reqwest = { version = "0.13", features = ["blocking", "json"] }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-arrow = { version = "55", default-features = false, features = ["ipc"] }
+arrow = { version = "55", default-features = false, features = [
+  "ipc",
+  # Timestamps carrying a named IANA zone ("UTC", "America/New_York")
+  # cannot be formatted without a timezone database — arrow's formatter
+  # returns an error for them, and only fixed offsets ("+00:00") parse
+  # without it. Results are fetched as Arrow and formatted here, so
+  # without this feature every named-zone timestamp fails to render.
+  "chrono-tz",
+] }
 serde_yaml = "0.9"
 base64 = "0.22"
 crossterm = "0.28"
