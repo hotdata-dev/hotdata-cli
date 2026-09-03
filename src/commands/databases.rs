@@ -1214,7 +1214,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                 println!(
                     "{}{}",
                     label("forked_from:"),
-                    lineage_row(&LineageEntry::from(f.clone()))
+                    lineage_row(&LineageEntry::from(f.clone()), false)
                 );
             }
             let catalog = db
@@ -1581,7 +1581,7 @@ pub fn fork(
             match &result.forked_from {
                 Some(f) => println!(
                     "forked_from: {}",
-                    lineage_row(&LineageEntry::from(f.clone()))
+                    lineage_row(&LineageEntry::from(f.clone()), false)
                 ),
                 None => println!("forked_from: {}", db.id),
             }
@@ -1717,10 +1717,10 @@ fn fetch_lineage(
     .map(LineageResponse::from)
 }
 
-/// One `id (name) — forked <date>, snapshot <n>, deleted` line of the lineage
-/// table view. The id leads: it's the only field guaranteed present, and the
-/// handle every other databases command accepts.
-fn lineage_row(e: &LineageEntry) -> String {
+/// One `id (name) — root, forked <date>, snapshot <n>, deleted` line of the
+/// lineage tree and the `forked_from:` rows. The id leads: it's the only field
+/// guaranteed present, and the handle every other databases command accepts.
+fn lineage_row(e: &LineageEntry, root: bool) -> String {
     use crossterm::style::Stylize;
     let mut s = e.database_id.clone().dark_cyan().to_string();
     if let Some(n) = &e.name {
@@ -1728,6 +1728,9 @@ fn lineage_row(e: &LineageEntry) -> String {
         s.push_str(&format!("({n})").cyan().to_string());
     }
     let mut notes: Vec<String> = Vec::new();
+    if root {
+        notes.push("root".to_string());
+    }
     if let Some(ts) = &e.forked_at {
         notes.push(format!("forked {}", crate::util::format_date(ts)));
     }
@@ -1755,43 +1758,79 @@ pub fn lineage(workspace_id: &str, database: Option<&str>, forks_limit: Option<u
         "yaml" => print!("{}", serde_yaml::to_string(&lin).unwrap()),
         "table" => {
             use crossterm::style::Stylize;
-            let label = |l: &str| format!("{:<24}", l).dark_grey().to_string();
-            println!(
-                "{}{}",
-                label("database:"),
-                lin.database_id.clone().dark_cyan()
-            );
-            println!("{}{}", label("root:"), lin.root_id.clone().dark_cyan());
-            if lin.ancestors.is_empty() {
-                println!("{}{}", label("ancestors:"), "none — not a fork".dark_grey());
-            } else {
-                let truncated = if lin.ancestors_truncated {
-                    ", truncated"
+            // A tree, root at the top: fork lineage never merges, so each
+            // generation is one `└─` deeper. Nesting glyphs live in the prefix;
+            // depth 0 is bare.
+            let row = |depth: usize, glyph: &str, body: String| {
+                if depth == 0 {
+                    println!("{body}");
                 } else {
-                    ""
-                };
-                println!(
-                    "{}({}{})",
-                    label("ancestors:"),
-                    lin.ancestors.len(),
-                    truncated
-                );
-                for a in &lin.ancestors {
-                    println!("  {}", lineage_row(a));
+                    println!("{}{}{body}", "   ".repeat(depth - 1), glyph.dark_grey());
                 }
+            };
+            let mut depth = 0usize;
+            if lin.ancestors_truncated {
+                // The chain stops before reaching the root; name the root from
+                // the id (its label isn't in the response) and mark the gap.
+                row(
+                    depth,
+                    "",
+                    format!(
+                        "{} {}",
+                        lin.root_id.clone().dark_cyan(),
+                        "— root".dark_grey()
+                    ),
+                );
+                depth += 1;
+                row(
+                    depth,
+                    "└─ ",
+                    "⋯ (ancestry truncated)".dark_grey().to_string(),
+                );
+                depth += 1;
             }
-            if lin.fork_count == 0 {
-                println!("{}{}", label("forks:"), "none".dark_grey());
-            } else {
-                println!(
-                    "{}({} of {})",
-                    label("forks:"),
-                    lin.forks.len(),
-                    lin.fork_count
+            // Ancestors arrive nearest-parent-first and end at the root when
+            // not truncated, so display walks them in reverse.
+            for (i, a) in lin.ancestors.iter().rev().enumerate() {
+                let is_root = !lin.ancestors_truncated && i == 0;
+                row(depth, "└─ ", lineage_row(a, is_root));
+                depth += 1;
+            }
+            // The queried database itself, name from the resolve that scoped
+            // the request (the lineage record doesn't repeat it).
+            let mut me = lin.database_id.clone().dark_cyan().to_string();
+            if let Some(n) = &db.name {
+                me.push(' ');
+                me.push_str(&format!("({n})").cyan().to_string());
+            }
+            me.push(' ');
+            me.push_str(&"← this database".green().to_string());
+            if lin.root_id == lin.database_id {
+                me.push(' ');
+                me.push_str(&"— root".dark_grey().to_string());
+            }
+            row(depth, "└─ ", me);
+            depth += 1;
+            // Direct forks, one level under the queried database. `├─` until
+            // the closing row — the last fork, or the more-marker when the
+            // server listed only a page of them.
+            let unlisted = lin.fork_count - lin.forks.len() as i64;
+            for (i, f) in lin.forks.iter().enumerate() {
+                let closes = unlisted <= 0 && i + 1 == lin.forks.len();
+                row(
+                    depth,
+                    if closes { "└─ " } else { "├─ " },
+                    lineage_row(f, false),
                 );
-                for f in &lin.forks {
-                    println!("  {}", lineage_row(f));
-                }
+            }
+            if unlisted > 0 {
+                row(
+                    depth,
+                    "└─ ",
+                    format!("⋯ {unlisted} more — see --forks-limit")
+                        .dark_grey()
+                        .to_string(),
+                );
             }
         }
         _ => unreachable!(),
@@ -2512,27 +2551,34 @@ mod tests {
 
     #[test]
     fn lineage_row_notes_fork_details_and_deletion() {
-        let row = lineage_row(&LineageEntry {
-            database_id: "db_parent".to_string(),
-            name: Some("staging".to_string()),
-            snapshot_id: Some(42),
-            forked_at: Some("2026-09-01T14:00:00Z".to_string()),
-            exists: false,
-        });
+        let row = lineage_row(
+            &LineageEntry {
+                database_id: "db_parent".to_string(),
+                name: Some("staging".to_string()),
+                snapshot_id: Some(42),
+                forked_at: Some("2026-09-01T14:00:00Z".to_string()),
+                exists: false,
+            },
+            true,
+        );
         // Contains-checks: crossterm styling wraps each piece in ANSI codes.
         assert!(row.contains("db_parent"), "row: {row}");
         assert!(row.contains("(staging)"), "row: {row}");
+        assert!(row.contains("root, forked"), "row: {row}");
         assert!(row.contains("snapshot 42"), "row: {row}");
         assert!(row.contains("deleted"), "row: {row}");
 
         // A bare entry (pre-lineage fork) is just the id — no dangling "—".
-        let bare = lineage_row(&LineageEntry {
-            database_id: "db_old".to_string(),
-            name: None,
-            snapshot_id: None,
-            forked_at: None,
-            exists: true,
-        });
+        let bare = lineage_row(
+            &LineageEntry {
+                database_id: "db_old".to_string(),
+                name: None,
+                snapshot_id: None,
+                forked_at: None,
+                exists: true,
+            },
+            false,
+        );
         assert!(bare.contains("db_old"), "row: {bare}");
         assert!(!bare.contains('—'), "row: {bare}");
     }
