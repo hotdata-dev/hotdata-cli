@@ -1929,6 +1929,20 @@ fn build_lineage_tree(
     // carries when truncated) ending at the queried database itself.
     let mut chain: Vec<LineageEntry> = lin.ancestors.iter().rev().cloned().collect();
     chain.push(self_entry);
+    // The server annotates each ancestor entry with the fork edge BELOW it —
+    // the snapshot of that ancestor the next generation copied, and when.
+    // Tree rows carry their own creation edge (the forks-list convention), so
+    // shift the metadata one generation down. The top of the chain keeps
+    // none: a root has no fork event, and below a truncation the edge above
+    // is unknown.
+    for i in (1..chain.len()).rev() {
+        chain[i].snapshot_id = chain[i - 1].snapshot_id;
+        chain[i].forked_at = chain[i - 1].forked_at.clone();
+    }
+    if let Some(first) = chain.first_mut() {
+        first.snapshot_id = None;
+        first.forked_at = None;
+    }
     // parent id → next generation toward the queried database, for grafting
     // past a node whose own lineage cannot be fetched.
     let mut descent: HashMap<String, LineageEntry> = HashMap::new();
@@ -2867,7 +2881,10 @@ mod tests {
             .with_body(lineage_body(
                 "db_mid",
                 "db_root",
-                r#"{"database_id":"db_root","name":"prod","exists":true}"#,
+                // The server annotates an ancestor with the fork edge BELOW it
+                // (here: db_mid's creation), which must not surface as the
+                // root's own fork event.
+                r#"{"database_id":"db_root","name":"prod","snapshot_id":42,"forked_at":"2026-09-01T14:00:00Z","exists":true}"#,
                 r#"{"database_id":"db_child","snapshot_id":7,"forked_at":"2026-09-02T09:00:00Z","exists":true}"#,
                 1,
             ))
@@ -2910,6 +2927,10 @@ mod tests {
 
         assert_eq!(t.root_id, "db_root");
         assert_eq!(t.tree.entry.database_id, "db_root");
+        // A root has no fork event of its own — the edge metadata the server
+        // put on its ancestor entry belongs to the generation below.
+        assert_eq!(t.tree.entry.snapshot_id, None);
+        assert_eq!(t.tree.entry.forked_at, None);
         let b = &t.tree.forks[0];
         // B's entry comes from its parent's fork list, so it carries the fork
         // metadata rather than the bare resolve-time name.
