@@ -277,6 +277,16 @@ fn main() {
                             expires_at.as_deref(),
                             &output,
                         ),
+                        Some(DatabasesCommands::Lineage {
+                            database,
+                            forks_limit,
+                            output,
+                        }) => databases::lineage(
+                            &workspace_id,
+                            database.as_deref(),
+                            forks_limit,
+                            &output,
+                        ),
                         Some(DatabasesCommands::Attach {
                             catalog,
                             database,

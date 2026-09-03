@@ -1,3 +1,17 @@
+## [0.30.0] - 2026-09-03
+
+### 🐛 Bug Fixes
+
+- *(query)* Render named-timezone timestamps (#283)
+## [0.29.0] - 2026-09-03
+
+### 🚀 Features
+
+- *(databases)* Lineage command and forked_from provenance (#281): new `hotdata databases lineage [database]` renders a database's fork tree (ancestor chain and direct forks, deleted generations marked, `--forks-limit` paging), and `databases show`/`fork` display a fork's `forked_from` record — source id, its label at fork time, the copied snapshot, and when — in the table views and as a nested object in `-o json/yaml` (omitted for non-forks, whose output is unchanged).
+
+### 🗑️ Removed
+
+- `jobs list --type` no longer accepts `data_refresh_table` / `data_refresh_connection` — those job types were retired server-side with the connections removal (the engine is push-only), and the SDK (now 0.15.0) dropped them.
 ## [0.28.0] - 2026-08-25
 
 ### 🚀 Features

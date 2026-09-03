@@ -1,7 +1,7 @@
 ---
 name: hotdata
 description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, instant databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, datasources/ingests/runs (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "instant database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "ingest run", "show a run", "schedule an ingest", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. This skill bundles three specialized guides under subskills/, loaded on demand: read subskills/search/SKILL.md for full-text/vector search and retrieval indexes, subskills/analytics/SKILL.md for OLAP analytics, query history, stored results, and Chain materializations, and subskills/geospatial/SKILL.md for geospatial/GIS.
-version: 0.28.0
+version: 0.30.0
 ---
 
 # Hotdata CLI Skill
@@ -98,6 +98,7 @@ hotdata databases list [--workspace-id <workspace_id>] [--output table|json|yaml
 hotdata databases count [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases create [--name <display_name>] [--catalog <alias>] [--table <table> ...] [--schema public] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases fork [<id>] [--name <display_name>] [--expires-at <duration|timestamp>] [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases lineage [<id>] [--forks-limit <n>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases use <id>
 hotdata databases unset
 hotdata databases <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
@@ -119,10 +120,11 @@ hotdata databases tables remove <table> [--database <id>] [--schema public] [--w
 - `list` — all instant databases in the workspace. Active database is marked with `*` under the DEFAULT column; CREATED shows when each database was made.
 - `count` — the total number of instant databases in the workspace, across **all** pages (`list` shows one page). Prints a bare integer by default so it drops straight into scripts (`$(hotdata databases count)`); `--output json|yaml` render `{"count": N}` / `count: N`.
 - `create` — creates a new instant database. `--name` is an optional human-readable display name. `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`); must be `[a-z_][a-z0-9_]*`. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; omitting means no expiry. Repeat `--table` to declare tables up front.
-- `fork` — creates a new instant database that is an independent deep copy of an existing one (same schemas, tables, and data); the source is left unchanged and the two diverge freely afterwards. The source defaults to the active database; pass the database `<id>` to fork another. `--name` defaults to `<source>-fork` (so the two stay distinguishable in `list`); `--expires-at` accepts a relative duration or RFC 3339 timestamp, and when omitted a still-future source expiry is carried over. The fork becomes the active database on success. The fork answers to the **same catalog alias** as its source inside its own scope; catalogs attached to the source are **re-attached** to the fork, but indexes are **not** carried over. Only databases created with the current (DuckLake) storage engine can be forked — older parquet-backed databases return an error.
+- `fork` — creates a new instant database that is an independent deep copy of an existing one (same schemas, tables, and data); the source is left unchanged and the two diverge freely afterwards. The source defaults to the active database; pass the database `<id>` to fork another. `--name` defaults to `<source>-fork` (so the two stay distinguishable in `list`); `--expires-at` accepts a relative duration or RFC 3339 timestamp, and when omitted a still-future source expiry is carried over. The fork becomes the active database on success. The fork answers to the **same catalog alias** as its source inside its own scope; catalogs attached to the source are **re-attached** to the fork, but indexes are **not** carried over. Only databases created with the current (DuckLake) storage engine can be forked — older parquet-backed databases return an error. The fork's output (and its `databases <id>` view) records **`forked_from`** provenance: source id, the source's name at fork time, the copied snapshot, and when.
+- `lineage` — renders a database's **whole fork family tree**, walked from the root down (defaults to the active database; one lineage request per database, fine for the small families forks produce in practice): every reachable generation, with the queried database marked `← this database`. Lineage is a historical record, not a live link — the databases stay independent, and a **deleted** generation stays in the chain (marked `deleted`), though its own fork list can't be enumerated: such branches end with `⋯ forks unknown`. Forks made before the server recorded lineage carry none. `--forks-limit <n>` pages each database's direct-fork list (server clamps to 1–100); a truncated branch closes with `⋯ N more`. `-o json`/`yaml` return `{database_id, root_id, tree}` with a recursive `tree` node.
 - `use` — saves the database **id** as the active database. Subsequent `databases tables` and `databases context` commands use it automatically. Note that a successful `fork` also updates this: the fork becomes the active database.
 - `unset` — clears the active database from config.
-- `<id>` — inspect one database (returns id, catalog, name, expires_at).
+- `<id>` — inspect one database (returns id, catalog, name, expires_at; a fork also shows its `forked_from` record).
 - `remove` — removes the instant database; clears the active-database config if it matched.
 - `load` (top-level shorthand) — loads parquet into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). Replaces the table by default; pass `--append` to add rows to the existing table instead. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
@@ -207,14 +209,14 @@ hotdata databases context push <name> [--database <id>] [--dry-run]
 ### Execute SQL Query
 
 ```
-hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--output table|json|csv]
+hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--dialect hotsql|duckdb|postgres|snowflake] [--output table|json|csv]
 hotdata query status <query_run_id>
 ```
 
 - Default output is `table` (row count and execution time).
 - **A query runs inside one instant database** (active database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus any attached catalogs only**. To query an attached catalog's tables or join across catalogs, attach the catalog first — see [Querying across catalogs (attach)](#querying-across-catalogs-attach).
 - Use `hotdata databases tables list` and `hotdata databases tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
-- **PostgreSQL dialect.** Quote non-lowercase columns with double quotes.
+- **PostgreSQL dialect.** Quote non-lowercase columns with double quotes. To write DuckDB/Postgres/Snowflake SQL instead, pass `--dialect` (server-side transpile, read-only queries) — details in **`hotdata-analytics`**.
 - Async runs return `query_run_id` → poll with `query status <id>` (do not re-run the same heavy SQL). `query status` exit codes: `0` succeeded, `1` failed, `2` still running (poll again), `3` succeeded but the result is a truncated/incomplete preview.
 - **Large results are complete, not a preview.** The server returns inline rows only up to a bounded cap and persists the full set out-of-band; `hotdata query` transparently fetches the full result, so the printed rows and row count are the complete set. (If the full result can't be retrieved, the CLI prints the preview and a `warning:` to stderr.)
 - **Backpressure is handled.** Under heavy concurrent load the server may shed a query with HTTP 429 (`OVERLOADED`); the CLI auto-retries (honoring `Retry-After`) before surfacing an error — no manual retry needed.
@@ -227,7 +229,7 @@ hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status 
 hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
-- `--job-type`: `data_refresh_table`, `data_refresh_connection`, `create_index`, `managed_load`.
+- `--job-type`: `create_index`, `managed_load`. (`data_refresh_table` / `data_refresh_connection` were retired server-side — the engine is push-only; nothing refreshes.)
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 
