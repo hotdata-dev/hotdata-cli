@@ -104,6 +104,25 @@ pub enum DatabasesCommands {
         output: String,
     },
 
+    /// Show a database's fork lineage: its ancestor chain and direct forks.
+    ///
+    /// Lineage is a historical record, not a live link — a fork and its source
+    /// are independent, and a deleted generation stays in the chain. Forks made
+    /// before the server recorded lineage carry none.
+    Lineage {
+        /// Database id, catalog, or name (defaults to the current database)
+        database: Option<String>,
+
+        /// How many direct forks to list (server clamps to 1-100; the reported
+        /// fork_count is always the true total)
+        #[arg(long)]
+        forks_limit: Option<u32>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
     /// Attach a catalog to an instant database so its tables are queryable.
     ///
     /// A `query` runs inside one instant database; attaching a catalog makes
@@ -1536,6 +1555,136 @@ pub fn fork(
     }
 }
 
+/// One generation in a lineage response — an ancestor up the fork chain, or a
+/// database forked directly from the one being asked about. The server sends
+/// the same shape for both lists.
+#[derive(Deserialize, Serialize)]
+struct LineageEntry {
+    database_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    /// Version of the source's data that the fork copied — a point in time,
+    /// not a revision count.
+    #[serde(default)]
+    snapshot_id: Option<i64>,
+    #[serde(default)]
+    forked_at: Option<String>,
+    /// False once that database has been deleted; its place in the record is
+    /// kept either way.
+    exists: bool,
+}
+
+/// Response of `GET /databases/{id}/lineage`.
+#[derive(Deserialize, Serialize)]
+struct LineageResponse {
+    database_id: String,
+    /// Top of the family tree; equals `database_id` when this database is not
+    /// a fork.
+    root_id: String,
+    /// Nearest parent first, ending at `root_id` unless truncated.
+    ancestors: Vec<LineageEntry>,
+    ancestors_truncated: bool,
+    /// Direct forks only — a fork of a fork appears in its own parent's lineage.
+    forks: Vec<LineageEntry>,
+    fork_count: i64,
+}
+
+/// Fetch a database's lineage. Untyped `get_json` path: the endpoint is newer
+/// than the published SDK's `databases()` handle (hotdata 0.14.0), and the CLI
+/// owns the output shape either way.
+fn fetch_lineage(
+    api: &Api,
+    database_id: &str,
+    forks_limit: Option<u32>,
+) -> Result<LineageResponse, ApiError> {
+    let mut query: Vec<(&str, String)> = Vec::new();
+    if let Some(n) = forks_limit {
+        query.push(("forks_limit", n.to_string()));
+    }
+    api.get_json(&format!("/databases/{database_id}/lineage"), &query)
+}
+
+/// One `id (name) — forked <date>, snapshot <n>, deleted` line of the lineage
+/// table view. The id leads: it's the only field guaranteed present, and the
+/// handle every other databases command accepts.
+fn lineage_row(e: &LineageEntry) -> String {
+    use crossterm::style::Stylize;
+    let mut s = e.database_id.clone().dark_cyan().to_string();
+    if let Some(n) = &e.name {
+        s.push(' ');
+        s.push_str(&format!("({n})").cyan().to_string());
+    }
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(ts) = &e.forked_at {
+        notes.push(format!("forked {}", crate::util::format_date(ts)));
+    }
+    if let Some(sn) = e.snapshot_id {
+        notes.push(format!("snapshot {sn}"));
+    }
+    if !e.exists {
+        notes.push("deleted".to_string());
+    }
+    if !notes.is_empty() {
+        s.push(' ');
+        s.push_str(&format!("— {}", notes.join(", ")).dark_grey().to_string());
+    }
+    s
+}
+
+pub fn lineage(workspace_id: &str, database: Option<&str>, forks_limit: Option<u32>, format: &str) {
+    let source = resolve_current_database(database, workspace_id);
+    let api = Api::new(Some(workspace_id));
+    let db = resolve_database(&api, &source);
+    let lin = fetch_lineage(&api, &db.id, forks_limit).unwrap_or_else(|e| e.exit());
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&lin).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&lin).unwrap()),
+        "table" => {
+            use crossterm::style::Stylize;
+            let label = |l: &str| format!("{:<24}", l).dark_grey().to_string();
+            println!(
+                "{}{}",
+                label("database:"),
+                lin.database_id.clone().dark_cyan()
+            );
+            println!("{}{}", label("root:"), lin.root_id.clone().dark_cyan());
+            if lin.ancestors.is_empty() {
+                println!("{}{}", label("ancestors:"), "none — not a fork".dark_grey());
+            } else {
+                let truncated = if lin.ancestors_truncated {
+                    ", truncated"
+                } else {
+                    ""
+                };
+                println!(
+                    "{}({}{})",
+                    label("ancestors:"),
+                    lin.ancestors.len(),
+                    truncated
+                );
+                for a in &lin.ancestors {
+                    println!("  {}", lineage_row(a));
+                }
+            }
+            if lin.fork_count == 0 {
+                println!("{}{}", label("forks:"), "none".dark_grey());
+            } else {
+                println!(
+                    "{}({} of {})",
+                    label("forks:"),
+                    lin.forks.len(),
+                    lin.fork_count
+                );
+                for f in &lin.forks {
+                    println!("  {}", lineage_row(f));
+                }
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
 pub fn unset(workspace_id: &str) {
     use crossterm::style::Stylize;
     if let Err(e) = crate::config::clear_current_database("default", workspace_id) {
@@ -2131,6 +2280,96 @@ mod tests {
         format!(
             r#"{{"id":"{id}","name":"{name}","default_catalog":"default","default_schema":"main","default_connection_id":"{conn_id}","attachments":[]}}"#
         )
+    }
+
+    #[test]
+    fn lineage_deserializes_and_forwards_forks_limit() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/v1/databases/db_fork/lineage")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "forks_limit".into(),
+                "5".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                  "database_id": "db_fork",
+                  "root_id": "db_root",
+                  "ancestors": [
+                    {"database_id": "db_parent", "name": "staging", "snapshot_id": 42, "forked_at": "2026-09-01T14:00:00Z", "exists": true},
+                    {"database_id": "db_root", "name": "prod", "exists": false}
+                  ],
+                  "ancestors_truncated": false,
+                  "forks": [
+                    {"database_id": "db_child", "snapshot_id": 7, "forked_at": "2026-09-02T09:00:00Z", "exists": true}
+                  ],
+                  "fork_count": 3
+                }"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let lin = fetch_lineage(&api, "db_fork", Some(5)).unwrap();
+        assert_eq!(lin.root_id, "db_root");
+        assert_eq!(lin.ancestors.len(), 2);
+        // A deleted generation stays in the chain, absent fields default.
+        assert!(!lin.ancestors[1].exists);
+        assert_eq!(lin.ancestors[1].snapshot_id, None);
+        // fork_count is the true total even when `forks` is a shorter page.
+        assert_eq!(lin.fork_count, 3);
+        assert_eq!(lin.forks.len(), 1);
+        m.assert();
+    }
+
+    #[test]
+    fn lineage_omits_forks_limit_when_unset() {
+        // No forks_limit flag → no query param, so the server default applies.
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/v1/databases/db_x/lineage")
+            .match_query(mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"database_id":"db_x","root_id":"db_x","ancestors":[],"ancestors_truncated":false,"forks":[],"fork_count":0}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let lin = fetch_lineage(&api, "db_x", None).unwrap();
+        // Not a fork: root is itself, no ancestors.
+        assert_eq!(lin.root_id, lin.database_id);
+        assert!(lin.ancestors.is_empty());
+        m.assert();
+    }
+
+    #[test]
+    fn lineage_row_notes_fork_details_and_deletion() {
+        let row = lineage_row(&LineageEntry {
+            database_id: "db_parent".to_string(),
+            name: Some("staging".to_string()),
+            snapshot_id: Some(42),
+            forked_at: Some("2026-09-01T14:00:00Z".to_string()),
+            exists: false,
+        });
+        // Contains-checks: crossterm styling wraps each piece in ANSI codes.
+        assert!(row.contains("db_parent"), "row: {row}");
+        assert!(row.contains("(staging)"), "row: {row}");
+        assert!(row.contains("snapshot 42"), "row: {row}");
+        assert!(row.contains("deleted"), "row: {row}");
+
+        // A bare entry (pre-lineage fork) is just the id — no dangling "—".
+        let bare = lineage_row(&LineageEntry {
+            database_id: "db_old".to_string(),
+            name: None,
+            snapshot_id: None,
+            forked_at: None,
+            exists: true,
+        });
+        assert!(bare.contains("db_old"), "row: {bare}");
+        assert!(!bare.contains('—'), "row: {bare}");
     }
 
     #[test]
