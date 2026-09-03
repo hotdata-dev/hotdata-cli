@@ -111,6 +111,24 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
+/// Warn once per process that a column could not be rendered.
+///
+/// Deduplicated because the failure is a property of the column's type, not of
+/// any one row: a million-row result would otherwise print a million lines.
+fn warn_unformattable_once(data_type: &arrow::datatypes::DataType, err: &arrow::error::ArrowError) {
+    use crossterm::style::Stylize;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    eprintln!(
+        "{}",
+        format!("warning: could not format a {data_type} value, so it is shown as null: {err}")
+            .yellow()
+    );
+}
+
 /// Convert one cell of an Arrow array to a `serde_json::Value`.
 fn arrow_cell(col: &dyn arrow::array::Array, row: usize) -> Value {
     use arrow::array::*;
@@ -222,9 +240,20 @@ fn arrow_cell(col: &dyn arrow::array::Array, row: usize) -> Value {
         _ => {
             use arrow::util::display::{ArrayFormatter, FormatOptions};
             let opts = FormatOptions::default();
-            ArrayFormatter::try_new(col, &opts)
-                .map(|f| Value::String(f.value(row).to_string()))
-                .unwrap_or(Value::Null)
+            match ArrayFormatter::try_new(col, &opts) {
+                Ok(f) => Value::String(f.value(row).to_string()),
+                // `col.is_null(row)` was checked above, so the cell *has* a
+                // value and we simply could not render it. Emitting `null` here
+                // claims the opposite, and is indistinguishable from a real
+                // null to anything reading the output — which is how a whole
+                // class of unformattable column went unnoticed. Keep the shape
+                // (callers rely on a value per column) but say so on stderr,
+                // once per run so a large result cannot drown the terminal.
+                Err(e) => {
+                    warn_unformattable_once(col.data_type(), &e);
+                    Value::Null
+                }
+            }
         }
     }
 }
@@ -721,6 +750,136 @@ mod tests {
         );
         resp.result_id = Some(result_id.map(|s| s.to_string()));
         resp
+    }
+
+    /// A timestamp carrying a *named* IANA zone must render, not come back as
+    /// null. Rendering it needs a timezone database compiled in; without one
+    /// Arrow's formatter errors, and this cell used to swallow that error and
+    /// report the value as null — silently, and only for named zones, so a
+    /// fixed-offset or zone-less timestamp in the same row looked fine.
+    #[test]
+    fn named_timezone_timestamps_render_instead_of_nulling() {
+        use arrow::array::TimestampMicrosecondArray;
+
+        // 2026-01-01T12:00:00Z
+        let micros = 1_767_268_800_000_000i64;
+
+        for zone in ["UTC", "America/New_York", "Europe/London"] {
+            let col = TimestampMicrosecondArray::from(vec![micros]).with_timezone(zone);
+            let cell = arrow_cell(&col, 0);
+            assert!(
+                cell.is_string(),
+                "zone {zone} rendered as {cell:?}, expected a formatted string"
+            );
+            assert_ne!(cell, Value::Null, "zone {zone} rendered as null");
+        }
+
+        // The two forms that worked even without a timezone database, kept here
+        // so a regression narrows to the named-zone case rather than all timestamps.
+        let offset = TimestampMicrosecondArray::from(vec![micros]).with_timezone("+00:00");
+        assert!(arrow_cell(&offset, 0).is_string());
+        let naive = TimestampMicrosecondArray::from(vec![micros]);
+        assert!(arrow_cell(&naive, 0).is_string());
+
+        // A genuine null is still a null.
+        let with_null = TimestampMicrosecondArray::from(vec![None::<i64>]).with_timezone("UTC");
+        assert_eq!(arrow_cell(&with_null, 0), Value::Null);
+    }
+
+    /// No column type we can be handed may turn a present value into `null`.
+    ///
+    /// The timezone case above is one instance of a wider hazard: every type
+    /// without an explicit arm falls through to Arrow's formatter, and a
+    /// formatter that cannot handle the type used to be reported as a null
+    /// cell. This walks the temporal and decimal types a query can return and
+    /// asserts each renders, so a future dependency or feature change that
+    /// breaks one of them fails here instead of silently blanking a column.
+    #[test]
+    fn no_column_type_silently_renders_as_null() {
+        use arrow::array::{
+            Date32Array, Date64Array, Decimal128Array, DurationMicrosecondArray, Time32SecondArray,
+            Time64MicrosecondArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+            TimestampNanosecondArray, TimestampSecondArray,
+        };
+
+        let micros = 1_767_268_800_000_000i64;
+        let cases: Vec<(&str, arrow::array::ArrayRef)> = vec![
+            ("Date32", Arc::new(Date32Array::from(vec![20454]))),
+            (
+                "Date64",
+                Arc::new(Date64Array::from(vec![1_767_268_800_000])),
+            ),
+            ("Time32(s)", Arc::new(Time32SecondArray::from(vec![43200]))),
+            (
+                "Time64(µs)",
+                Arc::new(Time64MicrosecondArray::from(vec![43_200_000_000])),
+            ),
+            (
+                "Duration(µs)",
+                Arc::new(DurationMicrosecondArray::from(vec![1_000_000])),
+            ),
+            (
+                "Decimal128",
+                Arc::new(
+                    Decimal128Array::from(vec![123_456i128])
+                        .with_precision_and_scale(10, 3)
+                        .expect("valid decimal"),
+                ),
+            ),
+            (
+                "Timestamp(s, naive)",
+                Arc::new(TimestampSecondArray::from(vec![1_767_268_800])),
+            ),
+            (
+                "Timestamp(ms, naive)",
+                Arc::new(TimestampMillisecondArray::from(vec![1_767_268_800_000])),
+            ),
+            (
+                "Timestamp(µs, naive)",
+                Arc::new(TimestampMicrosecondArray::from(vec![micros])),
+            ),
+            (
+                "Timestamp(ns, naive)",
+                Arc::new(TimestampNanosecondArray::from(vec![micros * 1_000])),
+            ),
+            (
+                "Timestamp(s, UTC)",
+                Arc::new(TimestampSecondArray::from(vec![1_767_268_800]).with_timezone("UTC")),
+            ),
+            (
+                "Timestamp(ms, UTC)",
+                Arc::new(
+                    TimestampMillisecondArray::from(vec![1_767_268_800_000]).with_timezone("UTC"),
+                ),
+            ),
+            (
+                "Timestamp(µs, UTC)",
+                Arc::new(TimestampMicrosecondArray::from(vec![micros]).with_timezone("UTC")),
+            ),
+            (
+                "Timestamp(ns, UTC)",
+                Arc::new(TimestampNanosecondArray::from(vec![micros * 1_000]).with_timezone("UTC")),
+            ),
+            (
+                "Timestamp(µs, +05:30)",
+                Arc::new(TimestampMicrosecondArray::from(vec![micros]).with_timezone("+05:30")),
+            ),
+            (
+                "Timestamp(µs, Asia/Kolkata)",
+                Arc::new(
+                    TimestampMicrosecondArray::from(vec![micros]).with_timezone("Asia/Kolkata"),
+                ),
+            ),
+        ];
+
+        for (label, col) in cases {
+            let cell = arrow_cell(col.as_ref(), 0);
+            assert_ne!(
+                cell,
+                Value::Null,
+                "{label} has a value at row 0 but rendered as null"
+            );
+        }
     }
 
     #[test]
