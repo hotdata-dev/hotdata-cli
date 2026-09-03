@@ -1,3 +1,8 @@
+## [0.30.0] - 2026-09-03
+
+### 🐛 Bug Fixes
+
+- *(query)* Render named-timezone timestamps (#283)
 ## [0.29.0] - 2026-09-03
 
 ### 🚀 Features
