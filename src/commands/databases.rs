@@ -1902,7 +1902,7 @@ fn walk_lineage_tree(
     };
     match fetched {
         Ok(r) => {
-            let unlisted_forks = (r.fork_count - r.forks.len() as i64).max(0);
+            let mut unlisted_forks = (r.fork_count - r.forks.len() as i64).max(0);
             let mut forks = Vec::new();
             for f in r.forks {
                 if visited.contains(&f.database_id) {
@@ -1917,6 +1917,23 @@ fn walk_lineage_tree(
                     visited,
                 ));
             }
+            // A paginated fork list can omit the very generation that leads to
+            // the queried database (pages are newest-first and the server
+            // clamps their size) — graft that known child so the queried
+            // database always appears. It was one of the unlisted forks.
+            if let Some(g) = descent.get(&id)
+                && !visited.contains(&g.database_id)
+            {
+                forks.push(walk_lineage_tree(
+                    api,
+                    g.clone(),
+                    forks_limit,
+                    descent,
+                    prefetched,
+                    visited,
+                ));
+                unlisted_forks = (unlisted_forks - 1).max(0);
+            }
             LineageTreeNode {
                 entry,
                 unlisted_forks,
@@ -1924,7 +1941,20 @@ fn walk_lineage_tree(
                 forks,
             }
         }
-        Err(_) => {
+        Err(e) => {
+            // A 404 is the expected shape of a deleted generation: its record
+            // survives in relatives' lineage, but the endpoint no longer
+            // answers for it. Anything else is a failed request (auth, rate
+            // limit, transport) — the fork list is just as unknown, but say
+            // so instead of passing it off as a deleted-generation artifact.
+            let not_found = matches!(&e, ApiError::Status { status, .. } if *status == reqwest::StatusCode::NOT_FOUND);
+            if !not_found {
+                let why = match &e {
+                    ApiError::Status { status, .. } => format!("HTTP {status}"),
+                    ApiError::Transport(t) => t.clone(),
+                };
+                eprintln!("warning: could not list forks of {id}: {why}");
+            }
             let forks = descent
                 .get(&id)
                 .filter(|g| !visited.contains(&g.database_id))
@@ -2914,6 +2944,66 @@ mod tests {
         c_lin.assert();
         a_lin.assert();
         b_lin.assert();
+    }
+
+    #[test]
+    fn lineage_tree_grafts_past_paginated_fork_page() {
+        // The root has 3 forks but its page lists only one, and the queried
+        // database is off the page. The walk must graft the known descent so
+        // the queried database still appears, counting it out of the unlisted
+        // tally.
+        let mut server = mockito::Server::new();
+        let q_lin = server
+            .mock("GET", "/v1/databases/db_q/lineage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(lineage_body(
+                "db_q",
+                "db_root",
+                r#"{"database_id":"db_root","name":"prod","exists":true}"#,
+                "",
+                0,
+            ))
+            .expect(1)
+            .create();
+        let root_lin = server
+            .mock("GET", "/v1/databases/db_root/lineage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(lineage_body(
+                "db_root",
+                "db_root",
+                "",
+                r#"{"database_id":"db_other","exists":true}"#,
+                3,
+            ))
+            .create();
+        let other_lin = server
+            .mock("GET", "/v1/databases/db_other/lineage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(lineage_body("db_other", "db_root", "", "", 0))
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let lin = fetch_lineage(&api, "db_q", None).unwrap();
+        let t = build_lineage_tree(&api, None, lin, None);
+
+        assert!(tree_contains(&t.tree, "db_q"), "queried db must appear");
+        // 3 total − 1 listed − 1 grafted = 1 still unlisted.
+        assert_eq!(t.tree.unlisted_forks, 1);
+        assert!(!t.tree.forks_unknown);
+        let ids: Vec<&str> = t
+            .tree
+            .forks
+            .iter()
+            .map(|f| f.entry.database_id.as_str())
+            .collect();
+        assert_eq!(ids, ["db_other", "db_q"]);
+
+        q_lin.assert();
+        root_lin.assert();
+        other_lin.assert();
     }
 
     #[test]
