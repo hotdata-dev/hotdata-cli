@@ -410,8 +410,44 @@ pub struct Database {
     pub expires_at: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
+    /// Set on a database created by forking another: where it came from and
+    /// which state of the source it copied. Absent (and omitted from `-o
+    /// json`/`-o yaml`) on originals and on forks that predate the server
+    /// recording lineage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<ForkedFrom>,
     #[serde(default)]
     attachments: Vec<DatabaseAttachment>,
+}
+
+/// Fork provenance as the CLI exposes it — the SDK's `ForkedFromInfo` with the
+/// `Option<Option<_>>` nullability flattened.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ForkedFrom {
+    /// Id of the forked database. A record, not a live link: the source may
+    /// since have been deleted.
+    pub database_id: String,
+    /// The source's label captured at fork time, so a deleted source still
+    /// reads as more than an id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Version of the source's data the fork copied — a point in time, not a
+    /// revision count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forked_at: Option<String>,
+}
+
+impl From<hotdata::models::ForkedFromInfo> for ForkedFrom {
+    fn from(f: hotdata::models::ForkedFromInfo) -> Self {
+        ForkedFrom {
+            database_id: f.database_id,
+            name: f.name.flatten(),
+            snapshot_id: f.snapshot_id.flatten(),
+            forked_at: f.forked_at.flatten(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -447,6 +483,10 @@ struct CreateDatabaseResponse {
     default_connection_id: String,
     #[serde(default)]
     expires_at: Option<String>,
+    /// Present on a fork's response (see [`Database::forked_from`]); create
+    /// responses never carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    forked_from: Option<ForkedFrom>,
 }
 
 #[derive(Deserialize)]
@@ -468,6 +508,7 @@ impl From<hotdata::models::DatabaseDetailResponse> for Database {
             default_connection_id: d.default_connection_id,
             expires_at: d.expires_at.flatten(),
             created_at: d.created_at.flatten(),
+            forked_from: d.forked_from.flatten().map(|f| ForkedFrom::from(*f)),
             attachments: d
                 .attachments
                 .into_iter()
@@ -1169,6 +1210,13 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                 label("catalog id:"),
                 db.default_connection_id.clone().dark_cyan()
             );
+            if let Some(f) = &db.forked_from {
+                println!(
+                    "{}{}",
+                    label("forked_from:"),
+                    lineage_row(&LineageEntry::from(f.clone()))
+                );
+            }
             let catalog = db
                 .default_catalog
                 .as_deref()
@@ -1386,6 +1434,9 @@ pub fn create(
         default_catalog: Some(resp.default_catalog),
         default_connection_id: resp.default_connection_id,
         expires_at: resp.expires_at.flatten(),
+        // Never set on a plain create; mapped anyway so the shape can't drift
+        // from fork's if the server ever returns an existing fork here.
+        forked_from: resp.forked_from.flatten().map(|f| ForkedFrom::from(*f)),
     };
 
     if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
@@ -1502,6 +1553,7 @@ pub fn fork(
         default_catalog: Some(resp.default_catalog),
         default_connection_id: resp.default_connection_id,
         expires_at: resp.expires_at.flatten(),
+        forked_from: resp.forked_from.flatten().map(|f| ForkedFrom::from(*f)),
     };
 
     if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
@@ -1523,7 +1575,16 @@ pub fn fork(
                 println!("catalog:     {}", c.clone().cyan());
             }
             println!("id:          {}", result.id);
-            println!("forked_from: {}", db.id);
+            // Prefer the server's provenance record (it carries the copied
+            // snapshot); the resolved source id is the fallback for servers
+            // that predate lineage.
+            match &result.forked_from {
+                Some(f) => println!(
+                    "forked_from: {}",
+                    lineage_row(&LineageEntry::from(f.clone()))
+                ),
+                None => println!("forked_from: {}", db.id),
+            }
             // Always printed, "never" included: with --expires-at omitted a
             // still-future expiry on the source is silently inherited.
             println!(
@@ -1558,24 +1619,64 @@ pub fn fork(
 /// One generation in a lineage response — an ancestor up the fork chain, or a
 /// database forked directly from the one being asked about. The server sends
 /// the same shape for both lists.
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 struct LineageEntry {
     database_id: String,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     /// Version of the source's data that the fork copied — a point in time,
     /// not a revision count.
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     snapshot_id: Option<i64>,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     forked_at: Option<String>,
     /// False once that database has been deleted; its place in the record is
     /// kept either way.
     exists: bool,
 }
 
-/// Response of `GET /databases/{id}/lineage`.
-#[derive(Deserialize, Serialize)]
+impl From<hotdata::models::LineageAncestorInfo> for LineageEntry {
+    fn from(a: hotdata::models::LineageAncestorInfo) -> Self {
+        LineageEntry {
+            database_id: a.database_id,
+            name: a.name.flatten(),
+            snapshot_id: a.snapshot_id.flatten(),
+            forked_at: a.forked_at.flatten(),
+            exists: a.exists,
+        }
+    }
+}
+
+impl From<hotdata::models::LineageForkInfo> for LineageEntry {
+    fn from(f: hotdata::models::LineageForkInfo) -> Self {
+        LineageEntry {
+            database_id: f.database_id,
+            name: f.name.flatten(),
+            snapshot_id: f.snapshot_id.flatten(),
+            forked_at: f.forked_at.flatten(),
+            exists: f.exists,
+        }
+    }
+}
+
+impl From<ForkedFrom> for LineageEntry {
+    /// A `forked_from` record rendered as a lineage row: the database it names
+    /// may or may not still exist, but the record never says — display as
+    /// existing rather than invent a "deleted" note.
+    fn from(f: ForkedFrom) -> Self {
+        LineageEntry {
+            database_id: f.database_id,
+            name: f.name,
+            snapshot_id: f.snapshot_id,
+            forked_at: f.forked_at,
+            exists: true,
+        }
+    }
+}
+
+/// Response of `GET /databases/{id}/lineage`, flattened from the SDK model —
+/// the CLI owns its `-o json`/`-o yaml` shape (see [`Database`]).
+#[derive(Serialize)]
 struct LineageResponse {
     database_id: String,
     /// Top of the family tree; equals `database_id` when this database is not
@@ -1589,19 +1690,31 @@ struct LineageResponse {
     fork_count: i64,
 }
 
-/// Fetch a database's lineage. Untyped `get_json` path: the endpoint is newer
-/// than the published SDK's `databases()` handle (hotdata 0.14.0), and the CLI
-/// owns the output shape either way.
+impl From<hotdata::models::DatabaseLineageResponse> for LineageResponse {
+    fn from(r: hotdata::models::DatabaseLineageResponse) -> Self {
+        LineageResponse {
+            database_id: r.database_id,
+            root_id: r.root_id,
+            ancestors: r.ancestors.into_iter().map(LineageEntry::from).collect(),
+            ancestors_truncated: r.ancestors_truncated,
+            forks: r.forks.into_iter().map(LineageEntry::from).collect(),
+            fork_count: r.fork_count,
+        }
+    }
+}
+
+/// Fetch a database's lineage through the SDK's typed `databases().lineage`.
 fn fetch_lineage(
     api: &Api,
     database_id: &str,
     forks_limit: Option<u32>,
 ) -> Result<LineageResponse, ApiError> {
-    let mut query: Vec<(&str, String)> = Vec::new();
-    if let Some(n) = forks_limit {
-        query.push(("forks_limit", n.to_string()));
-    }
-    api.get_json(&format!("/databases/{database_id}/lineage"), &query)
+    block(
+        api.client()
+            .databases()
+            .lineage(database_id, forks_limit.map(|n| n as i32)),
+    )
+    .map(LineageResponse::from)
 }
 
 /// One `id (name) — forked <date>, snapshot <n>, deleted` line of the lineage
@@ -2280,6 +2393,58 @@ mod tests {
         format!(
             r#"{{"id":"{id}","name":"{name}","default_catalog":"default","default_schema":"main","default_connection_id":"{conn_id}","attachments":[]}}"#
         )
+    }
+
+    #[test]
+    fn detail_forked_from_maps_and_serializes() {
+        // A fork's detail response carries provenance; it must survive the
+        // SDK-model → CLI-shape mapping and appear nested in -o json.
+        let mut server = mockito::Server::new();
+        let by_id = server
+            .mock("GET", "/v1/databases/db_fork")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"db_fork","name":"sales-fork","default_catalog":"sales",
+                    "default_schema":"main","default_connection_id":"conn_f","attachments":[],
+                    "forked_from":{"database_id":"db_src","name":"sales","snapshot_id":42,
+                                   "forked_at":"2026-09-01T14:00:00Z"}}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let db = get_database(&api, "db_fork").unwrap();
+        let f = db.forked_from.as_ref().expect("forked_from should map");
+        assert_eq!(f.database_id, "db_src");
+        assert_eq!(f.name.as_deref(), Some("sales"));
+        assert_eq!(f.snapshot_id, Some(42));
+
+        let json = serde_json::to_value(&db).unwrap();
+        assert_eq!(
+            json["forked_from"]["database_id"],
+            serde_json::json!("db_src")
+        );
+        by_id.assert();
+    }
+
+    #[test]
+    fn database_without_forked_from_omits_it_from_json() {
+        // Originals (and pre-lineage forks) carry no record; the JSON omits the
+        // key entirely rather than emitting `"forked_from": null`.
+        let mut server = mockito::Server::new();
+        let by_id = server
+            .mock("GET", "/v1/databases/db_orig")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(full_detail("db_orig", "orig", "conn_1"))
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let db = get_database(&api, "db_orig").unwrap();
+        assert!(db.forked_from.is_none());
+        let json = serde_json::to_value(&db).unwrap();
+        assert!(json.get("forked_from").is_none(), "json: {json}");
+        by_id.assert();
     }
 
     #[test]
