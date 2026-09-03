@@ -407,6 +407,11 @@ pub struct Database {
     pub name: Option<String>,
     #[serde(default)]
     pub default_catalog: Option<String>,
+    /// Id of the database's own catalog. runtimedb removed connections as a
+    /// concept (the engine is push-only; every connection row IS a catalog),
+    /// but the wire field is still named `default_connection_id` — the CLI's
+    /// own output already speaks catalog.
+    #[serde(rename = "default_catalog_id")]
     pub default_connection_id: String,
     #[serde(default)]
     pub expires_at: Option<String>,
@@ -454,6 +459,9 @@ impl From<hotdata::models::ForkedFromInfo> for ForkedFrom {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct DatabaseAttachment {
+    /// Catalog id under its post-connections-removal name (see
+    /// [`Database::default_connection_id`]); also the `detach` handle.
+    #[serde(rename = "catalog_id")]
     connection_id: String,
     alias: Option<String>,
 }
@@ -482,6 +490,9 @@ struct CreateDatabaseResponse {
     name: Option<String>,
     #[serde(default)]
     default_catalog: Option<String>,
+    /// Parses the server's `default_connection_id`, but `-o json`/`-o yaml`
+    /// emit it as `default_catalog_id` (see [`Database::default_connection_id`]).
+    #[serde(rename(serialize = "default_catalog_id"))]
     default_connection_id: String,
     #[serde(default)]
     expires_at: Option<String>,
@@ -669,6 +680,60 @@ pub fn resolve_database(api: &Api, id_or_name: &str) -> Database {
             std::process::exit(1);
         }
     }
+}
+
+/// Like [`try_resolve_database`], but prefer the API's ambient database scope
+/// (`HOTDATA_DATABASE` / current database) when its catalog or name matches
+/// `key`. This disambiguates the common case where several databases share a
+/// catalog (e.g. `default` across create/fork): the one the user is working in
+/// wins instead of the lookup erroring as ambiguous. A key that names neither
+/// the active database's catalog nor its name resolves like any other lookup.
+pub fn try_resolve_database_preferring_active(api: &Api, key: &str) -> Result<Database, String> {
+    if let Some(active_id) = api.database_id().filter(|id| *id != key)
+        && let Some(active) = none_if_404(get_database(api, active_id)).unwrap_or_else(|e| e.exit())
+        && (active.default_catalog.as_deref() == Some(key) || active.name.as_deref() == Some(key))
+    {
+        return Ok(active);
+    }
+    try_resolve_database(api, key)
+}
+
+/// Exiting wrapper around [`try_resolve_database_preferring_active`], mirroring
+/// [`resolve_database`].
+pub fn resolve_database_preferring_active(api: &Api, key: &str) -> Database {
+    match try_resolve_database_preferring_active(api, key) {
+        Ok(db) => db,
+        Err(e) => {
+            use crossterm::style::Stylize;
+            eprintln!("{}", format!("error: {e}").red());
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Every database id carries this prefix; anything else in a `--database` flag
+/// is a catalog or name that needs resolving before it can scope a request.
+const DATABASE_ID_PREFIX: &str = "dbid";
+
+/// True when a `--database` flag value is already an id (no resolve needed).
+fn is_database_id(value: &str) -> bool {
+    value.starts_with(DATABASE_ID_PREFIX)
+}
+
+/// Resolve a `--database` flag value to the id request scoping needs (the
+/// `X-Database-Id` header or a database-scoped path segment). An id passes
+/// through untouched — the common path pays no round trip — while a catalog
+/// or name resolves like every other database lookup (preferring the active
+/// database on an ambiguous catalog), so `-d <name>` works everywhere
+/// `-d <id>` does instead of the server rejecting the raw name. Takes the
+/// caller's `Api` (callers all have one, or are about to build one to scope)
+/// rather than constructing a second. Exits with the resolver's message when
+/// nothing matches.
+pub fn resolve_database_flag(api: &Api, key: &str) -> String {
+    if is_database_id(key) {
+        return key.to_string();
+    }
+    resolve_database_preferring_active(api, key).id
 }
 
 fn schema_name(schema: Option<&str>) -> &str {
@@ -2084,15 +2149,31 @@ fn database_exists_or_unverifiable(result: Result<Database, ApiError>) -> Result
     }
 }
 
-pub fn set(workspace_id: &str, id: &str) {
+pub fn set(workspace_id: &str, id_or_name: &str) {
     use crossterm::style::Stylize;
     // `set` only writes local config; the GET is just a friendly existence-check.
     let api = Api::new(Some(workspace_id));
-    if !database_exists_or_unverifiable(get_database(&api, id)).unwrap_or_else(|e| e.exit()) {
-        eprintln!("{}", format!("error: no database with id '{id}'").red());
-        std::process::exit(1);
-    }
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
+    let id = if is_database_id(id_or_name) {
+        // Ids keep the 403-tolerant existence check: a database API token is
+        // denied `GET /v1/databases/{id}` (and the list fallback), so resolving
+        // would lock it out of `databases use` entirely.
+        if !database_exists_or_unverifiable(get_database(&api, id_or_name))
+            .unwrap_or_else(|e| e.exit())
+        {
+            eprintln!(
+                "{}",
+                format!("error: no database with id '{id_or_name}'").red()
+            );
+            std::process::exit(1);
+        }
+        id_or_name.to_string()
+    } else {
+        // A catalog or name: resolve it so `databases use <name>` works like
+        // every other database lookup. Config must hold the id — everything
+        // downstream (X-Database-Id, context paths) sends it raw.
+        resolve_database(&api, id_or_name).id
+    };
+    if let Err(e) = crate::config::save_current_database("default", workspace_id, &id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
         std::process::exit(1);
     }
@@ -2235,24 +2316,7 @@ pub fn tables_load(
     let api = Api::new(Some(workspace_id));
     // Prefer the active database when its catalog or name matches the lookup key,
     // avoiding ambiguity when multiple databases share the same catalog name.
-    let active_id = crate::config::load_current_database("default", workspace_id);
-    let lookup_key = match active_id.as_deref() {
-        Some(id) => {
-            if let Some(active) = none_if_404(get_database(&api, id)).unwrap_or_else(|e| e.exit()) {
-                if active.default_catalog.as_deref() == Some(database.as_str())
-                    || active.name.as_deref() == Some(database.as_str())
-                {
-                    id.to_string()
-                } else {
-                    database.clone()
-                }
-            } else {
-                database.clone()
-            }
-        }
-        None => database.clone(),
-    };
-    let db = resolve_database(&api, &lookup_key);
+    let db = resolve_database_preferring_active(&api, &database);
     // A result load hits the connection-scoped endpoint, where the server scopes
     // the result by the X-Database-Id header; that must name the resolved target
     // database, not the ambient active one (which may be unset or different). An
@@ -2647,6 +2711,132 @@ mod tests {
     }
 
     #[test]
+    fn database_json_names_catalog_ids_as_catalog() {
+        // runtimedb removed connections as a concept (push-only engine: every
+        // connection row IS a catalog), so the CLI exposes the ids — they're
+        // real handles, e.g. for detach — under the catalog name they'll keep.
+        // Only the wire still says `default_connection_id`.
+        let db = Database {
+            id: "db_1".to_string(),
+            name: Some("sales".to_string()),
+            default_catalog: Some("sales".to_string()),
+            default_connection_id: "conn_own".to_string(),
+            expires_at: None,
+            created_at: None,
+            forked_from: None,
+            attachments: vec![DatabaseAttachment {
+                connection_id: "conn_a".to_string(),
+                alias: Some("gh".to_string()),
+            }],
+        };
+        let json = serde_json::to_value(&db).unwrap();
+        assert_eq!(json["default_catalog_id"], serde_json::json!("conn_own"));
+        assert!(json.get("default_connection_id").is_none(), "json: {json}");
+        assert_eq!(
+            json["attachments"][0]["catalog_id"],
+            serde_json::json!("conn_a")
+        );
+        assert!(
+            json["attachments"][0].get("connection_id").is_none(),
+            "json: {json}"
+        );
+    }
+
+    #[test]
+    fn create_response_parses_wire_name_but_emits_catalog_id() {
+        // The server's create/fork responses still say `default_connection_id`;
+        // the CLI's own -o json/yaml renames it on the way out.
+        let resp: CreateDatabaseResponse =
+            serde_json::from_str(r#"{"id":"db_new","default_connection_id":"conn_abc"}"#).unwrap();
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["default_catalog_id"], serde_json::json!("conn_abc"));
+        assert!(json.get("default_connection_id").is_none(), "json: {json}");
+    }
+
+    /// Like [`full_detail`] but with an explicit catalog, for ambiguity tests.
+    fn detail_with_catalog(id: &str, name: &str, catalog: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"{name}","default_catalog":"{catalog}","default_schema":"main","default_connection_id":"conn_x","attachments":[]}}"#
+        )
+    }
+
+    #[test]
+    fn preferring_active_picks_active_on_matching_catalog() {
+        // Two databases could share catalog 'default'; the active one wins
+        // without a list round-trip. Only the active-detail GET is mocked — a
+        // fallback into try_resolve_database would hit unmocked routes and fail.
+        let mut server = mockito::Server::new();
+        let active = server
+            .mock("GET", "/v1/databases/db_active")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(detail_with_catalog("db_active", "mine", "default"))
+            .create();
+
+        let api = Api::test_new_scoped(&server.url(), "k", Some("ws"), Some("db_active"));
+        let db = try_resolve_database_preferring_active(&api, "default").unwrap();
+        assert_eq!(db.id, "db_active");
+        active.assert();
+    }
+
+    #[test]
+    fn preferring_active_falls_back_when_active_does_not_match() {
+        // The active database's catalog/name don't match the key → the normal
+        // id → catalog → name resolution runs.
+        let mut server = mockito::Server::new();
+        let active = server
+            .mock("GET", "/v1/databases/db_active")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(detail_with_catalog("db_active", "othername", "other"))
+            .create();
+        let not_id = server
+            .mock("GET", "/v1/databases/sales")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        let list = server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[{"id":"db_s","name":"sales","default_catalog":"sales_cat","default_schema":"main"}]}"#,
+            )
+            .create();
+        let detail = server
+            .mock("GET", "/v1/databases/db_s")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(detail_with_catalog("db_s", "sales", "sales_cat"))
+            .create();
+
+        let api = Api::test_new_scoped(&server.url(), "k", Some("ws"), Some("db_active"));
+        let db = try_resolve_database_preferring_active(&api, "sales").unwrap();
+        assert_eq!(db.id, "db_s");
+        active.assert();
+        not_id.assert();
+        list.assert();
+        detail.assert();
+    }
+
+    #[test]
+    fn preferring_active_without_scope_resolves_plainly() {
+        // No ambient database scope → straight to the normal resolution.
+        let mut server = mockito::Server::new();
+        let by_id = server
+            .mock("GET", "/v1/databases/db_abc")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(full_detail("db_abc", "sales", "conn_1"))
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let db = try_resolve_database_preferring_active(&api, "db_abc").unwrap();
+        assert_eq!(db.id, "db_abc");
+        by_id.assert();
+    }
+
+    #[test]
     fn detail_forked_from_maps_and_serializes() {
         // A fork's detail response carries provenance; it must survive the
         // SDK-model → CLI-shape mapping and appear nested in -o json.
@@ -2676,6 +2866,49 @@ mod tests {
             serde_json::json!("db_src")
         );
         by_id.assert();
+    }
+
+    #[test]
+    fn database_flag_passes_ids_through_without_resolving() {
+        // An id needs no lookup: point the Api at a server with no mocks so
+        // any resolve attempt fails loudly.
+        let server = mockito::Server::new();
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        assert_eq!(resolve_database_flag(&api, "dbid123abc"), "dbid123abc");
+        assert!(is_database_id("dbideutulm48nc5l28ikc6u53gmjzr"));
+        assert!(!is_database_id("littlesis"));
+        assert!(!is_database_id("default"));
+    }
+
+    #[test]
+    fn database_flag_resolves_names_to_ids() {
+        // A non-id flag resolves through the normal lookup and returns the id.
+        let mut server = mockito::Server::new();
+        let not_id = server
+            .mock("GET", "/v1/databases/sales")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        let list = server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[{"id":"db_s","name":"sales","default_catalog":"sales_cat","default_schema":"main"}]}"#,
+            )
+            .create();
+        let detail = server
+            .mock("GET", "/v1/databases/db_s")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(detail_with_catalog("db_s", "sales", "sales_cat"))
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        assert_eq!(resolve_database_flag(&api, "sales"), "db_s");
+        not_id.assert();
+        list.assert();
+        detail.assert();
     }
 
     #[test]
