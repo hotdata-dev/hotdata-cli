@@ -1025,25 +1025,49 @@ mod tests {
         }
     }
 
-    /// A decimal keeps every digit, as the service's rendering does.
+    /// A decimal wider than an `f64` is rounded here. Known limitation, pinned
+    /// so it is a discovered fact rather than a surprise.
     ///
-    /// arrow-json writes a decimal as an unquoted JSON number at full width.
-    /// The service passes those bytes straight through; this side parses them,
-    /// so without `serde_json`'s `arbitrary_precision` the value lands in an
-    /// `f64` and everything past the 17th digit is lost — a 38-digit decimal
-    /// silently rounded, and a disagreement with the service.
+    /// arrow-json writes a decimal as an unquoted JSON number at full width and
+    /// the service passes those bytes through untouched, so a `DECIMAL(38,2)`
+    /// reaches this side with all its digits and then loses everything past the
+    /// 17th when parsed into a `Value`.
+    ///
+    /// `serde_json`'s `arbitrary_precision` would fix it and must not be used:
+    /// the feature is crate-wide, and with it on a `Number` serializes as the
+    /// private struct `$serde_json::private::Number`, which serde_yaml renders
+    /// as a nested mapping — corrupting `-o yaml` for commands that have
+    /// nothing to do with rendering results. The honest fix is to stop routing
+    /// the json output path through `Value` at all, as the service does; that
+    /// is a change to the output layer, not to this function.
     #[test]
-    fn a_wide_decimal_keeps_every_digit() {
+    fn a_wide_decimal_is_rounded_a_known_limitation() {
         use arrow::array::Decimal128Array;
 
         let col = Decimal128Array::from(vec![123456789012345678901234567890123456i128])
             .with_precision_and_scale(38, 2)
             .expect("valid decimal");
         let got = arrow_cell(&col, &field_for(&col), 0).expect("decimal renders");
-        assert_eq!(
-            got.to_string(),
-            "1234567890123456789012345678901234.56",
-            "decimal lost precision: {got}"
+
+        // Full precision would be 1234567890123456789012345678901234.56.
+        assert_eq!(got.to_string(), "1.2345678901234568e+33");
+    }
+
+    /// `-o yaml` must render a JSON number as a number.
+    ///
+    /// This exists to fail loudly if `serde_json`'s `arbitrary_precision` is
+    /// ever enabled: the feature is crate-wide, and serde_yaml does not know
+    /// about the private struct a `Number` then serializes as, so every yaml
+    /// output carrying a `Value` number becomes a nested mapping. Nothing else
+    /// in the suite covers yaml, so without this the breakage would ship.
+    #[test]
+    fn yaml_renders_a_json_number_as_a_number() {
+        let v: Value = serde_json::json!({"dimensions": 1536});
+        let yaml = serde_yaml::to_string(&v).expect("yaml");
+        assert_eq!(yaml.trim(), "dimensions: 1536", "yaml corrupted: {yaml}");
+        assert!(
+            !yaml.contains("private::Number"),
+            "serde_json's arbitrary_precision leaked into yaml: {yaml}"
         );
     }
 

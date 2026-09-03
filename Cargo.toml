@@ -32,11 +32,14 @@ directories = "6"
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
-# `arbitrary_precision` keeps a JSON number's literal digits instead of routing
-# it through an f64. arrow-json writes a decimal at full width and the service
-# passes those bytes through untouched, so without this a wide decimal would be
-# rounded here and disagree with the service.
-serde_json = { version = "1", features = ["arbitrary_precision"] }
+# NOT `arbitrary_precision`, deliberately. It would keep a wide decimal's
+# digits (see `a_wide_decimal_is_rounded_a_known_limitation`), but the feature
+# is crate-wide: with it on, `serde_json::Number` serializes as the private
+# struct `$serde_json::private::Number`, which serde_json's own serializer
+# intercepts and serde_yaml does not — so every `-o yaml` output carrying a
+# `Value` number turns into a nested mapping. That breaks commands unrelated to
+# this one, which costs more than the rounding it buys.
+serde_json = "1"
 arrow = { version = "55", default-features = false, features = [
   "ipc",
   # Timestamps carrying a named IANA zone ("UTC", "America/New_York")
