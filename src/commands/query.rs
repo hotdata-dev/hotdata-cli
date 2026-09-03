@@ -111,15 +111,26 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
-/// Warn once per process that a column could not be rendered.
+/// Warn that a column could not be rendered, once per data type.
 ///
-/// Deduplicated because the failure is a property of the column's type, not of
-/// any one row: a million-row result would otherwise print a million lines.
+/// Keyed on the type rather than a single global flag: the failure is a
+/// property of the type, so a million-row result must not print a million
+/// lines — but a result with two unformattable types has to report both, or
+/// the second one goes back to nulling silently.
 fn warn_unformattable_once(data_type: &arrow::datatypes::DataType, err: &arrow::error::ArrowError) {
     use crossterm::style::Stylize;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    if WARNED.swap(true, Ordering::Relaxed) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static WARNED: OnceLock<Mutex<HashSet<arrow::datatypes::DataType>>> = OnceLock::new();
+    let seen = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+    // A poisoned lock only means another thread panicked mid-warn; recover the
+    // set rather than take the process down over a diagnostic.
+    let mut seen = match seen.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if !seen.insert(data_type.clone()) {
         return;
     }
     eprintln!(
@@ -240,15 +251,23 @@ fn arrow_cell(col: &dyn arrow::array::Array, row: usize) -> Value {
         _ => {
             use arrow::util::display::{ArrayFormatter, FormatOptions};
             let opts = FormatOptions::default();
-            match ArrayFormatter::try_new(col, &opts) {
-                Ok(f) => Value::String(f.value(row).to_string()),
-                // `col.is_null(row)` was checked above, so the cell *has* a
-                // value and we simply could not render it. Emitting `null` here
-                // claims the opposite, and is indistinguishable from a real
-                // null to anything reading the output — which is how a whole
-                // class of unformattable column went unnoticed. Keep the shape
-                // (callers rely on a value per column) but say so on stderr,
-                // once per run so a large result cannot drown the terminal.
+            // `col.is_null(row)` was checked above, so the cell *has* a value.
+            // Reporting it as `null` claims the opposite and is
+            // indistinguishable from a real null to anything reading the
+            // output — which is how a whole class of unformattable column went
+            // unnoticed. Keep the shape (callers rely on a value per column)
+            // but say so on stderr, deduplicated per type.
+            //
+            // Both failure levels are handled. `try_new` reports a type Arrow
+            // cannot format at all; `try_to_string` reports a single value it
+            // cannot format. The latter matters because the plain `Display`
+            // impl, under the default `safe: true`, writes the text
+            // "ERROR: <msg>" into the cell — an error message wearing the
+            // costume of data — and panics outright when the inner write fails.
+            let formatted =
+                ArrayFormatter::try_new(col, &opts).and_then(|f| f.value(row).try_to_string());
+            match formatted {
+                Ok(s) => Value::String(s),
                 Err(e) => {
                     warn_unformattable_once(col.data_type(), &e);
                     Value::Null
@@ -878,6 +897,37 @@ mod tests {
                 cell,
                 Value::Null,
                 "{label} has a value at row 0 but rendered as null"
+            );
+        }
+    }
+
+    /// A single value Arrow cannot format must not panic, and must not put an
+    /// error message into the data.
+    ///
+    /// Two distinct failure levels exist: a type Arrow cannot format at all
+    /// (caught by `try_new`) and one value inside a formattable type that is
+    /// out of range. For the latter, the plain `Display` impl under the default
+    /// `safe: true` writes the literal text "ERROR: <msg>" as the cell value,
+    /// and panics when the inner write itself fails. Neither is acceptable in a
+    /// data column, so the value path is rendered fallibly.
+    #[test]
+    fn an_unformattable_value_is_null_not_a_panic_or_an_error_string() {
+        use arrow::array::TimestampSecondArray;
+
+        // Far outside the range a second-resolution timestamp can render.
+        let col = TimestampSecondArray::from(vec![i64::MAX]);
+        let cell = arrow_cell(&col, 0);
+
+        if let Value::String(s) = &cell {
+            assert!(
+                !s.contains("ERROR"),
+                "an error message reached the data as a value: {s}"
+            );
+        } else {
+            assert_eq!(
+                cell,
+                Value::Null,
+                "expected either a rendered value or null"
             );
         }
     }
