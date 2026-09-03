@@ -1,3 +1,8 @@
+## [0.29.0] - 2026-09-03
+
+### 🚀 Features
+
+- *(databases)* Lineage command and forked_from provenance (#281)
 ## [0.28.0] - 2026-08-25
 
 ### 🚀 Features
