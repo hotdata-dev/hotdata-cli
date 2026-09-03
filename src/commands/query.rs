@@ -122,6 +122,11 @@ fn value_to_string(v: &Value) -> String {
 /// rather than dropping `b`). It has to agree with the service or the same
 /// query would describe a struct differently depending on which side rendered
 /// it — the divergence this module exists to remove.
+///
+/// Caveat worth knowing: this is the same *encoder* as the service's, not the
+/// same *build* of it. The service is on a later arrow than the SDK this links
+/// against, so the two agree because they are observed to, not because a
+/// version pins them together. Aligning them needs an SDK release first.
 static ENCODER_OPTIONS: LazyLock<EncoderOptions> =
     LazyLock::new(|| EncoderOptions::default().with_explicit_nulls(true));
 
@@ -749,6 +754,67 @@ mod tests {
             serde_json::json!({"a": 1, "b": "x"}),
             "struct must be a JSON object, got {got:?}"
         );
+    }
+
+    /// The production path — `arrow_result_to_query_response` — rather than the
+    /// single-cell helper the other tests use.
+    ///
+    /// It owns work the helper does not: encoders built once per column per
+    /// batch, row assembly, and the column naming carried by a failure. Those
+    /// were previously exercised only by hand against a live service, which CI
+    /// does not do, so a break in them would have shipped.
+    #[test]
+    fn the_batch_path_renders_a_whole_result() {
+        use arrow::array::TimestampMicrosecondArray;
+        use arrow::array::{ArrayRef, Int64Array, Int64Builder, ListBuilder, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        // Two rows, and a nested column so shape is actually asserted.
+        let mut lb = ListBuilder::new(Int64Builder::new());
+        lb.values().append_value(7);
+        lb.values().append_value(8);
+        lb.append(true);
+        lb.values().append_value(9);
+        lb.append(true);
+        let list: ArrayRef = Arc::new(lb.finish());
+
+        let micros = 1_767_268_800_000_000i64;
+        let ts: ArrayRef = Arc::new(
+            TimestampMicrosecondArray::from(vec![micros, micros]).with_timezone("Asia/Kolkata"),
+        );
+        let ints: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("n", DataType::Int64, false),
+            Field::new("l", list.data_type().clone(), true),
+            Field::new("t", ts.data_type().clone(), true),
+        ]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![ints, list, ts]).expect("batch");
+
+        let result = hotdata::ArrowResult {
+            batches: vec![batch],
+            schema,
+            total_row_count: Some(2),
+            next_link: None,
+        };
+        let resp = arrow_result_to_query_response(result, "rslt_test".to_string())
+            .expect("the batch path renders");
+
+        assert_eq!(resp.columns, vec!["n", "l", "t"]);
+        assert_eq!(resp.row_count, 2);
+        assert_eq!(resp.total_row_count, Some(2));
+        assert_eq!(resp.result_id.as_deref(), Some("rslt_test"));
+        assert_eq!(resp.rows.len(), 2);
+
+        // The nested column must be a JSON array, not display text — the
+        // invariant that failed before, asserted through the real path.
+        assert_eq!(resp.rows[0][0], serde_json::json!(1));
+        assert_eq!(resp.rows[0][1], serde_json::json!([7, 8]));
+        assert_eq!(resp.rows[1][1], serde_json::json!([9]));
+
+        // And the named zone resolves rather than nulling.
+        let t = resp.rows[0][2].as_str().expect("timestamp is a string");
+        assert!(t.contains("+05:30"), "expected a resolved offset, got {t}");
     }
 
     /// A timestamp carrying a *named* IANA zone must render, not come back as
