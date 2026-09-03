@@ -127,6 +127,12 @@ static ENCODER_OPTIONS: LazyLock<EncoderOptions> =
 
 /// Encode one already-prepared cell to a `serde_json::Value`.
 ///
+/// The service encodes with the same arrow-json encoder but writes its bytes
+/// straight to the response and never builds a `Value`. This has to, because
+/// it also draws tables and CSV, which need the cells individually. That extra
+/// step is the only asymmetry left between the two, and it cannot change the
+/// rendering — the text being parsed here is exactly what the service emits.
+///
 /// `buf` is reused across cells so a wide result does not allocate per value.
 fn encode_cell(
     enc: &mut NullableEncoder<'_>,
@@ -140,6 +146,7 @@ fn encode_cell(
     }
     buf.clear();
     enc.encode(row, buf);
+
     serde_json::from_slice(buf).map_err(|e| {
         ArrowError::JsonError(format!(
             "arrow-json produced text that is not valid JSON ({e}): {}",
