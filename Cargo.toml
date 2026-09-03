@@ -32,7 +32,11 @@ directories = "6"
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `arbitrary_precision` keeps a JSON number's literal digits instead of routing
+# it through an f64. arrow-json writes a decimal at full width and the service
+# passes those bytes through untouched, so without this a wide decimal would be
+# rounded here and disagree with the service.
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 arrow = { version = "55", default-features = false, features = [
   "ipc",
   # Timestamps carrying a named IANA zone ("UTC", "America/New_York")

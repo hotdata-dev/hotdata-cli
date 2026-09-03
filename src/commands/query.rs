@@ -873,9 +873,9 @@ mod tests {
     #[test]
     fn no_column_type_silently_renders_as_null() {
         use arrow::array::{
-            Date32Array, Date64Array, Decimal128Array, DurationMicrosecondArray, Time32SecondArray,
-            Time64MicrosecondArray, TimestampMicrosecondArray, TimestampMillisecondArray,
-            TimestampNanosecondArray, TimestampSecondArray,
+            Date32Array, Date64Array, Decimal128Array, DurationMicrosecondArray, Float32Array,
+            Float64Array, Time32SecondArray, Time64MicrosecondArray, TimestampMicrosecondArray,
+            TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
         };
 
         let micros = 1_767_268_800_000_000i64;
@@ -946,6 +946,12 @@ mod tests {
                     TimestampMicrosecondArray::from(vec![micros]).with_timezone("Asia/Kolkata"),
                 ),
             ),
+            // Floats belong in this sweep because arrow-json emits an unquoted
+            // token for them: were it ever to emit `NaN` or `inf` — neither of
+            // which is valid JSON — the parse would fail and one bad cell would
+            // abort a whole result. It emits `null` today, matching the service.
+            ("Float64 finite", Arc::new(Float64Array::from(vec![1.5]))),
+            ("Float32 finite", Arc::new(Float32Array::from(vec![1.5f32]))),
         ];
 
         for (label, col) in cases {
@@ -987,6 +993,58 @@ mod tests {
             ),
             other => panic!("unexpected rendering: {other:?}"),
         }
+    }
+
+    /// A non-finite float renders as `null`, the way the service renders it.
+    ///
+    /// The service nullifies non-finite floats before encoding, because JSON
+    /// has no `NaN` or `Infinity`. arrow-json independently emits `null` for
+    /// them, so both sides agree — but if it ever emitted the bare tokens they
+    /// would not be valid JSON, the parse would fail, and a single bad cell
+    /// would abort an entire result. Pinned so that change is caught here.
+    #[test]
+    fn non_finite_floats_render_as_null_like_the_service() {
+        use arrow::array::{ArrayRef, Float32Array, Float64Array};
+
+        let cases: Vec<(&str, ArrayRef)> = vec![
+            ("f64 NaN", Arc::new(Float64Array::from(vec![f64::NAN]))),
+            (
+                "f64 +inf",
+                Arc::new(Float64Array::from(vec![f64::INFINITY])),
+            ),
+            (
+                "f64 -inf",
+                Arc::new(Float64Array::from(vec![f64::NEG_INFINITY])),
+            ),
+            ("f32 NaN", Arc::new(Float32Array::from(vec![f32::NAN]))),
+        ];
+        for (label, col) in cases {
+            let got = arrow_cell(col.as_ref(), &field_for(col.as_ref()), 0)
+                .unwrap_or_else(|e| panic!("{label} aborted the result: {e}"));
+            assert_eq!(got, Value::Null, "{label} rendered as {got:?}");
+        }
+    }
+
+    /// A decimal keeps every digit, as the service's rendering does.
+    ///
+    /// arrow-json writes a decimal as an unquoted JSON number at full width.
+    /// The service passes those bytes straight through; this side parses them,
+    /// so without `serde_json`'s `arbitrary_precision` the value lands in an
+    /// `f64` and everything past the 17th digit is lost — a 38-digit decimal
+    /// silently rounded, and a disagreement with the service.
+    #[test]
+    fn a_wide_decimal_keeps_every_digit() {
+        use arrow::array::Decimal128Array;
+
+        let col = Decimal128Array::from(vec![123456789012345678901234567890123456i128])
+            .with_precision_and_scale(38, 2)
+            .expect("valid decimal");
+        let got = arrow_cell(&col, &field_for(&col), 0).expect("decimal renders");
+        assert_eq!(
+            got.to_string(),
+            "1234567890123456789012345678901234.56",
+            "decimal lost precision: {got}"
+        );
     }
 
     #[test]
