@@ -146,6 +146,7 @@ The full command surface. The top level has eight groups — `auth`, `workspaces
 | `databases show` | Show details for an instant database |
 | `databases create` | Create a new instant database |
 | `databases fork` | Fork a database into a new, independent database |
+| `databases lineage` | Show a database's fork ancestry and direct forks |
 | `databases attach` | Attach a catalog so its tables are queryable |
 | `databases detach` | Detach a previously attached catalog |
 | `databases use` | Set the current (default) database |
