@@ -118,6 +118,13 @@ pub enum DatabasesCommands {
         #[arg(long)]
         forks_limit: Option<u32>,
 
+        /// Walk the whole family tree: from the root down through every
+        /// reachable generation, one lineage request per database — not just
+        /// this database's ancestors and direct forks. With --forks-limit, the
+        /// limit applies per database.
+        #[arg(long)]
+        tree: bool,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
@@ -1619,7 +1626,7 @@ pub fn fork(
 /// One generation in a lineage response — an ancestor up the fork chain, or a
 /// database forked directly from the one being asked about. The server sends
 /// the same shape for both lists.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct LineageEntry {
     database_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1747,11 +1754,38 @@ fn lineage_row(e: &LineageEntry, root: bool) -> String {
     s
 }
 
-pub fn lineage(workspace_id: &str, database: Option<&str>, forks_limit: Option<u32>, format: &str) {
+pub fn lineage(
+    workspace_id: &str,
+    database: Option<&str>,
+    forks_limit: Option<u32>,
+    tree: bool,
+    format: &str,
+) {
     let source = resolve_current_database(database, workspace_id);
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &source);
     let lin = fetch_lineage(&api, &db.id, forks_limit).unwrap_or_else(|e| e.exit());
+
+    if tree {
+        let t = build_lineage_tree(&api, db.name.as_deref(), lin, forks_limit);
+        if !tree_contains(&t.tree, &t.database_id) {
+            eprintln!(
+                "warning: could not reach {} walking down from the root; showing the reachable tree",
+                t.database_id
+            );
+        }
+        match format {
+            "json" => println!("{}", serde_json::to_string_pretty(&t).unwrap()),
+            "yaml" => print!("{}", serde_yaml::to_string(&t).unwrap()),
+            "table" => {
+                let mut out = String::new();
+                render_lineage_tree(&t.tree, "", "", true, &t.database_id, &t.root_id, &mut out);
+                print!("{out}");
+            }
+            _ => unreachable!(),
+        }
+        return;
+    }
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&lin).unwrap()),
@@ -1834,6 +1868,237 @@ pub fn lineage(workspace_id: &str, database: Option<&str>, forks_limit: Option<u
             }
         }
         _ => unreachable!(),
+    }
+}
+
+/// One database in a `lineage --tree` walk: its lineage entry plus the forks
+/// found under it. The CLI owns this `-o json`/`-o yaml` shape.
+#[derive(Serialize)]
+struct LineageTreeNode {
+    #[serde(flatten)]
+    entry: LineageEntry,
+    /// Direct forks the server listed but the walk page did not include
+    /// (`fork_count` minus the page) — raise --forks-limit to see them.
+    #[serde(skip_serializing_if = "is_zero")]
+    unlisted_forks: i64,
+    /// True when this database's own lineage could not be fetched (e.g. a
+    /// deleted generation): its fork list is unknown, not known-empty.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    forks_unknown: bool,
+    forks: Vec<LineageTreeNode>,
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
+}
+
+/// Response of `lineage --tree`: the family tree walked from the root.
+#[derive(Serialize)]
+struct LineageTreeResponse {
+    database_id: String,
+    root_id: String,
+    tree: LineageTreeNode,
+}
+
+/// Assemble the full family tree by walking down from the root, one
+/// `fetch_lineage` per database. `lin` is the queried database's own lineage
+/// (already fetched — it seeds the walk and is reused when the walk reaches
+/// that database). Auth/network problems surface on that first fetch; a
+/// per-node failure during the walk (e.g. a deleted generation the endpoint
+/// won't answer for) degrades to `forks_unknown` instead of aborting, grafting
+/// the known descent toward the queried database so it still appears.
+fn build_lineage_tree(
+    api: &Api,
+    db_name: Option<&str>,
+    lin: LineageResponse,
+    forks_limit: Option<u32>,
+) -> LineageTreeResponse {
+    use std::collections::{HashMap, HashSet};
+
+    let database_id = lin.database_id.clone();
+    let root_id = lin.root_id.clone();
+
+    let self_entry = LineageEntry {
+        database_id: database_id.clone(),
+        name: db_name.map(str::to_string),
+        snapshot_id: None,
+        forked_at: None,
+        exists: true,
+    };
+    // Known descent, root-first: reversed ancestors (the segment the response
+    // carries when truncated) ending at the queried database itself.
+    let mut chain: Vec<LineageEntry> = lin.ancestors.iter().rev().cloned().collect();
+    chain.push(self_entry);
+    // parent id → next generation toward the queried database, for grafting
+    // past a node whose own lineage cannot be fetched.
+    let mut descent: HashMap<String, LineageEntry> = HashMap::new();
+    for pair in chain.windows(2) {
+        descent.insert(pair[0].database_id.clone(), pair[1].clone());
+    }
+    let root_entry = match chain.first() {
+        Some(first) if first.database_id == root_id => first.clone(),
+        // Ancestry truncated: only the root's id is known. `exists` is
+        // unknown — display as existing rather than invent a deleted note.
+        _ => LineageEntry {
+            database_id: root_id.clone(),
+            name: None,
+            snapshot_id: None,
+            forked_at: None,
+            exists: true,
+        },
+    };
+
+    let mut prefetched: HashMap<String, LineageResponse> = HashMap::new();
+    prefetched.insert(database_id.clone(), lin);
+    let mut visited: HashSet<String> = HashSet::new();
+    let tree = walk_lineage_tree(
+        api,
+        root_entry,
+        forks_limit,
+        &descent,
+        &mut prefetched,
+        &mut visited,
+    );
+
+    LineageTreeResponse {
+        database_id,
+        root_id,
+        tree,
+    }
+}
+
+fn walk_lineage_tree(
+    api: &Api,
+    entry: LineageEntry,
+    forks_limit: Option<u32>,
+    descent: &std::collections::HashMap<String, LineageEntry>,
+    prefetched: &mut std::collections::HashMap<String, LineageResponse>,
+    visited: &mut std::collections::HashSet<String>,
+) -> LineageTreeNode {
+    let id = entry.database_id.clone();
+    // Fork lineage never merges, so a revisit would mean a server-side cycle;
+    // the guard turns that into a truncated branch instead of a hang.
+    visited.insert(id.clone());
+    let fetched = match prefetched.remove(&id) {
+        Some(r) => Ok(r),
+        None => fetch_lineage(api, &id, forks_limit),
+    };
+    match fetched {
+        Ok(r) => {
+            let unlisted_forks = (r.fork_count - r.forks.len() as i64).max(0);
+            let mut forks = Vec::new();
+            for f in r.forks {
+                if visited.contains(&f.database_id) {
+                    continue;
+                }
+                forks.push(walk_lineage_tree(
+                    api,
+                    f,
+                    forks_limit,
+                    descent,
+                    prefetched,
+                    visited,
+                ));
+            }
+            LineageTreeNode {
+                entry,
+                unlisted_forks,
+                forks_unknown: false,
+                forks,
+            }
+        }
+        Err(_) => {
+            let forks = descent
+                .get(&id)
+                .filter(|g| !visited.contains(&g.database_id))
+                .map(|g| {
+                    vec![walk_lineage_tree(
+                        api,
+                        g.clone(),
+                        forks_limit,
+                        descent,
+                        prefetched,
+                        visited,
+                    )]
+                })
+                .unwrap_or_default();
+            LineageTreeNode {
+                entry,
+                unlisted_forks: 0,
+                forks_unknown: true,
+                forks,
+            }
+        }
+    }
+}
+
+fn tree_contains(node: &LineageTreeNode, id: &str) -> bool {
+    node.entry.database_id == id || node.forks.iter().any(|f| tree_contains(f, id))
+}
+
+/// Render one tree node and its subtree into `out`. The root prints bare (an
+/// empty `connector`) to match the flat lineage view; each level below adds a
+/// `├─`/`└─` connector and a `│  ` rail while elder siblings remain open.
+fn render_lineage_tree(
+    node: &LineageTreeNode,
+    prefix: &str,
+    connector: &str,
+    last: bool,
+    self_id: &str,
+    root_id: &str,
+    out: &mut String,
+) {
+    use crossterm::style::Stylize;
+    use std::fmt::Write;
+
+    let mut body = lineage_row(&node.entry, node.entry.database_id == root_id);
+    if node.entry.database_id == self_id {
+        body.push(' ');
+        body.push_str(&"← this database".green().to_string());
+    }
+    writeln!(out, "{prefix}{}{body}", connector.dark_grey()).unwrap();
+
+    let child_prefix = if connector.is_empty() {
+        prefix.to_string()
+    } else if last {
+        format!("{prefix}   ")
+    } else {
+        format!("{prefix}│  ")
+    };
+    // The trailer rows (`⋯ N more`, `⋯ forks unknown`) occupy child slots, so
+    // they count toward which row closes the branch with `└─`.
+    let trailers = usize::from(node.unlisted_forks > 0) + usize::from(node.forks_unknown);
+    let total = node.forks.len() + trailers;
+    for (i, f) in node.forks.iter().enumerate() {
+        let is_last = i + 1 == total;
+        render_lineage_tree(
+            f,
+            &child_prefix,
+            if is_last { "└─ " } else { "├─ " },
+            is_last,
+            self_id,
+            root_id,
+            out,
+        );
+    }
+    let mut slot = node.forks.len();
+    if node.unlisted_forks > 0 {
+        slot += 1;
+        let glyph = if slot == total { "└─ " } else { "├─ " };
+        writeln!(
+            out,
+            "{child_prefix}{}",
+            format!("{glyph}⋯ {} more — see --forks-limit", node.unlisted_forks).dark_grey()
+        )
+        .unwrap();
+    }
+    if node.forks_unknown {
+        let note = if node.forks.is_empty() {
+            "└─ ⋯ forks unknown (lineage unavailable)"
+        } else {
+            "└─ ⋯ other forks unknown (lineage unavailable)"
+        };
+        writeln!(out, "{child_prefix}{}", note.dark_grey()).unwrap();
     }
 }
 
@@ -2581,6 +2846,212 @@ mod tests {
         );
         assert!(bare.contains("db_old"), "row: {bare}");
         assert!(!bare.contains('—'), "row: {bare}");
+    }
+
+    fn lineage_body(id: &str, root: &str, ancestors: &str, forks: &str, fork_count: i64) -> String {
+        format!(
+            r#"{{"database_id":"{id}","root_id":"{root}","ancestors":[{ancestors}],"ancestors_truncated":false,"forks":[{forks}],"fork_count":{fork_count}}}"#
+        )
+    }
+
+    #[test]
+    fn lineage_tree_walks_grandchildren() {
+        // A → B (queried) → C → D. The walk starts at the root and descends
+        // every generation; B's own lineage was already fetched, so its
+        // endpoint is hit exactly once.
+        let mut server = mockito::Server::new();
+        let mid = server
+            .mock("GET", "/v1/databases/db_mid/lineage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(lineage_body(
+                "db_mid",
+                "db_root",
+                r#"{"database_id":"db_root","name":"prod","exists":true}"#,
+                r#"{"database_id":"db_child","snapshot_id":7,"forked_at":"2026-09-02T09:00:00Z","exists":true}"#,
+                1,
+            ))
+            .expect(1)
+            .create();
+        let root = server
+            .mock("GET", "/v1/databases/db_root/lineage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(lineage_body(
+                "db_root",
+                "db_root",
+                "",
+                r#"{"database_id":"db_mid","name":"staging","snapshot_id":42,"forked_at":"2026-09-01T14:00:00Z","exists":true}"#,
+                1,
+            ))
+            .create();
+        let child = server
+            .mock("GET", "/v1/databases/db_child/lineage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(lineage_body(
+                "db_child",
+                "db_root",
+                "",
+                r#"{"database_id":"db_grand","exists":true}"#,
+                1,
+            ))
+            .create();
+        let grand = server
+            .mock("GET", "/v1/databases/db_grand/lineage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(lineage_body("db_grand", "db_root", "", "", 0))
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let lin = fetch_lineage(&api, "db_mid", None).unwrap();
+        let t = build_lineage_tree(&api, Some("staging"), lin, None);
+
+        assert_eq!(t.root_id, "db_root");
+        assert_eq!(t.tree.entry.database_id, "db_root");
+        let b = &t.tree.forks[0];
+        // B's entry comes from its parent's fork list, so it carries the fork
+        // metadata rather than the bare resolve-time name.
+        assert_eq!(b.entry.database_id, "db_mid");
+        assert_eq!(b.entry.name.as_deref(), Some("staging"));
+        assert_eq!(b.entry.snapshot_id, Some(42));
+        let c = &b.forks[0];
+        assert_eq!(c.entry.database_id, "db_child");
+        let d = &c.forks[0];
+        assert_eq!(d.entry.database_id, "db_grand");
+        assert!(d.forks.is_empty());
+        assert!(tree_contains(&t.tree, "db_mid"));
+
+        mid.assert();
+        root.assert();
+        child.assert();
+        grand.assert();
+    }
+
+    #[test]
+    fn lineage_tree_grafts_past_unfetchable_generation() {
+        // A → B (deleted) → C (queried). B's own lineage 404s, so its fork
+        // list is unknown — the known descent toward C is grafted so the
+        // queried database still appears, and the node says so in JSON.
+        let mut server = mockito::Server::new();
+        let c_lin = server
+            .mock("GET", "/v1/databases/db_c/lineage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(lineage_body(
+                "db_c",
+                "db_a",
+                r#"{"database_id":"db_b","exists":false},{"database_id":"db_a","name":"prod","exists":true}"#,
+                "",
+                0,
+            ))
+            .expect(1)
+            .create();
+        let a_lin = server
+            .mock("GET", "/v1/databases/db_a/lineage")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(lineage_body(
+                "db_a",
+                "db_a",
+                "",
+                r#"{"database_id":"db_b","exists":false}"#,
+                1,
+            ))
+            .create();
+        let b_lin = server
+            .mock("GET", "/v1/databases/db_b/lineage")
+            .with_status(404)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let lin = fetch_lineage(&api, "db_c", None).unwrap();
+        let t = build_lineage_tree(&api, None, lin, None);
+
+        assert_eq!(t.tree.entry.database_id, "db_a");
+        let b = &t.tree.forks[0];
+        assert_eq!(b.entry.database_id, "db_b");
+        assert!(b.forks_unknown);
+        assert_eq!(b.forks[0].entry.database_id, "db_c");
+
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["tree"]["forks"][0]["forks_unknown"], true);
+        // Nodes whose lineage was fetched omit the flag entirely.
+        assert!(json["tree"].get("forks_unknown").is_none(), "json: {json}");
+        assert!(
+            json["tree"]["forks"][0]["forks"][0]
+                .get("forks_unknown")
+                .is_none()
+        );
+
+        c_lin.assert();
+        a_lin.assert();
+        b_lin.assert();
+    }
+
+    #[test]
+    fn lineage_tree_render_rails_and_markers() {
+        let entry = |id: &str, name: Option<&str>| LineageEntry {
+            database_id: id.to_string(),
+            name: name.map(str::to_string),
+            snapshot_id: None,
+            forked_at: None,
+            exists: true,
+        };
+        let node = |id: &str, name: Option<&str>, unlisted: i64, forks: Vec<LineageTreeNode>| {
+            LineageTreeNode {
+                entry: entry(id, name),
+                unlisted_forks: unlisted,
+                forks_unknown: false,
+                forks,
+            }
+        };
+        let tree = node(
+            "db_a",
+            Some("prod"),
+            0,
+            vec![
+                node(
+                    "db_b",
+                    Some("staging"),
+                    0,
+                    vec![node("db_d", None, 0, vec![])],
+                ),
+                node("db_c", None, 2, vec![]),
+            ],
+        );
+
+        let mut out = String::new();
+        render_lineage_tree(&tree, "", "", true, "db_b", "db_a", &mut out);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 5, "out:\n{out}");
+        assert!(
+            lines[0].contains("db_a") && lines[0].contains("root"),
+            "out:\n{out}"
+        );
+        // The queried database is marked, and its open branch leaves a rail.
+        assert!(
+            lines[1].contains("db_b") && lines[1].contains("← this database"),
+            "out:\n{out}"
+        );
+        assert!(lines[1].contains("├─"), "out:\n{out}");
+        assert!(
+            lines[2].contains("db_d") && lines[2].contains("│"),
+            "out:\n{out}"
+        );
+        // The last sibling closes the branch; its unlisted trailer nests under it.
+        assert!(
+            lines[3].contains("db_c") && lines[3].contains("└─"),
+            "out:\n{out}"
+        );
+        assert!(!lines[3].contains('│'), "out:\n{out}");
+        assert!(
+            lines[4].contains("⋯ 2 more — see --forks-limit"),
+            "out:\n{out}"
+        );
     }
 
     #[test]

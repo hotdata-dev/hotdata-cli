@@ -280,11 +280,13 @@ fn main() {
                         Some(DatabasesCommands::Lineage {
                             database,
                             forks_limit,
+                            tree,
                             output,
                         }) => databases::lineage(
                             &workspace_id,
                             database.as_deref(),
                             forks_limit,
+                            tree,
                             &output,
                         ),
                         Some(DatabasesCommands::Attach {
