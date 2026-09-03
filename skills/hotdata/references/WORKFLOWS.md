@@ -140,7 +140,7 @@ hotdata databases fork --expires-at 24h   # deep copy; becomes the active databa
 hotdata databases load --catalog sales --table orders --file ./risky.parquet  # hits the fork
 ```
 
-**Capture both ids.** After the fork, both databases answer to the same catalog alias (here `sales`), so ids are the only unambiguous way to refer to either one — the source id comes from `databases list` up front, the fork id from the `fork` output. The shared alias means experimental SQL runs unchanged against the fork. Attached catalogs are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases use <source_id>` to switch back to the source) or delete it (`databases remove <fork_id>`). If the ids get lost, `hotdata databases lineage` recovers the pair: it renders the fork tree (ancestors and direct forks), and `databases <id>` shows a fork's `forked_from` record. Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
+**Capture both ids.** After the fork, both databases answer to the same catalog alias (here `sales`), so ids are the only unambiguous way to refer to either one — the source id comes from `databases list` up front, the fork id from the `fork` output. The shared alias means experimental SQL runs unchanged against the fork. Attached catalogs are re-attached to the fork; indexes are not carried over. When done, keep the fork (`databases use <source_id>` to switch back to the source) or delete it (`databases remove <fork_id>`). If the ids get lost, `hotdata databases lineage` recovers the pair: it renders the whole fork family tree, and `databases <id>` shows a fork's `forked_from` record. Only DuckLake-backed databases can be forked — see `fork` in the main skill for details.
 
 ---
 
