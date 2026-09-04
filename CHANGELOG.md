@@ -1,3 +1,20 @@
+## [0.31.0] - 2026-09-04
+
+### 🚀 Features
+
+- *(databases)* [**breaking**] Lineage walks the whole fork family (#288)
+
+### 🐛 Bug Fixes
+
+- *(query)* Render fetched results with arrow-json (#285)
+
+### 💼 Other
+
+- *(deps)* Arrow 55 -> 59, hotdata 0.16.0 (#286)
+
+### 📚 Documentation
+
+- *(skills)* Document databases lineage, forked_from, and retired job types (#287)
 ## [0.30.0] - 2026-09-03
 
 ### 🐛 Bug Fixes
