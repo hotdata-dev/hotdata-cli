@@ -129,9 +129,20 @@ Bring your own model with `hotdata search embeddings add`.
 - `hotdata databases context push|show DATAMODEL` stores your data model as
   shared, server-side Markdown so humans and agents query with the same map.
 
+## Getting help
+
+File a support ticket without leaving the terminal:
+
+```sh
+hotdata support report -m "Queries against work_abc have been timing out for an hour" --subject "Queries timing out"
+hotdata support report --logs ./stderr.txt --context env=staging
+```
+
+Omit `-m` in an interactive terminal to compose the report in `$EDITOR` instead. Replies go to the email on your HotData account.
+
 ## Commands
 
-The full command surface. The top level has eight groups — `auth`, `workspaces`, `databases`, `query`, `jobs`, `ingest`, `search`, and `manage`. Run `hotdata <command> --help` for full flags on any command.
+The full command surface. The top level has nine groups — `auth`, `workspaces`, `databases`, `query`, `jobs`, `ingest`, `search`, `manage`, and `support`. Run `hotdata <command> --help` for full flags on any command.
 
 | Command | What it does |
 | :-- | :-- |
@@ -203,6 +214,7 @@ The full command surface. The top level has eight groups — `auth`, `workspaces
 | `manage skills install` | Install/update the agent skill into agent directories |
 | `manage skills status` | Show the agent skill's installation status |
 | `manage skills list` | List installed skills (alias for `status`) |
+| `support report` | File a support ticket with the HotData team |
 
 ## Configuration
 

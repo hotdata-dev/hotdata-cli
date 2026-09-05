@@ -18,6 +18,7 @@ use commands::queries::{self, QueriesCommands};
 use commands::query::{self, QueryCommands};
 use commands::results::{self, ResultsCommands};
 use commands::skill::{self, SkillCommands};
+use commands::support::{self, SupportCommands};
 use commands::tables;
 use commands::workspace::{self, WorkspaceCommands};
 use commands::{update, usage};
@@ -703,6 +704,29 @@ fn main() {
                     }
                     SkillCommands::Status | SkillCommands::List => skill::status(),
                 },
+            },
+            Commands::Support { command } => match command {
+                SupportCommands::Report {
+                    message,
+                    subject,
+                    kind,
+                    severity,
+                    workspace_id,
+                    no_workspace,
+                    logs,
+                    context,
+                    output,
+                } => support::report(
+                    message,
+                    subject,
+                    kind,
+                    severity,
+                    workspace_id,
+                    no_workspace,
+                    logs,
+                    context,
+                    &output,
+                ),
             },
         },
     }
