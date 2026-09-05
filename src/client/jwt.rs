@@ -121,7 +121,7 @@ fn session_from_response(
     }
 }
 
-pub(crate) fn oauth_base(profile: &config::ProfileConfig) -> String {
+fn oauth_base(profile: &config::ProfileConfig) -> String {
     // DOT (`/o/authorize/`, `/o/token/`, …) is mounted on the webapp
     // (app_url), not the API. The api_url host typically only serves
     // the `/v1` runtimedb routes.

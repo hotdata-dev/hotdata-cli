@@ -1,9 +1,9 @@
-//! Raw-HTTP client for `POST {app_url}/v1/support/issues`.
+//! Raw-HTTP client for `POST {api_url}/v1/support/issues`.
 //!
-//! Lives on the webapp (`app_url`), not the API gateway (`api_url`) — the
-//! same host `jwt::oauth_base` resolves for `/v1/auth/token`. No SDK
-//! operation exists for this route yet, so it rides the hand-rolled
-//! `reqwest::blocking` seam alongside the token endpoints.
+//! This is a normal API-gateway route (`api_url`, default
+//! `https://api.hotdata.dev/v1`), not a webapp/OAuth one — same host every
+//! other command hits. No SDK operation exists for it yet, so it rides the
+//! hand-rolled `reqwest::blocking` seam like `client::ingest`.
 
 use crate::client::jwt;
 use crate::config;
@@ -23,8 +23,6 @@ pub struct SupportIssueRequest {
     pub body: String,
     pub kind: String,
     pub severity: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_public_id: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub context: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,25 +70,36 @@ impl SupportError {
     }
 }
 
+/// Same construction as `client::sdk`'s `probe_runtime_status`: strip the
+/// configured `api_url`'s `/v1` suffix via `sdk_base_path`, then add the one
+/// `/v1/support/issues` itself expects.
 fn url(profile: &config::ProfileConfig) -> String {
-    format!("{}/v1/support/issues", jwt::oauth_base(profile))
+    let base = crate::client::sdk::sdk_base_path(&profile.api_url);
+    format!("{}/v1/support/issues", base.trim_end_matches('/'))
 }
 
 fn send_once(
     client: &reqwest::blocking::Client,
     profile: &config::ProfileConfig,
     token: &str,
+    workspace_id: Option<&str>,
     req: &SupportIssueRequest,
 ) -> Result<(SupportIssue, bool), SupportError> {
     let body = serde_json::to_value(req).expect("SupportIssueRequest serializes");
-    let builder = client
+    let mut builder = client
         .post(url(profile))
         .header("Authorization", format!("Bearer {token}"))
         .header(
             "User-Agent",
             concat!("hotdata-cli/", env!("CARGO_PKG_VERSION")),
-        )
-        .json(&body);
+        );
+    // Same header every other /v1 call carries: the gateway ranks a longer
+    // path prefix above a header match, so /v1/support keeps routing here
+    // (not to a workspace's runtimedb worker) even with it present.
+    if let Some(ws) = workspace_id {
+        builder = builder.header("X-Workspace-Id", ws);
+    }
+    let builder = builder.json(&body);
     let (status, body_text) = util::send_debug(client, builder, Some(&body))
         .map_err(|e| SupportError::Connection(e.to_string()))?;
     if !status.is_success() {
@@ -107,18 +116,21 @@ fn send_once(
     Ok((parsed.issue, replay))
 }
 
-/// File a support issue. Retries once, after [`RETRY_DELAY`], on a connection
-/// error or 5xx — never on a 4xx — reusing the same `idempotency_key` so a
-/// retried create can't double-file.
+/// File a support issue. `workspace_id`, when given, is sent only as the
+/// `X-Workspace-Id` header (never in the JSON body). Retries once, after
+/// [`RETRY_DELAY`], on a connection error or 5xx — never on a 4xx — reusing
+/// the same `idempotency_key` so a retried create can't double-file.
 pub fn post_support_issue(
     profile: &config::ProfileConfig,
+    workspace_id: Option<&str>,
     req: &SupportIssueRequest,
 ) -> Result<(SupportIssue, bool), SupportError> {
-    post_support_issue_with_delay(profile, req, RETRY_DELAY)
+    post_support_issue_with_delay(profile, workspace_id, req, RETRY_DELAY)
 }
 
 fn post_support_issue_with_delay(
     profile: &config::ProfileConfig,
+    workspace_id: Option<&str>,
     req: &SupportIssueRequest,
     retry_delay: Duration,
 ) -> Result<(SupportIssue, bool), SupportError> {
@@ -131,11 +143,11 @@ fn post_support_issue_with_delay(
     let token = jwt::ensure_access_token(profile, api_key_fallback).map_err(SupportError::Auth)?;
     let client = crate::client::raw_http::build_http_client();
 
-    match send_once(&client, profile, &token, req) {
+    match send_once(&client, profile, &token, workspace_id, req) {
         Ok(ok) => Ok(ok),
         Err(e) if e.is_retryable() => {
             std::thread::sleep(retry_delay);
-            send_once(&client, profile, &token, req)
+            send_once(&client, profile, &token, workspace_id, req)
         }
         Err(e) => Err(e),
     }
@@ -144,14 +156,13 @@ fn post_support_issue_with_delay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ApiUrl, AppUrl, ProfileConfig, test_helpers::with_temp_config_dir};
+    use crate::config::{ApiUrl, ProfileConfig, test_helpers::with_temp_config_dir};
 
     /// A profile with an api_key set, so every test here resolves a bearer
     /// with zero network calls (no session mint/refresh to mock separately).
     fn mock_profile(url: &str) -> ProfileConfig {
         ProfileConfig {
             api_key: Some("hd_test_key".to_string()),
-            app_url: AppUrl(Some(url.to_string())),
             api_url: ApiUrl(Some(url.to_string())),
             ..Default::default()
         }
@@ -163,7 +174,6 @@ mod tests {
             body: "Queries against my workspace have been hanging for an hour.".into(),
             kind: "bug".into(),
             severity: "high".into(),
-            workspace_public_id: Some("work_abc".into()),
             context: BTreeMap::from([("cli_version".to_string(), "0.31.0".to_string())]),
             logs: None,
             idempotency_key: idempotency_key.to_string(),
@@ -178,11 +188,11 @@ mod tests {
             .mock("POST", "/v1/support/issues")
             .match_header("Authorization", "Bearer hd_test_key")
             .match_header("content-type", "application/json")
+            .match_header("X-Workspace-Id", "work_abc")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
                 "subject": "Query timing out",
                 "kind": "bug",
                 "severity": "high",
-                "workspace_public_id": "work_abc",
                 "idempotency_key": "fixed-key-1",
             })))
             .with_status(202)
@@ -193,13 +203,39 @@ mod tests {
             .create();
 
         let profile = mock_profile(&server.url());
-        let mut r = req("fixed-key-1");
-        r.workspace_public_id = Some("work_abc".into());
-        let (issue, replay) = post_support_issue_with_delay(&profile, &r, Duration::ZERO).unwrap();
+        let (issue, replay) = post_support_issue_with_delay(
+            &profile,
+            Some("work_abc"),
+            &req("fixed-key-1"),
+            Duration::ZERO,
+        )
+        .unwrap();
         m.assert();
         assert_eq!(issue.public_id, "supp_1");
         assert_eq!(issue.status, "queued");
         assert!(!replay);
+    }
+
+    #[test]
+    fn no_workspace_sends_no_x_workspace_id_header() {
+        // The JSON body never carries a workspace field at all — see
+        // `SupportIssueRequest`, which has no such field to omit — so the
+        // only thing left to assert is the header.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/v1/support/issues")
+            .match_header("X-Workspace-Id", mockito::Matcher::Missing)
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"ok":true,"issue":{"public_id":"supp_none","status":"queued","subject":"s","kind":"bug","severity":"high","workspace_public_id":null,"created_at":"2026-09-05T00:00:00Z"}}"#,
+            )
+            .create();
+
+        let profile = mock_profile(&server.url());
+        post_support_issue_with_delay(&profile, None, &req("k"), Duration::ZERO).unwrap();
+        m.assert();
     }
 
     #[test]
@@ -217,7 +253,8 @@ mod tests {
 
         let profile = mock_profile(&server.url());
         let (issue, replay) =
-            post_support_issue_with_delay(&profile, &req("fixed-key-2"), Duration::ZERO).unwrap();
+            post_support_issue_with_delay(&profile, None, &req("fixed-key-2"), Duration::ZERO)
+                .unwrap();
         m.assert();
         assert_eq!(issue.public_id, "supp_2");
         assert!(replay);
@@ -251,7 +288,8 @@ mod tests {
 
         let profile = mock_profile(&server.url());
         let (issue, replay) =
-            post_support_issue_with_delay(&profile, &req("fixed-key-3"), Duration::ZERO).unwrap();
+            post_support_issue_with_delay(&profile, None, &req("fixed-key-3"), Duration::ZERO)
+                .unwrap();
         fail.assert();
         ok.assert();
         assert_eq!(issue.public_id, "supp_3");
@@ -264,7 +302,8 @@ mod tests {
         // transport level, and the caller sees a Connection error, not a hang.
         let (_tmp, _guard) = with_temp_config_dir();
         let profile = mock_profile("http://127.0.0.1:1");
-        let err = post_support_issue_with_delay(&profile, &req("k"), Duration::ZERO).unwrap_err();
+        let err =
+            post_support_issue_with_delay(&profile, None, &req("k"), Duration::ZERO).unwrap_err();
         assert!(matches!(err, SupportError::Connection(_)));
     }
 
@@ -281,29 +320,20 @@ mod tests {
             .create();
 
         let profile = mock_profile(&server.url());
-        let err = post_support_issue_with_delay(&profile, &req("k"), Duration::ZERO).unwrap_err();
+        let err =
+            post_support_issue_with_delay(&profile, None, &req("k"), Duration::ZERO).unwrap_err();
         m.assert();
         assert!(matches!(err, SupportError::Http { status: 422, .. }));
     }
 
     #[test]
-    fn uses_app_url_not_api_url() {
-        // app_url and api_url point at different hosts; the request must hit
-        // the webapp host (app_url), never the api_url one.
-        let (_tmp, _guard) = with_temp_config_dir();
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("POST", "/v1/support/issues")
-            .with_status(202)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"ok":true,"issue":{"public_id":"supp_4","status":"queued","subject":"s","kind":"bug","severity":"high","workspace_public_id":null,"created_at":"2026-09-05T00:00:00Z"}}"#,
-            )
-            .create();
-
-        let mut profile = mock_profile(&server.url());
-        profile.api_url = ApiUrl(Some("http://127.0.0.1:1".to_string()));
-        post_support_issue_with_delay(&profile, &req("k"), Duration::ZERO).unwrap();
-        m.assert();
+    fn url_strips_the_configured_v1_suffix_and_adds_it_back_once() {
+        // DEFAULT_API_URL carries a /v1 suffix; sdk_base_path strips it so
+        // this doesn't add up to /v1/v1/support/issues.
+        let profile = ProfileConfig {
+            api_url: ApiUrl(Some("https://api.hotdata.dev/v1".to_string())),
+            ..Default::default()
+        };
+        assert_eq!(url(&profile), "https://api.hotdata.dev/v1/support/issues");
     }
 }

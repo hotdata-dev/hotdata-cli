@@ -1,5 +1,5 @@
-//! `hotdata support report` — file a ticket through the webapp's support
-//! intake (`POST {app_url}/v1/support/issues`). `client::support` owns the
+//! `hotdata support report` — file a ticket through the API's support
+//! intake (`POST {api_url}/v1/support/issues`). `client::support` owns the
 //! HTTP call; this module owns composing the request and rendering the
 //! result.
 //!
@@ -130,7 +130,7 @@ fn report_with_profile(
         std::process::exit(1);
     });
 
-    match client::support::post_support_issue(profile, &req) {
+    match client::support::post_support_issue(profile, workspace_id.as_deref(), &req) {
         Ok((issue, replay)) => print_success(&issue, replay, output),
         Err(e) => handle_error(&e, workspace_id.as_deref()),
     }
@@ -169,7 +169,6 @@ fn build_request(
         body,
         kind,
         severity,
-        workspace_public_id: workspace_id.clone(),
         context,
         logs,
         idempotency_key: generate_idempotency_key(),
@@ -480,12 +479,11 @@ fn handle_error(e: &SupportError, workspace_id: Option<&str>) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ApiUrl, AppUrl, ProfileConfig, test_helpers::with_temp_config_dir};
+    use crate::config::{ApiUrl, ProfileConfig, test_helpers::with_temp_config_dir};
 
     fn mock_profile(url: &str) -> ProfileConfig {
         ProfileConfig {
             api_key: Some("hd_test_key".to_string()),
-            app_url: AppUrl(Some(url.to_string())),
             api_url: ApiUrl(Some(url.to_string())),
             ..Default::default()
         }
@@ -790,10 +788,14 @@ Second paragraph.
     }
 
     #[test]
-    fn build_request_no_workspace_omits_workspace_public_id() {
+    fn build_request_no_workspace_resolves_to_none() {
+        // The request itself never carries a workspace field (see
+        // `SupportIssueRequest` — no such field exists to omit); the resolved
+        // id travels alongside the request instead, for the `X-Workspace-Id`
+        // header and for a `workspace_not_found` error message.
         let (_tmp, _guard) = with_temp_config_dir();
         let profile = mock_profile("http://127.0.0.1:1");
-        let (req, id) = build_request(
+        let (_req, id) = build_request(
             &profile,
             Some("body".to_string()),
             Some("Subj".to_string()),
@@ -805,15 +807,14 @@ Second paragraph.
             vec![],
         )
         .unwrap();
-        assert_eq!(req.workspace_public_id, None);
         assert_eq!(id, None);
     }
 
     #[test]
-    fn build_request_attaches_the_provided_workspace() {
+    fn build_request_resolves_the_provided_workspace() {
         let (_tmp, _guard) = with_temp_config_dir();
         let profile = mock_profile("http://127.0.0.1:1");
-        let (req, id) = build_request(
+        let (_req, id) = build_request(
             &profile,
             Some("body".to_string()),
             Some("Subj".to_string()),
@@ -825,7 +826,6 @@ Second paragraph.
             vec![],
         )
         .unwrap();
-        assert_eq!(req.workspace_public_id.as_deref(), Some("work_abc"));
         assert_eq!(id.as_deref(), Some("work_abc"));
     }
 
@@ -909,19 +909,19 @@ Second paragraph.
     // --- report_with_profile: end-to-end against a mock server --------------------
 
     #[test]
-    fn report_happy_path_posts_the_expected_body() {
+    fn report_happy_path_posts_the_expected_body_and_workspace_header() {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
         let m = server
             .mock("POST", "/v1/support/issues")
             .match_header("Authorization", "Bearer hd_test_key")
+            .match_header("X-Workspace-Id", "work_abc")
             .match_body(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::PartialJson(serde_json::json!({
                     "subject": "CLI hangs on query",
                     "body": "Every query against work_abc times out after 30s.",
                     "kind": "bug",
                     "severity": "high",
-                    "workspace_public_id": "work_abc",
                     "context": {
                         "cli_version": env!("CARGO_PKG_VERSION"),
                         "priority": "urgent",
@@ -947,6 +947,36 @@ Second paragraph.
             false,
             None,
             vec!["priority=urgent".to_string()],
+            "table",
+        );
+
+        m.assert();
+    }
+
+    #[test]
+    fn report_no_workspace_sends_no_workspace_header() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/v1/support/issues")
+            .match_header("X-Workspace-Id", mockito::Matcher::Missing)
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"ok":true,"issue":{"public_id":"supp_none","status":"queued","subject":"s","kind":"bug","severity":"high","workspace_public_id":null,"created_at":"2026-09-05T00:00:00Z"}}"#,
+            )
+            .create();
+
+        report_with_profile(
+            &mock_profile(&server.url()),
+            Some("body".to_string()),
+            Some("Subj".to_string()),
+            "bug".to_string(),
+            "high".to_string(),
+            Some("work_ignored".to_string()),
+            true,
+            None,
+            vec![],
             "table",
         );
 
