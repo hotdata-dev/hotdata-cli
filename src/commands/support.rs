@@ -504,17 +504,27 @@ fn mask_bearer_tokens(line: &str) -> Option<String> {
 }
 
 /// A bare `Authorization: <value>` with no `Bearer` scheme (e.g. a raw
-/// `hd_...` token) — mask the whole value, keeping the header name
-/// canonically capitalized (matching prior behavior) and everything before
-/// it on the line untouched. `authorization:` is located anywhere in the
-/// line, not just at its start.
+/// `hd_...` token) — mask only the token itself, using the same boundary
+/// rule as [`mask_bearer_tokens`] (the run up to whitespace, a quote, or end
+/// of line), keeping the header name canonically capitalized (matching
+/// prior behavior) and everything else on the line — including whatever
+/// follows the token — untouched. A line like `... missing authorization:
+/// token expired for user 42` must keep its message, not lose everything
+/// after the value. `authorization:` is located anywhere in the line, not
+/// just at its start.
 fn mask_authorization_header_value(line: &str) -> Option<String> {
     let lower = line.to_ascii_lowercase();
     let idx = lower.find("authorization:")?;
     let indent = &line[..idx];
     let value_start = idx + "authorization:".len();
-    let masked = util::mask_credential(line[value_start..].trim());
-    Some(format!("{indent}Authorization: {masked}"))
+    let rest = &line[value_start..];
+    let token_start = value_start + (rest.len() - rest.trim_start().len());
+    let token_len = line[token_start..]
+        .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+        .unwrap_or(line.len() - token_start);
+    let masked = util::mask_credential(&line[token_start..token_start + token_len]);
+    let tail = &line[token_start + token_len..];
+    Some(format!("{indent}Authorization: {masked}{tail}"))
 }
 
 fn generate_idempotency_key() -> String {
@@ -836,6 +846,17 @@ Second paragraph.
     fn redact_logs_line_with_no_credential_is_unchanged() {
         let input = "GET /v1/foo 200 12ms";
         assert_eq!(redact_logs(input), input);
+    }
+
+    #[test]
+    fn redact_logs_non_bearer_header_masks_only_the_token_not_the_rest_of_the_line() {
+        let input = "2026-09-05 WARN missing authorization: token expired for user 42";
+        let out = redact_logs(input);
+        assert!(out.contains("expired for user 42"), "got: {out}");
+        assert!(
+            out.starts_with("2026-09-05 WARN missing Authorization: "),
+            "got: {out}"
+        );
     }
 
     // --- idempotency key --------------------------------------------------------
