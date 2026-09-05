@@ -128,7 +128,10 @@ pub fn post_support_issue(
     post_support_issue_with_delay(profile, workspace_id, req, RETRY_DELAY)
 }
 
-fn post_support_issue_with_delay(
+/// `pub(crate)` so a cross-module test (`commands::support`) can drive the
+/// real retry-once path with `Duration::ZERO` instead of eating the full
+/// [`RETRY_DELAY`] every run.
+pub(crate) fn post_support_issue_with_delay(
     profile: &config::ProfileConfig,
     workspace_id: Option<&str>,
     req: &SupportIssueRequest,

@@ -1250,7 +1250,9 @@ Second paragraph.
         // failed send (post, then the persist decision) without going
         // through the process-exiting `handle_error` — so this can run
         // in-process. The mock returning 503 twice exercises the real
-        // retry-once-then-give-up path in `client::support`.
+        // retry-once-then-give-up path in `client::support`, via the
+        // `pub(crate)` delay seam with `Duration::ZERO` so this doesn't eat
+        // the real 2s `RETRY_DELAY` on every test run.
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
         let m = server
@@ -1270,7 +1272,12 @@ Second paragraph.
             idempotency_key: generate_idempotency_key(),
         };
 
-        let result = client::support::post_support_issue(&profile, None, &req);
+        let result = client::support::post_support_issue_with_delay(
+            &profile,
+            None,
+            &req,
+            std::time::Duration::ZERO,
+        );
         assert!(result.is_err(), "test setup: the mock must fail the send");
         m.assert();
 
