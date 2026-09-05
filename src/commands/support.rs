@@ -831,14 +831,16 @@ Second paragraph.
 
     #[test]
     fn redact_logs_masks_a_curl_dash_h_bearer_token_mid_line() {
-        let input = r#"curl -H "Authorization: Bearer hd_live_x123456789" https://api.hotdata.dev/v1/query"#;
+        // Obviously-fake fixture token (not a plausible live credential
+        // shape) so secret scanners don't flag this test fixture.
+        let input = r#"curl -H "Authorization: Bearer hd_notarealtoken_0001" https://api.hotdata.dev/v1/query"#;
         let out = redact_logs(input);
         assert!(
-            out.contains(r#"Authorization: Bearer hd_l...6789""#),
+            out.contains(r#"Authorization: Bearer hd_n...0001""#),
             "got: {out}"
         );
         assert!(out.contains("https://api.hotdata.dev/v1/query"));
-        assert!(!out.contains("hd_live_x123456789"));
+        assert!(!out.contains("hd_notarealtoken_0001"));
     }
 
     #[test]
