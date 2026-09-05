@@ -455,8 +455,8 @@ fn error_message(e: &SupportError, workspace_id: Option<&str>) -> String {
                 Some("body_too_long") => {
                     "report body is too long (limit 20000 characters)".to_string()
                 }
-                Some(code) => format!("support request failed ({status} {code})."),
-                None => format!("support request failed ({status})."),
+                Some(code) => format!("support request failed ({status} {code})"),
+                None => format!("support request failed ({status})"),
             }
         }
     }
