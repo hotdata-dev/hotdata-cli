@@ -173,13 +173,22 @@ pub fn debug_response_redacted(
 /// (`XXXX...YYYY`), or `***` if it's too short to reveal anything
 /// safely. The tail makes it easy to distinguish which token is on
 /// the wire (e.g. user JWT vs database-scoped JWT vs opaque API token).
+///
+/// Counts and slices by `char`, not byte: real credentials are ASCII, but
+/// this also runs over arbitrary `--logs` text, and byte-slicing an
+/// arbitrary string panics the moment it lands mid multi-byte character.
 pub fn mask_credential(s: &str) -> String {
-    if s.len() >= 12 {
-        format!("{}...{}", &s[..4], &s[s.len() - 4..])
-    } else if s.len() > 4 {
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    if len >= 12 {
+        let head: String = chars[..4].iter().collect();
+        let tail: String = chars[len - 4..].iter().collect();
+        format!("{head}...{tail}")
+    } else if len > 4 {
         // Short-ish — still better to show head than nothing, but
-        // don't double up on bytes by showing a tail.
-        format!("{}...", &s[..4])
+        // don't double up on chars by showing a tail.
+        let head: String = chars[..4].iter().collect();
+        format!("{head}...")
     } else {
         "***".into()
     }
@@ -556,6 +565,13 @@ mod tests {
     fn mask_credential_short() {
         assert_eq!(mask_credential("abcd"), "***");
         assert_eq!(mask_credential(""), "***");
+    }
+
+    #[test]
+    fn mask_credential_non_ascii_does_not_panic() {
+        // Byte-slicing this would panic mid multi-byte char; char-slicing
+        // must not. 14 chars total, so the long-form head+tail branch.
+        assert_eq!(mask_credential("token€12345678"), "toke...5678");
     }
 
     #[test]
