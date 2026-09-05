@@ -19,6 +19,10 @@ const MAX_LOGS_BYTES: usize = 256 * 1024;
 const MAX_CONTEXT_VALUE_CHARS: usize = 500;
 const MAX_USER_CONTEXT_PAIRS: usize = 20;
 const MAX_SUBJECT_CHARS: usize = 200;
+/// Cap on the server text folded into a generic error-message fallback — an
+/// HTML page is already short-circuited by `util::api_error`, but a plain
+/// non-JSON body (a raw stack trace, say) is echoed back verbatim.
+const MAX_ERROR_BODY_CHARS: usize = 200;
 /// The one non-error exit message ("aborted, nothing sent") shares the error
 /// channel (`Result<_, String>`) with real validation failures; this marker
 /// is how the top-level caller tells them apart to skip the "error: " prefix.
@@ -518,7 +522,15 @@ fn error_message(e: &SupportError, workspace_id: Option<&str>) -> String {
                 Some("subject_required") => "subject is required".to_string(),
                 Some("body_required") => "report body is required".to_string(),
                 Some(code) => format!("support request failed ({status} {code})"),
-                None => format!("support request failed ({status})"),
+                // No stable code at all (an upstream 5xx, a framework-level
+                // rejection) — still surface whatever the server said rather
+                // than a bare status. `api_error` echoes a non-JSON,
+                // non-HTML body verbatim, which could be an unbounded
+                // stack trace; truncate so that can't flood the terminal.
+                None => format!(
+                    "support request failed ({status}): {}",
+                    truncate_chars(&util::api_error(body.clone()), MAX_ERROR_BODY_CHARS)
+                ),
             }
         }
     }
@@ -1048,6 +1060,35 @@ Second paragraph.
         };
         let msg = error_message(&e, None);
         assert!(msg.contains("502"), "got: {msg}");
+    }
+
+    #[test]
+    fn error_message_no_code_includes_the_server_text() {
+        // No stable `error.code`/flat code at all, but the body still says
+        // something useful (a FastAPI-style `detail`) — don't drop it.
+        let e = SupportError::Http {
+            status: 502,
+            body: r#"{"detail":"upstream timeout"}"#.to_string(),
+        };
+        let msg = error_message(&e, None);
+        assert!(msg.contains("502"), "got: {msg}");
+        assert!(msg.contains("upstream timeout"), "got: {msg}");
+    }
+
+    #[test]
+    fn error_message_no_code_truncates_a_long_raw_body() {
+        // A non-JSON, non-HTML body is echoed verbatim by `util::api_error`
+        // — an unbounded stack trace must not flood the terminal.
+        let e = SupportError::Http {
+            status: 500,
+            body: "x".repeat(MAX_ERROR_BODY_CHARS + 500),
+        };
+        let msg = error_message(&e, None);
+        assert!(
+            msg.chars().count() < MAX_ERROR_BODY_CHARS + 100,
+            "message not truncated, got {} chars",
+            msg.chars().count()
+        );
     }
 
     // --- report_with_profile: end-to-end against a mock server --------------------
