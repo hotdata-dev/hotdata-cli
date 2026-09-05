@@ -73,7 +73,7 @@ Catalog, skill decision tree, epic flows (onboard, chain, retrieval), and instan
 
 ## Available Commands
 
-Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`databases`**, **`jobs`**, **`ingest`**, **`search`**, **`manage`**. Instant databases nest `databases tables`, `databases queries`, `databases results`, and `databases context`; `ingest` nests `ingest sources`, runs, and logs; `manage` nests `usage`, `completions`, `upgrade`, and `skills`. Search (bm25/vector), indexes, and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
+Top-level subcommands (each detailed below): **`auth`**, **`query`**, **`workspaces`**, **`databases`**, **`jobs`**, **`ingest`**, **`search`**, **`manage`**, **`support`**. Instant databases nest `databases tables`, `databases queries`, `databases results`, and `databases context`; `ingest` nests `ingest sources`, runs, and logs; `manage` nests `usage`, `completions`, `upgrade`, and `skills`; `support` nests `report`. Search (bm25/vector), indexes, and embedding providers are documented in **`hotdata-search`**; query history, results, Chain, and OLAP patterns in **`hotdata-analytics`**.
 
 Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**, **`--no-input`** (disable interactive prompts; commands that require input will error instead — useful in CI or non-TTY environments). Hidden developer flag: **`--debug`** (verbose HTTP logs).
 
@@ -423,6 +423,14 @@ hotdata auth logout           # Remove saved auth for the default profile
 ```
 
 `login` and `register` (both GitHub and `--email`) are **browser-based** PKCE flows: the CLI opens a browser and waits on a local callback to complete sign-in/sign-up — account details (email/password) are entered in the browser, not via CLI flags. They require a browser and an interactive terminal, so they do **not** work under `--no-input` or in headless/CI. For automation, authenticate once interactively, then use the saved session or `HOTDATA_API_KEY`.
+
+### Report a problem (`support report`)
+
+```
+hotdata support report -m "<body>" --subject "<subject>" [--kind bug|question|billing|feature|account|other] [--severity urgent|high|medium|low] [-w <workspace_id> | --no-workspace] [--logs <path>|-] [--context KEY=VALUE ...] [-o table|json|yaml]
+```
+
+Files a support ticket via the API — no browser needed. `-m`/`--subject` are required together for non-interactive use (agents: always pass both); omit both in an interactive terminal to compose in `$EDITOR` instead. Attaches the active workspace by default (`--no-workspace` to omit, `-w` for a specific one); `--logs` reads a file or `-` for stdin (cap 256 KiB); `--context key=value` adds extra diagnostic pairs (repeatable, max 20). Prints the ticket's `public_id` on success — replies go to the email on the HotData account, not to the CLI.
 
 ## Workflows
 
