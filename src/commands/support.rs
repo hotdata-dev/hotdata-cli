@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 const MAX_LOGS_BYTES: usize = 256 * 1024;
 const MAX_CONTEXT_VALUE_CHARS: usize = 500;
 const MAX_USER_CONTEXT_PAIRS: usize = 20;
+const MAX_SUBJECT_CHARS: usize = 200;
 /// The one non-error exit message ("aborted, nothing sent") shares the error
 /// channel (`Result<_, String>`) with real validation failures; this marker
 /// is how the top-level caller tells them apart to skip the "error: " prefix.
@@ -155,6 +156,7 @@ fn build_request(
     let (workspace_id, workspace_locked) =
         resolve_optional_workspace(profile, workspace_id, no_workspace)?;
     let (subject, body) = compose(message, subject)?;
+    validate_subject(&subject)?;
 
     let mut context = default_context(profile, workspace_locked);
     merge_user_context(&mut context, &context_pairs)?;
@@ -259,6 +261,19 @@ fn parse_composed(text: &str) -> Option<(String, String)> {
 /// Truncate to `max` chars (not bytes), respecting UTF-8 boundaries.
 fn truncate_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
+}
+
+/// Reject an over-long subject before any HTTP call — the server enforces
+/// the same 200-char limit (`subject_too_long`), but there is no reason to
+/// round-trip a request we already know it will refuse.
+fn validate_subject(subject: &str) -> Result<(), String> {
+    let len = subject.chars().count();
+    if len > MAX_SUBJECT_CHARS {
+        return Err(format!(
+            "subject is too long ({len} chars; limit {MAX_SUBJECT_CHARS})"
+        ));
+    }
+    Ok(())
 }
 
 fn default_context(
@@ -455,6 +470,11 @@ fn error_message(e: &SupportError, workspace_id: Option<&str>) -> String {
                 Some("body_too_long") => {
                     "report body is too long (limit 20000 characters)".to_string()
                 }
+                Some("subject_too_long") => {
+                    "subject is too long (limit 200 characters)".to_string()
+                }
+                Some("subject_required") => "subject is required".to_string(),
+                Some("body_required") => "report body is required".to_string(),
                 Some(code) => format!("support request failed ({status} {code})"),
                 None => format!("support request failed ({status})"),
             }
@@ -738,6 +758,30 @@ Second paragraph.
     }
 
     #[test]
+    fn build_request_over_long_subject_errors_before_any_http_call() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server.mock("POST", "/v1/support/issues").expect(0).create();
+
+        let subject = "x".repeat(MAX_SUBJECT_CHARS + 1);
+        let err = build_request(
+            &mock_profile(&server.url()),
+            Some("body".to_string()),
+            Some(subject),
+            "bug".to_string(),
+            "high".to_string(),
+            None,
+            true,
+            None,
+            vec![],
+        )
+        .unwrap_err();
+        assert!(err.contains("201"), "got: {err}");
+        assert!(err.contains("limit 200"), "got: {err}");
+        m.assert();
+    }
+
+    #[test]
     fn build_request_logs_over_cap_errors_before_any_http_call() {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
@@ -883,6 +927,38 @@ Second paragraph.
         };
         let msg = error_message(&e, None);
         assert!(msg.contains("20000"));
+    }
+
+    #[test]
+    fn error_message_maps_subject_too_long_with_the_limit() {
+        let e = SupportError::Http {
+            status: 422,
+            body: r#"{"error":"subject_too_long"}"#.to_string(),
+        };
+        let msg = error_message(&e, None);
+        assert!(msg.contains("200"), "got: {msg}");
+    }
+
+    #[test]
+    fn error_message_maps_subject_required() {
+        let e = SupportError::Http {
+            status: 422,
+            body: r#"{"error":"subject_required"}"#.to_string(),
+        };
+        let msg = error_message(&e, None);
+        assert!(msg.contains("subject"), "got: {msg}");
+        assert!(msg.contains("required"), "got: {msg}");
+    }
+
+    #[test]
+    fn error_message_maps_body_required() {
+        let e = SupportError::Http {
+            status: 422,
+            body: r#"{"error":"body_required"}"#.to_string(),
+        };
+        let msg = error_message(&e, None);
+        assert!(msg.contains("body"), "got: {msg}");
+        assert!(msg.contains("required"), "got: {msg}");
     }
 
     #[test]
