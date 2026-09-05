@@ -362,21 +362,63 @@ fn redact_logs(text: &str) -> String {
         .join("\n")
 }
 
+/// A saved log can carry a credential anywhere on the line, not just after a
+/// header name at the start (a pasted `curl -H "Authorization: Bearer ..."`,
+/// a timestamp-prefixed access log). Mask every `bearer <token>` found
+/// case-insensitively at any position; fall back to the plain
+/// `Authorization:` header case (no `Bearer` scheme) only when no token was
+/// found that way, so a Bearer-scheme value is never masked twice.
 fn redact_log_line(line: &str) -> String {
-    let trimmed = line.trim_start();
-    let indent = &line[..line.len() - trimmed.len()];
-    let Some((name, value)) = trimmed.split_once(':') else {
-        return line.to_string();
-    };
-    if !name.eq_ignore_ascii_case("authorization") {
-        return line.to_string();
+    if let Some(masked) = mask_bearer_tokens(line) {
+        return masked;
     }
-    let value = value.trim();
-    let masked = match value.strip_prefix("Bearer ") {
-        Some(token) => format!("Bearer {}", util::mask_credential(token)),
-        None => util::mask_credential(value),
-    };
-    format!("{indent}Authorization: {masked}")
+    mask_authorization_header_value(line).unwrap_or_else(|| line.to_string())
+}
+
+/// Find every case-insensitive `bearer ` in `line` and mask the token that
+/// follows it — the run of chars up to whitespace, a quote, or end of line —
+/// keeping "Bearer" (in whatever case it was written) and everything else on
+/// the line untouched. `None` when the line has no `bearer ` at all.
+fn mask_bearer_tokens(line: &str) -> Option<String> {
+    // `to_ascii_lowercase` only rewrites ASCII bytes in place, so `lower` and
+    // `line` share byte offsets even over multi-byte UTF-8 text — safe to
+    // search one and slice the other.
+    let lower = line.to_ascii_lowercase();
+    let mut out = String::with_capacity(line.len());
+    let mut pos = 0usize;
+    let mut found_any = false;
+    while let Some(rel) = lower[pos..].find("bearer ") {
+        found_any = true;
+        let keep_end = pos + rel + "bearer ".len();
+        out.push_str(&line[pos..keep_end]);
+        let token_start = keep_end;
+        let token_len = line[token_start..]
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .unwrap_or(line.len() - token_start);
+        out.push_str(&util::mask_credential(
+            &line[token_start..token_start + token_len],
+        ));
+        pos = token_start + token_len;
+    }
+    if !found_any {
+        return None;
+    }
+    out.push_str(&line[pos..]);
+    Some(out)
+}
+
+/// A bare `Authorization: <value>` with no `Bearer` scheme (e.g. a raw
+/// `hd_...` token) — mask the whole value, keeping the header name
+/// canonically capitalized (matching prior behavior) and everything before
+/// it on the line untouched. `authorization:` is located anywhere in the
+/// line, not just at its start.
+fn mask_authorization_header_value(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    let idx = lower.find("authorization:")?;
+    let indent = &line[..idx];
+    let value_start = idx + "authorization:".len();
+    let masked = util::mask_credential(line[value_start..].trim());
+    Some(format!("{indent}Authorization: {masked}"))
 }
 
 fn generate_idempotency_key() -> String {
@@ -663,6 +705,32 @@ Second paragraph.
         let input = "  authorization: hd_abcdefghijkl\n";
         let out = redact_logs(input);
         assert_eq!(out, "  Authorization: hd_a...ijkl");
+    }
+
+    #[test]
+    fn redact_logs_masks_a_curl_dash_h_bearer_token_mid_line() {
+        let input = r#"curl -H "Authorization: Bearer hd_live_x123456789" https://api.hotdata.dev/v1/query"#;
+        let out = redact_logs(input);
+        assert!(
+            out.contains(r#"Authorization: Bearer hd_l...6789""#),
+            "got: {out}"
+        );
+        assert!(out.contains("https://api.hotdata.dev/v1/query"));
+        assert!(!out.contains("hd_live_x123456789"));
+    }
+
+    #[test]
+    fn redact_logs_masks_a_timestamp_prefixed_bearer_line() {
+        let input = "2026-09-05T10:00:00Z Authorization: Bearer supersecrettoken1234";
+        let out = redact_logs(input);
+        assert!(out.starts_with("2026-09-05T10:00:00Z Authorization: Bearer "));
+        assert!(!out.contains("supersecrettoken1234"));
+    }
+
+    #[test]
+    fn redact_logs_line_with_no_credential_is_unchanged() {
+        let input = "GET /v1/foo 200 12ms";
+        assert_eq!(redact_logs(input), input);
     }
 
     // --- idempotency key --------------------------------------------------------
