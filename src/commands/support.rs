@@ -211,7 +211,19 @@ fn resolve_optional_workspace(
     if let Some(id) = provided {
         return Ok((Some(id), false));
     }
-    Ok((client::credentials::default_workspace_id(profile), false))
+    // Deliberately NOT `client::credentials::default_workspace_id`: for an
+    // api-key credential (`--api-key`/`HOTDATA_API_KEY`) that helper probes
+    // `GET /workspaces` to discover scope. An exact workspace is optional for
+    // filing a report, and the API being slow or down is exactly the
+    // situation this command exists for — it must never block on a network
+    // round trip just to guess a default. Read only the saved default
+    // (`workspaces set` / a prior login moves one to the front); if there is
+    // none, or the current credential can't actually reach it, file with no
+    // workspace instead of guessing.
+    Ok((
+        profile.workspaces.first().map(|w| w.public_id.clone()),
+        false,
+    ))
 }
 
 /// Produce (subject, body) from `-m`/`--subject`, or by composing in
@@ -798,6 +810,40 @@ Second paragraph.
     }
 
     #[test]
+    fn build_request_with_env_api_key_and_no_configured_default_makes_zero_http_calls() {
+        // `client::credentials::default_workspace_id` would probe `GET
+        // /workspaces` for an env/flag-sourced api key with no single-
+        // workspace answer already known -- resolve_optional_workspace must
+        // never do that. A report is exactly what gets filed when the API
+        // is slow or down, so filing one must never block on it.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let probe = server.mock("GET", "/workspaces").expect(0).create();
+
+        let mut profile = mock_profile(&server.url());
+        profile.api_key_source = config::ApiKeySource::Env;
+        assert!(
+            profile.workspaces.is_empty(),
+            "test setup: no saved default"
+        );
+
+        let (_req, id) = build_request(
+            &profile,
+            Some("body".to_string()),
+            Some("Subj".to_string()),
+            "bug".to_string(),
+            "high".to_string(),
+            None,
+            false,
+            None,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(id, None);
+        probe.assert();
+    }
+
+    #[test]
     fn saved_default_is_used_when_no_flag_given() {
         let profile = ProfileConfig {
             workspaces: vec![config::WorkspaceEntry {
@@ -832,8 +878,10 @@ Second paragraph.
         )
         .unwrap_err();
         assert!(err.contains("KEY=VALUE"), "got: {err}");
-        // build_request never talks to the network at all, so this always
-        // holds — asserted anyway as the documented guarantee.
+        // build_request never talks to the network at all -- workspace
+        // resolution reads only the saved default, never probes -- so this
+        // always holds regardless of which validation failed; asserted
+        // anyway as the documented guarantee.
         m.assert();
     }
 
