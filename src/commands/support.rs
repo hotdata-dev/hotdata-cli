@@ -178,12 +178,7 @@ fn persist_on_editor_failure(
 /// if even that fails — print the whole thing to stderr so nothing is lost.
 fn persist_composed_report(subject: &str, body: &str) {
     match save_draft(subject, body) {
-        Ok(path) => {
-            let path = path.display();
-            eprintln!(
-                "Your report was saved to {path}. Re-file it with: hotdata support report --subject '{subject}' -m \"$(tail -n +3 {path})\""
-            );
-        }
+        Ok(path) => eprintln!("{}", refile_hint(&path)),
         Err(e) => {
             eprintln!("warning: could not save your report to disk: {e}");
             eprintln!("--- your report, so nothing is lost ---");
@@ -194,12 +189,24 @@ fn persist_composed_report(subject: &str, body: &str) {
     }
 }
 
+/// The re-file hint printed after a draft is saved. Both `--subject` and `-m`
+/// are filled by reading the draft file back at re-file time (`head`/`tail`)
+/// rather than interpolating the user's own subject/body text into the
+/// command line — a quote or apostrophe in either would otherwise leave the
+/// shell sitting at a continuation prompt.
+fn refile_hint(path: &std::path::Path) -> String {
+    let path = path.display();
+    format!(
+        "Your report was saved to {path}. Re-file it with: hotdata support report --subject \"$(head -n 1 \"{path}\")\" -m \"$(tail -n +3 \"{path}\")\""
+    )
+}
+
 /// Persist a composed report to disk as `support-draft-<unix-seconds>.md`
 /// under the CLI config dir (mode 0600, same as the session file — the
 /// content is the user's own report, not a credential, but there is no
 /// reason to make it more visible than that). Format is `"<subject>\n\n
-/// <body>\n"`, so `tail -n +3 <path>` recovers the body alone (matching the
-/// re-file hint in [`persist_composed_report`]).
+/// <body>\n"`, so `head -n 1 <path>` recovers the subject and
+/// `tail -n +3 <path>` the body (matching [`refile_hint`]).
 fn save_draft(subject: &str, body: &str) -> Result<PathBuf, String> {
     let dir = config::config_dir()?;
     let now = SystemTime::now()
@@ -1263,6 +1270,18 @@ Second paragraph.
         let name = path.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("support-draft-"), "got: {name}");
         assert!(name.ends_with(".md"), "got: {name}");
+    }
+
+    #[test]
+    fn refile_hint_reads_subject_and_body_from_the_file_rather_than_interpolating_them() {
+        // An apostrophe or quote in the user's own subject/body must never
+        // land in the printed command line — only the (trusted) path does.
+        let path = std::path::Path::new("/tmp/support-draft-1234567890.md");
+        let hint = refile_hint(path);
+        assert_eq!(
+            hint,
+            "Your report was saved to /tmp/support-draft-1234567890.md. Re-file it with: hotdata support report --subject \"$(head -n 1 \"/tmp/support-draft-1234567890.md\")\" -m \"$(tail -n +3 \"/tmp/support-draft-1234567890.md\")\""
+        );
     }
 
     #[test]
