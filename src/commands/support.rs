@@ -14,6 +14,8 @@ use crate::config;
 use crate::util;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_LOGS_BYTES: usize = 256 * 1024;
 const MAX_CONTEXT_VALUE_CHARS: usize = 500;
@@ -115,7 +117,7 @@ fn report_with_profile(
     context_pairs: Vec<String>,
     output: &str,
 ) {
-    let (req, workspace_id) = build_request(
+    let (req, workspace_id, from_editor) = build_request(
         profile,
         message,
         subject,
@@ -135,16 +137,87 @@ fn report_with_profile(
         std::process::exit(1);
     });
 
-    match client::support::post_support_issue(profile, workspace_id.as_deref(), &req) {
+    send_and_report(profile, req, workspace_id, from_editor, output);
+}
+
+/// Send the built request and render the result. Split out from
+/// `report_with_profile` so a test can drive it directly with a hand-built
+/// request and an explicit `from_editor`, without spawning `$EDITOR`.
+fn send_and_report(
+    profile: &config::ProfileConfig,
+    req: SupportIssueRequest,
+    workspace_id: Option<String>,
+    from_editor: bool,
+    output: &str,
+) {
+    let result = client::support::post_support_issue(profile, workspace_id.as_deref(), &req);
+    persist_on_editor_failure(&result, &req, from_editor);
+    match result {
         Ok((issue, replay)) => print_success(&issue, replay, output),
         Err(e) => handle_error(&e, workspace_id.as_deref()),
     }
 }
 
+/// If the report was composed in `$EDITOR` and the send failed, persist it —
+/// `open_editor`'s own temp file is already gone by now, so a lost send
+/// would otherwise lose the text the user just wrote. A no-op for the
+/// `-m`/`--subject` path (that text is still in the caller's shell history)
+/// and for a successful send. Never touches `result`; it only adds a side
+/// effect alongside it.
+fn persist_on_editor_failure(
+    result: &Result<(SupportIssue, bool), SupportError>,
+    req: &SupportIssueRequest,
+    from_editor: bool,
+) {
+    if from_editor && result.is_err() {
+        persist_composed_report(&req.subject, &req.body);
+    }
+}
+
+/// Save the just-composed report and tell the user how to re-file it, or —
+/// if even that fails — print the whole thing to stderr so nothing is lost.
+fn persist_composed_report(subject: &str, body: &str) {
+    match save_draft(subject, body) {
+        Ok(path) => {
+            let path = path.display();
+            eprintln!(
+                "Your report was saved to {path}. Re-file it with: hotdata support report --subject '{subject}' -m \"$(tail -n +3 {path})\""
+            );
+        }
+        Err(e) => {
+            eprintln!("warning: could not save your report to disk: {e}");
+            eprintln!("--- your report, so nothing is lost ---");
+            eprintln!("Subject: {subject}");
+            eprintln!();
+            eprintln!("{body}");
+        }
+    }
+}
+
+/// Persist a composed report to disk as `support-draft-<unix-seconds>.md`
+/// under the CLI config dir (mode 0600, same as the session file — the
+/// content is the user's own report, not a credential, but there is no
+/// reason to make it more visible than that). Format is `"<subject>\n\n
+/// <body>\n"`, so `tail -n +3 <path>` recovers the body alone (matching the
+/// re-file hint in [`persist_composed_report`]).
+fn save_draft(subject: &str, body: &str) -> Result<PathBuf, String> {
+    let dir = config::config_dir()?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = dir.join(format!("support-draft-{now}.md"));
+    let content = format!("{subject}\n\n{body}\n");
+    util::atomic_write(&path, content.as_bytes(), 0o600)?;
+    Ok(path)
+}
+
 /// Resolve the workspace, compose the report text, build context, and load
 /// logs — everything that can be rejected before an HTTP call is ever made.
-/// Returns the request plus the resolved workspace id (needed to render a
-/// `workspace_not_found` error message later).
+/// Returns the request, the resolved workspace id (needed to render a
+/// `workspace_not_found` error message later), and whether the text came
+/// from `$EDITOR` (needed to decide whether a failed send should be
+/// persisted to disk).
 #[allow(clippy::too_many_arguments)]
 fn build_request(
     profile: &config::ProfileConfig,
@@ -156,10 +229,10 @@ fn build_request(
     no_workspace: bool,
     logs_path: Option<String>,
     context_pairs: Vec<String>,
-) -> Result<(SupportIssueRequest, Option<String>), String> {
+) -> Result<(SupportIssueRequest, Option<String>, bool), String> {
     let (workspace_id, workspace_locked) =
         resolve_optional_workspace(profile, workspace_id, no_workspace)?;
-    let (subject, body) = compose(message, subject)?;
+    let (subject, body, from_editor) = compose(message, subject)?;
     validate_subject(&subject)?;
 
     let mut context = default_context(profile, workspace_locked);
@@ -179,7 +252,7 @@ fn build_request(
         logs,
         idempotency_key: generate_idempotency_key(),
     };
-    Ok((req, workspace_id))
+    Ok((req, workspace_id, from_editor))
 }
 
 /// Resolve the workspace to attach. Unlike `main::resolve_workspace`, an
@@ -226,16 +299,22 @@ fn resolve_optional_workspace(
     ))
 }
 
-/// Produce (subject, body) from `-m`/`--subject`, or by composing in
-/// `$EDITOR` when neither is usable. The abort case (empty compose) is
-/// signaled via the literal [`ABORTED`] string so the caller skips the
-/// "error: " prefix on it.
-fn compose(message: Option<String>, subject: Option<String>) -> Result<(String, String), String> {
+/// Produce (subject, body, from_editor) from `-m`/`--subject`, or by
+/// composing in `$EDITOR` when neither is usable. `from_editor` is what lets
+/// a failed send later decide whether to persist a draft: `-m` text is still
+/// in the caller's shell history, but `$EDITOR`'s own temp file is gone by
+/// the time a send fails, so that text has nowhere else to live. The abort
+/// case (empty compose) is signaled via the literal [`ABORTED`] string so the
+/// caller skips the "error: " prefix on it.
+fn compose(
+    message: Option<String>,
+    subject: Option<String>,
+) -> Result<(String, String, bool), String> {
     if let Some(body) = message {
         let Some(subject) = subject else {
             return Err("--subject is required when using -m/--message".to_string());
         };
-        return Ok((subject, body));
+        return Ok((subject, body, false));
     }
 
     if !util::is_interactive() {
@@ -252,7 +331,8 @@ fn compose(message: Option<String>, subject: Option<String>) -> Result<(String, 
         subject.unwrap_or_default()
     );
     let edited = util::open_editor(&template)?;
-    parse_composed(&edited).ok_or_else(|| ABORTED.to_string())
+    let (subject, body) = parse_composed(&edited).ok_or_else(|| ABORTED.to_string())?;
+    Ok((subject, body, true))
 }
 
 /// Pure parse of an edited compose file: strip `#`-comment lines, take the
@@ -621,10 +701,11 @@ Second paragraph.
 
     #[test]
     fn compose_with_message_and_subject_succeeds_without_editor() {
-        let (subject, body) =
+        let (subject, body, from_editor) =
             compose(Some("body text".to_string()), Some("Subj".to_string())).unwrap();
         assert_eq!(subject, "Subj");
         assert_eq!(body, "body text");
+        assert!(!from_editor);
     }
 
     #[test]
@@ -827,7 +908,7 @@ Second paragraph.
             "test setup: no saved default"
         );
 
-        let (_req, id) = build_request(
+        let (_req, id, _from_editor) = build_request(
             &profile,
             Some("body".to_string()),
             Some("Subj".to_string()),
@@ -967,7 +1048,7 @@ Second paragraph.
         // header and for a `workspace_not_found` error message.
         let (_tmp, _guard) = with_temp_config_dir();
         let profile = mock_profile("http://127.0.0.1:1");
-        let (_req, id) = build_request(
+        let (_req, id, _from_editor) = build_request(
             &profile,
             Some("body".to_string()),
             Some("Subj".to_string()),
@@ -986,7 +1067,7 @@ Second paragraph.
     fn build_request_resolves_the_provided_workspace() {
         let (_tmp, _guard) = with_temp_config_dir();
         let profile = mock_profile("http://127.0.0.1:1");
-        let (_req, id) = build_request(
+        let (_req, id, _from_editor) = build_request(
             &profile,
             Some("body".to_string()),
             Some("Subj".to_string()),
@@ -1137,6 +1218,149 @@ Second paragraph.
             "message not truncated, got {} chars",
             msg.chars().count()
         );
+    }
+
+    // --- editor draft persistence -------------------------------------------------
+
+    #[test]
+    fn save_draft_writes_subject_blank_line_body_at_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        let path = save_draft("My subject", "My body\nsecond line").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "My subject\n\nMy body\nsecond line\n");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn save_draft_filename_carries_a_unix_timestamp() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let path = save_draft("s", "b").unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("support-draft-"), "got: {name}");
+        assert!(name.ends_with(".md"), "got: {name}");
+    }
+
+    #[test]
+    fn persist_on_editor_failure_writes_a_draft_when_send_failed_and_editor_composed() {
+        // Drives the exact same two steps `send_and_report` performs on a
+        // failed send (post, then the persist decision) without going
+        // through the process-exiting `handle_error` — so this can run
+        // in-process. The mock returning 503 twice exercises the real
+        // retry-once-then-give-up path in `client::support`.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("POST", "/v1/support/issues")
+            .with_status(503)
+            .expect(2)
+            .create();
+
+        let profile = mock_profile(&server.url());
+        let req = SupportIssueRequest {
+            subject: "Composed subject".to_string(),
+            body: "Composed body\nsecond line".to_string(),
+            kind: "bug".to_string(),
+            severity: "high".to_string(),
+            context: BTreeMap::new(),
+            logs: None,
+            idempotency_key: generate_idempotency_key(),
+        };
+
+        let result = client::support::post_support_issue(&profile, None, &req);
+        assert!(result.is_err(), "test setup: the mock must fail the send");
+        m.assert();
+
+        persist_on_editor_failure(&result, &req, true);
+
+        let dir = config::config_dir().unwrap();
+        let drafts: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("support-draft-")
+            })
+            .collect();
+        assert_eq!(drafts.len(), 1, "expected exactly one draft file");
+        let content = std::fs::read_to_string(drafts[0].path()).unwrap();
+        assert_eq!(content, "Composed subject\n\nComposed body\nsecond line\n");
+    }
+
+    #[test]
+    fn persist_on_editor_failure_is_a_noop_when_not_editor_composed() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let req = SupportIssueRequest {
+            subject: "s".to_string(),
+            body: "b".to_string(),
+            kind: "bug".to_string(),
+            severity: "high".to_string(),
+            context: BTreeMap::new(),
+            logs: None,
+            idempotency_key: "k".to_string(),
+        };
+        let result: Result<(SupportIssue, bool), SupportError> =
+            Err(SupportError::Connection("boom".to_string()));
+
+        persist_on_editor_failure(&result, &req, false);
+
+        let dir = config::config_dir().unwrap();
+        let has_draft = std::fs::read_dir(&dir)
+            .map(|mut entries| {
+                entries.any(|e| {
+                    e.ok().is_some_and(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .starts_with("support-draft-")
+                    })
+                })
+            })
+            .unwrap_or(false);
+        assert!(!has_draft, "-m path must never write a draft");
+    }
+
+    #[test]
+    fn persist_on_editor_failure_is_a_noop_when_the_send_succeeded() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let req = SupportIssueRequest {
+            subject: "s".to_string(),
+            body: "b".to_string(),
+            kind: "bug".to_string(),
+            severity: "high".to_string(),
+            context: BTreeMap::new(),
+            logs: None,
+            idempotency_key: "k".to_string(),
+        };
+        let issue = SupportIssue {
+            public_id: "supp_1".to_string(),
+            status: "queued".to_string(),
+            subject: "s".to_string(),
+            kind: "bug".to_string(),
+            severity: "high".to_string(),
+            workspace_public_id: None,
+            created_at: "2026-09-05T00:00:00Z".to_string(),
+        };
+        let result = Ok((issue, false));
+
+        persist_on_editor_failure(&result, &req, true);
+
+        let dir = config::config_dir().unwrap();
+        let has_draft = std::fs::read_dir(&dir)
+            .map(|mut entries| {
+                entries.any(|e| {
+                    e.ok().is_some_and(|e| {
+                        e.file_name()
+                            .to_string_lossy()
+                            .starts_with("support-draft-")
+                    })
+                })
+            })
+            .unwrap_or(false);
+        assert!(!has_draft, "a successful send must never write a draft");
     }
 
     // --- report_with_profile: end-to-end against a mock server --------------------
