@@ -24,6 +24,46 @@ pub fn atomic_write(path: &std::path::Path, bytes: &[u8], mode: u32) -> Result<(
     Ok(())
 }
 
+/// Open `$EDITOR` (falling back to `$VISUAL`, then `vi`) on a temp file
+/// pre-filled with `initial`, wait for it to exit, and return the file's
+/// final contents. `EDITOR`/`VISUAL` may carry arguments (e.g. `code --wait`);
+/// the first whitespace-separated token is the program, the rest are passed
+/// through before the file path.
+///
+/// Not unit-tested: spawning a real editor process has no place in a test
+/// suite. Callers that need to test compose behavior should test the pure
+/// parsing of the returned text instead.
+pub fn open_editor(initial: &str) -> Result<String, String> {
+    use std::io::Write;
+
+    let mut tmp = tempfile::Builder::new()
+        .suffix(".md")
+        .tempfile()
+        .map_err(|e| format!("creating temp file: {e}"))?;
+    tmp.write_all(initial.as_bytes())
+        .map_err(|e| format!("writing temp file: {e}"))?;
+    tmp.flush().map_err(|e| format!("writing temp file: {e}"))?;
+    let path = tmp.path().to_path_buf();
+
+    let editor_cmd = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".to_string());
+    let mut parts = editor_cmd.split_whitespace();
+    let program = parts.next().ok_or("EDITOR/VISUAL is set but empty")?;
+    let args: Vec<&str> = parts.collect();
+
+    let status = std::process::Command::new(program)
+        .args(&args)
+        .arg(&path)
+        .status()
+        .map_err(|e| format!("launching editor '{editor_cmd}': {e}"))?;
+    if !status.success() {
+        return Err(format!("editor '{editor_cmd}' exited with {status}"));
+    }
+
+    std::fs::read_to_string(&path).map_err(|e| format!("reading composed file: {e}"))
+}
+
 /// Create a steady-ticking spinner with a cyan glyph and the given message.
 /// Writes to stderr so stdout (json/yaml output) stays clean.
 pub fn spinner(msg: &str) -> indicatif::ProgressBar {
