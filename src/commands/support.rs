@@ -352,27 +352,53 @@ fn compose(
         subject.unwrap_or_default()
     );
     let edited = util::open_editor(&template)?;
-    let (subject, body) = parse_composed(&edited).ok_or_else(|| ABORTED.to_string())?;
+    let Some((subject, body)) = parse_composed(&edited) else {
+        return Err(abort_or_rescue(&edited));
+    };
     Ok((subject, body, true))
 }
 
-/// Pure parse of an edited compose file: strip `#`-comment lines, take the
-/// first non-blank remaining line as the subject and everything after as the
-/// body. `None` when either comes up empty — the abort case.
-fn parse_composed(text: &str) -> Option<(String, String)> {
+/// Split an edited compose file: strip `#`-comment lines, take the first
+/// non-blank remaining line as the subject and everything after as the body.
+/// Either half can come back empty; [`parse_composed`] is the caller that
+/// decides an empty half is a rejection.
+fn split_composed(text: &str) -> (String, String) {
     let mut lines = text.lines().filter(|l| !l.trim_start().starts_with('#'));
     let subject = loop {
         match lines.next() {
             Some(l) if l.trim().is_empty() => continue,
             Some(l) => break l.trim().to_string(),
-            None => return None,
+            None => break String::new(),
         }
     };
     let body: String = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+    (subject, body)
+}
+
+/// Pure parse of an edited compose file. `None` when either half comes up
+/// empty — the abort case.
+fn parse_composed(text: &str) -> Option<(String, String)> {
+    let (subject, body) = split_composed(text);
     if subject.is_empty() || body.is_empty() {
         return None;
     }
     Some((subject, body))
+}
+
+/// What `compose` returns when `parse_composed` rejects the edited file.
+/// An untouched or emptied template is the documented cancel — stay silent
+/// and leave no draft behind. Anything the user actually typed was rejected
+/// only for the missing half, and `open_editor`'s temp file is already
+/// gone, so rescue that text the same way a failed send does.
+fn abort_or_rescue(edited: &str) -> String {
+    let (subject, body) = split_composed(edited);
+    if subject.is_empty() {
+        // No non-comment content at all, so nothing was typed: `split_composed`
+        // only leaves the subject empty when it found no content line.
+        return ABORTED.to_string();
+    }
+    persist_composed_report(&subject, &body);
+    "a report needs a subject line and a body; nothing was sent".to_string()
 }
 
 /// Truncate to `max` chars (not bytes), respecting UTF-8 boundaries.
@@ -781,6 +807,51 @@ Second paragraph.
     }
 
     // --- compose (message/subject validation) -------------------------------
+
+    #[test]
+    fn a_typed_report_with_no_body_line_is_rescued_to_a_draft() {
+        // parse_composed rejects subject-only text, and open_editor's temp
+        // file is gone by then -- so this is the same class of loss as a
+        // failed send, and needs the same rescue.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let edited = "Everything is broken please help\n\n\
+                      # Lines starting with '#' are ignored.\n";
+
+        let err = abort_or_rescue(edited);
+
+        assert_ne!(err, ABORTED, "typed text must not abort silently");
+        let drafts = draft_paths();
+        assert_eq!(drafts.len(), 1, "expected exactly one draft file");
+        assert_eq!(
+            std::fs::read_to_string(&drafts[0]).unwrap(),
+            "Everything is broken please help\n\n\n"
+        );
+    }
+
+    #[test]
+    fn an_untouched_template_aborts_silently_without_a_draft() {
+        // "empty to abort" is the documented cancel; it must not litter the
+        // config dir with a draft of nothing.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let edited = "\n\n\
+                      # Lines starting with '#' are ignored. First non-comment line is the subject,\n\
+                      # the rest is the report body. Save and quit to send; empty to abort.\n";
+
+        assert_eq!(abort_or_rescue(edited), ABORTED);
+        assert!(draft_paths().is_empty());
+    }
+
+    #[test]
+    fn split_composed_keeps_an_empty_half_that_parse_composed_would_reject() {
+        assert_eq!(
+            split_composed("Just a subject\n# a comment\n"),
+            ("Just a subject".to_string(), String::new())
+        );
+        assert_eq!(
+            split_composed("# only comments\n"),
+            (String::new(), String::new())
+        );
+    }
 
     #[test]
     fn compose_with_message_but_no_subject_errors() {
