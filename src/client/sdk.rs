@@ -404,7 +404,7 @@ pub fn none_if_404<T>(r: Result<T, ApiError>) -> Result<Option<T>, ApiError> {
 /// url through verbatim would produce `/v1/v1/...` on every call. Strip one
 /// trailing `/v1` (and any trailing slash) so both paths resolve to a single
 /// `/v1`.
-fn sdk_base_path(api_url: &str) -> String {
+pub(crate) fn sdk_base_path(api_url: &str) -> String {
     let trimmed = api_url.trim_end_matches('/');
     trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string()
 }

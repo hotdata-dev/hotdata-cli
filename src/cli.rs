@@ -5,6 +5,7 @@ use crate::commands::jobs::JobsCommands;
 use crate::commands::query::QueryCommands;
 use crate::commands::search::SearchCommands;
 use crate::commands::skill::SkillCommands;
+use crate::commands::support::SupportCommands;
 use crate::commands::workspace::WorkspaceCommands;
 use clap::Subcommand;
 
@@ -142,6 +143,12 @@ pub enum Commands {
     Manage {
         #[command(subcommand)]
         command: ManageCommands,
+    },
+
+    /// Get help — file a support ticket with the HotData team
+    Support {
+        #[command(subcommand)]
+        command: SupportCommands,
     },
 }
 
