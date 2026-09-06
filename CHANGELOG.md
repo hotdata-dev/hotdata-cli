@@ -1,3 +1,8 @@
+## [0.32.0] - 2026-09-06
+
+### 🚀 Features
+
+- *(support)* Add support report command (#290)
 ## [0.31.0] - 2026-09-04
 
 ### 🚀 Features
