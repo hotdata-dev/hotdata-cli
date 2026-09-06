@@ -150,10 +150,11 @@ fn send_and_report(
     from_editor: bool,
     output: &str,
 ) {
+    let logs_attached = req.logs.is_some();
     let result = client::support::post_support_issue(profile, workspace_id.as_deref(), &req);
     persist_on_editor_failure(&result, &req, from_editor);
     match result {
-        Ok((issue, replay)) => print_success(&issue, replay, output),
+        Ok((issue, replay)) => print_success(&issue, replay, logs_attached, output),
         Err(e) => handle_error(&e, workspace_id.as_deref()),
     }
 }
@@ -568,8 +569,10 @@ struct ReportOutput<'a> {
     replay: bool,
 }
 
-fn print_success(issue: &SupportIssue, replay: bool, output: &str) {
+fn print_success(issue: &SupportIssue, replay: bool, logs_attached: bool, output: &str) {
     match output {
+        // json/yaml stay the issue object plus `replay`: a caller parsing
+        // these passed --logs itself and already knows.
         "json" => println!(
             "{}",
             serde_json::to_string_pretty(&ReportOutput { issue, replay }).unwrap()
@@ -578,25 +581,40 @@ fn print_success(issue: &SupportIssue, replay: bool, output: &str) {
             "{}",
             serde_yaml::to_string(&ReportOutput { issue, replay }).unwrap()
         ),
-        "table" => {
-            use crossterm::style::Stylize;
-            println!(
-                "Support request filed: {}",
-                issue.public_id.as_str().green()
-            );
-            println!("Subject:   {}", issue.subject);
-            let workspace = issue.workspace_public_id.as_deref().unwrap_or("none");
-            println!(
-                "Severity:  {}   Kind: {}   Workspace: {}",
-                issue.severity, issue.kind, workspace
-            );
-            println!("Replies go to the email on your HotData account.");
-            if replay {
-                println!("(already filed; nothing new was sent)");
-            }
-        }
+        "table" => println!("{}", success_table(issue, replay, logs_attached)),
         _ => unreachable!(),
     }
+}
+
+/// The table-mode confirmation as text — pure, so what it renders is tested
+/// directly rather than by capturing the process's stdout.
+fn success_table(issue: &SupportIssue, replay: bool, logs_attached: bool) -> String {
+    use crossterm::style::Stylize;
+
+    let mut lines = vec![
+        format!(
+            "Support request filed: {}",
+            issue.public_id.as_str().green()
+        ),
+        format!("Subject:   {}", issue.subject),
+        format!(
+            "Severity:  {}   Kind: {}   Workspace: {}",
+            issue.severity,
+            issue.kind,
+            issue.workspace_public_id.as_deref().unwrap_or("none")
+        ),
+    ];
+    // Confirm the attachment made it: --logs is the one input the user can't
+    // see in the response, and a silently dropped log file is the kind of
+    // thing they'd only discover from a support reply asking for it.
+    if logs_attached {
+        lines.push("Logs:      attached".to_string());
+    }
+    lines.push("Replies go to the email on your HotData account.".to_string());
+    if replay {
+        lines.push("(already filed; nothing new was sent)".to_string());
+    }
+    lines.join("\n")
 }
 
 /// The support endpoint's error envelope is Django-flat (`{"error":
@@ -1508,6 +1526,64 @@ Second paragraph.
             draft_paths().is_empty(),
             "a successful send must never write a draft"
         );
+    }
+
+    // --- table rendering (pure) ---------------------------------------------------
+
+    fn filed_issue() -> SupportIssue {
+        SupportIssue {
+            public_id: "supp_1".to_string(),
+            status: "queued".to_string(),
+            subject: "Query timing out".to_string(),
+            kind: "bug".to_string(),
+            severity: "high".to_string(),
+            workspace_public_id: Some("work_abc".to_string()),
+            created_at: "2026-09-05T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn success_table_reports_attached_logs() {
+        let table = success_table(&filed_issue(), false, true);
+        assert!(table.contains("Logs:      attached"), "got: {table}");
+    }
+
+    #[test]
+    fn success_table_omits_the_logs_line_when_none_were_sent() {
+        let table = success_table(&filed_issue(), false, false);
+        assert!(!table.contains("Logs:"), "got: {table}");
+    }
+
+    #[test]
+    fn success_table_carries_the_issue_fields_and_the_replay_note() {
+        let plain = success_table(&filed_issue(), true, false);
+        assert!(plain.contains("supp_1"), "got: {plain}");
+        assert!(
+            plain.contains("Subject:   Query timing out"),
+            "got: {plain}"
+        );
+        assert!(
+            plain.contains("Severity:  high   Kind: bug   Workspace: work_abc"),
+            "got: {plain}"
+        );
+        assert!(
+            plain.contains("Replies go to the email on your HotData account."),
+            "got: {plain}"
+        );
+        assert!(
+            plain.contains("(already filed; nothing new was sent)"),
+            "got: {plain}"
+        );
+    }
+
+    #[test]
+    fn success_table_renders_a_missing_workspace_as_none() {
+        let issue = SupportIssue {
+            workspace_public_id: None,
+            ..filed_issue()
+        };
+        let table = success_table(&issue, false, false);
+        assert!(table.contains("Workspace: none"), "got: {table}");
     }
 
     // --- report_with_profile: end-to-end against a mock server --------------------
