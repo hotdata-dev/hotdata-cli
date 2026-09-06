@@ -151,7 +151,12 @@ fn send_and_report(
     output: &str,
 ) {
     let logs_attached = req.logs.is_some();
+    // A failing API is the situation this command exists for, and the
+    // retry-once path can sit for two client timeouts plus the 2s backoff.
+    // Without this the terminal looks hung for the whole stretch.
+    let spinner = util::spinner("Filing support request...");
     let result = client::support::post_support_issue(profile, workspace_id.as_deref(), &req);
+    spinner.finish_and_clear();
     persist_on_editor_failure(&result, &req, from_editor);
     match result {
         Ok((issue, replay)) => print_success(&issue, replay, logs_attached, output),
