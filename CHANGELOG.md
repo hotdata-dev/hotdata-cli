@@ -1,3 +1,8 @@
+## [0.32.0] - 2026-09-06
+
+### 🚀 Features
+
+- *(support)* File support tickets from the CLI (#290)
 ## [0.31.0] - 2026-09-04
 
 ### 🚀 Features
