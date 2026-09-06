@@ -2,7 +2,7 @@
 
 ### 🚀 Features
 
-- *(support)* Add support report command (#290)
+- *(support)* File support tickets from the CLI (#290)
 ## [0.31.0] - 2026-09-04
 
 ### 🚀 Features
