@@ -239,16 +239,21 @@ fn build_request(
 ) -> Result<(SupportIssueRequest, Option<String>, bool), String> {
     let (workspace_id, workspace_locked) =
         resolve_optional_workspace(profile, workspace_id, no_workspace)?;
-    let (subject, body, from_editor) = compose(message, subject)?;
-    validate_subject(&subject)?;
 
+    // Everything that does not depend on the composed text is validated
+    // BEFORE $EDITOR opens. `compose`'s temp file is deleted the moment it
+    // returns, so a rejection after that point throws away text the user
+    // just spent an editor session writing -- a mistyped --logs path or a
+    // --context pair missing its '=' must not cost them the report.
     let mut context = default_context(profile, workspace_locked);
     merge_user_context(&mut context, &context_pairs)?;
-
     let logs = match logs_path {
         Some(path) => Some(load_logs(&path)?),
         None => None,
     };
+
+    let (subject, body, from_editor) = compose(message, subject)?;
+    validate_composed_subject(&subject, &body, from_editor)?;
 
     let req = SupportIssueRequest {
         subject,
@@ -377,6 +382,21 @@ fn validate_subject(subject: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// `validate_subject`, plus the draft rescue for the one rejection that can
+/// only land after `$EDITOR` has already closed: an over-long first line.
+/// Everything else `build_request` rejects is checked before composing, but
+/// this check needs the composed text itself, so save it before erroring --
+/// the editor's own copy is gone by now.
+fn validate_composed_subject(subject: &str, body: &str, from_editor: bool) -> Result<(), String> {
+    let Err(e) = validate_subject(subject) else {
+        return Ok(());
+    };
+    if from_editor {
+        persist_composed_report(subject, body);
+    }
+    Err(e)
 }
 
 fn default_context(
@@ -673,6 +693,27 @@ mod tests {
     }
 
     // --- parse_composed (editor compose, pure) -----------------------------
+
+    /// Every `support-draft-*` file currently in the (temp) config dir.
+    fn draft_paths() -> Vec<std::path::PathBuf> {
+        let dir = config::config_dir().unwrap();
+        let mut paths: Vec<_> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .starts_with("support-draft-")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        paths.sort();
+        paths
+    }
 
     #[test]
     fn parse_composed_strips_comments_and_splits_subject_body() {
@@ -1047,6 +1088,54 @@ Second paragraph.
     }
 
     #[test]
+    fn build_request_rejects_a_bad_logs_path_before_composing() {
+        // Ordering guard: --logs is read before compose() runs, so an
+        // editor session is never spent on a report a bad path would then
+        // throw away. no_input keeps compose from spawning a real editor,
+        // and makes its failure the distinguishable one -- if compose still
+        // ran first this would be the TTY error instead.
+        let (_tmp, _guard) = with_temp_config_dir();
+        util::set_no_input(true);
+        let err = build_request(
+            &mock_profile("http://127.0.0.1:1"),
+            None,
+            None,
+            "bug".to_string(),
+            "high".to_string(),
+            None,
+            true,
+            Some("/nonexistent/nope.log".to_string()),
+            vec![],
+        )
+        .unwrap_err();
+        util::set_no_input(false);
+        assert!(err.contains("nope.log"), "got: {err}");
+        assert!(!err.contains("TTY"), "got: {err}");
+    }
+
+    #[test]
+    fn build_request_rejects_a_malformed_context_pair_before_composing() {
+        // Same ordering guard as above, for --context.
+        let (_tmp, _guard) = with_temp_config_dir();
+        util::set_no_input(true);
+        let err = build_request(
+            &mock_profile("http://127.0.0.1:1"),
+            None,
+            None,
+            "bug".to_string(),
+            "high".to_string(),
+            None,
+            true,
+            None,
+            vec!["broken".to_string()],
+        )
+        .unwrap_err();
+        util::set_no_input(false);
+        assert!(err.contains("KEY=VALUE"), "got: {err}");
+        assert!(!err.contains("TTY"), "got: {err}");
+    }
+
+    #[test]
     fn build_request_non_tty_without_message_errors_before_any_http_call() {
         let (_tmp, _guard) = with_temp_config_dir();
         let mut server = mockito::Server::new();
@@ -1287,6 +1376,45 @@ Second paragraph.
     }
 
     #[test]
+    fn over_long_editor_subject_is_saved_as_a_draft_before_erroring() {
+        // The editor path can't be driven end-to-end here (compose() needs a
+        // TTY, and spawning a real editor has no place in a test), so this
+        // covers the rescue at the seam build_request calls.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let subject = "x".repeat(MAX_SUBJECT_CHARS + 1);
+
+        let err = validate_composed_subject(&subject, "Composed body", true).unwrap_err();
+
+        assert!(err.contains("limit 200"), "got: {err}");
+        let drafts = draft_paths();
+        assert_eq!(drafts.len(), 1, "expected exactly one draft file");
+        assert_eq!(
+            std::fs::read_to_string(&drafts[0]).unwrap(),
+            format!("{subject}\n\nComposed body\n")
+        );
+    }
+
+    #[test]
+    fn over_long_typed_subject_errors_without_saving_a_draft() {
+        // --subject text is still in the caller's shell history; nothing to
+        // rescue, and a draft file would just be litter.
+        let (_tmp, _guard) = with_temp_config_dir();
+        let subject = "x".repeat(MAX_SUBJECT_CHARS + 1);
+
+        let err = validate_composed_subject(&subject, "body", false).unwrap_err();
+
+        assert!(err.contains("limit 200"), "got: {err}");
+        assert!(draft_paths().is_empty(), "--subject path must not save one");
+    }
+
+    #[test]
+    fn subject_within_the_limit_saves_nothing() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        validate_composed_subject("Short enough", "body", true).unwrap();
+        assert!(draft_paths().is_empty());
+    }
+
+    #[test]
     fn persist_on_editor_failure_writes_a_draft_when_send_failed_and_editor_composed() {
         // Drives the exact same two steps `send_and_report` performs on a
         // failed send (post, then the persist decision) without going
@@ -1325,18 +1453,9 @@ Second paragraph.
 
         persist_on_editor_failure(&result, &req, true);
 
-        let dir = config::config_dir().unwrap();
-        let drafts: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("support-draft-")
-            })
-            .collect();
+        let drafts = draft_paths();
         assert_eq!(drafts.len(), 1, "expected exactly one draft file");
-        let content = std::fs::read_to_string(drafts[0].path()).unwrap();
+        let content = std::fs::read_to_string(&drafts[0]).unwrap();
         assert_eq!(content, "Composed subject\n\nComposed body\nsecond line\n");
     }
 
@@ -1357,19 +1476,7 @@ Second paragraph.
 
         persist_on_editor_failure(&result, &req, false);
 
-        let dir = config::config_dir().unwrap();
-        let has_draft = std::fs::read_dir(&dir)
-            .map(|mut entries| {
-                entries.any(|e| {
-                    e.ok().is_some_and(|e| {
-                        e.file_name()
-                            .to_string_lossy()
-                            .starts_with("support-draft-")
-                    })
-                })
-            })
-            .unwrap_or(false);
-        assert!(!has_draft, "-m path must never write a draft");
+        assert!(draft_paths().is_empty(), "-m path must never write a draft");
     }
 
     #[test]
@@ -1397,19 +1504,10 @@ Second paragraph.
 
         persist_on_editor_failure(&result, &req, true);
 
-        let dir = config::config_dir().unwrap();
-        let has_draft = std::fs::read_dir(&dir)
-            .map(|mut entries| {
-                entries.any(|e| {
-                    e.ok().is_some_and(|e| {
-                        e.file_name()
-                            .to_string_lossy()
-                            .starts_with("support-draft-")
-                    })
-                })
-            })
-            .unwrap_or(false);
-        assert!(!has_draft, "a successful send must never write a draft");
+        assert!(
+            draft_paths().is_empty(),
+            "a successful send must never write a draft"
+        );
     }
 
     // --- report_with_profile: end-to-end against a mock server --------------------
