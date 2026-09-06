@@ -202,19 +202,22 @@ fn refile_hint(path: &std::path::Path) -> String {
     )
 }
 
-/// Persist a composed report to disk as `support-draft-<unix-seconds>.md`
+/// Persist a composed report to disk as `support-draft-<unix-seconds>-<hex>.md`
 /// under the CLI config dir (mode 0600, same as the session file — the
 /// content is the user's own report, not a credential, but there is no
 /// reason to make it more visible than that). Format is `"<subject>\n\n
 /// <body>\n"`, so `head -n 1 <path>` recovers the subject and
-/// `tail -n +3 <path>` the body (matching [`refile_hint`]).
+/// `tail -n +3 <path>` the body (matching [`refile_hint`]). The hex suffix
+/// keeps two runs that fail inside the same second from overwriting each
+/// other's draft; the seconds keep the names sortable by age.
 fn save_draft(subject: &str, body: &str) -> Result<PathBuf, String> {
     let dir = config::config_dir()?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let path = dir.join(format!("support-draft-{now}.md"));
+    let suffix = random_hex(2);
+    let path = dir.join(format!("support-draft-{now}-{suffix}.md"));
     let content = format!("{subject}\n\n{body}\n");
     util::atomic_write(&path, content.as_bytes(), 0o600)?;
     Ok(path)
@@ -555,11 +558,16 @@ fn mask_authorization_header_value(line: &str) -> Option<String> {
     Some(format!("{indent}Authorization: {masked}{tail}"))
 }
 
-fn generate_idempotency_key() -> String {
+/// `len` random bytes as lowercase hex (so `2 * len` characters).
+fn random_hex(len: usize) -> String {
     use rand::RngCore;
-    let mut bytes = [0u8; 16];
+    let mut bytes = vec![0u8; len];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn generate_idempotency_key() -> String {
+    random_hex(16)
 }
 
 #[derive(Serialize)]
@@ -1379,6 +1387,27 @@ Second paragraph.
         let name = path.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("support-draft-"), "got: {name}");
         assert!(name.ends_with(".md"), "got: {name}");
+    }
+
+    #[test]
+    fn save_draft_does_not_overwrite_an_earlier_draft_from_the_same_second() {
+        // One process only ever writes one draft (it exits right after), so
+        // the collision is between two CLI runs failing in the same second.
+        let (_tmp, _guard) = with_temp_config_dir();
+
+        let first = save_draft("First", "first body").unwrap();
+        let second = save_draft("Second", "second body").unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(draft_paths().len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(&first).unwrap(),
+            "First\n\nfirst body\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap(),
+            "Second\n\nsecond body\n"
+        );
     }
 
     #[test]
