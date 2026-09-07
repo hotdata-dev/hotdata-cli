@@ -238,15 +238,19 @@ pub enum IngestCommands {
         #[arg(long = "dest-schema")]
         dest_schema: Option<String>,
 
-        /// How each run writes (default: replace). `upsert` needs a family
-        /// whose load path stamps a row key — today that is a continuous bucket
-        /// ingest, and `hotdata ingest sources fields <family>` reports which modes
-        /// a family accepts for which type.
-        ///
-        /// The two listed are the two the destination accepts anywhere. Offering
-        /// a third would be offering a request that is refused on arrival, which
-        /// costs the user a round trip to learn what `--help` could have said.
-        #[arg(long = "write-mode", value_parser = ["replace", "upsert"])]
+        /// How each run writes (default: `replace`). `replace` and `append` work
+        /// on any destination table; the key-based modes `upsert`, `update`, and
+        /// `delete` match rows by the table's declared key and are rejected on a
+        /// keyless table. This list is the service-wide vocabulary — clap catches a
+        /// typo up front — but which of these a *given* family or table accepts is
+        /// reported by `hotdata ingest sources fields <family>`, the authoritative
+        /// source; a mode the family or table does not support is refused on
+        /// arrival. (The old list `[replace, upsert]` both omitted `append` — which
+        /// families advertise — and offered `upsert` as if universal: see #278.)
+        #[arg(
+            long = "write-mode",
+            value_parser = ["replace", "append", "upsert", "update", "delete"]
+        )]
         write_mode: Option<String>,
 
         /// Schedule as JSON (inline, @file.json, or @-):
