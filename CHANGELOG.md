@@ -10,6 +10,10 @@
 
 - *(search)* Vector search no longer returns the index's embedding column; `--select '*'` asks for it back (#293)
 - *(query)* `--output csv` no longer abbreviates long list values (#293)
+
+### 📚 Documentation
+
+- *(skills)* Warn agents that a `;`-separated csv loads silently into one column, and that json-in-any-shape is the CLI's doing, not the API's (#296)
 ## [0.32.0] - 2026-09-06
 
 ### 🚀 Features
