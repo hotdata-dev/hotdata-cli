@@ -172,7 +172,8 @@ pub enum DatabasesCommands {
         name_or_id: String,
     },
 
-    /// Load a parquet file or a saved query result into an instant database table
+    /// Load a csv, json, or parquet file — or a saved query result — into an
+    /// instant database table
     Load {
         /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
         #[arg(long)]
@@ -186,11 +187,11 @@ pub enum DatabasesCommands {
         #[arg(long)]
         table: String,
 
-        /// Path to a local parquet file to upload and load
+        /// Path to a local file to upload and load (csv, json, or parquet)
         #[arg(long, conflicts_with_all = ["upload_id", "url", "result_id"])]
         file: Option<String>,
 
-        /// URL of a remote parquet file to download and load
+        /// URL of a remote file to download and load (csv, json, or parquet)
         #[arg(long, conflicts_with_all = ["file", "upload_id", "result_id"])]
         url: Option<String>,
 
@@ -398,7 +399,8 @@ pub enum DatabaseTablesCommands {
         output: String,
     },
 
-    /// Load a parquet file or a saved query result into a table (replaces or appends)
+    /// Load a csv, json, or parquet file — or a saved query result — into a
+    /// table, replacing it, appending, or matching rows by key
     Load {
         /// Database id or name (defaults to current database)
         #[arg(long)]
@@ -411,11 +413,11 @@ pub enum DatabaseTablesCommands {
         #[arg(long, default_value = "public")]
         schema: String,
 
-        /// Path to a local parquet file to upload and load
+        /// Path to a local file to upload and load (csv, json, or parquet)
         #[arg(long, conflicts_with_all = ["upload_id", "url", "result_id"])]
         file: Option<String>,
 
-        /// URL of a remote parquet file to download and load
+        /// URL of a remote file to download and load (csv, json, or parquet)
         #[arg(long, conflicts_with_all = ["file", "upload_id", "result_id"])]
         url: Option<String>,
 
@@ -1031,8 +1033,9 @@ pub fn add_table(
             if key.is_empty() {
                 println!(
                     "{}",
-                    "no key — loads with replace and append only; re-add with --key for \
-                     delete/update/upsert"
+                    "no key — loads with replace and append only. A key is fixed at \
+                     declaration and cannot be added later, so declare the next \
+                     table with --key if you need delete/update/upsert on it."
                         .dark_grey()
                 );
             } else {
@@ -1093,7 +1096,9 @@ fn describe_partition_keys(keys: &[serde_json::Value]) -> String {
 /// was never created with. An already-declared table comes back 409, which is
 /// left to the caller — re-declaring is a real conflict here, since the
 /// existing table's key and layout are fixed and this call would not change
-/// them.
+/// them. `tables remove` does not clear the declaration either: the table
+/// leaves the listing but the name stays declared and still 409s, so a key
+/// cannot be retrofitted onto a table that was declared without one.
 fn declare_table(
     api: &Api,
     database_id: &str,
@@ -1305,7 +1310,15 @@ fn upload_data_url(api: &Api, url: &str) -> String {
         }
     };
 
-    let temp = match download_to_temp(resp, &dl_pb) {
+    // The staged name carries the source URL's own extension, or none when the
+    // URL has none. It is advisory — the load resolves the format from the
+    // recorded content type and then the bytes, never the file name — but a
+    // staged name should not claim a format it cannot know.
+    let suffix = match crate::client::sdk::extension_of(url) {
+        "" => String::new(),
+        ext => format!(".{ext}"),
+    };
+    let temp = match download_to_temp(resp, &suffix, &dl_pb) {
         Ok(t) => t,
         Err(e) => {
             dl_pb.finish_and_clear();
@@ -1340,19 +1353,20 @@ where
     result
 }
 
-/// Stream a blocking HTTP response body to a freshly created temp file,
-/// advancing `pb` as bytes land. Returns the open [`NamedTempFile`], which
+/// Stream a blocking HTTP response body to a freshly created temp file named
+/// with `suffix`, advancing `pb` as bytes land. Returns the open [`NamedTempFile`], which
 /// deletes the file on drop. Created atomically with `O_EXCL` + 0600 perms via
 /// `tempfile`, so it can't be redirected by a pre-planted symlink.
 fn download_to_temp(
     resp: reqwest::blocking::Response,
+    suffix: &str,
     pb: &ProgressBar,
 ) -> std::io::Result<tempfile::NamedTempFile> {
     use std::io::Write;
 
     let mut temp = tempfile::Builder::new()
         .prefix("hotdata-upload-")
-        .suffix(".parquet")
+        .suffix(suffix)
         .tempfile()?;
 
     let mut reader = pb.wrap_read(resp);
