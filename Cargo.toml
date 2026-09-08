@@ -39,7 +39,14 @@ serde = { version = "1", features = ["derive"] }
 # intercepts and serde_yaml does not — so every `-o yaml` output carrying a
 # `Value` number turns into a nested mapping. That breaks commands unrelated to
 # this one, which costs more than the rounding it buys.
-serde_json = "1"
+#
+# `raw_value` is on, for the json load's reshape (src/commands/json_rows.rs):
+# it hands each row over as its own JSON text, so a row is rewritten
+# byte-for-byte instead of round-tripping through `Value` — which would sort
+# its keys (`BTreeMap`, since `preserve_order` is off) and round a number
+# wider than i64/u64/f64. Unlike `arbitrary_precision` above, this feature
+# changes nothing for code that does not name `RawValue`.
+serde_json = { version = "1", features = ["raw_value"] }
 arrow = { version = "59", default-features = false, features = [
   "ipc",
   # Timestamps carrying a named IANA zone ("UTC", "America/New_York")

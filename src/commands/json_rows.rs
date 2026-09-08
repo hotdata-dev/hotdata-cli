@@ -11,19 +11,27 @@
 //! Newline-delimited input is uploaded untouched: [`shape_of`] reads the first
 //! record, not the file, so a large `.jsonl` is never rewritten to say the same
 //! thing.
+//!
+//! A row is rewritten as **its own JSON text**, with only the whitespace
+//! between tokens dropped — never re-serialized from a parsed value. Both
+//! things a `serde_json::Value` round-trip would change are load-visible: it
+//! sorts an object's keys (a `BTreeMap`, since `preserve_order` is off), which
+//! reorders the columns the load infers, and it rounds a number wider than
+//! i64/u64 through f64. So the rows that go up are the rows that were on disk.
 
 use std::io::{Read, Write};
 
 use serde::de::{DeserializeSeed, Deserializer, SeqAccess, Visitor};
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 /// How many leading bytes [`shape_of`] wants to decide.
 ///
 /// Large enough that the first record of any plausible newline-delimited file
 /// is whole within it. A first record longer than this reads as
-/// [`Shape::Values`] and is rewritten — a slower path to the same rows, never a
-/// wrong one, since a stream of values is exactly what newline-delimited JSON
-/// is.
+/// [`Shape::Values`] and is rewritten — a slower path to the same rows, since a
+/// stream of values is exactly what newline-delimited JSON is and a row is
+/// rewritten as the text it already was.
 pub const SNIFF_BYTES: usize = 64 * 1024;
 
 /// The JSON shape a source carries, as read off its first bytes.
@@ -85,8 +93,8 @@ pub fn to_ndjson<R: Read, W: Write>(shape: Shape, src: R, out: W) -> Result<u64,
         }
         // A stream of whole values, which is what both other shapes are.
         Shape::Ndjson | Shape::Values => {
-            for value in de.into_iter::<Value>() {
-                rows.write(value.map_err(describe)?)?;
+            for row in de.into_iter::<Box<RawValue>>() {
+                rows.write(&row.map_err(describe)?)?;
             }
         }
     }
@@ -101,21 +109,60 @@ struct Rows<W: Write> {
 }
 
 impl<W: Write> Rows<W> {
-    /// Write one row, refusing a value that is not an object: a load needs
-    /// named columns, and a bare scalar or list names none.
-    fn write(&mut self, value: Value) -> Result<(), String> {
-        if !value.is_object() {
+    /// Write one row as the JSON text it already is, refusing a value that is
+    /// not an object: a load needs named columns, and a bare scalar or list
+    /// names none.
+    fn write(&mut self, row: &RawValue) -> Result<(), String> {
+        let text = row.get();
+        // `RawValue` holds one whole JSON value, so its first character settles
+        // the type without a parse.
+        if !text.trim_start().starts_with('{') {
             return Err(format!(
                 "a json load reads one object per row, and this file carries {} \
                  among its rows — reshape it so every row is an object",
-                type_of(&value)
+                type_of(text)
             ));
         }
-        serde_json::to_writer(&mut self.out, &value).map_err(|e| format!("{e}"))?;
+        write_compact(&mut self.out, text).map_err(|e| format!("{e}"))?;
         self.out.write_all(b"\n").map_err(|e| format!("{e}"))?;
         self.count += 1;
         Ok(())
     }
+}
+
+/// Write one row's JSON text as a single line: whitespace between tokens is
+/// dropped, and every other byte is copied through untouched — so the row keeps
+/// its key order, its number digits, and anything inside its strings.
+///
+/// Only the string state has to be tracked, since a `"` is the one delimiter
+/// whitespace can hide behind, and a backslash escape is the one thing that can
+/// hide a `"`.
+fn write_compact<W: Write>(out: &mut W, text: &str) -> std::io::Result<()> {
+    let bytes = text.as_bytes();
+    let mut copy_from = 0;
+    let mut i = 0;
+    let mut in_string = false;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if in_string => i += 2, // the escaped byte is whatever it is
+            b'"' => {
+                in_string = !in_string;
+                i += 1;
+            }
+            b if !in_string && b.is_ascii_whitespace() => {
+                // Flush what precedes the gap, then step over the whole gap.
+                out.write_all(&bytes[copy_from..i])?;
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                copy_from = i;
+            }
+            _ => i += 1,
+        }
+    }
+    // `i` can overshoot on a trailing escape, which valid JSON cannot carry.
+    out.write_all(&bytes[copy_from.min(bytes.len())..])
 }
 
 // Reads the elements of a top-level array without holding the array: serde
@@ -137,24 +184,25 @@ impl<'de, W: Write> Visitor<'de> for &mut Rows<W> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        while let Some(value) = seq.next_element::<Value>()? {
+        while let Some(row) = seq.next_element::<Box<RawValue>>()? {
             // Our own message, carried out through serde so the row's line and
             // column travel with it.
-            self.write(value).map_err(serde::de::Error::custom)?;
+            self.write(&row).map_err(serde::de::Error::custom)?;
         }
         Ok(())
     }
 }
 
-/// The JSON type name of `value`, for the not-an-object message.
-fn type_of(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "a null",
-        Value::Bool(_) => "a boolean",
-        Value::Number(_) => "a number",
-        Value::String(_) => "a string",
-        Value::Array(_) => "a list",
-        Value::Object(_) => "an object",
+/// The JSON type name of a row, read off the first character of its text, for
+/// the not-an-object message.
+fn type_of(text: &str) -> &'static str {
+    match text.trim_start().as_bytes().first() {
+        Some(b'[') => "a list",
+        Some(b'"') => "a string",
+        Some(b't' | b'f') => "a boolean",
+        Some(b'n') => "a null",
+        Some(b'{') => "an object",
+        _ => "a number",
     }
 }
 
@@ -206,6 +254,31 @@ mod tests {
         let (rows, out) = ndjson("{\"id\":1} {\"id\":2}{\"id\":3}").unwrap();
         assert_eq!(rows, 3);
         assert_eq!(out, "{\"id\":1}\n{\"id\":2}\n{\"id\":3}\n");
+    }
+
+    #[test]
+    fn a_row_keeps_its_own_number_text_and_key_order() {
+        // The rewrite is byte-faithful per row. A round-trip through `Value`
+        // would not be: it sorts an object's keys (`BTreeMap`, since
+        // `preserve_order` is off), which reorders the columns the load infers,
+        // and it rounds a number wider than i64/u64 to f64
+        // (123456789012345678901 comes back as 1.2345678901234568e20).
+        let src = r#"[{"z":1,"big":123456789012345678901,"d":0.12345678901234567890}]"#;
+        let (rows, out) = ndjson(src).unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(
+            out,
+            "{\"z\":1,\"big\":123456789012345678901,\"d\":0.12345678901234567890}\n"
+        );
+    }
+
+    #[test]
+    fn compaction_drops_whitespace_between_tokens_and_nothing_else() {
+        // Whitespace inside a string is part of the value, and an escaped quote
+        // does not end the string.
+        let src = "[\n  {\"note\": \"a  b\\n c\",\n   \"esc\": \"q\\\"  \\\\\"}\n]";
+        let (_, out) = ndjson(src).unwrap();
+        assert_eq!(out, "{\"note\":\"a  b\\n c\",\"esc\":\"q\\\"  \\\\\"}\n");
     }
 
     #[test]
