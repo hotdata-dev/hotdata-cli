@@ -119,7 +119,9 @@ pub enum Commands {
         #[arg(long, short = 'd')]
         database: Option<String>,
 
-        /// Columns to display (comma-separated, defaults to all)
+        /// Columns to display (comma-separated). Defaults to the table's own
+        /// columns; a vector index's generated embedding column is left out.
+        /// Pass `--select '*'` to include it.
         #[arg(long)]
         select: Option<String>,
 

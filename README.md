@@ -42,17 +42,20 @@ PostgreSQL-dialect SQL. Everything else builds on that.
 
 ## Getting your data in
 
-**Upload a parquet file** directly (convert CSV/JSON first):
+**Upload a file** directly — csv, newline-delimited json, or parquet:
 
 ```sh
-hotdata databases load --catalog demo --table listings --file ./listings.parquet
+hotdata databases load --catalog demo --table listings --file ./listings.csv
 ```
 
-A load **replaces** the table by default. Add `--append` to add rows to an
+The format comes from the extension; pass `--format csv|json|parquet` when the
+extension is missing or misleading.
+
+A load **replaces** the table by default. `--mode append` adds rows to an
 existing table instead:
 
 ```sh
-hotdata databases load --catalog demo --table listings --file ./more-listings.parquet --append
+hotdata databases load --catalog demo --table listings --file ./more-listings.parquet --mode append
 ```
 
 **Import from an external source** — Postgres/MySQL, S3/GCS buckets, Iceberg,
@@ -163,10 +166,11 @@ The full command surface. The top level has nine groups — `auth`, `workspaces`
 | `databases use` | Set the current (default) database |
 | `databases unset` | Clear the current database |
 | `databases remove` | Delete a database and all its tables |
-| `databases load` | Load a parquet file or saved result into a table (replace, or `--append`) |
+| `databases load` | Load a csv/json/parquet file or saved result into a table (`--mode replace\|append\|delete\|update\|upsert`) |
+| `databases tables add` | Declare a table with its key and storage layout |
 | `databases tables list` | List tables in a database |
 | `databases tables show` | Show column definitions for a table |
-| `databases tables load` | Load parquet/result into a table (replace, or `--append`) |
+| `databases tables load` | Same as `databases load`, addressed by database instead of catalog |
 | `databases tables remove` | Delete a table from a database |
 | `databases context list` | List named contexts in a database |
 | `databases context show` | Print context content to stdout |

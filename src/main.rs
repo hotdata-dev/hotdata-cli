@@ -315,6 +315,9 @@ fn main() {
                             upload_id,
                             result_id,
                             append,
+                            mode,
+                            format,
+                            key,
                         }) => databases::tables_load(
                             &workspace_id,
                             Some(catalog.as_str()),
@@ -325,6 +328,9 @@ fn main() {
                             upload_id.as_deref(),
                             result_id.as_deref(),
                             append,
+                            mode.as_deref(),
+                            format.as_deref(),
+                            &key,
                         ),
                         Some(DatabasesCommands::Tables { database, command }) => match command {
                             Some(DatabaseTablesCommands::List {
@@ -366,6 +372,26 @@ fn main() {
                                     )
                                 }
                             }
+                            Some(DatabaseTablesCommands::Add {
+                                table,
+                                database: db_flag,
+                                schema,
+                                key,
+                                key_determines,
+                                sorted_by,
+                                partition_by,
+                                output,
+                            }) => databases::add_table(
+                                &workspace_id,
+                                db_flag.as_deref().or(database.as_deref()),
+                                &table,
+                                &schema,
+                                &key,
+                                &key_determines,
+                                &sorted_by,
+                                &partition_by,
+                                &output,
+                            ),
                             Some(DatabaseTablesCommands::Show { table, output }) => {
                                 tables::show(&workspace_id, &table, &output)
                             }
@@ -378,6 +404,9 @@ fn main() {
                                 upload_id,
                                 result_id,
                                 append,
+                                mode,
+                                format,
+                                key,
                             }) => databases::tables_load(
                                 &workspace_id,
                                 db_flag.as_deref().or(database.as_deref()),
@@ -388,6 +417,9 @@ fn main() {
                                 upload_id.as_deref(),
                                 result_id.as_deref(),
                                 append,
+                                mode.as_deref(),
+                                format.as_deref(),
+                                &key,
                             ),
                             Some(DatabaseTablesCommands::Delete {
                                 database: db_flag,

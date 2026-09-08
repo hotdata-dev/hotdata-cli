@@ -11,7 +11,7 @@ The `hotdata` skill is always loaded first (auth and workspace setup). The three
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
 | Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `ingest sources`, `ingest`, `databases tables`, `databases context` |
-| Load parquet files into an instant database | **`hotdata`** | `databases create` + `databases load` |
+| Load csv/json/parquet files into an instant database | **`hotdata`** | `databases create` + `databases tables add` + `databases load` |
 | SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** (`subskills/analytics/SKILL.md`) | `query`, `databases queries`, `databases results` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** (`subskills/search/SKILL.md`) | `search`, `search create`, `search embeddings` |
 | Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** (`subskills/geospatial/SKILL.md`) | `query` with `ST_*`, WKB columns |
@@ -94,16 +94,16 @@ A `hotdata query` runs inside **one** instant database; its scope sees that data
 
 | | **Instant databases** |
 |---|------------------------|
-| **Best for** | Parquet files you own; catalog-style `alias.schema.table` |
+| **Best for** | Files you own (csv, newline-delimited json, parquet); catalog-style `alias.schema.table` |
 | **SQL prefix** | `<catalog>.<schema>.<table>` where catalog = `--catalog` alias |
 | **CLI** | `hotdata databases create --catalog` + `databases load` |
-| **Declare schema up front** | Yes — `--table` on create (auto-declared on first `databases load`) |
-| **Parquet file uploads** | `databases load --file` / `--url` / `--upload-id` |
-| **Refresh** | Replace via `databases load` again |
+| **Declare schema up front** | Optional — the load declares a missing table/schema. Declare with `databases tables add --key` when you need the keyed load modes; a key cannot be added later |
+| **File uploads** | `databases load --file` / `--url` / `--upload-id`; format from the extension, or `--format` |
+| **Refresh** | `databases load` again — `--mode replace` (default) or `append`, or `delete`/`update`/`upsert` against a declared key |
 
-**Rule of thumb:** Parquet files you control as **`mydb.public.orders`** → **instant databases**.
+**Rule of thumb:** Files you control as **`mydb.public.orders`** → **instant databases**.
 
-### Workflow: instant database (parquet)
+### Workflow: instant database (file upload)
 
 1. Create the database with a catalog alias:
 
@@ -111,16 +111,39 @@ A `hotdata query` runs inside **one** instant database; its scope sees that data
    hotdata databases create --catalog sales
    ```
 
-2. Load parquet per table (tables are auto-declared if needed):
+2. **Before the first load**, declare any table that needs a key, a sort order,
+   or partitioning — the load cannot infer these, and a key cannot be added to
+   a table that already exists:
 
    ```bash
-   hotdata databases load --catalog sales --table orders --file ./orders.parquet
+   hotdata databases tables add orders --key order_id --sorted-by created_at=desc
+   ```
+
+   Skip this for a table you will only ever replace or append to.
+
+3. Load a file per table. A table or schema not declared above is declared as
+   part of the load, and the format comes from the file's extension:
+
+   ```bash
+   hotdata databases load --catalog sales --table orders --file ./orders.csv
    hotdata databases load --catalog sales --table customers --url https://example.com/customers.parquet
    ```
 
-   > Auto-declaring a *new* table recreates the database (no add-table API), which **changes its `id`** — the id returned by `databases create` goes stale after the next `load` of an undeclared table. Declare tables up front (`databases create --table orders --table customers`) to avoid the recreate, and don't cache ids across loads: re-read the current id from `databases list` at time of use. (Selection is still always by id — names and catalogs are not unique.)
+   > The database keeps its `id` and its other tables across a load into an
+   > undeclared table — nothing is recreated. Selection is still always by id,
+   > since names and catalogs are not unique.
 
-3. Confirm and query:
+4. Keep a keyed table in sync by loading only what changed:
+
+   ```bash
+   hotdata databases load --catalog sales --table orders --file ./changed.csv --mode upsert
+   hotdata databases load --catalog sales --table orders --file ./removed.csv --mode delete
+   ```
+
+   `removed.csv` carries only the key columns. This needs the key declared in
+   step 2, or named per load with `--key order_id`.
+
+5. Confirm and query:
 
    ```bash
    hotdata databases tables list

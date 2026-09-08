@@ -33,6 +33,17 @@ impl Index {
             .clone()
             .or_else(|| self.columns.first().cloned())
     }
+
+    /// Columns this index added to the table. Only an auto-embed vector index
+    /// has any: `source_column` is the text it reads, and `columns` is the
+    /// embedding column it wrote. A direct vector, BM25, or sorted index
+    /// indexes columns that were already there, so it generated none.
+    fn generated_columns(&self) -> Vec<String> {
+        match self.source_column {
+            Some(_) => self.columns.clone(),
+            None => Vec::new(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -521,6 +532,12 @@ pub struct LocatedIndex {
     pub table: String,
     pub index_type: String,
     pub search_column: String,
+    /// Columns the index generated on the table rather than columns that were
+    /// already there — the `{column}_embedding` an auto-embed vector index
+    /// materialises. Empty for every other index kind. A search excludes these
+    /// from its default projection: they are 1536-wide float lists nobody
+    /// asked for.
+    pub generated_columns: Vec<String>,
     pub status: String,
     pub metric: Option<String>,
 }
@@ -578,6 +595,7 @@ pub fn locate_by_name(
                 table,
                 index_type: one.inner.index_type.clone(),
                 search_column,
+                generated_columns: one.inner.generated_columns(),
                 status: one.inner.status.clone(),
                 metric: one.inner.metric.clone(),
             })

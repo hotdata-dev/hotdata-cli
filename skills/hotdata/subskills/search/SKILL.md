@@ -37,6 +37,7 @@ hotdata search "<query>" --in <name>
 | **`vector`** | Pass plain-text query; name the **source text column** (e.g. `title`). Server embeds using the same provider/metric/dimensions as the index. SQL uses `vector_distance(col, 'text')`. Results sort by distance (ascending). |
 
 - **Index name:** the index carries its own type, column, and provider — you only name the index. Use `search list` to see available index names.
+- **`--select`:** defaults to the table's own columns. An auto-embed vector index materialises a `{column}_embedding` column on the table, and a search leaves it out — it is a 1536-float list in every row, tens of kilobytes per search nobody asked for. Ask for it back with `--select '*'`, or name it (`--select 'id,body_embedding'`); pair either with `--output json`, since `--output table` abbreviates long lists for display.
 - **Custom embedding model, raw query vector, or no vector index?** Use `hotdata query` directly (e.g. `cosine_distance(col, [<vec>])`) — `search` only auto-embeds the query text via the index's own provider.
 - **Before search:** create the right index (`search create <name> --type text` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
 - Default `--limit` is 10.
@@ -69,7 +70,7 @@ hotdata search remove <name> [-d <db-id>]
 - **`--type` is required** on create: `text` (BM25; one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`** — [`../analytics/SKILL.md`](../analytics/SKILL.md).)
 - **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md)) — this skill focuses on retrieval types.
 - **`--async`:** poll with `hotdata jobs <job_id>` (see **`hotdata`** skill **Jobs**).
-- **Auto-embedding:** `--type vector` on a **text** column generates embeddings server-side. Optional `--provider`; default output column `{column}_embedding` (override with `--output-column`).
+- **Auto-embedding:** `--type vector` on a **text** column generates embeddings server-side. Optional `--provider`; default output column `{column}_embedding` (override with `--output-column`). The generated column becomes part of the table, so it shows up in `information_schema.columns` and in a hand-written `SELECT *` — `hotdata search` leaves it out of its own projection (see `--select` above).
 
 Full workflow (gather workload → compare existing → create → verify): [references/INDEXES.md](references/INDEXES.md).
 
