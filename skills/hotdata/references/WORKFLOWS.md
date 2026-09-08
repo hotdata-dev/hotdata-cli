@@ -111,8 +111,18 @@ A `hotdata query` runs inside **one** instant database; its scope sees that data
    hotdata databases create --catalog sales
    ```
 
-2. Load a file per table. A missing table or schema is declared as part of the
-   load, and the format comes from the file's extension:
+2. **Before the first load**, declare any table that needs a key, a sort order,
+   or partitioning — the load cannot infer these, and a key cannot be added to
+   a table that already exists:
+
+   ```bash
+   hotdata databases tables add orders --key order_id --sorted-by created_at=desc
+   ```
+
+   Skip this for a table you will only ever replace or append to.
+
+3. Load a file per table. A table or schema not declared above is declared as
+   part of the load, and the format comes from the file's extension:
 
    ```bash
    hotdata databases load --catalog sales --table orders --file ./orders.csv
@@ -123,18 +133,17 @@ A `hotdata query` runs inside **one** instant database; its scope sees that data
    > undeclared table — nothing is recreated. Selection is still always by id,
    > since names and catalogs are not unique.
 
-3. Declare the table yourself only when you need something the load cannot
-   infer — a key, a sort order, or partitioning:
+4. Keep a keyed table in sync by loading only what changed:
 
    ```bash
-   hotdata databases tables add orders --key order_id --sorted-by created_at=desc
    hotdata databases load --catalog sales --table orders --file ./changed.csv --mode upsert
+   hotdata databases load --catalog sales --table orders --file ./removed.csv --mode delete
    ```
 
-   > A key is fixed when the table is declared and **cannot be added later**, so
-   > declare it before the first load if you will need `delete`/`update`/`upsert`.
+   `removed.csv` carries only the key columns. This needs the key declared in
+   step 2, or named per load with `--key order_id`.
 
-4. Confirm and query:
+5. Confirm and query:
 
    ```bash
    hotdata databases tables list

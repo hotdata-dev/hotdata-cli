@@ -170,7 +170,7 @@ The full command surface. The top level has nine groups — `auth`, `workspaces`
 | `databases tables add` | Declare a table with its key and storage layout |
 | `databases tables list` | List tables in a database |
 | `databases tables show` | Show column definitions for a table |
-| `databases tables load` | Load parquet/result into a table (replace, or `--append`) |
+| `databases tables load` | Same as `databases load`, addressed by database instead of catalog |
 | `databases tables remove` | Delete a table from a database |
 | `databases context list` | List named contexts in a database |
 | `databases context show` | Print context content to stdout |

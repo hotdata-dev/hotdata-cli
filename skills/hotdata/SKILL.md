@@ -146,16 +146,19 @@ hotdata databases load --catalog airbnb --table listings --url https://example.c
 hotdata query "SELECT count(*) FROM airbnb.public.listings"
 ```
 
-Keeping a table in sync by key — declare the key once, then load changes:
+Keeping a table in sync by key. Declare the key **before the table's first
+load** — `tables add` on a table that already exists returns 409, and a key
+cannot be added afterwards:
 
 ```
-hotdata databases tables add listings --key listing_id --sorted-by updated_at=desc
-hotdata databases load --catalog airbnb --table listings --file changed.csv --mode upsert
-hotdata databases load --catalog airbnb --table listings --file removed.csv --mode delete
+hotdata databases tables add bookings --key booking_id --sorted-by updated_at=desc
+hotdata databases load --catalog airbnb --table bookings --file bookings.csv
+hotdata databases load --catalog airbnb --table bookings --file changed.csv --mode upsert
+hotdata databases load --catalog airbnb --table bookings --file removed.csv --mode delete
 ```
 
-`removed.csv` carries only the key columns. On a table declared without a key,
-name one per load instead: `--mode upsert --key listing_id`.
+`removed.csv` carries only the key columns. On a table already declared without
+a key, name one per load instead: `--mode upsert --key booking_id`.
 
 #### Querying across catalogs (attach)
 
