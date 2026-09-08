@@ -166,7 +166,8 @@ The full command surface. The top level has nine groups — `auth`, `workspaces`
 | `databases use` | Set the current (default) database |
 | `databases unset` | Clear the current database |
 | `databases remove` | Delete a database and all its tables |
-| `databases load` | Load a parquet file or saved result into a table (replace, or `--append`) |
+| `databases load` | Load a csv/json/parquet file or saved result into a table (`--mode replace\|append\|delete\|update\|upsert`) |
+| `databases tables add` | Declare a table with its key and storage layout |
 | `databases tables list` | List tables in a database |
 | `databases tables show` | Show column definitions for a table |
 | `databases tables load` | Load parquet/result into a table (replace, or `--append`) |

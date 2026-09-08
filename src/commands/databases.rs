@@ -877,10 +877,9 @@ pub fn fork_database_request(
 }
 
 /// Build the typed `CreateDatabaseRequest` for the SDK's `databases().create`
-/// handle, reusing [`create_database_request`] as the single source of truth for
-/// the body shape. The delete+recreate path still consumes the raw JSON form
-/// (it inspects raw error bodies), so the JSON builder stays; this just adapts
-/// it for the typed call sites.
+/// handle by adapting [`create_database_request`], which stays the single
+/// source of truth for the body shape — the schema-seeding rules it encodes are
+/// specified against the JSON form in this module's tests.
 fn create_database_typed_request(
     name: Option<&str>,
     catalog: Option<&str>,

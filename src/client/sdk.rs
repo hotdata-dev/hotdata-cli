@@ -852,10 +852,10 @@ impl Api {
     /// `Configuration`, returning the raw status + body text.
     ///
     /// The seam's DELETE counterpart to [`post_raw`](Self::post_raw): used by
-    /// `databases.rs`, where the delete bodies feed the same CLI-side
-    /// `(status, body)` control flow as the old raw `delete_raw` (e.g. the
-    /// delete+recreate path inspects the failure body), so non-success is
-    /// returned as `Ok((status, body))` rather than an error.
+    /// `databases.rs`, where a delete's response body feeds the same CLI-side
+    /// `(status, body)` control flow the raw calls used, so non-success is
+    /// returned as `Ok((status, body))` rather than an error and the caller
+    /// renders the server's own message.
     pub fn delete_raw(&self, path: &str) -> Result<(reqwest::StatusCode, String), ApiError> {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
