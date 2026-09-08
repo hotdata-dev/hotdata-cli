@@ -9,6 +9,7 @@ pub mod indexes;
 pub mod ingest;
 pub mod ingest_common;
 pub mod jobs;
+pub mod json_rows;
 pub mod prompt;
 pub mod queries;
 pub mod query;

@@ -87,7 +87,7 @@ Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_st
 
 **Instant databases** are Hotdata-owned catalogs you create and populate yourself — no remote source to sync. Query them in SQL as **`<database_id>.<schema>.<table>`**. Prefer **`hotdata databases`** for this workflow.
 
-**File formats:** `databases tables load` accepts **csv**, **newline-delimited json**, and **parquet** (local `--file`, remote `--url`, or a pre-staged `--upload-id`). The format is read from the file's extension; `--format csv|json|parquet` overrides it, and an unrecognised extension is left to the server to resolve from the bytes.
+**File formats:** `databases tables load` accepts **csv**, **json**, and **parquet** (local `--file`, remote `--url`, or a pre-staged `--upload-id`). The format is read from the file's extension; `--format csv|json|parquet` overrides it, and an unrecognised extension is left to the server to resolve from the bytes. **json is read in any shape** — an array of objects, a pretty-printed document, or one object per line: `--file`/`--url` reshape it to newline-delimited json before upload, so no `jq` step is needed. Every row must be an object, and the reshape is byte-faithful per row — key order and number digits are preserved. Two inputs are refused locally, before anything uploads: a row that is not an object, and a source with no rows at all (`[]`, or an empty file). Note the **load itself** reads json numbers as f64, whatever the shape: an integer wider than i64/u64 or a decimal past ~17 significant digits lands rounded — use parquet, or a string column, where the exact digits matter.
 
 **Active database:** `hotdata databases use <id>` saves the active database to config. `databases tables list`/`load`/`remove`, `databases queries`/`results`, and all `databases context` commands default to the active database; pass **`--database <id>`** to override per-command. (`databases tables show` instead takes a fully-qualified `catalog.schema.table`.)
 
@@ -109,7 +109,7 @@ hotdata databases attach <catalog|name> [--database <id>] [--alias <alias>]
 hotdata databases detach <catalog|name|alias> [--database <id>]
 
 # Preferred: load by catalog alias (server declares the table/schema if missing).
-# Loads csv, newline-delimited json, or parquet — format read from the extension.
+# Loads csv, json, or parquet — format read from the extension.
 hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--mode replace|append|delete|update|upsert] [--append] [--format csv|json|parquet] [--key <col>]... [--workspace-id <workspace_id>]
 
 # Also available via tables subcommand
@@ -128,7 +128,7 @@ hotdata databases tables remove <table> [--database <id>] [--schema public] [--w
 - `unset` — clears the active database from config.
 - `<id>` — inspect one database (returns id, catalog, name, expires_at; a fork also shows its `forked_from` record).
 - `remove` — removes the instant database; clears the active-database config if it matched.
-- `load` (top-level shorthand) — loads a file into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). **Formats:** csv, newline-delimited json (`.json`/`.jsonl`/`.ndjson`), and parquet; the format comes from the file's extension, and `--format` overrides it (needed when the extension is absent or misleading). An unrecognised extension is not rejected — the server reads the bytes. A table or schema that was never declared is declared by the server as part of the load, so no up-front `--table` is required.
+- `load` (top-level shorthand) — loads a file into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). **Formats:** csv, json (`.json`/`.jsonl`/`.ndjson`), and parquet; the format comes from the file's extension, and `--format` overrides it (needed when the extension is absent or misleading). An unrecognised extension is not rejected — the server reads the bytes, and a file that plainly opens a json array is taken as json even without an extension. A json source in any shape (array, pretty-printed, one object per line) is reshaped locally to newline-delimited json before upload; an already-newline-delimited file is uploaded untouched. A table or schema that was never declared is declared by the server as part of the load, so no up-front `--table` is required.
 - **Load modes** (`--mode`, default `replace`) — `replace` supersedes the table's contents; `append` adds rows; `delete`, `update`, and `upsert` match existing rows **by key**. `--append` is the old shorthand for `--mode append` and still works, but the two cannot be combined. The keyed modes need a key: declare one with `databases tables add --key`, or name it per-load with `--key` (repeat for a composite key). `delete` uploads only the key columns; `update` replaces matching rows and ignores unmatched ones; `upsert` inserts the unmatched instead. Keyed modes are not available with `--result-id`.
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
 - `tables add` — declares a table **with its key and storage layout**, which a load cannot infer. `--key` (repeatable) is what enables the `delete`/`update`/`upsert` load modes on that table. `--sorted-by <col>` or `<col>=desc` sets sort order; `--partition-by <col>` partitions on the value, `<col>=month` (or `year`/`day`/`hour`) on a calendar part — one partition per calendar month needs **both** `<col>=year` and `<col>=month`, or every March shares a partition. Sort and partition are fixed once the table exists. `--key-determines` (repeatable) asserts a column's value is fixed by the key: it prunes keyed loads harder, and is **correctness-affecting** — declare it only where the invariant really holds, or a keyed load can leave a duplicate key behind. Re-adding an existing table is a conflict (409), and `tables remove` does not clear the declaration — the table leaves the listing but the name stays declared and still conflicts. So **a key cannot be retrofitted onto a table declared without one**: declare it with `--key` up front, or use a new table name.
@@ -144,6 +144,15 @@ Example:
 hotdata databases create --catalog airbnb
 hotdata databases load --catalog airbnb --table listings --url https://example.com/listings.parquet
 hotdata query "SELECT count(*) FROM airbnb.public.listings"
+```
+
+csv and json load on the same command, with nothing to convert first —
+`reviews.json` may hold `[{…}, {…}]`, one object per line, or a single
+pretty-printed object:
+
+```
+hotdata databases load --catalog airbnb --table hosts --file hosts.csv
+hotdata databases load --catalog airbnb --table reviews --file reviews.json
 ```
 
 Keeping a table in sync by key. Declare the key **before the table's first
