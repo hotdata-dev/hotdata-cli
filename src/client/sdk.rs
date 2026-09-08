@@ -97,38 +97,52 @@ fn upload_reqwest_client() -> reqwest::Client {
         .expect("reqwest client should build without a timeout")
 }
 
-/// Content type recorded for an upload, chosen from the file's extension by
-/// [`content_type_for_path`].
-///
-/// This is **not** advisory to the managed-table load: the load resolves the
-/// file's format from the recorded content type first, and a confidently wrong
-/// one is taken at its word rather than sniffed past — CSV bytes announced as
-/// parquet fail with "failed to parse parquet metadata: Corrupt footer". An
-/// unrecognised extension therefore announces
-/// [`UNKNOWN_CONTENT_TYPE`] instead of guessing, which is the case the load
-/// *does* sniff.
 const PARQUET_CONTENT_TYPE: &str = "application/vnd.apache.parquet";
 const CSV_CONTENT_TYPE: &str = "text/csv";
+/// Newline-delimited JSON — one object per line, which is what the load reads
+/// for `json`. Not `application/json`, which implies a single document.
 const JSON_CONTENT_TYPE: &str = "application/x-ndjson";
-
-/// Announced when the extension names no format we recognise. The load sniffs
-/// the bytes in this case, so an unknown extension is not a client-side
-/// failure — the server decides.
+/// Announced when the extension names no format we recognise, which is the
+/// case the load resolves by reading the bytes.
 const UNKNOWN_CONTENT_TYPE: &str = "application/octet-stream";
 
 /// The MIME type to record for `name`, keyed off its extension.
+///
+/// The recorded content type is **not** advisory to the managed-table load: the
+/// load resolves the file's format from it first, and takes a confidently wrong
+/// one at its word rather than sniffing past it — CSV bytes announced as
+/// parquet fail with "failed to parse parquet metadata: Corrupt footer". So an
+/// unrecognised extension announces [`UNKNOWN_CONTENT_TYPE`] rather than
+/// guessing, leaving the server to read the bytes.
 ///
 /// `name` is the *user-supplied* file name or URL, never a temp path: `--url`
 /// stages its download under a generated name, and typing that would announce
 /// the wrong format for the bytes inside.
 pub fn content_type_for_path(name: &str) -> &'static str {
-    let lower = name.to_ascii_lowercase();
-    let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    match ext {
+    match extension_of(name).to_ascii_lowercase().as_str() {
         "parquet" => PARQUET_CONTENT_TYPE,
         "csv" => CSV_CONTENT_TYPE,
         "json" | "jsonl" | "ndjson" => JSON_CONTENT_TYPE,
         _ => UNKNOWN_CONTENT_TYPE,
+    }
+}
+
+/// The extension of a file name or URL, as written, or `""` when it has none.
+/// Callers lowercase it before matching — extensions arrive in any case.
+///
+/// A URL's query and fragment are dropped first: a presigned storage URL ends
+/// in `…/listings.parquet?X-Amz-Signature=…`, and reading the extension off the
+/// raw string would yield `parquet?x-amz-signature=…` and match nothing. Any
+/// `/` after the last `.` also means the last path segment has no extension of
+/// its own (`…/data.d/export`).
+pub fn extension_of(name: &str) -> &str {
+    let path = name
+        .split_once(['?', '#'])
+        .map(|(before, _)| before)
+        .unwrap_or(name);
+    match path.rsplit_once('.') {
+        Some((_, ext)) if !ext.contains('/') => ext,
+        _ => "",
     }
 }
 
@@ -1554,6 +1568,37 @@ mod tests {
             .expect("post_raw should succeed");
         assert_eq!(status, reqwest::StatusCode::OK);
         m.assert();
+    }
+
+    #[test]
+    fn content_type_follows_the_extension_in_any_case() {
+        assert_eq!(content_type_for_path("a.parquet"), PARQUET_CONTENT_TYPE);
+        assert_eq!(content_type_for_path("A.PARQUET"), PARQUET_CONTENT_TYPE);
+        assert_eq!(content_type_for_path("a.csv"), CSV_CONTENT_TYPE);
+        assert_eq!(content_type_for_path("a.CSV"), CSV_CONTENT_TYPE);
+        for name in ["a.json", "a.jsonl", "a.ndjson"] {
+            assert_eq!(content_type_for_path(name), JSON_CONTENT_TYPE, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_extension_announces_nothing_specific() {
+        // The load sniffs an octet-stream, so this is the permissive answer —
+        // announcing parquet here is what made a csv fail with "Corrupt footer".
+        for name in ["a.txt", "a", "archive.tar.zst", ""] {
+            assert_eq!(content_type_for_path(name), UNKNOWN_CONTENT_TYPE, "{name}");
+        }
+    }
+
+    #[test]
+    fn extension_of_reads_past_a_query_and_fragment() {
+        assert_eq!(extension_of("https://h/b/f.parquet?sig=a.b.c"), "parquet");
+        assert_eq!(extension_of("https://h/f.csv#frag"), "csv");
+        assert_eq!(extension_of("/local/f.csv"), "csv");
+        // No extension on the last segment, despite dots earlier in the path.
+        assert_eq!(extension_of("https://h/v1.2/export"), "");
+        assert_eq!(extension_of("/data.d/export"), "");
+        assert_eq!(extension_of("plain"), "");
     }
 
     // --- presigned direct-to-storage upload ---------------------------------

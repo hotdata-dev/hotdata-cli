@@ -1135,9 +1135,12 @@ pub fn load_table_request_from_result(
 /// sniffed server-side, so the load simply omits `format` and lets the server
 /// decide. `--format` overrides this either way.
 pub fn format_for_path(name: &str) -> Option<&'static str> {
-    let lower = name.to_ascii_lowercase();
-    let ext = lower.rsplit_once('.').map(|(_, e)| e)?;
-    match ext {
+    // Shares `extension_of` with the content type the upload announces, so the
+    // two can never disagree about what a name means.
+    match crate::client::sdk::extension_of(name)
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "parquet" => Some("parquet"),
         "csv" => Some("csv"),
         "json" | "jsonl" | "ndjson" => Some("json"),
@@ -3453,6 +3456,22 @@ mod tests {
         // server to sniff the bytes — never a client-side rejection.
         assert_eq!(format_for_path("/data/orders.txt"), None);
         assert_eq!(format_for_path("/data/orders"), None);
+    }
+
+    #[test]
+    fn format_for_path_ignores_a_url_query_string() {
+        // A presigned storage URL carries its signature in the query, so the
+        // extension has to be read from the path alone.
+        assert_eq!(
+            format_for_path("https://s3.example.com/b/listings.parquet?X-Amz-Signature=abc123"),
+            Some("parquet")
+        );
+        assert_eq!(
+            format_for_path("https://example.com/export.csv?v=2#top"),
+            Some("csv")
+        );
+        // A dot in an earlier path segment is not the file's extension.
+        assert_eq!(format_for_path("https://example.com/v1.2/export"), None);
     }
 
     #[test]
