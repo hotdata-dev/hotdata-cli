@@ -218,9 +218,10 @@ pub enum DatabasesCommands {
         #[arg(long, value_parser = ["replace", "append", "delete", "update", "upsert"])]
         mode: Option<String>,
 
-        /// Format of the uploaded file: csv, json (newline-delimited), or
-        /// parquet. Detected from the file's extension when omitted; pass it
-        /// when the extension is absent or misleading. Not valid with
+        /// Format of the uploaded file: csv, json, or parquet. Detected from
+        /// the file's extension when omitted; pass it when the extension is
+        /// absent or misleading. json reads an array of objects, a
+        /// pretty-printed document, or one object per line. Not valid with
         /// `--result-id`, which is always parquet.
         #[arg(long, value_parser = ["csv", "json", "parquet"], conflicts_with = "result_id")]
         format: Option<String>,
@@ -444,9 +445,10 @@ pub enum DatabaseTablesCommands {
         #[arg(long, value_parser = ["replace", "append", "delete", "update", "upsert"])]
         mode: Option<String>,
 
-        /// Format of the uploaded file: csv, json (newline-delimited), or
-        /// parquet. Detected from the file's extension when omitted; pass it
-        /// when the extension is absent or misleading. Not valid with
+        /// Format of the uploaded file: csv, json, or parquet. Detected from
+        /// the file's extension when omitted; pass it when the extension is
+        /// absent or misleading. json reads an array of objects, a
+        /// pretty-printed document, or one object per line. Not valid with
         /// `--result-id`, which is always parquet.
         #[arg(long, value_parser = ["csv", "json", "parquet"], conflicts_with = "result_id")]
         format: Option<String>,
@@ -1245,31 +1247,156 @@ fn upload_data_path(
     result
 }
 
-/// Upload `path`, announcing the content type its extension implies. No
-/// extension is rejected: an unrecognised one announces
-/// `application/octet-stream`, which the load sniffs.
-fn upload_data_file(api: &Api, path: &str) -> String {
-    let file_size = match std::fs::metadata(path) {
-        Ok(m) => m.len(),
-        Err(e) => {
-            eprintln!("error opening file '{path}': {e}");
-            std::process::exit(1);
-        }
-    };
+/// Upload `path`, announcing the content type its extension implies, and
+/// return the upload id with the `format` the load should carry. No extension
+/// is rejected: an unrecognised one announces `application/octet-stream`,
+/// which the load sniffs.
+///
+/// `format` is the one already resolved from `--format` and the source's own
+/// extension. It comes back unchanged unless the file was a JSON shape the
+/// load cannot read and was rewritten — see [`json_source_rewrite`] — in which
+/// case the upload is newline-delimited json and says so.
+fn upload_data_file<'a>(
+    api: &Api,
+    path: &str,
+    format: Option<&'a str>,
+) -> (String, Option<&'a str>) {
+    let source = Path::new(path);
+    match json_source_rewrite(source, format).unwrap_or_else(|e| e.exit()) {
+        Some(rewritten) => (
+            upload_rewritten_json(api, rewritten).unwrap_or_else(|e| e.exit()),
+            Some("json"),
+        ),
+        None => {
+            let file_size = match std::fs::metadata(path) {
+                Ok(m) => m.len(),
+                Err(e) => {
+                    eprintln!("error opening file '{path}': {e}");
+                    std::process::exit(1);
+                }
+            };
 
-    upload_data_path(
-        api,
-        Path::new(path),
-        crate::client::sdk::content_type_for_path(path),
-        file_size,
-    )
-    .unwrap_or_else(|e| e.exit())
+            let id = upload_data_path(
+                api,
+                source,
+                crate::client::sdk::content_type_for_path(path),
+                file_size,
+            )
+            .unwrap_or_else(|e| e.exit());
+            (id, format)
+        }
+    }
+}
+
+/// The newline-delimited rewrite of `path` a load needs, or `None` when the
+/// file can be uploaded as it stands.
+///
+/// A `json` load reads one JSON value per line, and a `.json` file on disk is
+/// as often an array of objects or a single pretty-printed document. Both are
+/// rewritten here, so the shape inside the file is not something the caller has
+/// to know or convert first. Everything else is untouched: parquet and csv are
+/// not JSON, and already-newline-delimited json is what the load wants.
+///
+/// Errors are [`ApiError::Transport`] so the caller can clean up a staged
+/// download before surfacing them.
+fn json_source_rewrite(
+    path: &Path,
+    format: Option<&str>,
+) -> Result<Option<tempfile::NamedTempFile>, ApiError> {
+    use crate::commands::json_rows;
+    use std::io::{BufReader, BufWriter, Read, Seek};
+
+    let fail = |msg: String| ApiError::Transport(msg);
+    // Only a json load reads rows off lines, so a source that names another
+    // format is left alone without being opened at all.
+    if matches!(format, Some(f) if f != "json") {
+        return Ok(None);
+    }
+
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| fail(format!("error opening file '{}': {e}", path.display())))?;
+
+    // The shape is read off the first record, never the whole file, so a large
+    // newline-delimited source costs one short read to leave alone.
+    let mut head = Vec::new();
+    Read::by_ref(&mut file)
+        .take(json_rows::SNIFF_BYTES as u64)
+        .read_to_end(&mut head)
+        .map_err(|e| fail(format!("error reading '{}': {e}", path.display())))?;
+
+    if !load_reads_json(format, &head) {
+        return Ok(None);
+    }
+    let shape = json_rows::shape_of(&head);
+    if !shape.needs_rewrite() {
+        return Ok(None);
+    }
+
+    file.rewind()
+        .map_err(|e| fail(format!("error reading '{}': {e}", path.display())))?;
+    let temp = tempfile::Builder::new()
+        .prefix("hotdata-upload-")
+        // Names the rewrite for what it holds: the upload announces the ndjson
+        // content type this extension implies.
+        .suffix(".jsonl")
+        .tempfile()
+        .map_err(|e| fail(format!("error creating a temp file: {e}")))?;
+
+    let spinner = crate::util::spinner("Reading json...");
+    let rows = json_rows::to_ndjson(shape, BufReader::new(file), BufWriter::new(temp.as_file()));
+    spinner.finish_and_clear();
+
+    match rows {
+        Ok(0) => Err(fail(format!(
+            "error: '{}' carries no json rows",
+            path.display()
+        ))),
+        Ok(_) => Ok(Some(temp)),
+        Err(msg) => Err(fail(format!(
+            "error reading json from '{}': {msg}",
+            path.display()
+        ))),
+    }
+}
+
+/// Whether the load will read this source as JSON, given the `format` already
+/// resolved from `--format` and the source's extension.
+///
+/// An unresolved format sends no `format` at all and leaves the server to read
+/// the bytes, which it reads as csv — a leading `[` then fails as a one-column
+/// csv rather than as json. So a source that plainly opens a JSON array is
+/// claimed as json here even with no extension to say so, which is the
+/// `--url`-without-a-file-name case.
+fn load_reads_json(format: Option<&str>, head: &[u8]) -> bool {
+    match format {
+        Some(f) => f == "json",
+        None => {
+            crate::commands::json_rows::shape_of(head) == crate::commands::json_rows::Shape::Array
+        }
+    }
+}
+
+/// Upload a newline-delimited rewrite, announcing the ndjson content type its
+/// `.jsonl` name implies, and delete it before returning — on both arms, for
+/// the reason [`upload_temp_file`] documents.
+fn upload_rewritten_json(api: &Api, temp: tempfile::NamedTempFile) -> Result<String, ApiError> {
+    upload_temp_file(temp, |path| {
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let name = path.to_string_lossy();
+        upload_data_path(
+            api,
+            path,
+            crate::client::sdk::content_type_for_path(&name),
+            size,
+        )
+    })
 }
 
 /// Download `url` and upload it, announcing the content type the URL's own
 /// extension implies — the staged temp file's name is generated and says
-/// nothing about the bytes.
-fn upload_data_url(api: &Api, url: &str) -> String {
+/// nothing about the bytes. Returns the upload id and the `format` the load
+/// should carry, which [`upload_data_file`] documents.
+fn upload_data_url<'a>(api: &Api, url: &str, format: Option<&'a str>) -> (String, Option<&'a str>) {
     // The presigned upload needs a seekable, size-known source (the SDK opens
     // the path, declares its byte count, and PUTs it directly to storage), so
     // download the URL to a temp file first, then upload that file on the same
@@ -1327,10 +1454,18 @@ fn upload_data_url(api: &Api, url: &str) -> String {
     };
     dl_pb.finish_and_clear();
 
-    let size = std::fs::metadata(temp.path()).map(|m| m.len()).unwrap_or(0);
     let content_type = crate::client::sdk::content_type_for_path(url);
-    upload_temp_file(temp, |path| upload_data_path(api, path, content_type, size))
-        .unwrap_or_else(|e| e.exit())
+    // The download is reshaped on the same terms as a local `--file`: a json
+    // array or a pretty-printed document becomes newline-delimited json before
+    // it goes up, and the rewrite is what gets uploaded.
+    upload_temp_file(temp, |path| match json_source_rewrite(path, format)? {
+        Some(rewritten) => Ok((upload_rewritten_json(api, rewritten)?, Some("json"))),
+        None => {
+            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            Ok((upload_data_path(api, path, content_type, size)?, format))
+        }
+    })
+    .unwrap_or_else(|e| e.exit())
 }
 
 /// Upload an already-downloaded temp file, guaranteeing the file is deleted
@@ -1341,9 +1476,9 @@ fn upload_data_url(api: &Api, url: &str) -> String {
 /// [`ApiError::exit`] (`std::process::exit`) on the `Err` arm, and
 /// `process::exit` runs no destructors. Owning `temp` in this function means it
 /// drops (deleting a potentially multi-GB download) before the caller can exit.
-fn upload_temp_file<F>(temp: tempfile::NamedTempFile, upload: F) -> Result<String, ApiError>
+fn upload_temp_file<T, F>(temp: tempfile::NamedTempFile, upload: F) -> Result<T, ApiError>
 where
-    F: FnOnce(&Path) -> Result<String, ApiError>,
+    F: FnOnce(&Path) -> Result<T, ApiError>,
 {
     let result = upload(temp.path());
     // Delete now, while still inside this function, so cleanup precedes any
@@ -1855,8 +1990,8 @@ pub fn create(
                 "{}",
                 format!(
                     concat!(
-                        "Load a table:\n",
-                        "  hotdata databases load --catalog {0} --table <table> --file <path.parquet>\n",
+                        "Load a table (csv, json, or parquet):\n",
+                        "  hotdata databases load --catalog {0} --table <table> --file <path>\n",
                         "  hotdata databases load --catalog {0} --table <table> --url <url>\n",
                         "\nQuery with:\n",
                         "  hotdata query \"SELECT * FROM {0}.public.<table> LIMIT 10\"\n",
@@ -2662,21 +2797,22 @@ pub fn tables_load(
     // names the format, and an unrecognised one sends nothing so the server
     // sniffs. A staged --upload-id carries the content type it was created
     // with, so it too sends only what --format asked for.
+    //
+    // A file or URL can come back with a format the upload settled rather than
+    // the one resolved here: a json source that was not newline-delimited is
+    // uploaded as a rewrite that is.
     let body = match (result_id, upload_id, file, url) {
         (Some(rid), None, None, None) => load_table_request_from_result(rid, mode, key),
         (None, Some(id), None, None) => load_table_request(id, mode, format, key),
-        (None, None, Some(path), None) => load_table_request(
-            &upload_data_file(&api, path),
-            mode,
-            format.or_else(|| format_for_path(path)),
-            key,
-        ),
-        (None, None, None, Some(u)) => load_table_request(
-            &upload_data_url(&api, u),
-            mode,
-            format.or_else(|| format_for_path(u)),
-            key,
-        ),
+        (None, None, Some(path), None) => {
+            let (upload, format) =
+                upload_data_file(&api, path, format.or_else(|| format_for_path(path)));
+            load_table_request(&upload, mode, format, key)
+        }
+        (None, None, None, Some(u)) => {
+            let (upload, format) = upload_data_url(&api, u, format.or_else(|| format_for_path(u)));
+            load_table_request(&upload, mode, format, key)
+        }
         (None, None, None, None) => {
             eprintln!(
                 "error: one of --file <path>, --url <url>, --upload-id <id>, or --result-id <id> is required"
@@ -3532,6 +3668,111 @@ mod tests {
         );
     }
 
+    /// Write `body` to a temp file named with `suffix`, for the rewrite tests.
+    fn source_file(suffix: &str, body: &str) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn a_json_array_file_is_rewritten_to_newline_delimited_json() {
+        // The shape a `.json` file most often carries: what an HTTP API returns
+        // and what `jq` writes. A `json` load reads one value per line, so the
+        // array is rewritten before it goes up.
+        let src = source_file(".json", "[{\"id\":1},{\"id\":2}]");
+        let rewritten = json_source_rewrite(src.path(), Some("json"))
+            .unwrap()
+            .expect("an array is not newline-delimited, so it is rewritten");
+        assert_eq!(
+            std::fs::read_to_string(rewritten.path()).unwrap(),
+            "{\"id\":1}\n{\"id\":2}\n"
+        );
+        assert_eq!(
+            crate::client::sdk::content_type_for_path(&rewritten.path().to_string_lossy()),
+            "application/x-ndjson",
+            "the rewrite's own name has to announce what it holds"
+        );
+    }
+
+    #[test]
+    fn a_pretty_printed_json_file_is_rewritten() {
+        let src = source_file(".json", "{\n  \"id\": 1\n}\n");
+        let rewritten = json_source_rewrite(src.path(), Some("json"))
+            .unwrap()
+            .expect("a value spanning lines is not newline-delimited");
+        assert_eq!(
+            std::fs::read_to_string(rewritten.path()).unwrap(),
+            "{\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn newline_delimited_json_is_uploaded_untouched() {
+        // The fast path that keeps a large `.jsonl` from being rewritten to say
+        // exactly the same thing.
+        let src = source_file(".jsonl", "{\"id\":1}\n{\"id\":2}\n");
+        assert!(
+            json_source_rewrite(src.path(), Some("json"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_csv_or_parquet_source_is_never_reshaped() {
+        // Only a json load reads rows off lines; nothing else is even sniffed
+        // for shape, whatever its first byte looks like.
+        let csv = source_file(".csv", "id,name\n1,a\n");
+        assert!(
+            json_source_rewrite(csv.path(), Some("csv"))
+                .unwrap()
+                .is_none()
+        );
+        let looks_like_json = source_file(".csv", "[{\"id\":1}]");
+        assert!(
+            json_source_rewrite(looks_like_json.path(), Some("csv"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_extensionless_json_array_is_claimed_as_json() {
+        // With no extension the load sends no format and the server reads the
+        // bytes — as csv, which a leading `[` fails on. A plain array is taken
+        // as json here instead, and comes back rewritten.
+        let src = source_file("", "[{\"id\":1}]");
+        assert!(load_reads_json(None, b"  [{\"id\":1}]"));
+        assert!(json_source_rewrite(src.path(), None).unwrap().is_some());
+        // Newline-delimited bytes with no extension still go to the server to
+        // sniff, which reads them correctly.
+        assert!(!load_reads_json(None, b"{\"id\":1}\n{\"id\":2}\n"));
+    }
+
+    #[test]
+    fn a_json_source_with_no_rows_is_refused() {
+        let src = source_file(".json", "  \n");
+        let err = json_source_rewrite(src.path(), Some("json")).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("no json rows"),
+            "an empty json file should say so here, not fail schema inference server-side: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_json_row_that_is_not_an_object_is_refused_before_upload() {
+        let src = source_file(".json", "[{\"id\":1}, 7]");
+        let err = json_source_rewrite(src.path(), Some("json")).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("one object per row"),
+            "the error should name the shape a load needs: {msg}"
+        );
+    }
+
     #[test]
     fn format_for_path_ignores_a_url_query_string() {
         // A presigned storage URL carries its signature in the query, so the
@@ -4038,7 +4279,7 @@ mod tests {
         let path = temp.path().to_path_buf();
         assert!(path.exists());
 
-        let result = upload_temp_file(temp, |p| {
+        let result: Result<String, ApiError> = upload_temp_file(temp, |p| {
             assert!(p.exists(), "file present while the upload runs");
             Err(ApiError::Transport("upload boom".into()))
         });
