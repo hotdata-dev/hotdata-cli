@@ -1454,18 +1454,61 @@ fn upload_data_url<'a>(api: &Api, url: &str, format: Option<&'a str>) -> (String
     };
     dl_pb.finish_and_clear();
 
-    let content_type = crate::client::sdk::content_type_for_path(url);
+    let url_content_type = crate::client::sdk::content_type_for_path(url);
     // The download is reshaped on the same terms as a local `--file`: a json
     // array or a pretty-printed document becomes newline-delimited json before
-    // it goes up, and the rewrite is what gets uploaded.
-    upload_temp_file(temp, |path| match json_source_rewrite(path, format)? {
-        Some(rewritten) => Ok((upload_rewritten_json(api, rewritten)?, Some("json"))),
-        None => {
-            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-            Ok((upload_data_path(api, path, content_type, size)?, format))
-        }
+    // it goes up, and the rewrite is what gets uploaded — with the download
+    // deleted the moment the rewrite exists, so only one copy is on disk for
+    // the length of the upload.
+    let (source, rewritten) = download_to_upload(temp, |path| json_source_rewrite(path, format))
+        .unwrap_or_else(|e| e.exit());
+
+    let id = upload_temp_file(source, |path| {
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        // The rewrite's own `.jsonl` name announces ndjson; an untouched
+        // download is announced by the URL, whose extension is authoritative
+        // where the staged name is only advisory.
+        let staged = path.to_string_lossy();
+        let content_type = if rewritten {
+            crate::client::sdk::content_type_for_path(&staged)
+        } else {
+            url_content_type
+        };
+        upload_data_path(api, path, content_type, size)
     })
-    .unwrap_or_else(|e| e.exit())
+    .unwrap_or_else(|e| e.exit());
+
+    (id, if rewritten { Some("json") } else { format })
+}
+
+/// The file a staged download should upload — itself, or the rewrite that
+/// replaced it — and whether it was rewritten.
+///
+/// A rewrite makes the download dead weight, so it is deleted here rather than
+/// held until the upload returns: a 5 GB json array would otherwise need 10 GB
+/// of temp space for the length of the upload, and fail with ENOSPC on a small
+/// runner. A download that needed no rewrite is still the thing to upload, so
+/// it survives. Either way nothing outlives an error, for the reason
+/// [`upload_temp_file`] documents: the caller exits without unwinding.
+fn download_to_upload<R>(
+    download: tempfile::NamedTempFile,
+    rewrite: R,
+) -> Result<(tempfile::NamedTempFile, bool), ApiError>
+where
+    R: FnOnce(&Path) -> Result<Option<tempfile::NamedTempFile>, ApiError>,
+{
+    match rewrite(download.path()) {
+        Ok(Some(rewritten)) => {
+            // Deleted before the upload starts, not after it ends.
+            drop(download);
+            Ok((rewritten, true))
+        }
+        Ok(None) => Ok((download, false)),
+        Err(e) => {
+            drop(download);
+            Err(e)
+        }
+    }
 }
 
 /// Upload an already-downloaded temp file, guaranteeing the file is deleted
@@ -4303,6 +4346,72 @@ mod tests {
 
         assert_eq!(result.unwrap(), "upid_123");
         assert!(!path.exists(), "temp file must be removed on success");
+    }
+
+    /// A staged download plus the rewrite that may replace it, for the
+    /// lifetime tests below.
+    fn staged_pair() -> (tempfile::NamedTempFile, tempfile::NamedTempFile) {
+        (
+            tempfile::Builder::new().suffix(".json").tempfile().unwrap(),
+            tempfile::Builder::new()
+                .suffix(".jsonl")
+                .tempfile()
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_rewritten_download_is_deleted_before_the_upload() {
+        // Once the rewrite holds the rows the download is dead weight, and the
+        // upload is the long part: keeping both would put two copies of a
+        // multi-gigabyte source on disk for its whole duration (a 5 GB array
+        // needing 10 GB of temp, then ENOSPC on a small runner).
+        let (download, rewrite) = staged_pair();
+        let download_path = download.path().to_path_buf();
+        let rewrite_path = rewrite.path().to_path_buf();
+
+        let (source, rewritten) = download_to_upload(download, |_| Ok(Some(rewrite))).unwrap();
+
+        assert!(rewritten);
+        assert_eq!(source.path(), rewrite_path);
+        assert!(
+            !download_path.exists(),
+            "the download must be gone before the upload starts"
+        );
+        assert!(rewrite_path.exists(), "the rewrite is what gets uploaded");
+    }
+
+    #[test]
+    fn a_download_that_needs_no_rewrite_is_the_upload() {
+        // Nothing replaced it, so it has to survive to be uploaded — the case
+        // that stops this from being a plain "delete the download first".
+        let (download, _) = staged_pair();
+        let download_path = download.path().to_path_buf();
+
+        let (source, rewritten) = download_to_upload(download, |_| Ok(None)).unwrap();
+
+        assert!(!rewritten);
+        assert_eq!(source.path(), download_path);
+        assert!(download_path.exists());
+    }
+
+    #[test]
+    fn a_failed_reshape_deletes_the_download() {
+        // The caller exits on this error without unwinding, so cleanup has to
+        // happen here — the rule `upload_temp_file` documents.
+        let (download, _) = staged_pair();
+        let download_path = download.path().to_path_buf();
+
+        let err = download_to_upload(download, |_| {
+            Err(ApiError::Transport("reshape boom".into()))
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, ApiError::Transport(_)));
+        assert!(
+            !download_path.exists(),
+            "temp file must be removed before the failure is returned"
+        );
     }
 
     // --- `set`'s advisory existence check -----------------------------------
