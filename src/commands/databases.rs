@@ -219,8 +219,9 @@ pub enum DatabasesCommands {
 
         /// Format of the uploaded file: csv, json (newline-delimited), or
         /// parquet. Detected from the file's extension when omitted; pass it
-        /// when the extension is absent or misleading.
-        #[arg(long, value_parser = ["csv", "json", "parquet"])]
+        /// when the extension is absent or misleading. Not valid with
+        /// `--result-id`, which is always parquet.
+        #[arg(long, value_parser = ["csv", "json", "parquet"], conflicts_with = "result_id")]
         format: Option<String>,
 
         /// Key column for a `delete`/`update`/`upsert` load, repeatable for a
@@ -443,8 +444,9 @@ pub enum DatabaseTablesCommands {
 
         /// Format of the uploaded file: csv, json (newline-delimited), or
         /// parquet. Detected from the file's extension when omitted; pass it
-        /// when the extension is absent or misleading.
-        #[arg(long, value_parser = ["csv", "json", "parquet"])]
+        /// when the extension is absent or misleading. Not valid with
+        /// `--result-id`, which is always parquet.
+        #[arg(long, value_parser = ["csv", "json", "parquet"], conflicts_with = "result_id")]
         format: Option<String>,
 
         /// Key column for a `delete`/`update`/`upsert` load, repeatable for a
@@ -1039,8 +1041,47 @@ pub fn add_table(
             if !key_determines.is_empty() {
                 println!("determined by key: {}", key_determines.join(", "));
             }
+            // Sort and partition are fixed once the table exists, so echo what
+            // the server accepted — there is no second chance to check.
+            if !sorted_by.is_empty() {
+                println!("sorted:  {}", describe_sort_keys(&sorted_by));
+            }
+            if !partition_by.is_empty() {
+                println!("parts:   {}", describe_partition_keys(&partition_by));
+            }
         }
     }
+}
+
+/// Render sort keys for the table output, e.g. `created_at desc, id`.
+/// A key with no explicit direction prints bare, matching what was sent.
+fn describe_sort_keys(keys: &[serde_json::Value]) -> String {
+    keys.iter()
+        .map(|k| {
+            let column = k["column"].as_str().unwrap_or_default();
+            match k["direction"].as_str() {
+                Some(dir) => format!("{column} {dir}"),
+                None => column.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Render partition keys for the table output, e.g. `created_at:year,
+/// created_at:month, region`. `identity` prints as the bare column, since the
+/// partition is the value itself.
+fn describe_partition_keys(keys: &[serde_json::Value]) -> String {
+    keys.iter()
+        .map(|k| {
+            let column = k["column"].as_str().unwrap_or_default();
+            match k["transform"].as_str() {
+                Some("identity") | None => column.to_string(),
+                Some(t) => format!("{column}:{t}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Declare `table` in `schema` on an existing instant database, via
@@ -3456,6 +3497,26 @@ mod tests {
         // server to sniff the bytes — never a client-side rejection.
         assert_eq!(format_for_path("/data/orders.txt"), None);
         assert_eq!(format_for_path("/data/orders"), None);
+    }
+
+    #[test]
+    fn sort_and_partition_keys_render_for_the_table_output() {
+        // The layout is fixed at declaration, so the echo is the user's only
+        // confirmation of what the server took.
+        let sorted = sort_keys(&["created_at=desc".to_string(), "id".to_string()]).unwrap();
+        assert_eq!(describe_sort_keys(&sorted), "created_at desc, id");
+
+        let parts = partition_keys(&[
+            "created_at=year".to_string(),
+            "created_at=month".to_string(),
+            "region".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            describe_partition_keys(&parts),
+            "created_at:year, created_at:month, region",
+            "identity prints bare — the partition is the value itself"
+        );
     }
 
     #[test]

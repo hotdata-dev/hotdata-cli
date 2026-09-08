@@ -211,10 +211,10 @@ fn quote_ident(name: &str) -> String {
 ///
 /// An auto-embed vector index materialises a `{column}_embedding` column on the
 /// table, so a bare `*` returns a 1536-float list in every row — tens of
-/// kilobytes per search that the caller did not ask for, truncated on the way
-/// to the terminal and silently truncated by `-o csv`. Excluding it by default
-/// keeps the wire small and leaves the row readable; `--select '*'` asks for it
-/// back, and naming it in `--select` still works.
+/// kilobytes per search the caller did not ask for, and a column claiming
+/// terminal width the real ones need. Excluding it by default keeps the wire
+/// small and the row readable; `--select '*'` asks for it back, and naming it
+/// in `--select` still works.
 fn default_projection(generated_columns: &[String]) -> String {
     if generated_columns.is_empty() {
         return "*".to_string();

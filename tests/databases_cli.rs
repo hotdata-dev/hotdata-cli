@@ -272,6 +272,7 @@ fn databases_load_accepts_a_non_parquet_file_at_parse_time() {
             "/nonexistent/data.csv",
         ])
         .env("HOTDATA_CONFIG_DIR", "/nonexistent-config-dir")
+        .env("HOTDATA_WORKSPACE", "workffffffffffffffffffffffffffff")
         .output()
         .unwrap();
     let combined = format!(
@@ -283,4 +284,150 @@ fn databases_load_accepts_a_non_parquet_file_at_parse_time() {
         !combined.contains("require a parquet"),
         "csv was rejected client-side: {combined}"
     );
+}
+
+#[test]
+fn databases_load_rejects_format_together_with_result_id() {
+    // A stored result is always parquet and the load endpoint rejects `format`
+    // beside `result_id`, so the request builder has no field to put it in.
+    // Without this conflict the flag would be accepted and silently dropped.
+    let output = hotdata()
+        .args([
+            "databases",
+            "load",
+            "--catalog",
+            "c",
+            "--table",
+            "t",
+            "--result-id",
+            "rslt_1",
+            "--format",
+            "csv",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("cannot be used with"),
+        "output: {combined}"
+    );
+}
+
+#[test]
+fn databases_load_rejects_a_keyed_mode_with_result_id() {
+    // Not a clap conflict — `--mode` conflicts with `--result-id` only for the
+    // three keyed values, so the check is hand-rolled. It runs before any
+    // config or network access, which is what makes it reachable here.
+    for mode in ["delete", "update", "upsert"] {
+        let output = hotdata()
+            .args([
+                "databases",
+                "load",
+                "--catalog",
+                "c",
+                "--table",
+                "t",
+                "--result-id",
+                "rslt_1",
+                "--mode",
+                mode,
+            ])
+            .env("HOTDATA_CONFIG_DIR", "/nonexistent-config-dir")
+            .env("HOTDATA_WORKSPACE", "workffffffffffffffffffffffffffff")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "mode {mode} was accepted");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            combined.contains("matches rows by key"),
+            "mode {mode} output: {combined}"
+        );
+    }
+
+    // The non-keyed modes must still reach the network on the same input.
+    for mode in ["replace", "append"] {
+        let output = hotdata()
+            .args([
+                "databases",
+                "load",
+                "--catalog",
+                "c",
+                "--table",
+                "t",
+                "--result-id",
+                "rslt_1",
+                "--mode",
+                mode,
+            ])
+            .env("HOTDATA_CONFIG_DIR", "/nonexistent-config-dir")
+            .env("HOTDATA_WORKSPACE", "workffffffffffffffffffffffffffff")
+            .output()
+            .unwrap();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !combined.contains("matches rows by key"),
+            "mode {mode} was rejected as keyed: {combined}"
+        );
+    }
+}
+
+#[test]
+fn databases_tables_add_rejects_key_determines_without_a_key() {
+    // `--key-determines` names columns the key fixes, so it is meaningless
+    // without `--key` — the server would accept and ignore it.
+    let output = hotdata()
+        .args([
+            "databases",
+            "tables",
+            "add",
+            "t",
+            "--key-determines",
+            "tenant",
+        ])
+        .env("HOTDATA_CONFIG_DIR", "/nonexistent-config-dir")
+        .env("HOTDATA_WORKSPACE", "workffffffffffffffffffffffffffff")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("needs --key"), "output: {combined}");
+}
+
+#[test]
+fn databases_tables_add_rejects_a_bad_sort_direction_and_transform() {
+    for (flag, value, needle) in [
+        ("--sorted-by", "ts=sideways", "asc or desc"),
+        ("--partition-by", "created_at=week", "identity, year, month"),
+    ] {
+        let output = hotdata()
+            .args(["databases", "tables", "add", "t", flag, value])
+            .env("HOTDATA_CONFIG_DIR", "/nonexistent-config-dir")
+            .env("HOTDATA_WORKSPACE", "workffffffffffffffffffffffffffff")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{flag} {value} was accepted");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(combined.contains(needle), "{flag} output: {combined}");
+    }
 }
