@@ -1,3 +1,9 @@
+## [0.33.0] - 2026-09-08
+
+### 🚀 Features
+
+- *(databases)* Load csv/json, keyed load modes, and table declaration (#293)
+- *(databases)* Load a json file in whatever shape it holds (#294)
 ## [0.32.0] - 2026-09-06
 
 ### 🚀 Features
