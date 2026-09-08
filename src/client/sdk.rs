@@ -97,11 +97,40 @@ fn upload_reqwest_client() -> reqwest::Client {
         .expect("reqwest client should build without a timeout")
 }
 
-/// Content type recorded for a managed-table parquet upload. Advisory only —
-/// the managed-table load keys off the parquet file extension, not the upload's
-/// recorded content type — but a correct MIME type is the right metadata to
-/// persist alongside the file.
+/// Content type recorded for an upload, chosen from the file's extension by
+/// [`content_type_for_path`].
+///
+/// This is **not** advisory to the managed-table load: the load resolves the
+/// file's format from the recorded content type first, and a confidently wrong
+/// one is taken at its word rather than sniffed past — CSV bytes announced as
+/// parquet fail with "failed to parse parquet metadata: Corrupt footer". An
+/// unrecognised extension therefore announces
+/// [`UNKNOWN_CONTENT_TYPE`] instead of guessing, which is the case the load
+/// *does* sniff.
 const PARQUET_CONTENT_TYPE: &str = "application/vnd.apache.parquet";
+const CSV_CONTENT_TYPE: &str = "text/csv";
+const JSON_CONTENT_TYPE: &str = "application/x-ndjson";
+
+/// Announced when the extension names no format we recognise. The load sniffs
+/// the bytes in this case, so an unknown extension is not a client-side
+/// failure — the server decides.
+const UNKNOWN_CONTENT_TYPE: &str = "application/octet-stream";
+
+/// The MIME type to record for `name`, keyed off its extension.
+///
+/// `name` is the *user-supplied* file name or URL, never a temp path: `--url`
+/// stages its download under a generated name, and typing that would announce
+/// the wrong format for the bytes inside.
+pub fn content_type_for_path(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    match ext {
+        "parquet" => PARQUET_CONTENT_TYPE,
+        "csv" => CSV_CONTENT_TYPE,
+        "json" | "jsonl" | "ndjson" => JSON_CONTENT_TYPE,
+        _ => UNKNOWN_CONTENT_TYPE,
+    }
+}
 
 /// Default number of multipart part `PUT`s the SDK keeps in flight for an
 /// upload. 12 saturates a typical uplink without overwhelming the socket pool
@@ -681,7 +710,7 @@ impl Api {
         &self.client
     }
 
-    /// Upload a local parquet file directly to object storage via the SDK's
+    /// Upload a local data file directly to object storage via the SDK's
     /// presigned-upload flow ([`Client::upload_file`]), returning the upload id.
     ///
     /// The flow is `POST /v1/uploads` (open a session) → direct `PUT`(s) to
@@ -700,14 +729,24 @@ impl Api {
     ///
     /// `progress` is the SDK [`UploadProgress`] callback, invoked with
     /// cumulative `(bytes_done, total)` as bytes flow; the caller drives a
-    /// progress bar from it. The recorded content type is parquet (advisory).
-    pub fn upload(&self, path: &Path, progress: UploadProgress) -> Result<String, ApiError> {
+    /// progress bar from it.
+    ///
+    /// `content_type` is recorded with the upload and is what the managed-table
+    /// load resolves the file's format from, so it must describe the bytes —
+    /// see [`content_type_for_path`], which callers use to derive it from the
+    /// name the user gave (not from `path`, which may be a staged temp file).
+    pub fn upload(
+        &self,
+        path: &Path,
+        content_type: &str,
+        progress: UploadProgress,
+    ) -> Result<String, ApiError> {
         let mut cfg = self.client.configuration().clone();
         cfg.client = upload_reqwest_client();
         let upload_client = Client::from_configuration(cfg);
 
         let opts = UploadOptions {
-            content_type: Some(PARQUET_CONTENT_TYPE.to_string()),
+            content_type: Some(content_type.to_string()),
             progress: Some(progress),
             max_concurrency: Some(upload_concurrency()),
             ..UploadOptions::default()
@@ -1578,7 +1617,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let id = api
-            .upload(tf.path(), noop_progress())
+            .upload(tf.path(), "application/vnd.apache.parquet", noop_progress())
             .expect("presigned upload should succeed");
 
         assert_eq!(id, "upload_test");
@@ -1604,7 +1643,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let err = api
-            .upload(tf.path(), noop_progress())
+            .upload(tf.path(), "application/vnd.apache.parquet", noop_progress())
             .expect_err("a 501 must map to an error, not a fallback");
 
         match err {
@@ -1642,7 +1681,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let err = api
-            .upload(tf.path(), noop_progress())
+            .upload(tf.path(), "application/vnd.apache.parquet", noop_progress())
             .expect_err("a storage 403 must map to an error");
 
         match err {
@@ -1807,7 +1846,7 @@ mod tests {
         write_session(SESSION_JWT, 5);
 
         let id = api
-            .upload(tf.path(), noop_progress())
+            .upload(tf.path(), "application/vnd.apache.parquet", noop_progress())
             .expect("upload must succeed when every leg resolves its own bearer");
 
         assert_eq!(id, "upload_fresh");

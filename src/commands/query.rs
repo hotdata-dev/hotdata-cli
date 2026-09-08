@@ -105,13 +105,12 @@ fn value_to_string(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
-        Value::Array(arr) => {
-            let (formatted, count) = crate::output::table::truncate_array(arr);
-            match count {
-                Some(n) => format!("{formatted} ({n} items)"),
-                None => formatted,
-            }
-        }
+        // Rendered whole, not abbreviated. `value_to_string` feeds `-o csv`,
+        // whose consumer is a program: a long list shortened to
+        // "[1, 2, 3, ..., 9] (1536 items)" is silent data loss in a format
+        // nobody re-reads by eye. The table renderer abbreviates separately,
+        // where a human is the reader and the width is the constraint.
+        Value::Array(_) => v.to_string(),
         Value::Object(_) => v.to_string(),
     }
 }

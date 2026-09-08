@@ -42,17 +42,20 @@ PostgreSQL-dialect SQL. Everything else builds on that.
 
 ## Getting your data in
 
-**Upload a parquet file** directly (convert CSV/JSON first):
+**Upload a file** directly — csv, newline-delimited json, or parquet:
 
 ```sh
-hotdata databases load --catalog demo --table listings --file ./listings.parquet
+hotdata databases load --catalog demo --table listings --file ./listings.csv
 ```
 
-A load **replaces** the table by default. Add `--append` to add rows to an
+The format comes from the extension; pass `--format csv|json|parquet` when the
+extension is missing or misleading.
+
+A load **replaces** the table by default. `--mode append` adds rows to an
 existing table instead:
 
 ```sh
-hotdata databases load --catalog demo --table listings --file ./more-listings.parquet --append
+hotdata databases load --catalog demo --table listings --file ./more-listings.parquet --mode append
 ```
 
 **Import from an external source** — Postgres/MySQL, S3/GCS buckets, Iceberg,

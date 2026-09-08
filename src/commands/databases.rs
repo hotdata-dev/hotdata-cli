@@ -205,9 +205,29 @@ pub enum DatabasesCommands {
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
         result_id: Option<String>,
 
-        /// Append rows to the table instead of replacing it (default: replace)
-        #[arg(long)]
+        /// Append rows to the table instead of replacing it (default: replace).
+        /// Shorthand for `--mode append`.
+        #[arg(long, conflicts_with = "mode")]
         append: bool,
+
+        /// How the upload is applied to the table (default: replace).
+        /// `delete`, `update`, and `upsert` match existing rows by the table's
+        /// key — declare one with `databases tables add --key`, or name it here
+        /// with `--key`.
+        #[arg(long, value_parser = ["replace", "append", "delete", "update", "upsert"])]
+        mode: Option<String>,
+
+        /// Format of the uploaded file: csv, json (newline-delimited), or
+        /// parquet. Detected from the file's extension when omitted; pass it
+        /// when the extension is absent or misleading.
+        #[arg(long, value_parser = ["csv", "json", "parquet"])]
+        format: Option<String>,
+
+        /// Key column for a `delete`/`update`/`upsert` load, repeatable for a
+        /// composite key (`--key tenant --key id`). Defaults to the key the
+        /// table was declared with.
+        #[arg(long = "key")]
+        key: Vec<String>,
     },
 
     /// Manage tables inside an instant database
@@ -316,6 +336,57 @@ pub enum DatabaseTablesCommands {
         output: String,
     },
 
+    /// Declare a new table in an instant database, with its key and layout
+    ///
+    /// Declaring a key is what enables the `delete`, `update`, and `upsert`
+    /// load modes on the table: those loads match existing rows by the key's
+    /// values. `--sorted-by` and `--partition-by` set the table's on-disk
+    /// layout and are fixed once the table exists.
+    Add {
+        /// Table name, or `schema.table` to target a schema other than --schema
+        table: String,
+
+        /// Database id or name (defaults to current database)
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Schema for a bare table name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Column that uniquely identifies a row, repeatable for a composite
+        /// key (`--key tenant --key id`). Omit to declare no key — the table
+        /// still loads with replace and append.
+        #[arg(long = "key")]
+        key: Vec<String>,
+
+        /// Column whose value is fixed by the key, repeatable. An optimisation
+        /// for keyed loads, and correctness-affecting: if the claim is false, a
+        /// keyed load can leave a duplicate of the key behind. Declare it only
+        /// where the invariant really holds.
+        #[arg(long = "key-determines")]
+        key_determines: Vec<String>,
+
+        /// Sort the table on this column, repeatable to sort on several in
+        /// order: `--sorted-by ts` or `--sorted-by ts=desc` (default asc).
+        /// Fixed once the table is created.
+        #[arg(long = "sorted-by")]
+        sorted_by: Vec<String>,
+
+        /// Partition the table by this column, repeatable to nest partitions in
+        /// order. `--partition-by region` partitions on the value itself;
+        /// `--partition-by created_at=month` on a calendar part (year, month,
+        /// day, hour). One partition per month needs both `created_at=year` and
+        /// `created_at=month`, or every March shares a partition. Fixed once
+        /// the table is created.
+        #[arg(long = "partition-by")]
+        partition_by: Vec<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
     /// Show column definitions for a table
     Show {
         /// Table as catalog.schema.table (or schema.table with an active database)
@@ -358,9 +429,29 @@ pub enum DatabaseTablesCommands {
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
         result_id: Option<String>,
 
-        /// Append rows to the table instead of replacing it (default: replace)
-        #[arg(long)]
+        /// Append rows to the table instead of replacing it (default: replace).
+        /// Shorthand for `--mode append`.
+        #[arg(long, conflicts_with = "mode")]
         append: bool,
+
+        /// How the upload is applied to the table (default: replace).
+        /// `delete`, `update`, and `upsert` match existing rows by the table's
+        /// key — declare one with `databases tables add --key`, or name it here
+        /// with `--key`.
+        #[arg(long, value_parser = ["replace", "append", "delete", "update", "upsert"])]
+        mode: Option<String>,
+
+        /// Format of the uploaded file: csv, json (newline-delimited), or
+        /// parquet. Detected from the file's extension when omitted; pass it
+        /// when the extension is absent or misleading.
+        #[arg(long, value_parser = ["csv", "json", "parquet"])]
+        format: Option<String>,
+
+        /// Key column for a `delete`/`update`/`upsert` load, repeatable for a
+        /// composite key (`--key tenant --key id`). Defaults to the key the
+        /// table was declared with.
+        #[arg(long = "key")]
+        key: Vec<String>,
     },
 
     /// Delete a table from an instant database
@@ -807,24 +898,251 @@ pub fn managed_table_delete_path(connection_id: &str, schema: &str, table: &str)
     format!("/connections/{connection_id}/schemas/{schema}/tables/{table}")
 }
 
-pub fn load_table_request(upload_id: &str, mode: &str) -> serde_json::Value {
-    serde_json::json!({
+/// Build the `sorted_by` entries for a table declaration from `--sorted-by`
+/// values, each `column` or `column=direction`.
+fn sort_keys(values: &[String]) -> Result<Vec<serde_json::Value>, String> {
+    values
+        .iter()
+        .map(|v| match v.split_once('=') {
+            None => Ok(serde_json::json!({ "column": v })),
+            Some((column, dir)) => {
+                let dir = dir.to_ascii_lowercase();
+                if !matches!(dir.as_str(), "asc" | "desc") {
+                    return Err(format!(
+                        "--sorted-by '{v}': direction must be asc or desc, got '{dir}'"
+                    ));
+                }
+                Ok(serde_json::json!({ "column": column, "direction": dir }))
+            }
+        })
+        .collect()
+}
+
+/// Build the `partition_by` entries from `--partition-by` values, each
+/// `column` (identity) or `column=transform`.
+fn partition_keys(values: &[String]) -> Result<Vec<serde_json::Value>, String> {
+    values
+        .iter()
+        .map(|v| {
+            let (column, transform) = match v.split_once('=') {
+                None => (v.as_str(), "identity".to_string()),
+                Some((column, t)) => (column, t.to_ascii_lowercase()),
+            };
+            if !matches!(
+                transform.as_str(),
+                "identity" | "year" | "month" | "day" | "hour"
+            ) {
+                return Err(format!(
+                    "--partition-by '{v}': transform must be identity, year, month, day, or \
+                     hour, got '{transform}'"
+                ));
+            }
+            Ok(serde_json::json!({ "column": column, "transform": transform }))
+        })
+        .collect()
+}
+
+/// `databases tables add` — declare a table on an existing instant database.
+#[allow(clippy::too_many_arguments)]
+pub fn add_table(
+    workspace_id: &str,
+    database: Option<&str>,
+    table: &str,
+    schema: &str,
+    key: &[String],
+    key_determines: &[String],
+    sorted_by: &[String],
+    partition_by: &[String],
+    output: &str,
+) {
+    use crossterm::style::Stylize;
+
+    // `schema.table` overrides --schema, matching `databases create --table`.
+    let (schema, table) = match table.split_once('.') {
+        Some((s, t)) => (s, t),
+        None => (schema, table),
+    };
+
+    // key_determines names columns the key fixes, so a key must exist for it to
+    // mean anything; the server would take it and quietly ignore it.
+    if !key_determines.is_empty() && key.is_empty() {
+        eprintln!(
+            "{}",
+            "error: --key-determines describes columns fixed by the key, so it needs --key.".red()
+        );
+        std::process::exit(1);
+    }
+
+    let sorted_by = sort_keys(sorted_by).unwrap_or_else(|e| {
+        eprintln!("{}", format!("error: {e}").red());
+        std::process::exit(1);
+    });
+    let partition_by = partition_keys(partition_by).unwrap_or_else(|e| {
+        eprintln!("{}", format!("error: {e}").red());
+        std::process::exit(1);
+    });
+
+    let database = resolve_current_database(database, workspace_id);
+    let api = Api::new(Some(workspace_id));
+    let db = resolve_database(&api, &database);
+
+    let mut body = serde_json::json!({ "name": table });
+    if !key.is_empty() {
+        body["key"] = serde_json::json!(key);
+    }
+    if !key_determines.is_empty() {
+        body["key_determines"] = serde_json::json!(key_determines);
+    }
+    if !sorted_by.is_empty() {
+        body["sorted_by"] = serde_json::json!(sorted_by);
+    }
+    if !partition_by.is_empty() {
+        body["partition_by"] = serde_json::json!(partition_by);
+    }
+
+    let (status, resp) = declare_table(&api, &db.id, schema, &body);
+
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp).red());
+        std::process::exit(1);
+    }
+
+    let catalog = db
+        .default_catalog
+        .as_deref()
+        .or(db.name.as_deref())
+        .unwrap_or(&db.id);
+    let declared = serde_json::json!({
+        "table": format!("{catalog}.{schema}.{table}"),
+        "schema": schema,
+        "name": table,
+        "key": key,
+        "key_determines": key_determines,
+        "sorted_by": sorted_by,
+        "partition_by": partition_by,
+    });
+    match output {
+        "json" => println!("{}", serde_json::to_string_pretty(&declared).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&declared).unwrap()),
+        _ => {
+            println!("{}", format!("Declared {catalog}.{schema}.{table}").green());
+            if key.is_empty() {
+                println!(
+                    "{}",
+                    "no key — loads with replace and append only; re-add with --key for \
+                     delete/update/upsert"
+                        .dark_grey()
+                );
+            } else {
+                println!("key:     {}", key.join(", "));
+            }
+            if !key_determines.is_empty() {
+                println!("determined by key: {}", key_determines.join(", "));
+            }
+        }
+    }
+}
+
+/// Declare `table` in `schema` on an existing instant database, via
+/// `POST /databases/{id}/schemas/{schema}/tables`, with `body` carrying the
+/// name and whatever key/layout the caller declared.
+///
+/// Declares the schema first when the server says it is missing: the table
+/// route 404s with "Schema '<name>' is not declared" for a schema the database
+/// was never created with. An already-declared table comes back 409, which is
+/// left to the caller — re-declaring is a real conflict here, since the
+/// existing table's key and layout are fixed and this call would not change
+/// them.
+fn declare_table(
+    api: &Api,
+    database_id: &str,
+    schema: &str,
+    body: &serde_json::Value,
+) -> (reqwest::StatusCode, String) {
+    let tables_path = format!("/databases/{database_id}/schemas/{schema}/tables");
+    let (status, resp) = api
+        .post_raw(&tables_path, body)
+        .unwrap_or_else(|e| e.exit());
+
+    if status.as_u16() == 404 && crate::util::api_error(resp.clone()).contains("not declared") {
+        let (s_status, s_resp) = api
+            .post_raw(
+                &format!("/databases/{database_id}/schemas"),
+                &serde_json::json!({ "name": schema }),
+            )
+            .unwrap_or_else(|e| e.exit());
+        // A concurrent declaration of the same schema (409) is not a failure —
+        // the schema exists either way, which is all the retry needs.
+        if !s_status.is_success() && s_status.as_u16() != 409 {
+            return (s_status, s_resp);
+        }
+        return api
+            .post_raw(&tables_path, body)
+            .unwrap_or_else(|e| e.exit());
+    }
+
+    (status, resp)
+}
+
+/// Body for a load from a staged upload.
+///
+/// `format` is omitted when `None` so the server resolves the format itself,
+/// from the upload's recorded content type and then from the bytes. `key` is
+/// omitted when empty, which tells the server to use the key the table was
+/// declared with; it is ignored outside the keyed modes.
+pub fn load_table_request(
+    upload_id: &str,
+    mode: &str,
+    format: Option<&str>,
+    key: &[String],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
         "mode": mode,
         "upload_id": upload_id,
-    })
+    });
+    if let Some(f) = format {
+        body["format"] = serde_json::json!(f);
+    }
+    if !key.is_empty() {
+        body["key"] = serde_json::json!(key);
+    }
+    body
 }
 
-pub fn load_table_request_from_result(result_id: &str, mode: &str) -> serde_json::Value {
-    serde_json::json!({
+/// Body for a load from a persisted query result.
+///
+/// No `format`: a stored result is always parquet, and the server rejects the
+/// field alongside `result_id`.
+pub fn load_table_request_from_result(
+    result_id: &str,
+    mode: &str,
+    key: &[String],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
         "mode": mode,
         "result_id": result_id,
-    })
+    });
+    if !key.is_empty() {
+        body["key"] = serde_json::json!(key);
+    }
+    body
 }
 
-/// Returns true when `path` looks like a parquet file by extension.
-pub fn is_parquet_path(path: &str) -> bool {
-    path.to_ascii_lowercase().ends_with(".parquet")
-        || Path::new(path).extension().and_then(|e| e.to_str()) == Some("parquet")
+/// The load-request `format` implied by `name`'s extension, or `None` when the
+/// extension names nothing we recognise.
+///
+/// `None` is not an error: an upload announcing an unrecognised content type is
+/// sniffed server-side, so the load simply omits `format` and lets the server
+/// decide. `--format` overrides this either way.
+pub fn format_for_path(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    let ext = lower.rsplit_once('.').map(|(_, e)| e)?;
+    match ext {
+        "parquet" => Some("parquet"),
+        "csv" => Some("csv"),
+        "json" | "jsonl" | "ndjson" => Some("json"),
+        _ => None,
+    }
 }
 
 fn table_rows(catalog: &str, tables: Vec<InfoTable>) -> Vec<TableRow> {
@@ -850,13 +1168,18 @@ fn upload_progress_style() -> ProgressStyle {
     .progress_chars("=>-")
 }
 
-/// Upload an already-on-disk parquet file via the SDK's presigned direct-to-
+/// Upload an already-on-disk data file via the SDK's presigned direct-to-
 /// storage flow, driving a single aggregate progress bar from the SDK's
 /// byte-granular progress callback. Returns the finalized upload id, or the
 /// seam's error (a `501 PRESIGN_UNSUPPORTED` surfaces an actionable message,
 /// not a fallback). The caller decides how to surface failure — `--url` must
 /// clean up its temp file before exiting, so this returns rather than exits.
-fn upload_parquet_path(api: &Api, path: &Path, size: u64) -> Result<String, ApiError> {
+fn upload_data_path(
+    api: &Api,
+    path: &Path,
+    content_type: &str,
+    size: u64,
+) -> Result<String, ApiError> {
     let pb = ProgressBar::new(size);
     pb.set_style(upload_progress_style());
 
@@ -869,21 +1192,15 @@ fn upload_parquet_path(api: &Api, path: &Path, size: u64) -> Result<String, ApiE
         cb_pb.set_position(done);
     });
 
-    let result = api.upload(path, progress);
+    let result = api.upload(path, content_type, progress);
     pb.finish_and_clear();
     result
 }
 
-fn upload_parquet_file(api: &Api, path: &str) -> String {
-    if !is_parquet_path(path) {
-        eprintln!(
-            "error: managed table loads require a parquet file (got '{}'). \
-             Convert your data to parquet first.",
-            path
-        );
-        std::process::exit(1);
-    }
-
+/// Upload `path`, announcing the content type its extension implies. No
+/// extension is rejected: an unrecognised one announces
+/// `application/octet-stream`, which the load sniffs.
+fn upload_data_file(api: &Api, path: &str) -> String {
     let file_size = match std::fs::metadata(path) {
         Ok(m) => m.len(),
         Err(e) => {
@@ -892,17 +1209,19 @@ fn upload_parquet_file(api: &Api, path: &str) -> String {
         }
     };
 
-    upload_parquet_path(api, Path::new(path), file_size).unwrap_or_else(|e| e.exit())
+    upload_data_path(
+        api,
+        Path::new(path),
+        crate::client::sdk::content_type_for_path(path),
+        file_size,
+    )
+    .unwrap_or_else(|e| e.exit())
 }
 
-fn upload_parquet_url(api: &Api, url: &str) -> String {
-    if !is_parquet_path(url) {
-        eprintln!(
-            "error: managed table loads require a parquet URL ending in .parquet (got '{url}')."
-        );
-        std::process::exit(1);
-    }
-
+/// Download `url` and upload it, announcing the content type the URL's own
+/// extension implies — the staged temp file's name is generated and says
+/// nothing about the bytes.
+fn upload_data_url(api: &Api, url: &str) -> String {
     // The presigned upload needs a seekable, size-known source (the SDK opens
     // the path, declares its byte count, and PUTs it directly to storage), so
     // download the URL to a temp file first, then upload that file on the same
@@ -953,7 +1272,9 @@ fn upload_parquet_url(api: &Api, url: &str) -> String {
     dl_pb.finish_and_clear();
 
     let size = std::fs::metadata(temp.path()).map(|m| m.len()).unwrap_or(0);
-    upload_temp_file(temp, |path| upload_parquet_path(api, path, size)).unwrap_or_else(|e| e.exit())
+    let content_type = crate::client::sdk::content_type_for_path(url);
+    upload_temp_file(temp, |path| upload_data_path(api, path, content_type, size))
+        .unwrap_or_else(|e| e.exit())
 }
 
 /// Upload an already-downloaded temp file, guaranteeing the file is deleted
@@ -2215,10 +2536,27 @@ pub fn tables_load(
     upload_id: Option<&str>,
     result_id: Option<&str>,
     append: bool,
+    mode: Option<&str>,
+    format: Option<&str>,
+    key: &[String],
 ) {
     use crossterm::style::Stylize;
 
-    let mode = if append { "append" } else { "replace" };
+    // `--append` predates `--mode` and stays supported; clap keeps them mutually
+    // exclusive, so at most one is set.
+    let mode = match (mode, append) {
+        (Some(m), _) => m,
+        (None, true) => "append",
+        (None, false) => "replace",
+    };
+    if matches!(mode, "delete" | "update" | "upsert") && result_id.is_some() {
+        eprintln!(
+            "error: --result-id loads a stored result, which carries every column — \
+             mode '{mode}' matches rows by key and needs a key-shaped upload. \
+             Use --file/--url/--upload-id, or mode replace/append."
+        );
+        std::process::exit(1);
+    }
 
     // NOTE: this used to detect a database API token and route it through the
     // database-scoped endpoints (the connection-scoped managed paths and the
@@ -2263,13 +2601,25 @@ pub fn tables_load(
     // clap enforces mutual exclusion; only one source is ever Some. A file/URL is
     // uploaded first and loaded by upload id; a result is loaded by reference with
     // no upload step.
+    // An explicit --format always wins; otherwise the source's own extension
+    // names the format, and an unrecognised one sends nothing so the server
+    // sniffs. A staged --upload-id carries the content type it was created
+    // with, so it too sends only what --format asked for.
     let body = match (result_id, upload_id, file, url) {
-        (Some(rid), None, None, None) => load_table_request_from_result(rid, mode),
-        (None, Some(id), None, None) => load_table_request(id, mode),
-        (None, None, Some(path), None) => {
-            load_table_request(&upload_parquet_file(&api, path), mode)
-        }
-        (None, None, None, Some(u)) => load_table_request(&upload_parquet_url(&api, u), mode),
+        (Some(rid), None, None, None) => load_table_request_from_result(rid, mode, key),
+        (None, Some(id), None, None) => load_table_request(id, mode, format, key),
+        (None, None, Some(path), None) => load_table_request(
+            &upload_data_file(&api, path),
+            mode,
+            format.or_else(|| format_for_path(path)),
+            key,
+        ),
+        (None, None, None, Some(u)) => load_table_request(
+            &upload_data_url(&api, u),
+            mode,
+            format.or_else(|| format_for_path(u)),
+            key,
+        ),
         (None, None, None, None) => {
             eprintln!(
                 "error: one of --file <path>, --url <url>, --upload-id <id>, or --result-id <id> is required"
@@ -2288,136 +2638,10 @@ pub fn tables_load(
     });
     spinner.finish_and_clear();
 
-    let (status, resp_body) = if !status.is_success()
-        // Upload-only recovery: the delete + recreate below mints a new database
-        // id, which would orphan a result (the server scopes it to the original
-        // database). A result load into an undeclared table is auto-declared
-        // server-side, so this path isn't needed for it — surface the error.
-        && result_id.is_none()
-        && crate::util::api_error(resp_body.clone()).contains("not declared")
-    {
-        // The table wasn't declared at create time. Collect existing tables so
-        // they are re-declared in the replacement database, then delete and
-        // recreate with all tables (including the new one) declared.
-        let (existing, _, _) =
-            collect_tables(&api, &db.default_connection_id, None, None, None, None);
-        let mut all_tables: Vec<String> = existing
-            .iter()
-            .map(|t| format!("{}.{}", t.schema, t.table))
-            .collect();
-        let new_table_key = format!("{schema}.{table}");
-        if !all_tables.contains(&new_table_key) {
-            all_tables.push(new_table_key);
-        }
-
-        // Warn if any existing table has synced data — delete+recreate will lose it.
-        let synced: Vec<String> = existing
-            .iter()
-            .filter(|t| t.synced)
-            .map(|t| format!("{}.{}", t.schema, t.table))
-            .collect();
-        if !synced.is_empty() {
-            use crossterm::style::Stylize;
-            let catalog = db
-                .default_catalog
-                .as_deref()
-                .or(db.name.as_deref())
-                .unwrap_or(&db.id);
-            eprintln!(
-                "{}",
-                format!(
-                    "warning: declaring '{}' requires recreating the database '{catalog}'. \
-                     The following tables have loaded data that will be lost:\n  {}",
-                    table,
-                    synced.join(", ")
-                )
-                .yellow()
-            );
-            if crate::util::is_interactive() {
-                use std::io::Write;
-                eprint!("Proceed and lose this data? [y/N] ");
-                std::io::stderr().flush().unwrap();
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                if !input.trim().eq_ignore_ascii_case("y") {
-                    eprintln!("{}", "Aborted.".red());
-                    std::process::exit(1);
-                }
-            } else {
-                eprintln!(
-                    "{}",
-                    "error: cannot auto-declare table in non-interactive mode — existing data would be lost. \
-                     Declare all tables up front with 'databases create --table <name>'."
-                        .red()
-                );
-                std::process::exit(1);
-            }
-        }
-
-        let (del_status, del_body) = api
-            .delete_raw(&format!("/databases/{}", db.id))
-            .unwrap_or_else(|e| e.exit());
-        if !del_status.is_success() {
-            eprintln!("{}", crate::util::api_error(del_body).red());
-            std::process::exit(1);
-        }
-        let create_body = create_database_request(
-            db.name.as_deref(),
-            db.default_catalog.as_deref(),
-            schema,
-            &all_tables,
-            db.expires_at.as_deref(),
-        );
-        let (create_status, create_body_resp) = api
-            .post_raw("/databases", &create_body)
-            .unwrap_or_else(|e| e.exit());
-        if !create_status.is_success() {
-            eprintln!("{}", crate::util::api_error(create_body_resp).red());
-            std::process::exit(1);
-        }
-        let new_db: CreateDatabaseResponse = match serde_json::from_str(&create_body_resp) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("error parsing create response: {e}");
-                std::process::exit(1);
-            }
-        };
-        let _ = crate::config::save_current_database("default", workspace_id, &new_db.id);
-        // Instant databases have no add-table endpoint, so declaring a new table
-        // is a delete + recreate — which mints a NEW database id. Surface that
-        // explicitly: the id printed by `databases create` is now stale, and
-        // id-based automation (e.g. `databases delete <create-time-id>`) would
-        // otherwise fail with "no database with id". Reference by catalog instead.
-        {
-            use crossterm::style::Stylize;
-            let catalog = db
-                .default_catalog
-                .as_deref()
-                .or(db.name.as_deref())
-                .unwrap_or(&db.id);
-            eprintln!(
-                "{}",
-                format!(
-                    "note: table '{table}' was not declared — recreated database '{catalog}' to add it \
-                     (id {} → {}). Instant databases are recreated when a new table is loaded; \
-                     reference them by catalog ('{catalog}'), not the create-time id.",
-                    db.id, new_db.id
-                )
-                .yellow()
-            );
-        }
-        let new_path = managed_table_load_path(&new_db.default_connection_id, schema, table);
-        let spinner = crate::util::spinner("Loading table...");
-        let result = api.post_raw(&new_path, &body).unwrap_or_else(|e| {
-            spinner.finish_and_clear();
-            e.exit()
-        });
-        spinner.finish_and_clear();
-        result
-    } else {
-        (status, resp_body)
-    };
-
+    // No undeclared-table recovery here: the load endpoint declares a missing
+    // table (and a missing schema) itself, so a load never fails for want of a
+    // declaration. `databases tables add` is for declaring a table *with* a
+    // key or a layout, which a load cannot infer.
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
@@ -3170,36 +3394,92 @@ mod tests {
 
     #[test]
     fn load_table_request_carries_mode() {
-        let body = load_table_request("upl_abc", "replace");
+        let body = load_table_request("upl_abc", "replace", None, &[]);
         assert_eq!(body["mode"], "replace");
         assert_eq!(body["upload_id"], "upl_abc");
 
-        let body = load_table_request("upl_abc", "append");
+        let body = load_table_request("upl_abc", "append", None, &[]);
         assert_eq!(body["mode"], "append");
         assert_eq!(body["upload_id"], "upl_abc");
     }
 
     #[test]
+    fn load_table_request_omits_format_and_key_unless_given() {
+        // Omitted, not null: the server resolves the format itself from the
+        // upload's content type, and an absent key means "the table's own".
+        let body = load_table_request("upl_abc", "replace", None, &[]);
+        assert!(body.get("format").is_none());
+        assert!(body.get("key").is_none());
+
+        let key = vec!["tenant".to_string(), "id".to_string()];
+        let body = load_table_request("upl_abc", "upsert", Some("csv"), &key);
+        assert_eq!(body["format"], "csv");
+        assert_eq!(body["key"], serde_json::json!(["tenant", "id"]));
+    }
+
+    #[test]
     fn load_table_request_from_result_carries_mode() {
-        let body = load_table_request_from_result("rslt_abc", "replace");
+        let body = load_table_request_from_result("rslt_abc", "replace", &[]);
         assert_eq!(body["mode"], "replace");
         assert_eq!(body["result_id"], "rslt_abc");
         // A result load must not send an upload_id (the server rejects both).
         assert!(body.get("upload_id").is_none());
 
-        let body = load_table_request_from_result("rslt_abc", "append");
+        let body = load_table_request_from_result("rslt_abc", "append", &[]);
         assert_eq!(body["mode"], "append");
         assert_eq!(body["result_id"], "rslt_abc");
         assert!(body.get("upload_id").is_none());
     }
 
     #[test]
-    fn is_parquet_path_by_extension() {
-        assert!(is_parquet_path("/data/orders.parquet"));
-        assert!(is_parquet_path("/data/ORDERS.PARQUET"));
-        assert!(is_parquet_path("file.parquet"));
-        assert!(!is_parquet_path("/data/orders.csv"));
-        assert!(!is_parquet_path("/data/orders"));
+    fn result_load_never_sends_a_format() {
+        // A stored result is always parquet and the server rejects `format`
+        // alongside `result_id`, so the builder has no way to send one.
+        let body = load_table_request_from_result("rslt_abc", "replace", &["id".to_string()]);
+        assert!(body.get("format").is_none());
+        assert_eq!(body["key"], serde_json::json!(["id"]));
+    }
+
+    #[test]
+    fn format_for_path_reads_the_extension() {
+        assert_eq!(format_for_path("/data/orders.parquet"), Some("parquet"));
+        assert_eq!(format_for_path("/data/ORDERS.PARQUET"), Some("parquet"));
+        assert_eq!(format_for_path("/data/orders.csv"), Some("csv"));
+        // Newline-delimited JSON answers to three spellings, all `json`.
+        assert_eq!(format_for_path("a.json"), Some("json"));
+        assert_eq!(format_for_path("a.jsonl"), Some("json"));
+        assert_eq!(format_for_path("a.ndjson"), Some("json"));
+        // Unknown and absent extensions send no format at all, leaving the
+        // server to sniff the bytes — never a client-side rejection.
+        assert_eq!(format_for_path("/data/orders.txt"), None);
+        assert_eq!(format_for_path("/data/orders"), None);
+    }
+
+    #[test]
+    fn sort_keys_default_to_ascending_and_reject_a_bad_direction() {
+        assert_eq!(
+            sort_keys(&["ts".to_string()]).unwrap(),
+            vec![serde_json::json!({"column": "ts"})],
+            "no direction is omitted, so the server applies its own default"
+        );
+        assert_eq!(
+            sort_keys(&["ts=DESC".to_string()]).unwrap(),
+            vec![serde_json::json!({"column": "ts", "direction": "desc"})]
+        );
+        assert!(sort_keys(&["ts=sideways".to_string()]).is_err());
+    }
+
+    #[test]
+    fn partition_keys_default_to_identity_and_reject_a_bad_transform() {
+        assert_eq!(
+            partition_keys(&["region".to_string()]).unwrap(),
+            vec![serde_json::json!({"column": "region", "transform": "identity"})]
+        );
+        assert_eq!(
+            partition_keys(&["created_at=Month".to_string()]).unwrap(),
+            vec![serde_json::json!({"column": "created_at", "transform": "month"})]
+        );
+        assert!(partition_keys(&["created_at=week".to_string()]).is_err());
     }
 
     #[test]
@@ -3530,7 +3810,8 @@ mod tests {
                 "/v1/connections/conn_default/schemas/public/tables/orders/loads",
             )
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&load_table_request("upl_123", "replace")).unwrap(),
+                serde_json::to_string(&load_table_request("upl_123", "replace", None, &[]))
+                    .unwrap(),
             ))
             .with_status(200)
             .with_body(
@@ -3547,7 +3828,7 @@ mod tests {
         let api = Api::test_new(&server.url(), "k", Some("ws1"));
         let db = resolve_database(&api, "db_1");
         let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
-        let body = load_table_request("upl_123", "replace");
+        let body = load_table_request("upl_123", "replace", None, &[]);
         let (status, resp_body) = api.post_raw(&path, &body).unwrap();
         assert!(status.is_success());
         let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();
@@ -3577,7 +3858,7 @@ mod tests {
             )
             .match_header("X-Database-Id", "db_1")
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&load_table_request_from_result("rslt_123", "replace"))
+                serde_json::to_string(&load_table_request_from_result("rslt_123", "replace", &[]))
                     .unwrap(),
             ))
             .with_status(200)
@@ -3598,7 +3879,7 @@ mod tests {
         // carries X-Database-Id.
         let api = api.scoped_to_database_opt(Some(db.id.as_str()));
         let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
-        let body = load_table_request_from_result("rslt_123", "replace");
+        let body = load_table_request_from_result("rslt_123", "replace", &[]);
         let (status, resp_body) = api.post_raw(&path, &body).unwrap();
         assert!(status.is_success());
         let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();

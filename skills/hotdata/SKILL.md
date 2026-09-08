@@ -87,7 +87,7 @@ Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_st
 
 **Instant databases** are Hotdata-owned catalogs you create and populate yourself — no remote source to sync. Query them in SQL as **`<database_id>.<schema>.<table>`**. Prefer **`hotdata databases`** for this workflow.
 
-**Parquet only:** `databases tables load` accepts **parquet** files (local `--file`, remote `--url`, or a pre-staged `--upload-id`).
+**File formats:** `databases tables load` accepts **csv**, **newline-delimited json**, and **parquet** (local `--file`, remote `--url`, or a pre-staged `--upload-id`). The format is read from the file's extension; `--format csv|json|parquet` overrides it, and an unrecognised extension is left to the server to resolve from the bytes.
 
 **Active database:** `hotdata databases use <id>` saves the active database to config. `databases tables list`/`load`/`remove`, `databases queries`/`results`, and all `databases context` commands default to the active database; pass **`--database <id>`** to override per-command. (`databases tables show` instead takes a fully-qualified `catalog.schema.table`.)
 
@@ -108,12 +108,14 @@ hotdata databases remove <id> [--workspace-id <workspace_id>]
 hotdata databases attach <catalog|name> [--database <id>] [--alias <alias>]
 hotdata databases detach <catalog|name|alias> [--database <id>]
 
-# Preferred: load by catalog alias (auto-declares table if needed). --append adds rows instead of replacing.
-hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--append] [--workspace-id <workspace_id>]
+# Preferred: load by catalog alias (server declares the table/schema if missing).
+# Loads csv, newline-delimited json, or parquet — format read from the extension.
+hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--mode replace|append|delete|update|upsert] [--append] [--format csv|json|parquet] [--key <col>]... [--workspace-id <workspace_id>]
 
 # Also available via tables subcommand
 hotdata databases tables list [--database <id>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
-hotdata databases tables load <table> [--database <id>] [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--append] [--workspace-id <workspace_id>]
+hotdata databases tables add <table|schema.table> [--database <id>] [--schema public] [--key <col>]... [--key-determines <col>]... [--sorted-by <col>[=asc|desc]]... [--partition-by <col>[=identity|year|month|day|hour]]... [--output table|json|yaml]
+hotdata databases tables load <table> [--database <id>] [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--mode replace|append|delete|update|upsert] [--append] [--format csv|json|parquet] [--key <col>]... [--workspace-id <workspace_id>]
 hotdata databases tables remove <table> [--database <id>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
@@ -126,9 +128,11 @@ hotdata databases tables remove <table> [--database <id>] [--schema public] [--w
 - `unset` — clears the active database from config.
 - `<id>` — inspect one database (returns id, catalog, name, expires_at; a fork also shows its `forked_from` record).
 - `remove` — removes the instant database; clears the active-database config if it matched.
-- `load` (top-level shorthand) — loads parquet into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). Replaces the table by default; pass `--append` to add rows to the existing table instead. If the table was not declared at create time, the CLI automatically deletes and recreates the database with the table declared, then retries the load.
+- `load` (top-level shorthand) — loads a file into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). **Formats:** csv, newline-delimited json (`.json`/`.jsonl`/`.ndjson`), and parquet; the format comes from the file's extension, and `--format` overrides it (needed when the extension is absent or misleading). An unrecognised extension is not rejected — the server reads the bytes. A table or schema that was never declared is declared by the server as part of the load, so no up-front `--table` is required.
+- **Load modes** (`--mode`, default `replace`) — `replace` supersedes the table's contents; `append` adds rows; `delete`, `update`, and `upsert` match existing rows **by key**. `--append` is the old shorthand for `--mode append` and still works, but the two cannot be combined. The keyed modes need a key: declare one with `databases tables add --key`, or name it per-load with `--key` (repeat for a composite key). `delete` uploads only the key columns; `update` replaces matching rows and ignores unmatched ones; `upsert` inserts the unmatched instead. Keyed modes are not available with `--result-id`.
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
-- `tables load` — publishes to an instant-database table from a local parquet file (`--file`), a remote parquet URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`, must belong to the target database). Defaults to **replace** mode; pass `--append` to add rows to the existing table instead.
+- `tables add` — declares a table **with its key and storage layout**, which a load cannot infer. `--key` (repeatable) is what enables the `delete`/`update`/`upsert` load modes on that table. `--sorted-by <col>` or `<col>=desc` sets sort order; `--partition-by <col>` partitions on the value, `<col>=month` (or `year`/`day`/`hour`) on a calendar part — one partition per calendar month needs **both** `<col>=year` and `<col>=month`, or every March shares a partition. Sort and partition are fixed once the table exists. `--key-determines` (repeatable) asserts a column's value is fixed by the key: it prunes keyed loads harder, and is **correctness-affecting** — declare it only where the invariant really holds, or a keyed load can leave a duplicate key behind. Re-adding an existing table is a conflict, since its key and layout cannot be changed afterwards.
+- `tables load` — publishes to an instant-database table from a local file (`--file`), a remote URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`, must belong to the target database). Same `--mode`, `--format`, and `--key` flags as the top-level `load` above.
 - `tables remove` — drops a table from the instant database.
 - `attach` — attaches a **catalog** to an instant database, so the catalog's **live** tables become visible inside that database's query scope. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name the catalog answers to (defaults to the catalog's name). This is how you query an attached catalog's tables and **join across catalogs** — see [Querying across catalogs](#querying-across-catalogs-attach).
 - `detach` — removes an attached catalog. Accepts the catalog name/id **or** the alias you attached it under. Defaults to the active database.
@@ -141,6 +145,17 @@ hotdata databases create --catalog airbnb
 hotdata databases load --catalog airbnb --table listings --url https://example.com/listings.parquet
 hotdata query "SELECT count(*) FROM airbnb.public.listings"
 ```
+
+Keeping a table in sync by key — declare the key once, then load changes:
+
+```
+hotdata databases tables add listings --key listing_id --sorted-by updated_at=desc
+hotdata databases load --catalog airbnb --table listings --file changed.csv --mode upsert
+hotdata databases load --catalog airbnb --table listings --file removed.csv --mode delete
+```
+
+`removed.csv` carries only the key columns. On a table declared without a key,
+name one per load instead: `--mode upsert --key listing_id`.
 
 #### Querying across catalogs (attach)
 

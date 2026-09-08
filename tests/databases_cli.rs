@@ -130,3 +130,157 @@ fn databases_tables_load_rejects_both_file_and_upload_id_at_parse_time() {
         "output: {combined}"
     );
 }
+
+#[test]
+fn databases_tables_help_lists_add() {
+    let output = hotdata()
+        .args(["databases", "tables", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("add"), "help: {help}");
+    assert!(help.contains("load"), "help: {help}");
+    assert!(help.contains("show"), "help: {help}");
+}
+
+#[test]
+fn databases_tables_add_help_documents_key_and_layout_flags() {
+    let output = hotdata()
+        .args(["databases", "tables", "add", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--key"), "help: {help}");
+    assert!(help.contains("--key-determines"), "help: {help}");
+    assert!(help.contains("--sorted-by"), "help: {help}");
+    assert!(help.contains("--partition-by"), "help: {help}");
+}
+
+#[test]
+fn databases_tables_add_requires_a_table_argument() {
+    let output = hotdata()
+        .args(["databases", "tables", "add"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("required") || combined.contains("TABLE"),
+        "output: {combined}"
+    );
+}
+
+#[test]
+fn databases_load_help_documents_mode_format_and_key() {
+    let output = hotdata()
+        .args(["databases", "load", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--mode"), "help: {help}");
+    assert!(help.contains("--format"), "help: {help}");
+    assert!(help.contains("--key"), "help: {help}");
+    // The keyed modes are the point of --mode; they must be discoverable.
+    for mode in ["replace", "append", "delete", "update", "upsert"] {
+        assert!(help.contains(mode), "help missing '{mode}': {help}");
+    }
+}
+
+#[test]
+fn databases_load_rejects_an_unknown_mode_at_parse_time() {
+    let output = hotdata()
+        .args([
+            "databases",
+            "load",
+            "--catalog",
+            "c",
+            "--table",
+            "t",
+            "--file",
+            "a.csv",
+            "--mode",
+            "merge",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("invalid value") || combined.contains("possible values"),
+        "output: {combined}"
+    );
+}
+
+#[test]
+fn databases_load_rejects_append_together_with_mode() {
+    // `--append` is the old shorthand for `--mode append`; accepting both would
+    // leave the effective mode ambiguous, so clap refuses the pair.
+    let output = hotdata()
+        .args([
+            "databases",
+            "load",
+            "--catalog",
+            "c",
+            "--table",
+            "t",
+            "--file",
+            "a.csv",
+            "--append",
+            "--mode",
+            "upsert",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("cannot be used with"),
+        "output: {combined}"
+    );
+}
+
+#[test]
+fn databases_load_accepts_a_non_parquet_file_at_parse_time() {
+    // A csv must get past argument parsing and the client entirely — the load
+    // reads csv, json, and parquet, and an unrecognised extension is the
+    // server's call, not a client-side rejection. Without credentials the run
+    // fails later, on auth or the network, never on the file's extension.
+    let output = hotdata()
+        .args([
+            "databases",
+            "load",
+            "--catalog",
+            "c",
+            "--table",
+            "t",
+            "--file",
+            "/nonexistent/data.csv",
+        ])
+        .env("HOTDATA_CONFIG_DIR", "/nonexistent-config-dir")
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !combined.contains("require a parquet"),
+        "csv was rejected client-side: {combined}"
+    );
+}
