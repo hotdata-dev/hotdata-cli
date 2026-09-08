@@ -13,7 +13,7 @@
 
 ### 📚 Documentation
 
-- *(skills)* Warn agents that a `;`-separated csv loads silently into one column, and that json-in-any-shape is the CLI's doing, not the API's (#296)
+- *(skills)* Improve the agent guidance around data loading (#296)
 ## [0.32.0] - 2026-09-06
 
 ### 🚀 Features
