@@ -161,8 +161,10 @@ fn write_compact<W: Write>(out: &mut W, text: &str) -> std::io::Result<()> {
             _ => i += 1,
         }
     }
-    // `i` can overshoot on a trailing escape, which valid JSON cannot carry.
-    out.write_all(&bytes[copy_from.min(bytes.len())..])
+    // Whatever follows the last gap. `copy_from` only ever takes a position
+    // inside the row or its end, so it indexes even when a trailing escape has
+    // carried `i` past the end — which valid JSON cannot carry anyway.
+    out.write_all(&bytes[copy_from..])
 }
 
 // Reads the elements of a top-level array without holding the array: serde
