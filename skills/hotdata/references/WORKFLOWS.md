@@ -94,7 +94,7 @@ A `hotdata query` runs inside **one** instant database; its scope sees that data
 
 | | **Instant databases** |
 |---|------------------------|
-| **Best for** | Files you own (csv, newline-delimited json, parquet); catalog-style `alias.schema.table` |
+| **Best for** | Files you own (csv, json, parquet); catalog-style `alias.schema.table` |
 | **SQL prefix** | `<catalog>.<schema>.<table>` where catalog = `--catalog` alias |
 | **CLI** | `hotdata databases create --catalog` + `databases load` |
 | **Declare schema up front** | Optional — the load declares a missing table/schema. Declare with `databases tables add --key` when you need the keyed load modes; a key cannot be added later |

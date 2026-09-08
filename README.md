@@ -42,14 +42,15 @@ PostgreSQL-dialect SQL. Everything else builds on that.
 
 ## Getting your data in
 
-**Upload a file** directly — csv, newline-delimited json, or parquet:
+**Upload a file** directly — csv, json, or parquet:
 
 ```sh
 hotdata databases load --catalog demo --table listings --file ./listings.csv
 ```
 
 The format comes from the extension; pass `--format csv|json|parquet` when the
-extension is missing or misleading.
+extension is missing or misleading. json is read whatever shape it arrives in —
+an array of objects, a pretty-printed document, or one object per line.
 
 A load **replaces** the table by default. `--mode append` adds rows to an
 existing table instead:
