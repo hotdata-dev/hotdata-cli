@@ -1,3 +1,19 @@
+## [0.33.0] - 2026-09-08
+
+### 🚀 Features
+
+- *(databases)* Load csv and json files, not just parquet — json in any shape: an array, a pretty-printed document, or one object per line (#293, #294)
+- *(databases)* Keyed load modes — `--mode delete|update|upsert` match existing rows by key (#293)
+- *(databases)* `databases tables add --key` declares a table's key and layout before its first load (#293)
+
+### 🔄 Changed
+
+- *(search)* Vector search no longer returns the index's embedding column; `--select '*'` asks for it back (#293)
+- *(query)* `--output csv` no longer abbreviates long list values (#293)
+
+### 📚 Documentation
+
+- *(skills)* Improve the agent guidance around data loading (#296)
 ## [0.32.0] - 2026-09-06
 
 ### 🚀 Features
