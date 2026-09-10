@@ -1,3 +1,4 @@
+use hotdata::{JsonCell, JsonCellKind};
 use tabled::settings::{
     Color, Modify, Style,
     object::{Columns, Rows, Segment},
@@ -7,10 +8,16 @@ use tabled::settings::{
 
 /// Truncate arrays to first 3 + last 3 when over 6 elements.
 /// Returns (formatted_values, total_count) where total_count is Some when truncated.
-pub fn truncate_array(arr: &[serde_json::Value]) -> (String, Option<usize>) {
+///
+/// Elements are written as their own JSON text, so a wide number inside a list
+/// is as exact here as it is in a column of its own.
+pub fn truncate_array(arr: &[JsonCell]) -> (String, Option<usize>) {
     if arr.len() > 6 {
-        let head: Vec<String> = arr[..3].iter().map(|v| v.to_string()).collect();
-        let tail: Vec<String> = arr[arr.len() - 3..].iter().map(|v| v.to_string()).collect();
+        let head: Vec<&str> = arr[..3].iter().map(JsonCell::as_json_str).collect();
+        let tail: Vec<&str> = arr[arr.len() - 3..]
+            .iter()
+            .map(JsonCell::as_json_str)
+            .collect();
         (
             format!("[{}, ..., {}]", head.join(", "), tail.join(", ")),
             Some(arr.len()),
@@ -20,7 +27,7 @@ pub fn truncate_array(arr: &[serde_json::Value]) -> (String, Option<usize>) {
             format!(
                 "[{}]",
                 arr.iter()
-                    .map(|v| v.to_string())
+                    .map(JsonCell::as_json_str)
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -30,7 +37,7 @@ pub fn truncate_array(arr: &[serde_json::Value]) -> (String, Option<usize>) {
 }
 
 /// Format an array for styled table output.
-fn format_array(arr: &[serde_json::Value]) -> String {
+fn format_array(arr: &[JsonCell]) -> String {
     use crossterm::style::Stylize;
     let (formatted, count) = truncate_array(arr);
     match count {
@@ -267,7 +274,7 @@ pub fn print(headers: &[&str], rows: &[Vec<String>]) {
 
 /// Print a table with JSON-typed data. Numbers, bools, and nulls get per-cell coloring.
 /// Uses fair column width distribution (for user-generated query results).
-pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
+pub fn print_json(headers: &[String], rows: &[Vec<JsonCell>]) {
     use tabled::settings::object::Cell;
 
     let tw = term_width();
@@ -285,24 +292,27 @@ pub fn print_json(headers: &[String], rows: &[Vec<serde_json::Value>]) {
         let string_row: Vec<String> = row
             .iter()
             .enumerate()
-            .map(|(ci, v)| match v {
-                serde_json::Value::Number(n) => {
+            .map(|(ci, v)| match v.kind() {
+                JsonCellKind::Number => {
                     colored_cells.push((ri + 1, ci, Color::FG_CYAN));
-                    n.to_string()
+                    // The cell's own text: a decimal wider than an f64 is
+                    // shown at full width rather than rounded into one.
+                    v.as_json_str().to_string()
                 }
-                serde_json::Value::Null => {
+                JsonCellKind::Null => {
                     colored_cells.push((ri + 1, ci, Color::FG_BRIGHT_BLACK));
                     String::new()
                 }
-                serde_json::Value::Bool(b) => {
+                JsonCellKind::Bool => {
                     colored_cells.push((ri + 1, ci, Color::FG_YELLOW));
-                    b.to_string()
+                    v.as_json_str().to_string()
                 }
-                serde_json::Value::Array(arr) => format_array(arr),
-                _ => v
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| v.to_string()),
+                // `kind` already identified these, so the accessors cannot
+                // decline. Substituting an empty list or empty string would
+                // put a value on screen the service never sent.
+                JsonCellKind::Array => format_array(&v.as_array().expect("kind() reported Array")),
+                JsonCellKind::String => v.as_str().expect("kind() reported String").into_owned(),
+                JsonCellKind::Object => v.as_json_str().to_string(),
             })
             .collect();
         builder.push_record(&string_row);
