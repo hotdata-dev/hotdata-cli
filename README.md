@@ -93,7 +93,8 @@ hotdata query "SELECT IFF(n > 0, 'pos', 'neg') FROM t" --dialect snowflake
 ```
 
 Long queries go async and print a `query_run_id` — poll with
-`hotdata query status <id>` (exit `0` done / `1` failed / `2` running). Re-fetch
+`hotdata query status <id>` (exit `0` done / `1` failed / `2` running / `3` done
+but the printed result is a truncated preview). Re-fetch
 past results with `hotdata databases results get <result-id>`; browse history
 with `hotdata databases queries list`.
 
