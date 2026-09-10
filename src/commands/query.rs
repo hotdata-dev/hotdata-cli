@@ -3,8 +3,8 @@ use crate::client::sdk::{Api, ApiError};
 use arrow::datatypes::FieldRef;
 use arrow::error::ArrowError;
 use arrow::json::writer::{EncoderOptions, NullableEncoder, make_encoder};
+use hotdata::{JsonCell, JsonCellKind};
 use serde::Serialize;
-use serde_json::Value;
 use std::sync::LazyLock;
 
 /// Subcommands for `hotdata query`.
@@ -28,7 +28,10 @@ pub struct QueryResponse {
     pub query_run_id: Option<String>,
     pub result_id: Option<String>,
     pub columns: Vec<String>,
-    pub rows: Vec<Vec<Value>>,
+    /// Cells hold the JSON text the service sent, not a parsed value: a
+    /// number too wide for an `f64` (`DECIMAL(38,2)` at full width, say) keeps
+    /// every digit, and `-o json` re-emits it as the same unquoted number.
+    pub rows: Vec<Vec<JsonCell>>,
     /// Rows actually carried here (`rows.len()`). For a complete result this is
     /// the whole result; for an incomplete preview (`truncated`) it's a bounded
     /// subset.
@@ -99,19 +102,21 @@ fn query_response_from_sdk(resp: hotdata::models::QueryResponse) -> QueryRespons
     }
 }
 
-fn value_to_string(v: &Value) -> String {
-    match v {
-        Value::Null => "NULL".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.clone(),
-        // Rendered whole, not abbreviated. `value_to_string` feeds `-o csv`,
-        // whose consumer is a program: a long list shortened to
-        // "[1, 2, 3, ..., 9] (1536 items)" is silent data loss in a format
+fn value_to_string(v: &JsonCell) -> String {
+    match v.kind() {
+        JsonCellKind::Null => "NULL".to_string(),
+        // `kind` reported String, so this cannot decline; an empty string
+        // here would be a value the service never sent.
+        JsonCellKind::String => v.as_str().expect("kind() reported String").into_owned(),
+        // Everything else is written as the cell's own JSON text. For a number
+        // that is every digit the service sent, however wide.
+        //
+        // Composites are rendered whole, not abbreviated. `value_to_string`
+        // feeds `-o csv`, whose consumer is a program: a long list shortened
+        // to "[1, 2, 3, ..., 9] (1536 items)" is silent data loss in a format
         // nobody re-reads by eye. The table renderer abbreviates separately,
         // where a human is the reader and the width is the constraint.
-        Value::Array(_) => v.to_string(),
-        Value::Object(_) => v.to_string(),
+        _ => v.as_json_str().to_string(),
     }
 }
 
@@ -129,29 +134,39 @@ fn value_to_string(v: &Value) -> String {
 static ENCODER_OPTIONS: LazyLock<EncoderOptions> =
     LazyLock::new(|| EncoderOptions::default().with_explicit_nulls(true));
 
-/// Encode one already-prepared cell to a `serde_json::Value`.
+/// Encode one already-prepared cell to a [`JsonCell`].
 ///
-/// The service encodes with the same arrow-json encoder but writes its bytes
-/// straight to the response and never builds a `Value`. This has to, because
-/// it also draws tables and CSV, which need the cells individually. That extra
-/// step is the only asymmetry left between the two, and it cannot change the
-/// rendering — the text being parsed here is exactly what the service emits.
+/// The service encodes with the same arrow-json encoder and writes its bytes
+/// straight to the response. This keeps those bytes too — a cell holds the
+/// encoder's text, not a value parsed out of it — so the two sides render a
+/// value identically, down to the digits of a decimal wider than an `f64`.
+/// The text is still validated as JSON: an encoder that produced something
+/// unparseable is an error, never a silently mangled cell.
 ///
-/// `buf` is reused across cells so a wide result does not allocate per value.
+/// `buf` is reused across cells, so the encode buffer is allocated once
+/// rather than per cell. The cell's text is then copied out of it, which
+/// is one `String` per value.
 fn encode_cell(
     enc: &mut NullableEncoder<'_>,
     row: usize,
     buf: &mut Vec<u8>,
-) -> Result<Value, ArrowError> {
+) -> Result<JsonCell, ArrowError> {
     // A null the service really did send. Distinct from a value we could not
     // render, which is an error below and never a null.
     if enc.is_null(row) {
-        return Ok(Value::Null);
+        return Ok(JsonCell::null());
     }
     buf.clear();
     enc.encode(row, buf);
 
-    serde_json::from_slice(buf).map_err(|e| {
+    let text = std::str::from_utf8(buf)
+        .map_err(|e| {
+            ArrowError::JsonError(format!(
+                "arrow-json produced text that is not valid UTF-8 ({e})"
+            ))
+        })?
+        .to_owned();
+    JsonCell::from_json_text(text).map_err(|e| {
         ArrowError::JsonError(format!(
             "arrow-json produced text that is not valid JSON ({e}): {}",
             String::from_utf8_lossy(buf)
@@ -168,7 +183,7 @@ fn arrow_cell(
     col: &dyn arrow::array::Array,
     field: &FieldRef,
     row: usize,
-) -> Result<Value, ArrowError> {
+) -> Result<JsonCell, ArrowError> {
     let mut enc = make_encoder(field, col, &ENCODER_OPTIONS)?;
     let mut buf = Vec::new();
     encode_cell(&mut enc, row, &mut buf)
@@ -209,7 +224,7 @@ fn arrow_result_to_query_response(
         .iter()
         .map(|f| f.name().clone())
         .collect();
-    let mut rows: Vec<Vec<Value>> = Vec::new();
+    let mut rows: Vec<Vec<JsonCell>> = Vec::new();
 
     let mut buf: Vec<u8> = Vec::new();
     for batch in &result.batches {
@@ -225,7 +240,7 @@ fn arrow_result_to_query_response(
             .map_err(|e| render_failure(&schema, None, &e))?;
 
         for row in 0..batch.num_rows() {
-            let mut cells: Vec<Value> = Vec::with_capacity(encoders.len());
+            let mut cells: Vec<JsonCell> = Vec::with_capacity(encoders.len());
             for (c, enc) in encoders.iter_mut().enumerate() {
                 cells.push(
                     encode_cell(enc, row, &mut buf)
@@ -686,6 +701,7 @@ pub fn print_result(result: &QueryResponse, format: &str) {
 mod tests {
     use super::*;
     use crate::client::sdk::Api;
+    use serde_json::Value;
     use std::sync::Arc;
 
     /// A truncated inline 200: one preview row standing in for a larger result.
@@ -693,14 +709,14 @@ mod tests {
     /// null, i.e. persistence not initiated).
     fn truncated_preview(result_id: Option<&str>) -> hotdata::models::QueryResponse {
         let mut resp = hotdata::models::QueryResponse::new(
-            vec!["id".to_string()],           // columns
-            5,                                // execution_time_ms
-            vec![false],                      // nullable
-            1,                                // preview_row_count
-            "qrun_1".to_string(),             // query_run_id
-            1,                                // row_count (deprecated, == preview)
-            vec![vec![serde_json::json!(1)]], // rows (preview only)
-            true,                             // truncated
+            vec!["id".to_string()],                           // columns
+            5,                                                // execution_time_ms
+            vec![false],                                      // nullable
+            1,                                                // preview_row_count
+            "qrun_1".to_string(),                             // query_run_id
+            1,                                                // row_count (deprecated, == preview)
+            vec![vec![JsonCell::from(serde_json::json!(1))]], // rows (preview only)
+            true,                                             // truncated
         );
         resp.result_id = Some(result_id.map(|s| s.to_string()));
         resp
@@ -732,7 +748,7 @@ mod tests {
         let list: ArrayRef = Arc::new(lb.finish());
         let got = arrow_cell(list.as_ref(), &field_for(list.as_ref()), 0).expect("list renders");
         assert_eq!(
-            got,
+            got.to_value(),
             serde_json::json!([1, 2]),
             "list must be a JSON array, got {got:?}"
         );
@@ -749,7 +765,7 @@ mod tests {
         ]));
         let got = arrow_cell(st.as_ref(), &field_for(st.as_ref()), 0).expect("struct renders");
         assert_eq!(
-            got,
+            got.to_value(),
             serde_json::json!({"a": 1, "b": "x"}),
             "struct must be a JSON object, got {got:?}"
         );
@@ -765,7 +781,9 @@ mod tests {
     #[test]
     fn the_batch_path_renders_a_whole_result() {
         use arrow::array::TimestampMicrosecondArray;
-        use arrow::array::{ArrayRef, Int64Array, Int64Builder, ListBuilder, RecordBatch};
+        use arrow::array::{
+            ArrayRef, Decimal128Array, Int64Array, Int64Builder, ListBuilder, RecordBatch,
+        };
         use arrow::datatypes::{DataType, Field, Schema};
 
         // Two rows, and a nested column so shape is actually asserted.
@@ -783,12 +801,20 @@ mod tests {
         );
         let ints: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
 
+        // 22 significant digits: five more than an f64 carries.
+        let dec: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![9_999_999_999_999_999_999_999i128, 1i128])
+                .with_precision_and_scale(38, 2)
+                .expect("valid decimal"),
+        );
+
         let schema = Arc::new(Schema::new(vec![
             Field::new("n", DataType::Int64, false),
             Field::new("l", list.data_type().clone(), true),
             Field::new("t", ts.data_type().clone(), true),
+            Field::new("d", dec.data_type().clone(), false),
         ]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![ints, list, ts]).expect("batch");
+        let batch = RecordBatch::try_new(schema.clone(), vec![ints, list, ts, dec]).expect("batch");
 
         let result = hotdata::ArrowResult {
             batches: vec![batch],
@@ -799,7 +825,7 @@ mod tests {
         let resp = arrow_result_to_query_response(result, "rslt_test".to_string())
             .expect("the batch path renders");
 
-        assert_eq!(resp.columns, vec!["n", "l", "t"]);
+        assert_eq!(resp.columns, vec!["n", "l", "t", "d"]);
         assert_eq!(resp.row_count, 2);
         assert_eq!(resp.total_row_count, Some(2));
         assert_eq!(resp.result_id.as_deref(), Some("rslt_test"));
@@ -807,13 +833,18 @@ mod tests {
 
         // The nested column must be a JSON array, not display text — the
         // invariant that failed before, asserted through the real path.
-        assert_eq!(resp.rows[0][0], serde_json::json!(1));
-        assert_eq!(resp.rows[0][1], serde_json::json!([7, 8]));
-        assert_eq!(resp.rows[1][1], serde_json::json!([9]));
+        assert_eq!(resp.rows[0][0].to_value(), serde_json::json!(1));
+        assert_eq!(resp.rows[0][1].to_value(), serde_json::json!([7, 8]));
+        assert_eq!(resp.rows[1][1].to_value(), serde_json::json!([9]));
 
         // And the named zone resolves rather than nulling.
         let t = resp.rows[0][2].as_str().expect("timestamp is a string");
         assert!(t.contains("+05:30"), "expected a resolved offset, got {t}");
+
+        // The decimal column keeps every digit through the batch path, which
+        // is the one a truncated or async result is fetched over.
+        assert_eq!(resp.rows[0][3].as_json_str(), "99999999999999999999.99");
+        assert_eq!(resp.rows[1][3].as_json_str(), "0.01");
     }
 
     /// A timestamp carrying a *named* IANA zone must render, not come back as
@@ -833,7 +864,7 @@ mod tests {
             let cell = arrow_cell(&col, &field_for(&col), 0)
                 .unwrap_or_else(|e| panic!("zone {zone} failed: {e}"));
             assert!(
-                cell.is_string(),
+                cell.to_value().is_string(),
                 "zone {zone} rendered as {cell:?}, expected a formatted string"
             );
         }
@@ -844,19 +875,23 @@ mod tests {
         assert!(
             arrow_cell(&offset, &field_for(&offset), 0)
                 .unwrap()
+                .to_value()
                 .is_string()
         );
         let naive = TimestampMicrosecondArray::from(vec![micros]);
         assert!(
             arrow_cell(&naive, &field_for(&naive), 0)
                 .unwrap()
+                .to_value()
                 .is_string()
         );
 
         // A genuine null is still a null — that one the service really did send.
         let with_null = TimestampMicrosecondArray::from(vec![None::<i64>]).with_timezone("UTC");
         assert_eq!(
-            arrow_cell(&with_null, &field_for(&with_null), 0).unwrap(),
+            arrow_cell(&with_null, &field_for(&with_null), 0)
+                .unwrap()
+                .to_value(),
             Value::Null
         );
     }
@@ -958,7 +993,7 @@ mod tests {
                 panic!("{label} has a value at row 0 but failed to render: {e}")
             });
             assert_ne!(
-                cell,
+                cell.to_value(),
                 Value::Null,
                 "{label} has a value at row 0 but rendered as null"
             );
@@ -984,7 +1019,7 @@ mod tests {
         let col = TimestampSecondArray::from(vec![i64::MAX]);
         let cell = arrow_cell(&col, &field_for(&col), 0).expect("arrow-json reports success here");
 
-        match &cell {
+        match &cell.to_value() {
             Value::Null => panic!("a present value was reported as null"),
             Value::String(s) => assert!(
                 s.starts_with("ERROR:"),
@@ -1020,27 +1055,30 @@ mod tests {
         for (label, col) in cases {
             let got = arrow_cell(col.as_ref(), &field_for(col.as_ref()), 0)
                 .unwrap_or_else(|e| panic!("{label} aborted the result: {e}"));
-            assert_eq!(got, Value::Null, "{label} rendered as {got:?}");
+            // Assert on the cell text, not `to_value()`: that parses, and a
+            // parse it could not complete also yields `Value::Null`, so this
+            // would pass for the wrong reason.
+            assert_eq!(got.as_json_str(), "null", "{label} rendered as {got:?}");
         }
     }
 
-    /// A decimal wider than an `f64` is rounded here. Known limitation, pinned
-    /// so it is a discovered fact rather than a surprise.
+    /// A decimal wider than an `f64` keeps every digit.
     ///
-    /// arrow-json writes a decimal as an unquoted JSON number at full width and
-    /// the service passes those bytes through untouched, so a `DECIMAL(38,2)`
-    /// reaches this side with all its digits and then loses everything past the
-    /// 17th when parsed into a `Value`.
+    /// arrow-json writes a decimal as an unquoted JSON number at full width,
+    /// and a cell holds that text rather than a number parsed out of it, so a
+    /// `DECIMAL(38,2)` renders with all 36 of its digits. Routing the cell
+    /// through `serde_json::Value` — which has no arbitrary-precision number —
+    /// is what used to round it to 17.
     ///
-    /// `serde_json`'s `arbitrary_precision` would fix it and must not be used:
-    /// the feature is crate-wide, and with it on a `Number` serializes as the
-    /// private struct `$serde_json::private::Number`, which serde_yaml renders
-    /// as a nested mapping — corrupting `-o yaml` for commands that have
-    /// nothing to do with rendering results. The honest fix is to stop routing
-    /// the json output path through `Value` at all, as the service does; that
-    /// is a change to the output layer, not to this function.
+    /// `serde_json`'s `arbitrary_precision` is the other way to keep the
+    /// digits and must not be used: the feature is crate-wide, and with it on
+    /// a `Number` serializes as the private struct
+    /// `$serde_json::private::Number`, which serde_yaml renders as a nested
+    /// mapping — corrupting `-o yaml` for commands that have nothing to do
+    /// with rendering results. `yaml_renders_a_json_number_as_a_number` pins
+    /// that.
     #[test]
-    fn a_wide_decimal_is_rounded_a_known_limitation() {
+    fn a_wide_decimal_keeps_every_digit() {
         use arrow::array::Decimal128Array;
 
         let col = Decimal128Array::from(vec![123456789012345678901234567890123456i128])
@@ -1048,8 +1086,98 @@ mod tests {
             .expect("valid decimal");
         let got = arrow_cell(&col, &field_for(&col), 0).expect("decimal renders");
 
-        // Full precision would be 1234567890123456789012345678901234.56.
-        assert_eq!(got.to_string(), "1.2345678901234568e+33");
+        assert_eq!(got.as_json_str(), "1234567890123456789012345678901234.56");
+        // `-o csv` and `-o table` read the same text.
+        assert_eq!(
+            value_to_string(&got),
+            "1234567890123456789012345678901234.56"
+        );
+        // `-o json` re-emits it as an unquoted number, not a string: a `jq`
+        // pipeline that did arithmetic on this column still can.
+        assert_eq!(
+            serde_json::to_string(&got).unwrap(),
+            "1234567890123456789012345678901234.56"
+        );
+    }
+
+    /// The inline (HTTP 200) path keeps a wide decimal too.
+    ///
+    /// A separate loss site from the Arrow path above: this body is parsed
+    /// by the SDK straight off the wire and never touches arrow-json.
+    #[test]
+    fn a_wide_decimal_survives_the_inline_path() {
+        let wide = "99999999999999999999.99";
+        let body = format!(
+            r#"{{"columns":["w"],"execution_time_ms":1,"nullable":[false],
+               "preview_row_count":1,"query_run_id":"qrun_1","row_count":1,
+               "rows":[[{wide}]],"truncated":false,"total_row_count":1}}"#
+        );
+        let sdk: hotdata::models::QueryResponse =
+            serde_json::from_str(&body).expect("inline body parses");
+
+        let resp = query_response_from_sdk(sdk);
+        assert_eq!(resp.rows[0][0].as_json_str(), wide);
+        assert_eq!(value_to_string(&resp.rows[0][0]), wide);
+    }
+
+    /// `-o json` prints a wide decimal as an unquoted number.
+    ///
+    /// Quoting it would keep the digits and break every downstream consumer
+    /// that treats the column as numeric — one wire-contract break traded for
+    /// another — so the whole rendered body is asserted, not just the cell.
+    #[test]
+    fn json_output_prints_a_wide_decimal_unquoted() {
+        let wide = "99999999999999999999.99";
+        let result = QueryResponse {
+            query_run_id: None,
+            result_id: None,
+            columns: vec!["w".to_string()],
+            rows: vec![vec![JsonCell::from_json_text(wide.to_string()).unwrap()]],
+            row_count: 1,
+            total_row_count: Some(1),
+            truncated: false,
+            execution_time_ms: None,
+            warning: None,
+        };
+        let rendered = serde_json::to_string_pretty(&result).unwrap();
+        assert!(
+            rendered.contains(&format!("      {wide}\n")),
+            "expected an unquoted {wide} in:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(&format!("\"{wide}\"")),
+            "the decimal was quoted into a string:\n{rendered}"
+        );
+    }
+
+    /// `-o json` writes a composite cell as one line.
+    ///
+    /// A cell holds JSON text and is re-emitted verbatim, so the pretty
+    /// printer indents the rows around it but not inside it. Scalars are
+    /// unaffected; only a list or struct column looks different from a
+    /// `Value`-rendered body. Pinned because it is a visible difference in
+    /// stdout, and a deliberate one: re-indenting the text would mean
+    /// re-parsing it, which is what loses the digits.
+    #[test]
+    fn json_output_writes_a_composite_cell_on_one_line() {
+        let result = QueryResponse {
+            query_run_id: None,
+            result_id: None,
+            columns: vec!["l".to_string()],
+            rows: vec![vec![
+                JsonCell::from_json_text("[1,2,3]".to_string()).unwrap(),
+            ]],
+            row_count: 1,
+            total_row_count: Some(1),
+            truncated: false,
+            execution_time_ms: None,
+            warning: None,
+        };
+        let rendered = serde_json::to_string_pretty(&result).unwrap();
+        assert!(
+            rendered.contains("      [1,2,3]\n"),
+            "expected the cell on one line, got:\n{rendered}"
+        );
     }
 
     /// `-o yaml` must render a JSON number as a number.
@@ -1211,7 +1339,10 @@ mod tests {
             2,
             "qrun_2".to_string(),
             2,
-            vec![vec![serde_json::json!(1)], vec![serde_json::json!(2)]],
+            vec![
+                vec![JsonCell::from(serde_json::json!(1))],
+                vec![JsonCell::from(serde_json::json!(2))],
+            ],
             false, // not truncated
         );
         resp.result_id = Some(Some("res_2".to_string()));
@@ -1220,7 +1351,10 @@ mod tests {
         assert_eq!(resolved.row_count, 2);
         assert_eq!(
             resolved.rows,
-            vec![vec![serde_json::json!(1)], vec![serde_json::json!(2)]]
+            vec![
+                vec![JsonCell::from(serde_json::json!(1))],
+                vec![JsonCell::from(serde_json::json!(2))]
+            ]
         );
         assert_eq!(resolved.result_id.as_deref(), Some("res_2"));
         // Complete result: not a preview, total backfilled from held rows.
@@ -1263,7 +1397,7 @@ mod tests {
             query_run_id: None,
             result_id: None,
             columns: vec!["id".to_string()],
-            rows: vec![vec![serde_json::json!(1)]],
+            rows: vec![vec![JsonCell::from(serde_json::json!(1))]],
             row_count: 1,
             total_row_count: Some(100),
             truncated: true,
@@ -1283,7 +1417,10 @@ mod tests {
             query_run_id: Some("qrun_9".to_string()),
             result_id: Some("res_9".to_string()),
             columns: vec!["id".to_string()],
-            rows: vec![vec![serde_json::json!(1)], vec![serde_json::json!(2)]],
+            rows: vec![
+                vec![JsonCell::from(serde_json::json!(1))],
+                vec![JsonCell::from(serde_json::json!(2))],
+            ],
             row_count: 2,
             total_row_count: Some(2),
             truncated: false,
@@ -1307,7 +1444,7 @@ mod tests {
             query_run_id: None,
             result_id: None,
             columns: vec!["id".to_string()],
-            rows: vec![vec![serde_json::json!(1)]],
+            rows: vec![vec![JsonCell::from(serde_json::json!(1))]],
             row_count: 1,
             total_row_count: Some(100),
             truncated: true,
