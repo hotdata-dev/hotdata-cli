@@ -346,6 +346,37 @@ pub fn print_json(headers: &[String], rows: &[Vec<JsonCell>]) {
 mod tests {
     use super::*;
 
+    /// A wide number inside a list keeps its digits, on both branches.
+    ///
+    /// `truncate_array` formats the short case and the head/tail case
+    /// separately, so a regression could land on one and not the other. The
+    /// long case also pins that the elision counts every element rather than
+    /// the six it prints.
+    #[test]
+    fn truncate_array_keeps_element_precision_on_both_branches() {
+        let wide = || JsonCell::from_json_text("99999999999999999999.99".to_owned()).unwrap();
+
+        let (short, count) = truncate_array(&[wide(), wide()]);
+        assert_eq!(short, "[99999999999999999999.99, 99999999999999999999.99]");
+        assert_eq!(count, None);
+
+        let long: Vec<JsonCell> = (0..7).map(|_| wide()).collect();
+        let (formatted, count) = truncate_array(&long);
+        assert_eq!(count, Some(7));
+        assert!(
+            formatted.starts_with("[99999999999999999999.99, "),
+            "head lost precision: {formatted}"
+        );
+        assert!(
+            formatted.ends_with(", 99999999999999999999.99]"),
+            "tail lost precision: {formatted}"
+        );
+        assert!(
+            !formatted.contains("1e+20"),
+            "rounded to a float: {formatted}"
+        );
+    }
+
     /// The `hotdata ingest list` table, which is the one that went unreadable:
     /// a 30-character id per row and seven attributes competing for what is
     /// left of an 80-column terminal.

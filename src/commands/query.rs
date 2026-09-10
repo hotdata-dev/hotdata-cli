@@ -143,7 +143,9 @@ static ENCODER_OPTIONS: LazyLock<EncoderOptions> =
 /// The text is still validated as JSON: an encoder that produced something
 /// unparseable is an error, never a silently mangled cell.
 ///
-/// `buf` is reused across cells so a wide result does not allocate per value.
+/// `buf` is reused across cells, so the encode buffer is allocated once
+/// rather than per cell. The cell's text is then copied out of it, which
+/// is one `String` per value.
 fn encode_cell(
     enc: &mut NullableEncoder<'_>,
     row: usize,
