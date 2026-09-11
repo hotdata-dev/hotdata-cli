@@ -483,6 +483,12 @@ async fn apply_seam_headers(
     req
 }
 
+/// How often to re-check a result the server is still writing.
+const RESULT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+/// Upper bound on a single wait, so a generous `Retry-After` cannot stall the
+/// poll past the point of being responsive.
+const RESULT_POLL_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl Api {
     /// Build an [`Api`], reproducing `ApiClient::new`'s auth-source precedence
     /// by selecting the [`AuthMode`] the installed provider will serve. Exits
@@ -878,19 +884,77 @@ impl Api {
     }
 
     /// Fetch `/v1/results/{id}` as Arrow IPC and decode it through the SDK's
-    /// `get_result_arrow`, returning the fully-buffered [`hotdata::ArrowResult`].
+    /// Open a persisted result once it is ready, waiting if it is still being
+    /// written.
     ///
-    /// The SDK owns transport (same reqwest client, bearer via the
-    /// `token_provider`, `X-Workspace-Id`) and decode. Results are
-    /// database-scoped, so the active database is forwarded as the required
-    /// `X-Database-Id`; [`require_database`](Self::require_database) exits with a
-    /// hint when none is set. Its `ArrowError` (the Arrow-path error type, which
-    /// is not an `Error<T>`) is mapped to [`ApiError`] via
-    /// [`from_arrow`](ApiError::from_arrow) so callers keep the same `.exit()`
-    /// handling.
-    pub fn get_result_arrow(&self, id: &str) -> Result<hotdata::ArrowResult, ApiError> {
+    /// A result becomes fetchable only after the server finishes draining the
+    /// query to storage, so a large result is routinely still `processing` when
+    /// the response that named it arrives. Fetching once and giving up would
+    /// hand back the bounded preview and call it a day, which is data loss
+    /// wearing an exit code — so this polls, honouring the server's
+    /// `Retry-After` where it sends one.
+    ///
+    /// `ArrowError::NotReady` is matched as a typed variant here rather than
+    /// after [`ApiError::from_arrow`] has collapsed it into a message, so the
+    /// retry decision never depends on error text.
+    ///
+    /// Returns the last not-ready state as an error once `deadline` passes; the
+    /// caller decides whether it has something to fall back on.
+    pub fn open_result_arrow_when_ready(
+        &self,
+        id: &str,
+        limit: Option<i64>,
+        deadline: std::time::Duration,
+    ) -> Result<hotdata::ArrowResultStream, ApiError> {
         let database_id = self.require_database();
-        rt().block_on(self.client.get_result_arrow(id, database_id, None, None))
+        let start = std::time::Instant::now();
+        let mut waiting: Option<indicatif::ProgressBar> = None;
+
+        let outcome = loop {
+            match rt().block_on(self.client.open_result_arrow(id, database_id, None, limit)) {
+                Ok(stream) => break Ok(stream),
+                Err(hotdata::ArrowError::NotReady { retry_after, .. }) => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= deadline {
+                        break Err(ApiError::Transport(format!(
+                            "result {id} was still being written after {}s; \
+                             retrieve it later with `hotdata databases results get {id}`",
+                            deadline.as_secs()
+                        )));
+                    }
+                    // The wait is visible: a large result can take a while to
+                    // finish writing, and a silent pause reads as a hang.
+                    if waiting.is_none() {
+                        waiting = Some(crate::util::spinner("waiting for the full result..."));
+                    }
+                    // Honour the server's hint, but keep the poll responsive:
+                    // a generous `Retry-After` should not outlast the deadline.
+                    let hint = retry_after
+                        .map(std::time::Duration::from_secs)
+                        .unwrap_or(RESULT_POLL_INTERVAL)
+                        .clamp(RESULT_POLL_INTERVAL, RESULT_POLL_MAX_INTERVAL);
+                    std::thread::sleep(hint.min(deadline - elapsed));
+                }
+                Err(e) => break Err(ApiError::from_arrow(e)),
+            }
+        };
+
+        if let Some(pb) = waiting {
+            pb.finish_and_clear();
+        }
+        outcome
+    }
+
+    /// Pull the next batch from a stream opened by
+    /// [`open_result_arrow`](Self::open_result_arrow).
+    ///
+    /// Kept on `Api` rather than exposed as a raw async call so the renderer
+    /// stays synchronous and every `block_on` in the CLI goes through one seam.
+    pub fn next_result_batch(
+        &self,
+        stream: &mut hotdata::ArrowResultStream,
+    ) -> Result<Option<arrow::array::RecordBatch>, ApiError> {
+        rt().block_on(stream.next_batch())
             .map_err(ApiError::from_arrow)
     }
 
@@ -1394,7 +1458,7 @@ mod tests {
     }
 
     #[test]
-    fn get_result_arrow_fetches_decodes_and_forwards_headers() {
+    fn open_result_arrow_decodes_and_forwards_headers() {
         use arrow::array::{Int64Array, RecordBatch, StringArray};
         use arrow::datatypes::{DataType, Field, Schema};
         use arrow::ipc::writer::StreamWriter;
@@ -1419,8 +1483,9 @@ mod tests {
             writer.finish().unwrap();
         }
 
-        // The SDK's get_result_arrow carries the bearer + X-Workspace-Id like
-        // every SDK call and negotiates Arrow via ?format=arrow + Accept.
+        // The streaming opener carries the bearer + X-Workspace-Id like every
+        // SDK call and negotiates Arrow via ?format=arrow + Accept, the same as
+        // the buffered fetch it replaced.
         let mut server = mockito::Server::new();
         let m = server
             .mock("GET", "/v1/results/res_1")
@@ -1438,18 +1503,117 @@ mod tests {
             .create();
 
         let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
-        let result = api
-            .get_result_arrow("res_1")
-            .expect("get_result_arrow should succeed");
-        assert_eq!(result.num_rows(), 3);
-        assert_eq!(result.schema.fields().len(), 2);
-        assert_eq!(result.schema.field(0).name(), "id");
-        assert_eq!(result.schema.field(1).name(), "name");
+        let mut stream = api
+            .open_result_arrow_when_ready("res_1", None, Duration::from_secs(30))
+            .expect("open_result_arrow should succeed");
+
+        // The schema is known before any batch is pulled.
+        let schema = stream.schema();
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "name");
+
+        let mut rows = 0;
+        while let Some(batch) = api
+            .next_result_batch(&mut stream)
+            .expect("batch decode should succeed")
+        {
+            rows += batch.num_rows();
+        }
+        assert_eq!(rows, 3);
         m.assert();
     }
 
+    use std::time::Duration;
+
+    /// A result the server is still writing must be waited for, not abandoned.
+    ///
+    /// Fetching once and giving up is what made a bounded preview look like the
+    /// whole answer: the caller got the preview rows and a non-zero exit while
+    /// the real result finished writing a moment later.
     #[test]
-    fn get_result_arrow_maps_not_found_to_status() {
+    fn open_result_arrow_waits_while_a_result_is_still_processing() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/v1/results/pending")
+            .match_query(mockito::Matcher::Any)
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"processing","result_id":"pending"}"#)
+            .expect_at_least(2)
+            .create();
+
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
+        let started = std::time::Instant::now();
+        let err = api
+            .open_result_arrow_when_ready("pending", None, Duration::from_millis(300))
+            .expect_err("a result that never becomes ready must not hang forever");
+
+        // It polled rather than returning on the first 202 ...
+        m.assert();
+        // ... and it respected the deadline instead of waiting indefinitely.
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "gave up far later than the deadline: {:?}",
+            started.elapsed()
+        );
+        let msg = err.message();
+        assert!(
+            msg.contains("still being written"),
+            "the error should say the result was not finished, got {msg:?}"
+        );
+        assert!(
+            msg.contains("results get"),
+            "the error should name the command that retrieves it later, got {msg:?}"
+        );
+    }
+
+    /// A result that is already ready is returned on the first call, with no
+    /// poll delay.
+    #[test]
+    fn open_result_arrow_when_ready_returns_a_ready_result_immediately() {
+        use arrow::array::{Int64Array, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let mut ipc: Vec<u8> = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut ipc, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/results/ready")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/vnd.apache.arrow.stream")
+            .with_body(ipc)
+            .expect(1)
+            .create();
+
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
+        let started = std::time::Instant::now();
+        let stream = api
+            .open_result_arrow_when_ready("ready", None, Duration::from_secs(300))
+            .expect("a ready result opens on the first try");
+        assert_eq!(stream.schema().fields().len(), 1);
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "a ready result must not pay a poll interval; took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn open_result_arrow_maps_not_found_to_status() {
         // A 404 surfaces as ApiError::Status so the CLI's 4xx re-auth hint path
         // still fires.
         let mut server = mockito::Server::new();
@@ -1461,7 +1625,10 @@ mod tests {
             .create();
 
         let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
-        match api.get_result_arrow("missing").unwrap_err() {
+        match api
+            .open_result_arrow_when_ready("missing", None, Duration::from_secs(30))
+            .unwrap_err()
+        {
             ApiError::Status { status, .. } => {
                 assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
             }
@@ -1470,7 +1637,7 @@ mod tests {
     }
 
     #[test]
-    fn get_result_arrow_preserves_generic_http_status() {
+    fn open_result_arrow_preserves_generic_http_status() {
         // Statuses outside the SDK's explicitly-mapped set (404/400/409/202)
         // come back as ArrowError::Http; from_arrow must preserve them so a
         // 401/403 still reaches the CLI's 4xx re-auth hint. 403 stands in for
@@ -1484,7 +1651,10 @@ mod tests {
             .create();
 
         let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
-        match api.get_result_arrow("forbidden").unwrap_err() {
+        match api
+            .open_result_arrow_when_ready("forbidden", None, Duration::from_secs(30))
+            .unwrap_err()
+        {
             ApiError::Status { status, body } => {
                 assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
                 assert_eq!(body, "forbidden");
