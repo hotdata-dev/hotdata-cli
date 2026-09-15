@@ -2378,9 +2378,19 @@ mod tests {
         let err = stream_csv(&mut batches, &columns, &mut out)
             .expect_err("a body that ends mid-message must not read as a clean end of stream");
         let msg = err.message();
+        // Both error paths carry a message, so an emptiness check would pass on
+        // either. This has to be the decode failure travelling as
+        // `BatchMessage::Failed` — if the reader panicked instead, the queue
+        // would close with no marker and `next_queued` would produce its own
+        // reader-stopped error, which is a different bug wearing the same exit
+        // code.
         assert!(
-            !msg.is_empty(),
-            "the failure has to name something a caller can act on"
+            !msg.contains("the result reader stopped"),
+            "the reader died instead of reporting the decode failure: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("arrow") || msg.to_lowercase().contains("ipc"),
+            "the failure should name the decode that failed, got {msg}"
         );
     }
 
