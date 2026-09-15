@@ -153,8 +153,15 @@ pub fn list(
 
 pub fn get(result_id: &str, workspace_id: &str, database: Option<&str>, format: &str) {
     let api = Api::new(Some(workspace_id)).scoped_to_database_opt(database);
-    let result = crate::commands::query::fetch_arrow_result(&api, result_id);
-    crate::commands::query::print_result(&result, format);
+    // A stored result is fetched by id alone, so it carries no run id or timing;
+    // the footer shows an em dash for the time, as it did before streaming.
+    let meta = crate::commands::query::StreamMeta {
+        result_id: result_id.to_owned(),
+        query_run_id: None,
+        execution_time_ms: None,
+        warning: None,
+    };
+    crate::commands::query::print_persisted_result(&api, meta, format);
 }
 
 #[cfg(test)]
