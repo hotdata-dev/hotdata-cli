@@ -1,3 +1,13 @@
+## [0.34.0] - 2026-09-15
+
+### 🐛 Bug Fixes
+
+- *(query)* Print wide decimals at full precision (#299)
+- *(query)* [**breaking**] Stream results instead of buffering them (#300)
+
+### 📚 Documentation
+
+- README's query status exit codes omitted 3 (truncated preview)
 ## [0.33.0] - 2026-09-08
 
 ### 🚀 Features
