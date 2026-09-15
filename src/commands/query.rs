@@ -870,18 +870,29 @@ fn fetch_capped(api: &Api, meta: &StreamMeta, cap: i64) -> Result<QueryResponse,
 }
 
 /// Batches in flight between the socket reader and the renderer.
-type BatchQueue = tokio::sync::mpsc::Receiver<Result<arrow::array::RecordBatch, ApiError>>;
+type BatchQueue = tokio::sync::mpsc::Receiver<crate::client::sdk::BatchMessage>;
 
 /// Take the next batch, waiting for the reader.
 ///
 /// `blocking_recv` is correct here and only here: the renderer is a plain
 /// synchronous loop, and the reader it waits on runs on the shared runtime.
+///
+/// A queue that closes without [`BatchMessage::Done`] is an error, not an end.
+/// `spawn` stores a task panic in a `JoinHandle` this code drops, so a reader
+/// that dies mid-decode is invisible except for its silence — and reading that
+/// silence as "the result ended" is how a truncated download becomes a short
+/// result reported as complete.
 fn next_queued(batches: &mut BatchQueue) -> Result<Option<arrow::array::RecordBatch>, ApiError> {
+    use crate::client::sdk::BatchMessage;
     match batches.blocking_recv() {
-        Some(Ok(batch)) => Ok(Some(batch)),
-        Some(Err(e)) => Err(e),
-        // The reader finished and dropped its sender.
-        None => Ok(None),
+        Some(BatchMessage::Batch(batch)) => Ok(Some(batch)),
+        Some(BatchMessage::Done) => Ok(None),
+        Some(BatchMessage::Failed(e)) => Err(e),
+        None => Err(ApiError::Transport(
+            "the result reader stopped before the end of the stream; the rows \
+             read so far are incomplete"
+                .to_string(),
+        )),
     }
 }
 
@@ -2334,6 +2345,43 @@ mod tests {
         assert_eq!(result.row_count, 6);
         assert!(!result.truncated);
         assert_eq!(result_exit_code(&result), 0);
+    }
+
+    /// A body that dies mid-stream must surface as an error, not as the end of
+    /// the result.
+    ///
+    /// This is the path that failed in production: the reader gets
+    /// `error decoding response body` partway through and the rows already
+    /// written are a fraction of the result. The error travels through the
+    /// queue as `BatchMessage::Failed`, so the renderer stops and the process
+    /// exits non-zero rather than reporting a short result as complete.
+    #[test]
+    fn a_body_that_dies_mid_stream_is_an_error_not_an_ending() {
+        let ipc = awkward_ipc();
+        // Cut inside the second batch: the schema and first batch decode, then
+        // the stream ends where a message should continue.
+        let truncated = ipc[..ipc.len() - 40].to_vec();
+
+        let mut server = mockito::Server::new();
+        // No X-Total-Row-Count, so nothing but the stream error can reveal the
+        // truncation — the row-count guard cannot fire.
+        let _m = serve_ipc(&mut server, truncated, None);
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+
+        let stream = api
+            .open_result_arrow_when_ready("res_1", None, RESULT_READY_TIMEOUT)
+            .expect("the schema is intact, so opening succeeds");
+        let columns = vec!["id".to_string()];
+        let mut batches = api.stream_result_batches(stream);
+        let mut out: Vec<u8> = Vec::new();
+
+        let err = stream_csv(&mut batches, &columns, &mut out)
+            .expect_err("a body that ends mid-message must not read as a clean end of stream");
+        let msg = err.message();
+        assert!(
+            !msg.is_empty(),
+            "the failure has to name something a caller can act on"
+        );
     }
 
     /// The row count the server advertises is checked against what was read, so
