@@ -812,10 +812,22 @@ pub(crate) fn print_streamed_result(
 /// window, the response is marked `truncated`, which is what makes the footer
 /// say `N of TOTAL rows — INCOMPLETE PREVIEW` and the exit code non-zero.
 fn fetch_capped(api: &Api, meta: &StreamMeta, cap: i64) -> Result<QueryResponse, ApiError> {
+    // Ask for one row past the window. That row's existence is the proof there
+    // is more, and it needs nothing from the server beyond the rows themselves:
+    // deriving truncation from `total_row_count` alone was wrong, because
+    // `arrow_result_to_query_response` backfills that total from the rows in
+    // hand when the response carries no `X-Total-Row-Count`. A window with no
+    // such header then had `total == row_count` and printed as a complete
+    // table — the silent truncation this command exists to avoid.
+    let probe = cap.saturating_add(1);
     let mut stream =
-        api.open_result_arrow_when_ready(&meta.result_id, Some(cap), RESULT_READY_TIMEOUT)?;
+        api.open_result_arrow_when_ready(&meta.result_id, Some(probe), RESULT_READY_TIMEOUT)?;
     let schema = stream.schema();
-    let total_row_count = stream.total_row_count();
+    // Only what the server actually reported. Never the backfill, which for a
+    // window is a count of the window and not of the result.
+    let reported_total = stream
+        .total_row_count()
+        .and_then(|total| u64::try_from(total).ok());
     let mut batches = Vec::new();
     while let Some(batch) = api.next_result_batch(&mut stream)? {
         batches.push(batch);
@@ -823,15 +835,26 @@ fn fetch_capped(api: &Api, meta: &StreamMeta, cap: i64) -> Result<QueryResponse,
     let result = hotdata::ArrowResult {
         batches,
         schema,
-        total_row_count,
+        total_row_count: stream.total_row_count(),
         next_link: stream.next_link().map(str::to_owned),
     };
     let mut response = arrow_result_to_query_response(result, meta.result_id.clone())?;
     response.query_run_id = meta.query_run_id.clone();
     response.execution_time_ms = meta.execution_time_ms;
-    response.truncated = response
-        .total_row_count
-        .is_some_and(|total| total > response.row_count);
+
+    // The probe row came back, so the result is larger than the window. Drop it
+    // — it was never meant to be shown — and report what remains as a preview.
+    let cap_rows = u64::try_from(cap).unwrap_or(u64::MAX);
+    let beyond_window = response.row_count > cap_rows;
+    if beyond_window {
+        response.rows.truncate(cap_rows as usize);
+        response.row_count = cap_rows;
+    }
+    response.truncated =
+        beyond_window || reported_total.is_some_and(|total| total > response.row_count);
+    // `?` in the footer beats a total derived from the window, which would read
+    // as "10000 of 10000" for a result of a million.
+    response.total_row_count = reported_total;
     Ok(response)
 }
 
@@ -941,7 +964,7 @@ fn stream_json(
     write!(out, ",\n  \"result_id\": ").map_err(write_failure)?;
     write_compact(out, &Some(meta.result_id.clone()))?;
     write!(out, ",\n  \"columns\": ").map_err(write_failure)?;
-    write_indented(out, &to_pretty(&columns.to_vec())?, 2)?;
+    write_indented(out, &to_pretty(&columns)?, 2)?;
     write!(out, ",\n  \"rows\": [").map_err(write_failure)?;
 
     let mut written = 0u64;
@@ -955,19 +978,22 @@ fn stream_json(
             // The element's own indentation; `write_indented` then shifts the
             // lines after the first to match.
             write!(out, "\n    ").map_err(write_failure)?;
-            write_indented(out, &to_pretty(&cells.to_vec())?, 4)
+            write_indented(out, &to_pretty(&cells)?, 4)
         })?;
     }
     if written > 0 {
         write!(out, "\n  ").map_err(write_failure)?;
     }
 
-    // A streamed result is the whole persisted result, so it is never a preview:
-    // `truncated` is false and the total falls back to what was read, matching
-    // the buffered Arrow path.
+    // `truncated` is written after the rows, so by now the body's real shape is
+    // known: a server-reported total that disagrees with what arrived means the
+    // rows above are an incomplete subset. Saying `false` there while the caller
+    // exits non-zero would leave a consumer that branches on the field reading
+    // an incomplete result as complete.
+    let truncated = total_row_count.is_some_and(|total| total != written);
     write!(
         out,
-        "],\n  \"row_count\": {written},\n  \"total_row_count\": {},\n  \"truncated\": false,\n  \"execution_time_ms\": {}\n}}\n",
+        "],\n  \"row_count\": {written},\n  \"total_row_count\": {},\n  \"truncated\": {truncated},\n  \"execution_time_ms\": {}\n}}\n",
         total_row_count.unwrap_or(written),
         match meta.execution_time_ms {
             Some(ms) => ms.to_string(),
@@ -1018,10 +1044,6 @@ pub fn print_result(result: &QueryResponse, format: &str) {
     }
 }
 
-/// Render a result, without deciding the process exit.
-///
-/// Split out so the streaming paths can print a capped table through the same
-/// renderer and then return their exit code rather than terminating here.
 /// Write a buffered result as JSON.
 ///
 /// The display struct is serialized directly; `warning` is `#[serde(skip)]`
@@ -1043,6 +1065,10 @@ fn write_csv_body(result: &QueryResponse, out: &mut impl Write) -> std::io::Resu
     Ok(())
 }
 
+/// Render a result, without deciding the process exit.
+///
+/// Split out so the streaming paths can print a capped table through the same
+/// renderer and then return their exit code rather than terminating here.
 fn print_result_body(result: &QueryResponse, format: &str) {
     if let Some(ref warning) = result.warning {
         eprintln!("warning: {warning}");
@@ -2189,6 +2215,43 @@ mod tests {
         assert!(table_footer(&result).contains("INCOMPLETE PREVIEW"));
         // The run's timing is stamped on, as the buffered path did (#183).
         assert_eq!(result.execution_time_ms, Some(4200));
+    }
+
+    /// The cap must not depend on the server reporting a row count.
+    ///
+    /// `arrow_result_to_query_response` backfills `total_row_count` from the
+    /// rows in hand, so deriving truncation from that total made a window with
+    /// no `X-Total-Row-Count` look like a complete result: 10,000 rows of a
+    /// million printed with a plain footer and exit 0. The probe row is what
+    /// makes the answer independent of the header.
+    #[test]
+    fn a_capped_window_is_incomplete_even_with_no_row_count_header() {
+        let mut server = mockito::Server::new();
+        // Six rows available, no X-Total-Row-Count at all.
+        let _m = serve_ipc(&mut server, awkward_ipc(), None);
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+
+        let result = fetch_capped(&api, &meta_for("res_1"), 5).unwrap();
+
+        assert!(
+            result.truncated,
+            "a window filled to the cap must be reported incomplete without a \
+             row-count header; got truncated=false, which prints as a whole result"
+        );
+        assert_eq!(
+            result.row_count, 5,
+            "the probe row is a signal, not data to show; got {} rows",
+            result.row_count
+        );
+        assert_eq!(result.rows.len(), 5);
+        assert_eq!(
+            result.total_row_count, None,
+            "with no header the total is unknown — the footer shows `?` rather \
+             than a total derived from the window; got {:?}",
+            result.total_row_count
+        );
+        assert_eq!(result_exit_code(&result), EXIT_INCOMPLETE_RESULT);
+        assert!(table_footer(&result).contains("5 of ? rows"));
     }
 
     /// A window that covers the whole result is complete, and must not be

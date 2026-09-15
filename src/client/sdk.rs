@@ -883,7 +883,6 @@ impl Api {
         })
     }
 
-    /// Fetch `/v1/results/{id}` as Arrow IPC and decode it through the SDK's
     /// Open a persisted result once it is ready, waiting if it is still being
     /// written.
     ///
