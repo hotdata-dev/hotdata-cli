@@ -832,6 +832,11 @@ fn fetch_capped(api: &Api, meta: &StreamMeta, cap: i64) -> Result<QueryResponse,
     while let Some(batch) = api.next_result_batch(&mut stream)? {
         batches.push(batch);
     }
+    // The server's own "there is more" signal. Independent of the probe row,
+    // which only fires when `?limit=` was honoured exactly: a server free to
+    // clamp the limit to its own maximum returns the window full and no more,
+    // and without this that would read as a complete result all over again.
+    let more_pages = stream.next_link().is_some();
     let result = hotdata::ArrowResult {
         batches,
         schema,
@@ -850,8 +855,9 @@ fn fetch_capped(api: &Api, meta: &StreamMeta, cap: i64) -> Result<QueryResponse,
         response.rows.truncate(cap_rows as usize);
         response.row_count = cap_rows;
     }
-    response.truncated =
-        beyond_window || reported_total.is_some_and(|total| total > response.row_count);
+    response.truncated = beyond_window
+        || more_pages
+        || reported_total.is_some_and(|total| total > response.row_count);
     // `?` in the footer beats a total derived from the window, which would read
     // as "10000 of 10000" for a result of a million.
     response.total_row_count = reported_total;
@@ -2215,6 +2221,43 @@ mod tests {
         assert!(table_footer(&result).contains("INCOMPLETE PREVIEW"));
         // The run's timing is stamped on, as the buffered path did (#183).
         assert_eq!(result.execution_time_ms, Some(4200));
+    }
+
+    /// A server that clamps `?limit=` to its own maximum returns the window
+    /// exactly full, so the probe row never arrives and cannot prove anything.
+    /// The `Link: rel="next"` header is the server saying there is more, and it
+    /// is what keeps that case from printing as a complete result.
+    #[test]
+    fn a_next_link_marks_a_window_incomplete_when_the_probe_row_never_arrives() {
+        let mut server = mockito::Server::new();
+        // Exactly the window, no total header — but a next link.
+        let _m = server
+            .mock("GET", "/v1/results/res_1")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "format".into(),
+                "arrow".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/vnd.apache.arrow.stream")
+            .with_header(
+                "Link",
+                "<https://api.hotdata.dev/v1/results/res_1?offset=6>; rel=\"next\"",
+            )
+            .with_body(awkward_ipc())
+            .create();
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+
+        // cap 6 == the rows served, so `beyond_window` is false and only the
+        // link can carry the fact.
+        let result = fetch_capped(&api, &meta_for("res_1"), 6).unwrap();
+
+        assert_eq!(result.row_count, 6, "the whole window is shown");
+        assert!(
+            result.truncated,
+            "the server said there is a next page; a full window with no total \
+             header must not print as a complete result"
+        );
+        assert_eq!(result_exit_code(&result), EXIT_INCOMPLETE_RESULT);
     }
 
     /// The cap must not depend on the server reporting a row count.
