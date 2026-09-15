@@ -759,7 +759,7 @@ pub(crate) fn print_streamed_result(
         eprintln!("warning: {warning}");
     }
 
-    let mut stream = api
+    let stream = api
         .open_result_arrow_when_ready(&meta.result_id, None, RESULT_READY_TIMEOUT)
         .map_err(StreamFailure::early)?;
     let columns: Vec<String> = stream
@@ -777,9 +777,14 @@ pub(crate) fn print_streamed_result(
 
     // Past this point bytes are on their way to stdout, so a failure can no
     // longer be swapped for a fallback rendering — it is reported as one.
+    // Hand the stream to a reader on the runtime and render from its queue, so
+    // the socket keeps draining while a batch is being written.
+    let total_row_count = stream.total_row_count();
+    let mut batches = api.stream_result_batches(stream);
+
     let written = match format {
-        "csv" => stream_csv(api, &mut stream, &columns, &mut out),
-        "json" => stream_json(api, &mut stream, &columns, &meta, &mut out),
+        "csv" => stream_csv(&mut batches, &columns, &mut out),
+        "json" => stream_json(&mut batches, &columns, &meta, total_row_count, &mut out),
         _ => unreachable!("streamed formats are csv and json"),
     }
     .map_err(StreamFailure::mid_output)?;
@@ -792,7 +797,7 @@ pub(crate) fn print_streamed_result(
     // The server reports the full result size independently of what was read, so
     // a body that ended early is caught even though the rows themselves looked
     // well-formed.
-    if let Some(total) = stream.total_row_count() {
+    if let Some(total) = total_row_count {
         let total = u64::try_from(total).unwrap_or(written);
         if written != total {
             eprintln!(
@@ -864,6 +869,22 @@ fn fetch_capped(api: &Api, meta: &StreamMeta, cap: i64) -> Result<QueryResponse,
     Ok(response)
 }
 
+/// Batches in flight between the socket reader and the renderer.
+type BatchQueue = tokio::sync::mpsc::Receiver<Result<arrow::array::RecordBatch, ApiError>>;
+
+/// Take the next batch, waiting for the reader.
+///
+/// `blocking_recv` is correct here and only here: the renderer is a plain
+/// synchronous loop, and the reader it waits on runs on the shared runtime.
+fn next_queued(batches: &mut BatchQueue) -> Result<Option<arrow::array::RecordBatch>, ApiError> {
+    match batches.blocking_recv() {
+        Some(Ok(batch)) => Ok(Some(batch)),
+        Some(Err(e)) => Err(e),
+        // The reader finished and dropped its sender.
+        None => Ok(None),
+    }
+}
+
 /// A stdout write that failed. Reported as a transport error so it exits the
 /// same way every other unrecoverable render failure does.
 fn write_failure(err: std::io::Error) -> ApiError {
@@ -913,8 +934,7 @@ where
 
 /// Write a result as CSV, one batch at a time. Returns the rows written.
 fn stream_csv(
-    api: &Api,
-    stream: &mut hotdata::ArrowResultStream,
+    batches: &mut BatchQueue,
     columns: &[String],
     out: &mut impl Write,
 ) -> Result<u64, ApiError> {
@@ -922,7 +942,7 @@ fn stream_csv(
     let mut written = 0u64;
     let mut buf: Vec<u8> = Vec::new();
     let mut line = String::new();
-    while let Some(batch) = api.next_result_batch(stream)? {
+    while let Some(batch) = next_queued(batches)? {
         written += for_each_row(&batch, &mut buf, |cells| {
             line.clear();
             for (i, cell) in cells.iter().enumerate() {
@@ -957,13 +977,13 @@ fn csv_field(cell: &JsonCell) -> String {
 /// `serde_json::to_string_pretty` of the equivalent [`QueryResponse`] in
 /// `streamed_json_is_byte_identical_to_the_buffered_envelope`.
 fn stream_json(
-    api: &Api,
-    stream: &mut hotdata::ArrowResultStream,
+    batches: &mut BatchQueue,
     columns: &[String],
     meta: &StreamMeta,
+    reported_total: Option<i64>,
     out: &mut impl Write,
 ) -> Result<u64, ApiError> {
-    let total_row_count = stream.total_row_count().and_then(|t| u64::try_from(t).ok());
+    let total_row_count = reported_total.and_then(|t| u64::try_from(t).ok());
 
     write!(out, "{{\n  \"query_run_id\": ").map_err(write_failure)?;
     write_compact(out, &meta.query_run_id)?;
@@ -975,7 +995,7 @@ fn stream_json(
 
     let mut written = 0u64;
     let mut buf: Vec<u8> = Vec::new();
-    while let Some(batch) = api.next_result_batch(stream)? {
+    while let Some(batch) = next_queued(batches)? {
         for_each_row(&batch, &mut buf, |cells| {
             if written > 0 {
                 write!(out, ",").map_err(write_failure)?;
@@ -2062,7 +2082,7 @@ mod tests {
         let meta = meta_for("res_1");
 
         // Streamed: batch by batch, off the socket.
-        let mut stream = api
+        let stream = api
             .open_result_arrow_when_ready("res_1", None, RESULT_READY_TIMEOUT)
             .unwrap();
         let columns: Vec<String> = stream
@@ -2071,13 +2091,15 @@ mod tests {
             .iter()
             .map(|f| f.name().clone())
             .collect();
+        let reported_total = stream.total_row_count();
+        let mut batches = api.stream_result_batches(stream);
         let mut streamed: Vec<u8> = Vec::new();
         match format {
             "csv" => {
-                stream_csv(&api, &mut stream, &columns, &mut streamed).unwrap();
+                stream_csv(&mut batches, &columns, &mut streamed).unwrap();
             }
             "json" => {
-                stream_json(&api, &mut stream, &columns, &meta, &mut streamed).unwrap();
+                stream_json(&mut batches, &columns, &meta, reported_total, &mut streamed).unwrap();
             }
             _ => unreachable!(),
         }
@@ -2154,19 +2176,22 @@ mod tests {
         let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
         let meta = meta_for("res_1");
 
-        let mut stream = api
+        let stream = api
             .open_result_arrow_when_ready("res_1", None, RESULT_READY_TIMEOUT)
             .unwrap();
         let columns = vec!["id".to_string()];
+        let mut batches = api.stream_result_batches(stream);
         let mut csv: Vec<u8> = Vec::new();
-        stream_csv(&api, &mut stream, &columns, &mut csv).unwrap();
+        stream_csv(&mut batches, &columns, &mut csv).unwrap();
         assert_eq!(String::from_utf8(csv).unwrap(), "id\n");
 
-        let mut stream = api
+        let stream = api
             .open_result_arrow_when_ready("res_1", None, RESULT_READY_TIMEOUT)
             .unwrap();
+        let reported_total = stream.total_row_count();
+        let mut batches = api.stream_result_batches(stream);
         let mut json: Vec<u8> = Vec::new();
-        stream_json(&api, &mut stream, &columns, &meta, &mut json).unwrap();
+        stream_json(&mut batches, &columns, &meta, reported_total, &mut json).unwrap();
         let expected = QueryResponse {
             query_run_id: meta.query_run_id.clone(),
             result_id: Some("res_1".to_string()),

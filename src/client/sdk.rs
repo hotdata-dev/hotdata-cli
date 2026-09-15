@@ -957,6 +957,54 @@ impl Api {
             .map_err(ApiError::from_arrow)
     }
 
+    /// Drain a result stream on the runtime, handing batches back through a
+    /// bounded queue.
+    ///
+    /// Rendering a batch takes far longer than reading one, so a caller that
+    /// decodes and reads on the same thread leaves the socket idle for most of
+    /// the transfer. Over a WAN link that is a slow consumer: throughput
+    /// collapses against the receive window, and a connection held open for
+    /// minutes is one an intermediary is entitled to drop — measured at 20M
+    /// rows as a 7x slowdown ending in `error decoding response body`.
+    ///
+    /// Reading on the runtime while the caller renders keeps the socket drained
+    /// at full speed. `QUEUE_DEPTH` is what keeps that from being the buffering
+    /// this all exists to avoid: the reader blocks once the queue is full, so
+    /// resident batches are bounded by the queue rather than by the result.
+    pub fn stream_result_batches(
+        &self,
+        mut stream: hotdata::ArrowResultStream,
+    ) -> tokio::sync::mpsc::Receiver<Result<arrow::array::RecordBatch, ApiError>> {
+        /// Batches held between the reader and the renderer. Enough to cover a
+        /// render while the next reads, small enough that peak memory stays a
+        /// handful of batches.
+        const QUEUE_DEPTH: usize = 4;
+
+        // A tokio channel, not `std::sync::mpsc`: the reader is async and its
+        // send must yield when the queue is full, not block a runtime worker.
+        let (tx, rx) = tokio::sync::mpsc::channel(QUEUE_DEPTH);
+        rt().spawn(async move {
+            loop {
+                match stream.next_batch().await {
+                    Ok(Some(batch)) => {
+                        // A send error means the renderer is gone — it failed,
+                        // or stopped early. Stop reading rather than draining
+                        // the rest of the result into a dropped queue.
+                        if tx.send(Ok(batch)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Ok(None) => return,
+                    Err(e) => {
+                        let _ = tx.send(Err(ApiError::from_arrow(e))).await;
+                        return;
+                    }
+                }
+            }
+        });
+        rx
+    }
+
     // --- Sample migrated call (workspace.rs uses this) -----------------------
 
     /// List workspaces visible to the authenticated principal.
