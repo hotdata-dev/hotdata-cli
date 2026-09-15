@@ -1,3 +1,8 @@
+## [0.34.1] - 2026-09-15
+
+### 🐛 Bug Fixes
+
+- *(query)* Drain the result socket while rendering (#302)
 ## [0.34.0] - 2026-09-15
 
 ### 🐛 Bug Fixes
