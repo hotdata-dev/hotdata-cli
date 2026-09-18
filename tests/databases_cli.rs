@@ -46,8 +46,8 @@ fn databases_create_help_documents_attach_flag() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("--attach"), "help: {help}");
-    // The `catalog=alias` form is the documented way to set the SQL alias.
-    assert!(help.contains("catalog=alias"), "help: {help}");
+    // The `database=alias` form is the documented way to set the SQL alias.
+    assert!(help.contains("database=alias"), "help: {help}");
 }
 
 #[test]

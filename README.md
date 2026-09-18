@@ -165,8 +165,8 @@ The full command surface. The top level has nine groups — `auth`, `workspaces`
 | `databases create` | Create a new instant database |
 | `databases fork` | Fork a database into a new, independent database |
 | `databases lineage` | Show a database's whole fork family tree |
-| `databases attach` | Attach a catalog so its tables are queryable |
-| `databases detach` | Detach a previously attached catalog |
+| `databases attach` | Attach another database so its tables are queryable |
+| `databases detach` | Detach a previously attached database |
 | `databases use` | Set the current (default) database |
 | `databases unset` | Clear the current database |
 | `databases remove` | Delete a database and all its tables |

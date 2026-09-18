@@ -66,9 +66,10 @@ pub enum DatabasesCommands {
         #[arg(long)]
         expires_at: Option<String>,
 
-        /// Attach a catalog to the new database so its tables are queryable (repeatable).
-        /// Accepts a catalog name or id, optionally `catalog=alias` to set the
-        /// SQL alias it answers to: `--attach github --attach salesdb=sales`.
+        /// Attach another database to the new one so its tables are queryable
+        /// (repeatable). Accepts a database name, catalog alias, or id,
+        /// optionally `database=alias` to set the SQL alias it answers to:
+        /// `--attach reference --attach salesdb=sales`.
         #[arg(long = "attach")]
         attach: Vec<String>,
 
@@ -125,13 +126,16 @@ pub enum DatabasesCommands {
         output: String,
     },
 
-    /// Attach a catalog to an instant database so its tables are queryable.
+    /// Attach another instant database so its tables are queryable here.
     ///
-    /// A `query` runs inside one instant database; attaching a catalog makes
-    /// its live tables visible in that database's scope, so you can join across
-    /// catalogs in a single query without exporting data. Reachable in SQL as
-    /// `<alias>.<schema>.<table>`, or `<catalog-name>.<schema>.<table>` when
+    /// A `query` runs inside one instant database; attaching another makes its
+    /// live tables visible in this database's scope, so you can join across the
+    /// two in a single query without exporting data. Reachable in SQL as
+    /// `<alias>.<schema>.<table>`, or `<catalog-alias>.<schema>.<table>` when
     /// `--alias` is omitted.
+    ///
+    /// Read-only: loads still target this database's own catalog. Not
+    /// transitive: you see what you attached, not what it attached.
     Attach {
         /// Catalog name or id to attach (e.g. `github`)
         catalog: String,

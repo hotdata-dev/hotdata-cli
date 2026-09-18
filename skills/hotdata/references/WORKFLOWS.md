@@ -63,7 +63,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 1. [ ] `hotdata databases tables list` (filter with `--schema`/`--table`) — pick text column (BM25) or embedding/text column (vector)
 2. [ ] `hotdata search list` — avoid duplicate text/vector indexes on the same column
 3. [ ] Create index (address by name):
-   - [ ] **Instant DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). A table in another database must be attached first (`hotdata databases attach <database>`).
+   - [ ] **Instant DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). Indexes belong to the database that owns the table: to index a table in another database, build the index there, or load a copy into this one. Attaching does not make it indexable — an attached database is read-only.
    - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
 4. [ ] Search (address the index by name):
    - [ ] `hotdata search "…" --index <tbl>_<col>`
