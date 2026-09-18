@@ -39,7 +39,7 @@ hotdata search create <table>_embedding_vec --type vector \
   --from <alias>.<schema>.<table> --column embedding --metric cosine
 ```
 
-Indexes are created on **instant databases** only. To index a table that lives in an external catalog, attach the catalog to an instant database first (`hotdata databases attach <catalog>`), then create the index with the instant database's catalog in `--from` — a bare connection/catalog is rejected.
+Indexes are created on **instant databases** only, and on the database's own tables: an index is a write, and an attached database is read-only. To index a table that lives in another database, build the index there, or load a copy into this one — attaching it does not make it indexable here.
 
 Large builds: `--async`, then `hotdata jobs list` / `hotdata jobs <job_id>`.
 

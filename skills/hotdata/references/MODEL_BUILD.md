@@ -10,7 +10,7 @@ Optional **deep pass** for a single authoritative markdown document stored as **
 
 ## 1. Discover catalogs and tables
 
-List the catalogs you can query — instant databases you own and any attached catalogs — and the tables they expose:
+List the catalogs you can query — your instant database and anything attached to it — and the tables they expose:
 
 ```bash
 hotdata databases list           # instant databases (catalogs you own)
@@ -74,7 +74,7 @@ For each table, capture where reasonable:
 2. **Primary keys** — `id`, `<entity>_id`, or composite patterns from names + types.
 3. **Foreign keys** — `_id` / `_fk` / name matches to other tables; confirm with connector docs when possible.
 4. **Parent–child** — Flattened API/JSON tables (often nested names) and dlt parent keys.
-5. **Cross-catalog** — Same logical entity in two catalogs (keys, type mismatches, caveats).
+5. **Cross-database** — Same logical entity in two databases (keys, type mismatches, caveats).
 
 For **small** schemas (e.g. ≤5 tables in a domain), a short **ASCII diagram** helps. For larger ones, group by domain in prose (e.g. billing, identity, product).
 
@@ -114,7 +114,7 @@ This Markdown body is what you store as **context:DATAMODEL** (`hotdata database
 - **Overview** — Domains and what the workspace is for.
 - **Per catalog** — Optional subsection per source; for **deep** models, **repeat** one block per `catalog.schema.table` (grain, column table with name/type/nullable/PK-FK/notes, relationships, queryability, caveats)—the template’s single `####` heading is a pattern to copy for each table.
 - **Instant databases** — Same treatment as catalog tables where relevant.
-- **Cross-catalog joins** — Keys, semantics, type caveats.
+- **Cross-database joins** — Keys, semantics, type caveats.
 - **Search / index summary** — Table, column, index status, intended use.
 
 If the workspace has **many** tables (e.g. 50+), add a **table of contents** after the overview (catalog → table counts).

@@ -48,7 +48,7 @@ hotdata search "<query>" --in <name>
 
 ## Indexes (text and vector)
 
-Indexes are an **instant-database** concept. Create names the index (positional) and attaches to a table on an instant database via `--from` — `catalog.schema.table` (the instant database's catalog), or `schema.table` with an active database set. A plain connection catalog is rejected. `list` narrows to the **active database** when one is set; without one it scans the whole workspace. `show`/`remove` resolve the index by name in the active database (or `--database <id>`).
+Indexes are an **instant-database** concept, and belong to the database's own tables — an attached database is read-only, so index its tables there rather than here. Create names the index (positional) and attaches to a table via `--from` — `catalog.schema.table` (the database's own catalog), or `schema.table` with an active database set. `list` narrows to the **active database** when one is set; without one it scans the whole workspace. `show`/`remove` resolve the index by name in the active database (or `--database <id>`).
 
 ```bash
 # List — active-database scope when a DB is set, else whole-workspace scan

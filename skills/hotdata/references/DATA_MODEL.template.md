@@ -48,11 +48,11 @@ For each business entity:
 - **Primary tables:** `catalog.schema.table`  
 - **Key columns:**  
 
-## Cross-catalog joins
+## Cross-database joins
 
 Document safe join paths and caveats (fan-out, timing, different refresh cadence, type mismatches).
 
-> A cross-catalog join runs inside one instant database; each catalog it touches must be **attached** to that database (`hotdata databases attach <catalog>`) so its live tables are in query scope. Note here which catalogs a join requires attached, and the alias each is attached under. See **`hotdata`** skill → Querying across catalogs.
+> A cross-database join runs inside one instant database; every other database it touches must be **attached** to that one (`hotdata databases attach <database>`) so its live tables are in query scope. Note here which databases a join requires attached, and the alias each is attached under. See **`hotdata`** skill → Querying across databases.
 
 ## Search & index summary (optional)
 

@@ -98,16 +98,18 @@ but the printed result is a truncated preview). Re-fetch
 past results with `hotdata databases results get <result-id>`; browse history
 with `hotdata databases queries list`.
 
-## Join across sources
+## Join across databases
 
-Attach another catalog to an instant database and join its live tables directly,
-no copying:
+Attach another instant database and join its live tables directly, no copying:
 
 ```sh
 hotdata databases attach prod-replica --alias prod
 hotdata query "SELECT t.id, o.total FROM demo.public.tickets t
                JOIN prod.public.orders o ON o.ticket_id = t.id"
 ```
+
+The attached database is read-only here: loads still go to your own database,
+and `detach` withdraws visibility without deleting anything.
 
 ## Search
 
