@@ -1708,7 +1708,9 @@ mod tests {
                 "arrow".into(),
             ))
             .with_status(500)
-            .with_body("boom")
+            // An error envelope, the shape the server actually sends: the
+            // warning must carry the sentence inside it, not the JSON.
+            .with_body(r#"{"error":{"message":"result res_1 has expired","code":"NOT_FOUND"}}"#)
             .create();
 
         let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
@@ -1738,6 +1740,10 @@ mod tests {
         assert_eq!(resolved.total_row_count, None);
         let warning = resolved.warning.as_deref().unwrap_or("");
         assert!(warning.contains("truncated"), "warning: {warning:?}");
+        assert!(
+            warning.contains("result res_1 has expired") && !warning.contains("{\"error\""),
+            "the warning should quote the server's sentence, not its envelope: {warning}"
+        );
         assert!(
             warning.contains("could not fetch full result"),
             "warning: {warning:?}"

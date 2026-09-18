@@ -276,11 +276,19 @@ impl ApiError {
 
     /// A printable, single-line description of the failure.
     ///
-    /// Used where the error is surfaced inline (e.g. folded into a query
-    /// `warning`) rather than printed-and-exited via [`exit`](Self::exit).
+    /// Used where the error is surfaced inline (folded into a query `warning`,
+    /// the `create --attach` warning) rather than printed-and-exited via
+    /// [`exit`](Self::exit). Carries the status so a non-JSON body still says
+    /// what happened, and runs the body through [`server_explanation`] so an
+    /// error envelope renders as the sentence inside it, never as raw JSON.
+    /// The exit path ([`format_fail_message`]) shares that base and adds the
+    /// credential-probe hints on top, which need a live `Api` this does not
+    /// have.
     pub fn message(&self) -> String {
         match self {
-            ApiError::Status { status, body } => format!("{status}: {body}"),
+            ApiError::Status { status, body } => {
+                format!("{status}: {}", server_explanation(*status, body))
+            }
             ApiError::Transport(msg) => msg.clone(),
         }
     }
@@ -1040,6 +1048,21 @@ impl Api {
     }
 }
 
+/// What the server said, as one line a person can read.
+///
+/// An error envelope (`{"error":{"message":…}}`, and the other shapes
+/// `util::api_error` knows) renders as the sentence inside it; a bodyless
+/// response says so instead of printing a blank. This is the one place that
+/// unwrapping lives — both `ApiError::message` (inline) and
+/// `format_fail_message` (fatal) build on it.
+fn server_explanation(status: reqwest::StatusCode, body: &str) -> String {
+    if body.trim().is_empty() {
+        format!("HTTP {status} (empty response body)")
+    } else {
+        util::api_error(body.to_string())
+    }
+}
+
 /// Decide what error text to print for a failed response. Pure function so the
 /// re-auth-hint heuristic is unit-testable without HTTP or `exit`.
 ///
@@ -1055,12 +1078,13 @@ pub fn format_fail_message(
     body: &str,
     auth_status: Option<&credentials::AuthStatus>,
 ) -> String {
-    // Base: the server's own explanation, or the status line when there is none.
-    let mut msg = if body.trim().is_empty() {
-        format!("error: HTTP {status} (empty response body)")
-    } else {
-        util::api_error(body.to_string())
-    };
+    // Base: the server's own explanation, or the status line when there is
+    // none. Shared with `ApiError::message` so the inline and the fatal
+    // rendering of one response never drift apart.
+    let mut msg = server_explanation(status, body);
+    if body.trim().is_empty() {
+        msg = format!("error: {msg}");
+    }
     // A 403 ACCESS_DENIED is the allow-list guard rejecting an operation the
     // credential can't perform — typically a database API token (which is
     // limited to create/query/upload) hitting a workspace-level endpoint. Keep
@@ -1088,6 +1112,39 @@ pub fn format_fail_message(
 mod tests {
     use super::*;
     use credentials::AuthStatus;
+
+    /// An inline warning is read by a person, so the envelope must be gone.
+    /// `create --attach` used to print `409 Conflict: {"error":{"message":…}}`.
+    #[test]
+    fn api_error_message_unwraps_the_error_envelope() {
+        let err = ApiError::Status {
+            status: reqwest::StatusCode::CONFLICT,
+            body: r#"{"error":{"message":"this catalog is scoped to another database and cannot be attached here","code":"CONFLICT"}}"#.to_string(),
+        };
+        assert_eq!(
+            err.message(),
+            "409 Conflict: this catalog is scoped to another database and cannot be attached here"
+        );
+    }
+
+    /// A bodyless response names the status instead of printing a blank, and
+    /// says the same thing the fatal path says (minus its `error:` prefix).
+    #[test]
+    fn api_error_message_and_fail_message_agree_on_an_empty_body() {
+        let status = reqwest::StatusCode::BAD_GATEWAY;
+        let err = ApiError::Status {
+            status,
+            body: String::new(),
+        };
+        assert_eq!(
+            err.message(),
+            "502 Bad Gateway: HTTP 502 Bad Gateway (empty response body)"
+        );
+        assert_eq!(
+            format_fail_message(status, "", None),
+            "error: HTTP 502 Bad Gateway (empty response body)"
+        );
+    }
 
     #[test]
     fn api_error_message_formats_status_and_transport() {
