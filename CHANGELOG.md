@@ -1,3 +1,8 @@
+## [0.35.0] - 2026-09-18
+
+### ⚡ Performance
+
+- *(query)* Results and listings now transfer gzip-compressed (#305)
 ## [0.34.1] - 2026-09-15
 
 ### 🐛 Bug Fixes
