@@ -46,12 +46,12 @@ fn databases_create_help_documents_attach_flag() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("--attach"), "help: {help}");
-    // The `catalog=alias` form is the documented way to set the SQL alias.
-    assert!(help.contains("catalog=alias"), "help: {help}");
+    // The `database=alias` form is the documented way to set the SQL alias.
+    assert!(help.contains("database=alias"), "help: {help}");
 }
 
 #[test]
-fn databases_attach_help_documents_connection_and_alias() {
+fn databases_attach_help_documents_database_and_alias() {
     let output = hotdata()
         .args(["databases", "attach", "--help"])
         .output()
@@ -63,8 +63,8 @@ fn databases_attach_help_documents_connection_and_alias() {
 }
 
 #[test]
-fn databases_attach_requires_a_connection_argument() {
-    // `catalog` is a required positional — parsing must fail without it.
+fn databases_attach_requires_a_database_argument() {
+    // the database is a required positional — parsing must fail without it.
     let output = hotdata().args(["databases", "attach"]).output().unwrap();
     assert!(!output.status.success());
     let combined = format!(
@@ -73,7 +73,7 @@ fn databases_attach_requires_a_connection_argument() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("required") || combined.contains("CATALOG"),
+        combined.contains("required") || combined.contains("DATABASE"),
         "output: {combined}"
     );
 }

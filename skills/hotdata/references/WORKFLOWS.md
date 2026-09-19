@@ -63,7 +63,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 1. [ ] `hotdata databases tables list` (filter with `--schema`/`--table`) — pick text column (BM25) or embedding/text column (vector)
 2. [ ] `hotdata search list` — avoid duplicate text/vector indexes on the same column
 3. [ ] Create index (address by name):
-   - [ ] **Instant DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). An external catalog must be attached to an instant database first (`hotdata databases attach`).
+   - [ ] **Instant DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). Indexes belong to the database that owns the table: to index a table in another database, build the index there, or load a copy into this one. Attaching does not make it indexable — an attached database is read-only.
    - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
 4. [ ] Search (address the index by name):
    - [ ] `hotdata search "…" --index <tbl>_<col>`
@@ -71,20 +71,22 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 **Detail:** [hotdata-search INDEXES.md](../subskills/search/references/INDEXES.md)
 
-### Cross-source query (attach a catalog)
+### Cross-database query (attach another database)
 
 **Skill:** **`hotdata`**
 
-A `hotdata query` runs inside **one** instant database; its scope sees that database's own catalog plus **attached** catalog catalogs only. To query a catalog's tables — or join a managed table against a live catalog table in one query — attach the catalog. (No instant database set → *"a database is required."*; an unattached catalog → *"table not found."*)
+A `hotdata query` runs inside **one** instant database; its scope sees that database's own catalog plus whatever is **attached** to it only. To read another database's tables — or join your own tables against them in one query — attach that database. (No instant database set → *"a database is required."*; something unattached → *"table not found."*)
 
 1. [ ] Pick/create the instant database that will be the query context (`hotdata databases use <id>` or `databases create --catalog <alias>`)
-2. [ ] Attach the catalog(s) you need (live, sync intact): `hotdata databases attach <catalog> [--alias <a>]`
-   - Or attach at creation: `hotdata databases create --catalog <alias> --attach <catalog>[=<alias>]`
-3. [ ] Confirm scope: `hotdata databases <id>` lists attached catalogs
-4. [ ] Query across sources: `hotdata query "SELECT … FROM <my_catalog>.public.<t> JOIN <catalog_or_alias>.<schema>.<table> ON …"`
-5. [ ] (Optional) `hotdata databases detach <catalog|alias>` when finished; record required attachments in **context:DATAMODEL → Cross-catalog joins**
+2. [ ] Attach the database(s) you need (live, no copy): `hotdata databases attach <database> [--alias <a>]`
+   - Or attach at creation: `hotdata databases create --catalog <alias> --attach <database>[=<alias>]`
+3. [ ] Confirm scope: `hotdata databases <id>` lists what is attached
+4. [ ] Query across databases: `hotdata query "SELECT … FROM <my_catalog>.public.<t> JOIN <attached_or_alias>.<schema>.<table> ON …"`
+5. [ ] (Optional) `hotdata databases detach <database|alias>` when finished; record required attachments in **context:DATAMODEL → Cross-database joins**
 
-**Do not** export a catalog to parquet just to query it — attach is the live, sync-preserving path.
+Attaching is read-only (loads still target your own database) and not transitive (you see what you attached, not what it attached). The source cannot be deleted while you hold it, but an *expiring* source still goes on its `expires_at` — check that date before depending on one.
+
+**Do not** export a database to parquet just to query it — attach is the live path.
 
 ---
 

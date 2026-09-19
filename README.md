@@ -98,16 +98,19 @@ but the printed result is a truncated preview). Re-fetch
 past results with `hotdata databases results get <result-id>`; browse history
 with `hotdata databases queries list`.
 
-## Join across sources
+## Join across databases
 
-Attach another catalog to an instant database and join its live tables directly,
-no copying:
+Attach another instant database and join its live tables directly, no copying:
 
 ```sh
 hotdata databases attach prod-replica --alias prod
 hotdata query "SELECT t.id, o.total FROM demo.public.tickets t
                JOIN prod.public.orders o ON o.ticket_id = t.id"
 ```
+
+The attached database is read-only here: loads still go to your own database,
+and `detach` withdraws visibility without deleting anything. `--alias` is
+required when the other database kept the stock `default` catalog name.
 
 ## Search
 
@@ -163,8 +166,8 @@ The full command surface. The top level has nine groups — `auth`, `workspaces`
 | `databases create` | Create a new instant database |
 | `databases fork` | Fork a database into a new, independent database |
 | `databases lineage` | Show a database's whole fork family tree |
-| `databases attach` | Attach a catalog so its tables are queryable |
-| `databases detach` | Detach a previously attached catalog |
+| `databases attach` | Attach another database so its tables are queryable |
+| `databases detach` | Detach a previously attached database |
 | `databases use` | Set the current (default) database |
 | `databases unset` | Clear the current database |
 | `databases remove` | Delete a database and all its tables |
