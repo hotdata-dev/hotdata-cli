@@ -111,8 +111,8 @@ hotdata databases <id> [--workspace-id <workspace_id>] [--output table|json|yaml
 hotdata databases remove <id> [--workspace-id <workspace_id>]
 
 # Attach another database so its tables are queryable (enables cross-database queries — see below)
-hotdata databases attach <database|catalog|id> [--database <id>] [--alias <alias>]
-hotdata databases detach <database|catalog|alias> [--database <id>]
+hotdata databases attach <database> [--database <id>] [--alias <alias>]   # <database>: name, catalog alias, or id
+hotdata databases detach <database> [--database <id>]                     # or the alias it was attached under
 
 # Preferred: load by catalog alias (server declares the table/schema if missing).
 # Loads csv, json, or parquet — format read from the extension.
@@ -140,7 +140,7 @@ hotdata databases tables remove <table> [--database <id>] [--schema public] [--w
 - `tables add` — declares a table **with its key and storage layout**, which a load cannot infer. `--key` (repeatable) is what enables the `delete`/`update`/`upsert` load modes on that table. `--sorted-by <col>` or `<col>=desc` sets sort order; `--partition-by <col>` partitions on the value, `<col>=month` (or `year`/`day`/`hour`) on a calendar part — one partition per calendar month needs **both** `<col>=year` and `<col>=month`, or every March shares a partition. Sort and partition are fixed once the table exists. `--key-determines` (repeatable) asserts a column's value is fixed by the key: it prunes keyed loads harder, and is **correctness-affecting** — declare it only where the invariant really holds, or a keyed load can leave a duplicate key behind. Re-adding an existing table is a conflict (409), and `tables remove` does not clear the declaration — the table leaves the listing but the name stays declared and still conflicts. So **a key cannot be retrofitted onto a table declared without one**: declare it with `--key` up front, or use a new table name.
 - `tables load` — publishes to an instant-database table from a local file (`--file`), a remote URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`, must belong to the target database). Same `--mode`, `--format`, and `--key` flags as the top-level `load` above.
 - `tables remove` — drops a table from the instant database.
-- `attach` — attaches **another instant database** to this one, so its **live** tables become visible inside this database's query scope. Name the other database by name, catalog alias, or id. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name it answers to (defaults to the attached database's own catalog alias). This is how you **join across databases** — see [Querying across databases](#querying-across-databases-attach). Read-only: loads still target your own database, and attaching is not transitive — you see what you attached, not what it attached.
+- `attach` — attaches **another instant database** to this one, so its **live** tables become visible inside this database's query scope. Name the other database by name, catalog alias, or id. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name it answers to (defaults to the attached database's own catalog alias). **Required when that alias is `default`** — the stock name for a database created without `--catalog` — since `default` cannot be attached under its own name. This is how you **join across databases** — see [Querying across databases](#querying-across-databases-attach). Read-only: loads still target your own database, and attaching is not transitive — you see what you attached, not what it attached.
 - `detach` — removes an attachment, withdrawing visibility without deleting any data. Accepts the attached database's name/id **or** the alias you attached it under. Defaults to the active database.
 - `create --attach <database>[=<alias>]` — attach one or more databases at creation time (repeatable), e.g. `--attach reference --attach salesdb=sales`.
 
@@ -223,7 +223,7 @@ hotdata databases tables show <catalog.schema.table|schema.table> [--output tabl
 
 **`databases tables show`**
 - Fetches column definitions (`COLUMN`, `DATA_TYPE`, `NULLABLE`) for a single table.
-- **`catalog.schema.table`** — three-part form; the catalog resolves to an instant database or an attached source by name.
+- **`catalog.schema.table`** — three-part form; the catalog resolves to an instant database or an attached database by name.
 - **`schema.table`** — two-part form; uses the active database (errors if none is set).
 - Copy the name directly from `databases tables list` output — both forms match what `list` prints.
 - **Always use `databases tables show` to inspect columns before writing queries.**

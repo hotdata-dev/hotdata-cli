@@ -109,7 +109,8 @@ hotdata query "SELECT t.id, o.total FROM demo.public.tickets t
 ```
 
 The attached database is read-only here: loads still go to your own database,
-and `detach` withdraws visibility without deleting anything.
+and `detach` withdraws visibility without deleting anything. `--alias` is
+required when the other database kept the stock `default` catalog name.
 
 ## Search
 

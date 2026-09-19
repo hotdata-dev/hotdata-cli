@@ -137,21 +137,27 @@ pub enum DatabasesCommands {
     /// Read-only: loads still target this database's own catalog. Not
     /// transitive: you see what you attached, not what it attached.
     Attach {
-        /// Catalog name or id to attach (e.g. `github`)
+        /// The database to attach: its name, catalog alias, or id (e.g. `reference`)
+        #[arg(value_name = "DATABASE")]
         catalog: String,
 
         /// Database id, catalog, or name to attach into (defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
-        /// Alias the catalog answers to in SQL. Defaults to the catalog's name.
+        /// Alias the attached database answers to in SQL. Defaults to its own
+        /// catalog alias; required when that alias is `default`, which cannot
+        /// be attached under its own name.
         #[arg(long)]
         alias: Option<String>,
     },
 
-    /// Detach a previously attached catalog from an instant database.
+    /// Detach a previously attached database, withdrawing visibility without
+    /// deleting anything.
     Detach {
-        /// Catalog name or id to detach
+        /// The attached database: its name, catalog alias, or id, or the alias
+        /// it was attached under
+        #[arg(value_name = "DATABASE")]
         catalog: String,
 
         /// Database id, catalog, or name to detach from (defaults to the current database)
@@ -1790,7 +1796,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                 format!("{catalog}.{{schema}}.{{table}}").green()
             );
             if !db.attachments.is_empty() {
-                println!("{}({})", label("attached catalogs:"), db.attachments.len());
+                println!("{}({})", label("attached databases:"), db.attachments.len());
                 for a in &db.attachments {
                     let alias = a
                         .alias
@@ -1809,9 +1815,9 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
     }
 }
 
-/// Attach a connection as a queryable catalog on an instant database, so its
-/// live tables are visible inside that database's query scope (cross-source
-/// joins without exporting data). Defaults to the current database.
+/// Attach another instant database's catalog to this one, so its live tables
+/// are visible inside this database's query scope (cross-database joins
+/// without exporting data). Defaults to the current database.
 pub fn attach(workspace_id: &str, catalog: &str, database: Option<&str>, alias: Option<&str>) {
     use crossterm::style::Stylize;
 
@@ -1835,7 +1841,7 @@ pub fn attach(workspace_id: &str, catalog: &str, database: Option<&str>, alias: 
         Some(a) => println!(
             "{}",
             format!(
-                "Attached '{catalog}' to database '{where_}' as catalog '{a}'.\n\
+                "Attached '{catalog}' to database '{where_}' as '{a}'.\n\
                  Query: hotdata query \"SELECT * FROM {a}.<schema>.<table> LIMIT 10\" -d {where_}"
             )
             .green()
@@ -1843,16 +1849,16 @@ pub fn attach(workspace_id: &str, catalog: &str, database: Option<&str>, alias: 
         None => println!(
             "{}",
             format!(
-                "Attached '{catalog}' to database '{where_}'. It is reachable by the \
-                 catalog's name; run `hotdata databases {where_}` to see attached catalogs."
+                "Attached '{catalog}' to database '{where_}'. It answers to its own \
+                 catalog alias; run `hotdata databases {where_}` to see what is attached."
             )
             .green()
         ),
     }
 }
 
-/// Detach a previously attached catalog from an instant database.
-/// Defaults to the current database.
+/// Detach a previously attached database, withdrawing visibility without
+/// deleting anything. Defaults to the current database.
 pub fn detach(workspace_id: &str, catalog: &str, database: Option<&str>) {
     use crossterm::style::Stylize;
 
