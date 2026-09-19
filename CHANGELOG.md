@@ -1,3 +1,12 @@
+## [0.36.0] - 2026-09-19
+
+### 🐛 Bug Fixes
+
+- *(client)* Render the error envelope's sentence in inline warnings (#308)
+
+### 📚 Documentation
+
+- Describe attach as joining across instant databases (#309)
 ## [0.35.0] - 2026-09-18
 
 ### ⚡ Performance
