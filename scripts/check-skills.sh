@@ -8,8 +8,10 @@
 #      changed too. The script cannot judge prose, so this is the reminder
 #      that a code change needs its SKILL.md follow-up. Override with
 #      SKIP_SKILL_DRIFT=1 when a release is verified to be skill-neutral.
-#   2. Coverage: every subcommand the built binary exposes must be named in
-#      skills/**/*.md, so a new command cannot ship undocumented.
+#   2. Coverage: every subcommand the built binary exposes, and every long
+#      flag in its --help, must be named in skills/**/*.md, so a new command
+#      or flag cannot ship undocumented. Hidden flags are not in --help and
+#      are not checked.
 #   3. Version: every SKILL.md frontmatter `version:` must equal Cargo.toml
 #      (finish phase only — prepare runs before cargo-release bumps them).
 #
@@ -88,7 +90,29 @@ if [ ${#missing[@]} -gt 0 ]; then
     printf '    hotdata %s\n' "${missing[@]}" >&2
     fail=1
 else
-    echo "→ skills: coverage ok (${#leaves[@]} commands documented)"
+    echo "→ skills: command coverage ok (${#leaves[@]} commands documented)"
+fi
+
+# Long flags, per leaf, minus the globals every command carries.
+GLOBAL_FLAGS='^--(api-key|no-input|help|output|workspace-id)$'
+missing_flags=()
+flag_count=0
+for leaf in "${leaves[@]}"; do
+    # shellcheck disable=SC2086
+    flags="$("$BIN" $leaf --help 2>/dev/null \
+        | grep -oE '^\s+(-[a-zA-Z], )?--[a-z][a-z0-9-]+' \
+        | grep -oE -- '--[a-z][a-z0-9-]+' | sort -u | grep -vE "$GLOBAL_FLAGS" || true)"
+    for f in $flags; do
+        flag_count=$((flag_count + 1))
+        grep -qF -- "$f" <<<"$skill_text" || missing_flags+=("hotdata $leaf $f")
+    done
+done
+if [ ${#missing_flags[@]} -gt 0 ]; then
+    echo "error: flags in --help that no skill mentions:" >&2
+    printf '    %s\n' "${missing_flags[@]}" >&2
+    fail=1
+else
+    echo "→ skills: flag coverage ok ($flag_count flags documented)"
 fi
 
 # --- 3. version -------------------------------------------------------------

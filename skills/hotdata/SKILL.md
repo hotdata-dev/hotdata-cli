@@ -330,7 +330,7 @@ hotdata ingest sources add --family filesystem --bucket-url s3://events-prod
 # They merge with --config, flag last. --no-wait returns without watching the
 # new source settle; the wait is a poll and starts nothing.
 
-hotdata ingest sources list [--family sql] [--state active]   # ids, families, states
+hotdata ingest sources list [--family sql] [--state active] [--include-deleted]   # ids, families, states
 hotdata ingest sources show <source-id>                       # state, config version, discovery
 hotdata ingest sources update-config <source-id> --config @source.json
 # Appends an immutable config version under the SAME id and moves the pointer.
@@ -369,11 +369,22 @@ hotdata ingest create --source "prod postgres" --table orders --schema public \
 #   --schema <name>        source schema (sql)
 #   --format csv|jsonl|parquet, --glob "**/*.parquet"   (bucket sources)
 #   --record-shape otel_traces|mqtt_observations        (bucket sources)
-#   --all                  everything under a bucket root (needs --format)
+#   --topic <name>         Kafka topic, REPEATABLE — topics live on the ingest,
+#                          not the datasource, which is the cluster (kafka)
+#   --table-path <path>    ONE Delta table under the datasource root, e.g.
+#                          warehouse/orders — name it with --dest-table (delta)
+#   --all                  everything the datasource exposes (buckets need --format)
 #   --limit N              stop after N source rows
+#   --stream               shorthand for --type continuous (still needs --every)
 # Destination flags instead of --destination:
-#   --database-id (required)  --dest-table (defaults to the single --table)
-#   --dest-schema (default public)  --write-mode (default replace)
+#   --database-id (required)  --dest-schema (default public)  --write-mode (default replace)
+#   --dest-table <name>       for sources that land ONE table: buckets, delta,
+#                             --raw-sql (defaults to --table there)
+#   --dest-table-prefix <p>   for sources that land SEVERAL (sql --table/--sql,
+#                             iceberg, ducklake, kafka, rest): `orders` lands as
+#                             `<p>_orders`. Optional, but only one prefix-less
+#                             ingest can own a database+schema — a second one
+#                             must pick a prefix or it overwrites the first.
 
 hotdata ingest create --datasource-id ds_01J --database-id db_123 \
   --sql "SELECT id, status FROM public.orders WHERE status = 'open' LIMIT 1000"
@@ -387,7 +398,7 @@ hotdata ingest create --datasource-id ds_01J --database-id db_123 \
 # CTEs, window functions. Only the result set transfers, into --table. (A query
 # has no source table, so --table names where the result lands.)
 
-hotdata ingest list [--datasource-id ds_01J] [--type continuous] [--state active]
+hotdata ingest list [--datasource-id ds_01J] [--type continuous] [--state active] [--include-deleted]
 hotdata ingest show <ingest-id>
 hotdata ingest pause <ingest-id>     # stops the active run AND future runs
 hotdata ingest resume <ingest-id>    # clears the stop; starts NOTHING immediately
@@ -395,7 +406,7 @@ hotdata ingest schedule <ingest-id> --every 5m [--next now]
 hotdata ingest remove <ingest-id>    # releases the destination table; data untouched
 
 # --- runs --------------------------------------------------------------------
-hotdata ingest logs <ingest-id> [--status failed]   # every attempt, newest first
+hotdata ingest logs <ingest-id> [--status failed]   # every attempt, newest first (--ingest-id <id> is the flag form)
 hotdata ingest run <run-id>          # exits 0 succeeded / 1 failed|cancelled / 2 in flight
 # --wait on either polls to a terminal status (--wait-timeout, default 300s;
 # exit 2 on timeout). It WATCHES: the scheduler owns dispatch, so waiting cannot
@@ -473,7 +484,7 @@ hotdata auth logout           # Remove saved auth for the default profile
 hotdata support report -m "<body>" --subject "<subject>" [--kind bug|question|billing|feature|account|other] [--severity urgent|high|medium|low] [-w <workspace_id> | --no-workspace] [--logs <path>|-] [--context KEY=VALUE ...] [-o table|json|yaml]
 ```
 
-Files a support ticket via the API — no browser needed. `-m`/`--subject` are required together for non-interactive use (agents: always pass both); omit both in an interactive terminal to compose in `$EDITOR` instead. Attaches the active workspace by default (`--no-workspace` to omit, `-w` for a specific one); `--logs` reads a file or `-` for stdin (cap 256 KiB); `--context key=value` adds extra diagnostic pairs (repeatable, max 20). Prints the ticket's `public_id` on success — replies go to the email on the HotData account, not to the CLI.
+Files a support ticket via the API — no browser needed. `-m`/`--message` and `--subject` are required together for non-interactive use (agents: always pass both); omit both in an interactive terminal to compose in `$EDITOR` instead. Attaches the active workspace by default (`--no-workspace` to omit, `-w` for a specific one); `--logs` reads a file or `-` for stdin (cap 256 KiB); `--context key=value` adds extra diagnostic pairs (repeatable, max 20). Prints the ticket's `public_id` on success — replies go to the email on the HotData account, not to the CLI.
 
 ## Workflows
 

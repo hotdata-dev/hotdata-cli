@@ -23,7 +23,7 @@ Switches to `main`, pulls latest, runs the skill check with `--require-version`,
 Both phases run `scripts/check-skills.sh`. The agent skills under `skills/` ship in every release (`skills.tar.gz`, `SKILL.md`), so the script refuses to release when they lag the code:
 
 - **Drift** — if `src/` or `README.md` changed since the last `v*` tag and `skills/` did not, the run fails and lists the commits to review. Update the skills and commit, or set `SKIP_SKILL_DRIFT=1` when the release is verified to be skill-neutral.
-- **Coverage** — every subcommand the built binary exposes must appear as `hotdata <group> <sub>` somewhere in `skills/**/*.md`.
+- **Coverage** — every subcommand the built binary exposes must appear as `hotdata <group> <sub>` somewhere in `skills/**/*.md`, and every long flag in its `--help` must be mentioned too. CI runs this check on every pull request (with the drift check skipped), so a new command or flag cannot merge undocumented.
 - **Version** (`finish` only) — every `SKILL.md` frontmatter `version:` must equal the crate version.
 
 The drift check is a reminder, not a judge of prose. Before `prepare`, read the commits since the last tag and update `skills/hotdata/SKILL.md` and the subskills to match the current `--help` output and behavior.

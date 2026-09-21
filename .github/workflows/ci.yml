@@ -22,6 +22,36 @@ jobs:
           git fetch origin "$BASE_REF"
           python3 scripts/validate-changelog.py "origin/$BASE_REF"
 
+  skills:
+    # The agent skills ship in every release. Fail a PR that adds a command or
+    # flag without documenting it. The drift check (code changed since the last
+    # tag, skills did not) is left to release.sh, where it has a whole release
+    # to judge rather than one PR.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check skills cover every command and flag
+        env:
+          SKIP_SKILL_DRIFT: "1"
+        run: scripts/check-skills.sh --require-version
+
   fmt:
     runs-on: ubuntu-latest
     steps:
