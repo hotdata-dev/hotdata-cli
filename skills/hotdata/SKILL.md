@@ -43,8 +43,6 @@ Optional: pass **`--debug`** on any command to print verbose HTTP request/respon
 
 Commands that accept `--workspace-id` default to the active workspace from config when omitted. Use `hotdata workspaces use` to switch interactively, or `hotdata workspaces use <workspace_id>` for a direct choice. In `hotdata workspaces list`, the `*` marker labels the **default** workspace the CLI resolves to.
 
-**`hotdata databases queries` does not accept `--workspace-id`:** query run history always uses the active workspace—set it with `workspaces use` first if needed.
-
 If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked** to that value: passing a different `--workspace-id` is an error, and **`hotdata workspaces use` fails** (“workspace is locked”).
 
 **Omit `--workspace-id` unless you need to target a specific workspace** (and it is not locked by env or session).
@@ -258,7 +256,8 @@ hotdata query status <query_run_id>
 - Use `hotdata databases tables list` and `hotdata databases tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes. To write DuckDB/Postgres/Snowflake SQL instead, pass `--dialect` (server-side transpile, read-only queries) — details in **`hotdata-analytics`**.
 - Async runs return `query_run_id` → poll with `query status <id>` (do not re-run the same heavy SQL). `query status` exit codes: `0` succeeded, `1` failed, `2` still running (poll again), `3` succeeded but the result is a truncated/incomplete preview.
-- **Large results are complete, not a preview.** The server returns inline rows only up to a bounded cap and persists the full set out-of-band; `hotdata query` transparently fetches the full result, so the printed rows and row count are the complete set. (If the full result can't be retrieved, the CLI prints the preview and a `warning:` to stderr.)
+- **Large results: `-o csv` / `-o json` are complete, `-o table` is capped.** The server returns inline rows only up to a bounded cap and persists the full set under a `result_id`. For `csv` and `json` the CLI **streams** that full result batch by batch, so output size is unbounded and memory stays flat — pipe a big result to a file with `-o csv`/`-o json`, never `table`. For `table` the CLI fetches at most **10,000 rows** and the footer says `N of TOTAL rows — INCOMPLETE PREVIEW` (with `?` when the server sent no total); the process exits **3** so a pipeline cannot mistake it for the whole set. Same rules for `hotdata databases results get`. A result the server is still writing is waited for (up to 5 minutes, honoring `Retry-After`) rather than returned partial. If the full result can't be retrieved, the CLI prints the inline preview, a `warning:` to stderr, and exits 3. `-o json` carries `row_count`, `total_row_count`, and `truncated` — branch on `truncated`, not on the row count.
+- **Numbers print exactly.** A `DECIMAL(38,2)` or other wide number is printed with every digit the service sent, in every output format; `-o json` emits it as an unquoted JSON number. One consequence: a list or struct cell prints on a single line in `-o json` (re-indenting would mean re-parsing and rounding it); scalars are unaffected.
 - **Backpressure is handled.** Under heavy concurrent load the server may shed a query with HTTP 429 (`OVERLOADED`); the CLI auto-retries (honoring `Retry-After`) before surfacing an error — no manual retry needed.
 - **OLAP** (aggregations, history, Chain, sorted indexes): **`hotdata-analytics`** skill.
 - **Search** (BM25, vector): **`hotdata-search`** skill.
