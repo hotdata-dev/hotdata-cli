@@ -105,7 +105,7 @@ hotdata databases fork [<id>] [--name <display_name>] [--expires-at <duration|ti
 hotdata databases lineage [<id>] [--forks-limit <n>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases use <id>
 hotdata databases unset
-hotdata databases <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases show <id> [--workspace-id <workspace_id>] [--output table|json|yaml]   # or the shorthand: hotdata databases <id>
 hotdata databases remove <id> [--workspace-id <workspace_id>]
 
 # Attach another database so its tables are queryable (enables cross-database queries — see below)
@@ -130,7 +130,7 @@ hotdata databases tables remove <table> [--database <id>] [--schema public] [--w
 - `lineage` — renders a database's **whole fork family tree**, walked from the root down (defaults to the active database; one lineage request per database, fine for the small families forks produce in practice): every reachable generation, with the queried database marked `← this database`. Lineage is a historical record, not a live link — the databases stay independent, and a **deleted** generation stays in the chain (marked `deleted`), though its own fork list can't be enumerated: such branches end with `⋯ forks unknown`. Forks made before the server recorded lineage carry none. `--forks-limit <n>` pages each database's direct-fork list (server clamps to 1–100); a truncated branch closes with `⋯ N more`. `-o json`/`yaml` return `{database_id, root_id, tree}` with a recursive `tree` node.
 - `use` — saves the database **id** as the active database. Subsequent `databases tables` and `databases context` commands use it automatically. Note that a successful `fork` also updates this: the fork becomes the active database.
 - `unset` — clears the active database from config.
-- `<id>` — inspect one database (returns id, catalog, name, expires_at; a fork also shows its `forked_from` record).
+- `show <id>` / `<id>` — inspect one database (returns id, catalog, name, expires_at, attached databases; a fork also shows its `forked_from` record).
 - `remove` — removes the instant database; clears the active-database config if it matched.
 - `load` (top-level shorthand) — loads a file into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). **Formats:** csv, json (`.json`/`.jsonl`/`.ndjson`), and parquet; the format comes from the file's extension, and `--format` overrides it (needed when the extension is absent or misleading). An unrecognised extension is not rejected — the server reads the bytes, and a file that plainly opens a json array is taken as json even without an extension. A json source in any shape (array, pretty-printed, one object per line) is reshaped locally to newline-delimited json before upload; an already-newline-delimited file is uploaded untouched. A table or schema that was never declared is declared by the server as part of the load, so no up-front `--table` is required.
 - **Load modes** (`--mode`, default `replace`) — `replace` supersedes the table's contents; `append` adds rows; `delete`, `update`, and `upsert` match existing rows **by key**. `--append` is the old shorthand for `--mode append` and still works, but the two cannot be combined. The keyed modes need a key: declare one with `databases tables add --key`, or name it per-load with `--key` (repeat for a composite key). `delete` uploads only the key columns; `update` replaces matching rows and ignores unmatched ones; `upsert` inserts the unmatched instead. Keyed modes are not available with `--result-id`.
@@ -249,6 +249,10 @@ hotdata databases context push <name> [--database <id>] [--dry-run]
 ```
 hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--dialect hotsql|duckdb|postgres|snowflake] [--output table|json|csv]
 hotdata query status <query_run_id>
+
+# Same commands under the databases group (identical flags and exit codes)
+hotdata databases query "<sql>" [-d <database>] [--output table|json|csv]
+hotdata databases query status <query_run_id>
 ```
 
 - Default output is `table` (row count and execution time).
