@@ -384,13 +384,13 @@ hotdata ingest create --source "prod postgres" --table orders --schema public \
 #   --stream               shorthand for --type continuous (still needs --every).
 #                          Offered only where `hotdata ingest sources fields
 #                          <family>` says `continuous: yes` — today filesystem,
-#                          derived, kafka, iggy; the server refuses it elsewhere.
+#                          kafka, iggy; the server refuses it elsewhere.
 # Destination flags instead of --destination:
 #   --database-id (required)  --dest-schema (default public)  --write-mode (default replace)
 #   --dest-table <name>       for sources that land ONE table: buckets, delta,
 #                             --raw-sql (defaults to --table there)
 #   --dest-table-prefix <p>   for sources that land SEVERAL (sql --table/--sql,
-#                             iceberg, ducklake, kafka, rest): `orders` lands as
+#                             iceberg, ducklake, kafka, iggy, rest): `orders` lands as
 #                             `<p>_orders`. Optional, but only one prefix-less
 #                             ingest can own a database+schema — a second one
 #                             must pick a prefix or it overwrites the first.

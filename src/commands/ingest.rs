@@ -228,8 +228,8 @@ pub enum IngestCommands {
         dest_table: Option<String>,
 
         /// Common prefix for the destination tables of a source that lands
-        /// SEVERAL: SQL --table/--sql, Iceberg, DuckLake, Kafka, REST. Each
-        /// source table `orders` lands as `<prefix>_orders`.
+        /// SEVERAL: SQL --table/--sql, Iceberg, DuckLake, Kafka, Iggy, REST.
+        /// Each source table `orders` lands as `<prefix>_orders`.
         ///
         /// Optional. Without it the source names are used unchanged, which is
         /// what a raw mirror of a schema or a catalog wants — but only one
@@ -839,8 +839,9 @@ fn build_selector(plan: &CreatePlan) -> Result<(serde_json::Value, Option<String
     if selector.is_empty() {
         return Err(
             "nothing to read — pass --table <name> (SQL, Iceberg, DuckLake), --table-path \
-             <path> (Delta), --topic <name> (Kafka; Iggy as stream/topic), --format with an optional --glob \
-             (buckets), --sql, --raw-sql, --all, or the whole --selector as JSON. A REST \
+             <path> (Delta), --topic <name> (Kafka; Iggy as stream/topic), --format with an \
+             optional --glob (buckets), --sql, --raw-sql, --all, or the whole --selector as \
+             JSON. A REST \
              source is --selector only: its resources carry endpoints, not just names \
              ('hotdata ingest sources fields rest')"
                 .into(),
