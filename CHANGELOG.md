@@ -1,3 +1,10 @@
+## [0.36.1] - 2026-09-22
+
+### 📚 Documentation
+
+- *(skills)* Sync with streamed results; gate releases on skill freshness (#311)
+- *(streaming)* One --topic vocabulary for kafka and iggy (#312)
+- *(ingest)* Name iggy wherever the family lists are spelled (#313)
 ## [0.36.0] - 2026-09-19
 
 ### 🐛 Bug Fixes
