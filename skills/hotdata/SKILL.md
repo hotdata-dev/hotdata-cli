@@ -321,7 +321,7 @@ hotdata ingest sources add --family sql --config @source.json --display-name "pr
 #    "credentials": {"username": …, "password": …}}
 # --config also accepts a bare config object, @- (stdin), or inline JSON.
 # --credentials takes the secret half separately. Keep secrets out of argv.
-# Families: sql, filesystem (buckets), kafka, iceberg, delta, ducklake, rest.
+# Families: sql, filesystem (buckets), kafka, iggy, iceberg, delta, ducklake, rest.
 # The fields each half takes: hotdata ingest sources fields <family>.
 # Two config fields have a flag of their own, which BUILDS that JSON:
 hotdata ingest sources add --family filesystem --bucket-url s3://events-prod
@@ -346,7 +346,8 @@ hotdata ingest create --datasource-id ds_01J --type one-time \
 # selector.json is family-specific (what subset to read) — its fields, and the
 #   write modes this family accepts: hotdata ingest sources fields <family>.
 # destination.json is {"database_id", "schema", "table", "write_mode"} —
-#   write_mode: replace | upsert (upsert needs a continuous bucket ingest).
+#   write_mode: replace | upsert (upsert needs a continuous ingest of a family
+#   that stamps a row key: filesystem, kafka, iggy).
 #   Selector and destination are both IMMUTABLE after creation.
 # CREATE STARTS NOTHING, for every type. It returns no run id, and
 # `ingest logs <id>` is EMPTY until the scheduler claims the ingest — normal,
@@ -369,13 +370,21 @@ hotdata ingest create --source "prod postgres" --table orders --schema public \
 #   --schema <name>        source schema (sql)
 #   --format csv|jsonl|parquet, --glob "**/*.parquet"   (bucket sources)
 #   --record-shape otel_traces|mqtt_observations        (bucket sources)
-#   --topic <name>         Kafka topic, REPEATABLE — topics live on the ingest,
-#                          not the datasource, which is the cluster (kafka)
+#   --topic <name>         log topic, REPEATABLE, one flag for every log engine
+#                          (kafka, iggy). Topics live on the ingest, not the
+#                          datasource, which is the cluster/server. An entry
+#                          carries the engine's hierarchy as a path: kafka has
+#                          one level (--topic orders), iggy two
+#                          (--topic events/orders). The table is named from the
+#                          whole path (events_orders).
 #   --table-path <path>    ONE Delta table under the datasource root, e.g.
 #                          warehouse/orders — name it with --dest-table (delta)
 #   --all                  everything the datasource exposes (buckets need --format)
 #   --limit N              stop after N source rows
-#   --stream               shorthand for --type continuous (still needs --every)
+#   --stream               shorthand for --type continuous (still needs --every).
+#                          Offered only where `hotdata ingest sources fields
+#                          <family>` says `continuous: yes` — today filesystem,
+#                          derived, kafka, iggy; the server refuses it elsewhere.
 # Destination flags instead of --destination:
 #   --database-id (required)  --dest-schema (default public)  --write-mode (default replace)
 #   --dest-table <name>       for sources that land ONE table: buckets, delta,
@@ -414,6 +423,9 @@ hotdata ingest run <run-id>          # exits 0 succeeded / 1 failed|cancelled / 
 ```
 
 Agent tips:
+- **Streaming (kafka, iggy) is tail-by-batch, not a live subscription.** A continuous ingest runs on its `--every` interval; each run resumes from the committed position (per topic: partition → last offset read), loads only what is new, and commits the new position after a clean load. Rows carry the partition and offset as a key (`_kafka_partition`/`_kafka_offset` on kafka, `_source_partition`/`_source_offset` on iggy), so a re-read upserts rather than duplicates. Latency is one interval plus job start-up. A run that finds nothing new succeeds as `no new messages`.
+- **Retention gaps fail loudly.** If the source has expired messages past the committed offset, the run **fails** naming the partition and the count, and the position is not advanced — the ingest stops progressing rather than skipping data. Recreating the ingest is how to accept the loss; lengthening retention or shortening `--every` is how to avoid it.
+- **`start: latest` is a continuous-only selector field (kafka).** On the first run it seeds the position at the head without reading; the bounded one-time/scheduled reader refuses it.
 - **There is no `trigger-import` / run-now verb, by design.** Nothing you can call starts a run — the scheduler dispatches every one. A one-time ingest is created *due*, so it is claimed on the next tick; scheduled/continuous ones are claimed on their schedule, and each run recovers from the last committed state. To make the next scheduled run happen now: `hotdata ingest schedule <ingest-id> --next now`. To load again from scratch: create another one-time ingest.
 - **An empty run list right after `ingest create` is normal.** The scheduler has not claimed the ingest yet. Poll `ingest logs <ingest-id>` until a run appears rather than treating the gap as a failed create — re-creating the ingest here is how you end up with two loads into one table.
 - **`pause` means both halves** — stop the current run *and* stop future dispatch. `resume` is its inverse and is deliberately not a trigger.

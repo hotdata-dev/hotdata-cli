@@ -163,13 +163,17 @@ pub enum IngestCommands {
         #[arg(long = "table-path", conflicts_with_all = ["tables", "topics", "format", "glob"])]
         table_path: Option<String>,
 
-        /// Kafka topic to read, repeatable (Kafka sources).
+        /// Topic to read, repeatable (Kafka sources, and Iggy sources as
+        /// `stream/topic`).
         ///
-        /// The datasource is the CLUSTER — one credential opens it and each
-        /// ingest picks its own topics — which is why topics are named here
-        /// and not on the datasource. Each topic lands in a destination table
-        /// of its own name; put them under a common one with
-        /// --dest-table-prefix.
+        /// One flag for every log engine. The datasource is the CLUSTER or
+        /// SERVER — one credential opens it and each ingest picks its own
+        /// topics — which is why topics are named here and not on the
+        /// datasource. An entry carries the engine's own hierarchy as a
+        /// path: Kafka has one level (`--topic orders`), Iggy two
+        /// (`--topic events/orders`). Each topic lands in a destination
+        /// table named from the whole path (`events_orders`); put them under
+        /// a common prefix with --dest-table-prefix.
         #[arg(long = "topic", conflicts_with_all = ["tables", "format", "glob"])]
         topics: Vec<String>,
 
@@ -835,7 +839,7 @@ fn build_selector(plan: &CreatePlan) -> Result<(serde_json::Value, Option<String
     if selector.is_empty() {
         return Err(
             "nothing to read — pass --table <name> (SQL, Iceberg, DuckLake), --table-path \
-             <path> (Delta), --topic <name> (Kafka), --format with an optional --glob \
+             <path> (Delta), --topic <name> (Kafka; Iggy as stream/topic), --format with an optional --glob \
              (buckets), --sql, --raw-sql, --all, or the whole --selector as JSON. A REST \
              source is --selector only: its resources carry endpoints, not just names \
              ('hotdata ingest sources fields rest')"
