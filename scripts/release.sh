@@ -2,8 +2,8 @@
 # release.sh — two-phase release wrapper around cargo-release
 #
 # Usage:
-#   scripts/release.sh prepare <version>   # branch, bump, changelog PR
-#   scripts/release.sh finish              # tag only (main is branch-protected)
+#   scripts/release.sh prepare <version>   # skill check, branch, bump, changelog PR
+#   scripts/release.sh finish              # skill check, tag only (main is branch-protected)
 
 set -euo pipefail
 
@@ -44,6 +44,9 @@ case "$COMMAND" in
         BRANCH="release/$VERSION"
 
         require_clean_tree
+
+        echo "→ Checking agent skills against the code..."
+        scripts/check-skills.sh
 
         echo "→ Creating branch $BRANCH"
         git checkout -b "$BRANCH"
@@ -98,6 +101,9 @@ case "$COMMAND" in
 
         echo ""
         echo "→ Release version from Cargo.toml: $VERSION (tag $TAG)"
+
+        echo "→ Checking agent skills against the code and version..."
+        scripts/check-skills.sh --require-version
 
         if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "error: tag $TAG already exists locally. Delete it or pick a new version." >&2

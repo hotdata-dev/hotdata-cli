@@ -26,7 +26,8 @@ hotdata query status <query_run_id>
 - Use **`hotdata databases tables list`** for schema discovery — not `information_schema` via `query`.
 - Fully qualified names: `<catalog>.<schema>.<table>`, `<database>.<schema>.<table>`.
 - **Query scope:** every query runs inside one instant database (active or `--database`); it sees that database's own catalog plus whatever is **attached** to it only. To read another database's table, or **join your own table against one**, attach that database first: `hotdata databases attach <database>` — see **`hotdata`** skill → [Querying across databases](../../SKILL.md#querying-across-databases-attach). No instant database set → *"a database is required."*
-- Long-running queries may return `query_run_id` → poll with **`query status`** (exit `2` = still running). Do not re-run identical heavy SQL while polling.
+- Long-running queries may return `query_run_id` → poll with **`query status`** — exit `0` succeeded, `1` failed, `2` still running (poll again), `3` succeeded but the printed result is an incomplete/truncated preview. Do not re-run identical heavy SQL while polling.
+- **Big result sets:** use `-o csv` or `-o json` — both stream the full persisted result with flat memory. `-o table` is a human view capped at 10,000 rows; past that the footer reads `N of TOTAL rows — INCOMPLETE PREVIEW` and the command exits `3`. Details in the **`hotdata`** skill → Execute SQL Query.
 - For **workspace-wide** joins and naming, load **context:DATAMODEL** when listed (`hotdata databases context list` → `show DATAMODEL`) — see **`hotdata`** skill.
 
 ### OLAP patterns
@@ -45,11 +46,11 @@ Column names from CSV uploads may be case-sensitive — use double quotes when n
 
 ## Query run history
 
-Uses the **active workspace only** (no `--workspace-id`; set with `hotdata workspaces use`).
+Scoped to the **active database** (set with `hotdata databases use`); pass `-d/--database <id>` to target another, `-w/--workspace-id` for another workspace.
 
 ```bash
-hotdata databases queries list [--limit <int>] [--cursor <token>] [--status <csv>] [--output table|json|yaml]
-hotdata databases queries <query_run_id> [--output table|json|yaml]
+hotdata databases queries list [-d <db-id>] [--workspace-id <workspace_id>] [--limit <int>] [--cursor <token>] [--status <csv>] [--output table|json|yaml]
+hotdata databases queries <query_run_id> [-d <db-id>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 
 - `list` — status, duration, row count, SQL preview (default limit 20). Filter: `--status running,failed`.
@@ -61,11 +62,11 @@ hotdata databases queries <query_run_id> [--output table|json|yaml]
 ## Stored results
 
 ```bash
-hotdata databases results list [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--output table|json|yaml]
-hotdata databases results get <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]
+hotdata databases results list [-d <db-id>] [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--output table|json|yaml]
+hotdata databases results get <result_id> [-d <db-id>] [--workspace-id <workspace_id>] [--output table|json|csv]
 ```
 
-- Prefer **`databases results get <id>`** over re-running identical heavy queries.
+- Prefer **`databases results get <id>`** over re-running identical heavy queries. It renders like `query`: `csv`/`json` stream the whole result, `table` is capped at 10,000 rows and exits `3` when the result is larger. Results and query runs scope to the active database; pass `-d/--database <id>` to target another.
 - Query footers may include `[result-id: rslt...]`; also available from `databases queries <query_run_id>`.
 - `databases results list --limit` defaults to **100** (max **1000**) — unlike `databases queries list`, which defaults to **20**.
 

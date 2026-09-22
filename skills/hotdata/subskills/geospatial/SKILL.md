@@ -18,9 +18,9 @@ All SQL below runs through the core CLI:
 hotdata query "<sql>" [--workspace-id <id>] [--database <db>] [--output table|json|csv]
 ```
 
-- **Fully qualify tables** as `<catalog>.<schema>.<table>` (or `<catalog>.<schema>.<table>` for an instant database) — every `<table>` placeholder below means a qualified name.
+- **Fully qualify tables** as `<catalog>.<schema>.<table>`, where the catalog is the instant database's `--catalog` alias (or the alias of an attached database) — every `<table>` placeholder below means a qualified name.
 - **PostgreSQL dialect:** double-quote any non-lowercase identifier (e.g. `"GeoID"`).
-- Discover candidate tables/columns with **`hotdata databases tables list`** (filter with `--schema`/`--table`) or **`hotdata databases tables list`** (tables inside an instant database) — see core skill.
+- Discover candidate tables with **`hotdata databases tables list`** (filter with `--schema`/`--table`) and columns with **`hotdata databases tables show <catalog.schema.table>`** — see core skill.
 
 ---
 

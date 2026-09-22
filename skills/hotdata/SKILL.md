@@ -43,8 +43,6 @@ Optional: pass **`--debug`** on any command to print verbose HTTP request/respon
 
 Commands that accept `--workspace-id` default to the active workspace from config when omitted. Use `hotdata workspaces use` to switch interactively, or `hotdata workspaces use <workspace_id>` for a direct choice. In `hotdata workspaces list`, the `*` marker labels the **default** workspace the CLI resolves to.
 
-**`hotdata databases queries` does not accept `--workspace-id`:** query run history always uses the active workspace—set it with `workspaces use` first if needed.
-
 If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked** to that value: passing a different `--workspace-id` is an error, and **`hotdata workspaces use` fails** (“workspace is locked”).
 
 **Omit `--workspace-id` unless you need to target a specific workspace** (and it is not locked by env or session).
@@ -107,7 +105,7 @@ hotdata databases fork [<id>] [--name <display_name>] [--expires-at <duration|ti
 hotdata databases lineage [<id>] [--forks-limit <n>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 hotdata databases use <id>
 hotdata databases unset
-hotdata databases <id> [--workspace-id <workspace_id>] [--output table|json|yaml]
+hotdata databases show <id> [--workspace-id <workspace_id>] [--output table|json|yaml]   # or the shorthand: hotdata databases <id>
 hotdata databases remove <id> [--workspace-id <workspace_id>]
 
 # Attach another database so its tables are queryable (enables cross-database queries — see below)
@@ -132,7 +130,7 @@ hotdata databases tables remove <table> [--database <id>] [--schema public] [--w
 - `lineage` — renders a database's **whole fork family tree**, walked from the root down (defaults to the active database; one lineage request per database, fine for the small families forks produce in practice): every reachable generation, with the queried database marked `← this database`. Lineage is a historical record, not a live link — the databases stay independent, and a **deleted** generation stays in the chain (marked `deleted`), though its own fork list can't be enumerated: such branches end with `⋯ forks unknown`. Forks made before the server recorded lineage carry none. `--forks-limit <n>` pages each database's direct-fork list (server clamps to 1–100); a truncated branch closes with `⋯ N more`. `-o json`/`yaml` return `{database_id, root_id, tree}` with a recursive `tree` node.
 - `use` — saves the database **id** as the active database. Subsequent `databases tables` and `databases context` commands use it automatically. Note that a successful `fork` also updates this: the fork becomes the active database.
 - `unset` — clears the active database from config.
-- `<id>` — inspect one database (returns id, catalog, name, expires_at; a fork also shows its `forked_from` record).
+- `show <id>` / `<id>` — inspect one database (returns id, catalog, name, expires_at, attached databases; a fork also shows its `forked_from` record).
 - `remove` — removes the instant database; clears the active-database config if it matched.
 - `load` (top-level shorthand) — loads a file into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). **Formats:** csv, json (`.json`/`.jsonl`/`.ndjson`), and parquet; the format comes from the file's extension, and `--format` overrides it (needed when the extension is absent or misleading). An unrecognised extension is not rejected — the server reads the bytes, and a file that plainly opens a json array is taken as json even without an extension. A json source in any shape (array, pretty-printed, one object per line) is reshaped locally to newline-delimited json before upload; an already-newline-delimited file is uploaded untouched. A table or schema that was never declared is declared by the server as part of the load, so no up-front `--table` is required.
 - **Load modes** (`--mode`, default `replace`) — `replace` supersedes the table's contents; `append` adds rows; `delete`, `update`, and `upsert` match existing rows **by key**. `--append` is the old shorthand for `--mode append` and still works, but the two cannot be combined. The keyed modes need a key: declare one with `databases tables add --key`, or name it per-load with `--key` (repeat for a composite key). `delete` uploads only the key columns; `update` replaces matching rows and ignores unmatched ones; `upsert` inserts the unmatched instead. Keyed modes are not available with `--result-id`.
@@ -251,6 +249,10 @@ hotdata databases context push <name> [--database <id>] [--dry-run]
 ```
 hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--dialect hotsql|duckdb|postgres|snowflake] [--output table|json|csv]
 hotdata query status <query_run_id>
+
+# Same commands under the databases group (identical flags and exit codes)
+hotdata databases query "<sql>" [-d <database>] [--output table|json|csv]
+hotdata databases query status <query_run_id>
 ```
 
 - Default output is `table` (row count and execution time).
@@ -258,7 +260,8 @@ hotdata query status <query_run_id>
 - Use `hotdata databases tables list` and `hotdata databases tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes. To write DuckDB/Postgres/Snowflake SQL instead, pass `--dialect` (server-side transpile, read-only queries) — details in **`hotdata-analytics`**.
 - Async runs return `query_run_id` → poll with `query status <id>` (do not re-run the same heavy SQL). `query status` exit codes: `0` succeeded, `1` failed, `2` still running (poll again), `3` succeeded but the result is a truncated/incomplete preview.
-- **Large results are complete, not a preview.** The server returns inline rows only up to a bounded cap and persists the full set out-of-band; `hotdata query` transparently fetches the full result, so the printed rows and row count are the complete set. (If the full result can't be retrieved, the CLI prints the preview and a `warning:` to stderr.)
+- **Large results: `-o csv` / `-o json` are complete, `-o table` is capped.** The server returns inline rows only up to a bounded cap and persists the full set under a `result_id`. For `csv` and `json` the CLI **streams** that full result batch by batch, so output size is unbounded and memory stays flat — pipe a big result to a file with `-o csv`/`-o json`, never `table`. For `table` the CLI fetches at most **10,000 rows** and the footer says `N of TOTAL rows — INCOMPLETE PREVIEW` (with `?` when the server sent no total); the process exits **3** so a pipeline cannot mistake it for the whole set. Same rules for `hotdata databases results get`. A result the server is still writing is waited for (up to 5 minutes, honoring `Retry-After`) rather than returned partial. If the full result can't be retrieved, the CLI prints the inline preview, a `warning:` to stderr, and exits 3. `-o json` carries `row_count`, `total_row_count`, and `truncated` — branch on `truncated`, not on the row count.
+- **Numbers print exactly.** A `DECIMAL(38,2)` or other wide number is printed with every digit the service sent, in every output format; `-o json` emits it as an unquoted JSON number. One consequence: a list or struct cell prints on a single line in `-o json` (re-indenting would mean re-parsing and rounding it); scalars are unaffected.
 - **Backpressure is handled.** Under heavy concurrent load the server may shed a query with HTTP 429 (`OVERLOADED`); the CLI auto-retries (honoring `Retry-After`) before surfacing an error — no manual retry needed.
 - **OLAP** (aggregations, history, Chain, sorted indexes): **`hotdata-analytics`** skill.
 - **Search** (BM25, vector): **`hotdata-search`** skill.
@@ -327,7 +330,7 @@ hotdata ingest sources add --family filesystem --bucket-url s3://events-prod
 # They merge with --config, flag last. --no-wait returns without watching the
 # new source settle; the wait is a poll and starts nothing.
 
-hotdata ingest sources list [--family sql] [--state active]   # ids, families, states
+hotdata ingest sources list [--family sql] [--state active] [--include-deleted]   # ids, families, states
 hotdata ingest sources show <source-id>                       # state, config version, discovery
 hotdata ingest sources update-config <source-id> --config @source.json
 # Appends an immutable config version under the SAME id and moves the pointer.
@@ -366,11 +369,22 @@ hotdata ingest create --source "prod postgres" --table orders --schema public \
 #   --schema <name>        source schema (sql)
 #   --format csv|jsonl|parquet, --glob "**/*.parquet"   (bucket sources)
 #   --record-shape otel_traces|mqtt_observations        (bucket sources)
-#   --all                  everything under a bucket root (needs --format)
+#   --topic <name>         Kafka topic, REPEATABLE — topics live on the ingest,
+#                          not the datasource, which is the cluster (kafka)
+#   --table-path <path>    ONE Delta table under the datasource root, e.g.
+#                          warehouse/orders — name it with --dest-table (delta)
+#   --all                  everything the datasource exposes (buckets need --format)
 #   --limit N              stop after N source rows
+#   --stream               shorthand for --type continuous (still needs --every)
 # Destination flags instead of --destination:
-#   --database-id (required)  --dest-table (defaults to the single --table)
-#   --dest-schema (default public)  --write-mode (default replace)
+#   --database-id (required)  --dest-schema (default public)  --write-mode (default replace)
+#   --dest-table <name>       for sources that land ONE table: buckets, delta,
+#                             --raw-sql (defaults to --table there)
+#   --dest-table-prefix <p>   for sources that land SEVERAL (sql --table/--sql,
+#                             iceberg, ducklake, kafka, rest): `orders` lands as
+#                             `<p>_orders`. Optional, but only one prefix-less
+#                             ingest can own a database+schema — a second one
+#                             must pick a prefix or it overwrites the first.
 
 hotdata ingest create --datasource-id ds_01J --database-id db_123 \
   --sql "SELECT id, status FROM public.orders WHERE status = 'open' LIMIT 1000"
@@ -384,7 +398,7 @@ hotdata ingest create --datasource-id ds_01J --database-id db_123 \
 # CTEs, window functions. Only the result set transfers, into --table. (A query
 # has no source table, so --table names where the result lands.)
 
-hotdata ingest list [--datasource-id ds_01J] [--type continuous] [--state active]
+hotdata ingest list [--datasource-id ds_01J] [--type continuous] [--state active] [--include-deleted]
 hotdata ingest show <ingest-id>
 hotdata ingest pause <ingest-id>     # stops the active run AND future runs
 hotdata ingest resume <ingest-id>    # clears the stop; starts NOTHING immediately
@@ -392,7 +406,7 @@ hotdata ingest schedule <ingest-id> --every 5m [--next now]
 hotdata ingest remove <ingest-id>    # releases the destination table; data untouched
 
 # --- runs --------------------------------------------------------------------
-hotdata ingest logs <ingest-id> [--status failed]   # every attempt, newest first
+hotdata ingest logs <ingest-id> [--status failed]   # every attempt, newest first (--ingest-id <id> is the flag form)
 hotdata ingest run <run-id>          # exits 0 succeeded / 1 failed|cancelled / 2 in flight
 # --wait on either polls to a terminal status (--wait-timeout, default 300s;
 # exit 2 on timeout). It WATCHES: the scheduler owns dispatch, so waiting cannot
@@ -470,7 +484,7 @@ hotdata auth logout           # Remove saved auth for the default profile
 hotdata support report -m "<body>" --subject "<subject>" [--kind bug|question|billing|feature|account|other] [--severity urgent|high|medium|low] [-w <workspace_id> | --no-workspace] [--logs <path>|-] [--context KEY=VALUE ...] [-o table|json|yaml]
 ```
 
-Files a support ticket via the API — no browser needed. `-m`/`--subject` are required together for non-interactive use (agents: always pass both); omit both in an interactive terminal to compose in `$EDITOR` instead. Attaches the active workspace by default (`--no-workspace` to omit, `-w` for a specific one); `--logs` reads a file or `-` for stdin (cap 256 KiB); `--context key=value` adds extra diagnostic pairs (repeatable, max 20). Prints the ticket's `public_id` on success — replies go to the email on the HotData account, not to the CLI.
+Files a support ticket via the API — no browser needed. `-m`/`--message` and `--subject` are required together for non-interactive use (agents: always pass both); omit both in an interactive terminal to compose in `$EDITOR` instead. Attaches the active workspace by default (`--no-workspace` to omit, `-w` for a specific one); `--logs` reads a file or `-` for stdin (cap 256 KiB); `--context key=value` adds extra diagnostic pairs (repeatable, max 20). Prints the ticket's `public_id` on success — replies go to the email on the HotData account, not to the CLI.
 
 ## Workflows
 
