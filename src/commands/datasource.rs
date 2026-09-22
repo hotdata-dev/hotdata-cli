@@ -64,7 +64,7 @@ pub enum DatasourceCommands {
     #[command(name = "test")]
     Validate {
         /// Source family — the shape of --config: sql, filesystem, iceberg,
-        /// delta, ducklake, kafka, rest. Use `sql` for any SQL dialect (the
+        /// delta, ducklake, kafka, iggy, rest. Use `sql` for any SQL dialect (the
         /// dialect goes in the config) and `filesystem` for buckets.
         ///
         /// Not validated here on purpose: the service decides which families
@@ -93,7 +93,7 @@ pub enum DatasourceCommands {
     #[command(name = "add")]
     Create {
         /// Source family — the shape of --config: sql, filesystem, iceberg,
-        /// delta, ducklake, kafka, rest. Use `sql` for any SQL dialect (the
+        /// delta, ducklake, kafka, iggy, rest. Use `sql` for any SQL dialect (the
         /// dialect goes in the config) and `filesystem` for buckets.
         ///
         /// Omit it on a terminal to pick a source type from the catalog.
@@ -184,7 +184,7 @@ pub enum DatasourceCommands {
     /// script to build a form from.
     Fields {
         /// Family to describe — the FAMILY column of `hotdata ingest sources
-        /// types`, e.g. sql, filesystem, iceberg, kafka, rest
+        /// types`, e.g. sql, filesystem, iceberg, kafka, iggy, rest
         family: Option<String>,
     },
 }
@@ -509,7 +509,7 @@ fn create(
     let from_flags = (!payload.is_empty() || !util::is_interactive()).then(|| {
         let Some(family) = family else {
             fail(
-                "--family is required (sql, filesystem, iceberg, delta, ducklake, kafka, rest). \
+                "--family is required (sql, filesystem, iceberg, delta, ducklake, kafka, iggy, rest). \
                  Run 'hotdata ingest sources add' in a terminal to be asked instead.",
             );
         };
