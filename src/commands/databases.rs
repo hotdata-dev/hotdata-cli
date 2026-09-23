@@ -100,6 +100,12 @@ pub enum DatabasesCommands {
         #[arg(long)]
         expires_at: Option<String>,
 
+        /// Why the fork is being taken, e.g. "what-if on Q3 pricing". Kept on
+        /// the fork's lineage record and shown by `databases <id>` and
+        /// `databases lineage`. Set at fork time only; it cannot be edited later.
+        #[arg(long)]
+        description: Option<String>,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
@@ -546,6 +552,9 @@ pub struct ForkedFrom {
     pub snapshot_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forked_at: Option<String>,
+    /// Why the fork was taken, as given at fork time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 impl From<hotdata::models::ForkedFromInfo> for ForkedFrom {
@@ -555,6 +564,7 @@ impl From<hotdata::models::ForkedFromInfo> for ForkedFrom {
             name: f.name.flatten(),
             snapshot_id: f.snapshot_id.flatten(),
             forked_at: f.forked_at.flatten(),
+            description: f.description.flatten(),
         }
     }
 }
@@ -874,18 +884,21 @@ pub fn fork_database_request(
     name: Option<&str>,
     source_label: Option<&str>,
     expires_at: Option<&str>,
+    description: Option<&str>,
 ) -> hotdata::models::ForkDatabaseRequest {
     let name = name
         .map(str::to_string)
         .or_else(|| source_label.map(|l| format!("{l}-fork")));
 
-    // The SDK models both fields as double-option: `None` omits the field
+    // The SDK models these fields as double-option: `None` omits the field
     // (server applies its default — inherit the source's name/expiry), while
-    // `Some(Some(v))` sends the value. We never send an explicit null.
+    // `Some(Some(v))` sends the value. We never send an explicit null. The
+    // description is sent as given: the server trims it, treats blank as
+    // absent, and owns the length and control-character checks.
     hotdata::models::ForkDatabaseRequest {
         name: name.map(Some),
         expires_at: expires_at.map(|e| Some(e.to_string())),
-        description: None,
+        description: description.map(|d| Some(d.to_string())),
     }
 }
 
@@ -1780,11 +1793,14 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                 db.default_connection_id.clone().dark_cyan()
             );
             if let Some(f) = &db.forked_from {
-                println!(
-                    "{}{}",
-                    label("forked_from:"),
-                    lineage_row(&LineageEntry::from(f.clone()), false)
-                );
+                println!("{}{}", label("forked_from:"), forked_from_row(f));
+                if let Some(d) = &f.description {
+                    println!(
+                        "{}{}",
+                        label("fork description:"),
+                        indent_continuation(d, 24)
+                    );
+                }
             }
             let catalog = db
                 .default_catalog
@@ -2088,6 +2104,7 @@ pub fn fork(
     database: Option<&str>,
     name: Option<&str>,
     expires_at: Option<&str>,
+    description: Option<&str>,
     format: &str,
 ) {
     use crossterm::style::Stylize;
@@ -2100,6 +2117,7 @@ pub fn fork(
         name,
         db.name.as_deref().or(db.default_catalog.as_deref()),
         expires_at,
+        description,
     );
 
     // The copy is synchronous but bucket-internal (server-side object copy, no
@@ -2148,11 +2166,15 @@ pub fn fork(
             // snapshot); the resolved source id is the fallback for servers
             // that predate lineage.
             match &result.forked_from {
-                Some(f) => println!(
-                    "forked_from: {}",
-                    lineage_row(&LineageEntry::from(f.clone()), false)
-                ),
+                Some(f) => println!("forked_from: {}", forked_from_row(f)),
                 None => println!("forked_from: {}", db.id),
+            }
+            if let Some(d) = result
+                .forked_from
+                .as_ref()
+                .and_then(|f| f.description.as_deref())
+            {
+                println!("description: {}", indent_continuation(d, 13));
             }
             // Always printed, "never" included: with --expires-at omitted a
             // still-future expiry on the source is silently inherited.
@@ -2199,6 +2221,9 @@ struct LineageEntry {
     snapshot_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     forked_at: Option<String>,
+    /// Why the fork was taken, as given at fork time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
     /// False once that database has been deleted; its place in the record is
     /// kept either way.
     exists: bool,
@@ -2211,6 +2236,7 @@ impl From<hotdata::models::LineageAncestorInfo> for LineageEntry {
             name: a.name.flatten(),
             snapshot_id: a.snapshot_id.flatten(),
             forked_at: a.forked_at.flatten(),
+            description: a.description.flatten(),
             exists: a.exists,
         }
     }
@@ -2223,6 +2249,7 @@ impl From<hotdata::models::LineageForkInfo> for LineageEntry {
             name: f.name.flatten(),
             snapshot_id: f.snapshot_id.flatten(),
             forked_at: f.forked_at.flatten(),
+            description: f.description.flatten(),
             exists: f.exists,
         }
     }
@@ -2238,6 +2265,7 @@ impl From<ForkedFrom> for LineageEntry {
             name: f.name,
             snapshot_id: f.snapshot_id,
             forked_at: f.forked_at,
+            description: f.description,
             exists: true,
         }
     }
@@ -2286,6 +2314,38 @@ fn fetch_lineage(
     .map(LineageResponse::from)
 }
 
+/// Longest description shown on a one-line lineage row; the full text is in
+/// `-o json`/`yaml` and on `databases <id>`.
+const DESCRIPTION_SUMMARY_CHARS: usize = 60;
+
+/// A fork description squeezed onto one row: its first line, cut at
+/// [`DESCRIPTION_SUMMARY_CHARS`], with `…` marking anything left out.
+fn description_summary(d: &str) -> String {
+    let mut lines = d.lines();
+    let first = lines.next().unwrap_or("");
+    let mut out: String = first.chars().take(DESCRIPTION_SUMMARY_CHARS).collect();
+    if out.len() < first.len() || lines.next().is_some() {
+        out.push('…');
+    }
+    out
+}
+
+/// Indent every line after the first by `width` spaces, so a multi-line value
+/// stays aligned under its label.
+fn indent_continuation(s: &str, width: usize) -> String {
+    s.lines()
+        .collect::<Vec<_>>()
+        .join(&format!("\n{}", " ".repeat(width)))
+}
+
+/// A `forked_from:` row. The description is left off because both views that
+/// print this row give it a line of its own.
+fn forked_from_row(f: &ForkedFrom) -> String {
+    let mut entry = LineageEntry::from(f.clone());
+    entry.description = None;
+    lineage_row(&entry, false)
+}
+
 /// One `id (name) — root, forked <date>, snapshot <n>, deleted` line of the
 /// lineage tree and the `forked_from:` rows. The id leads: it's the only field
 /// guaranteed present, and the handle every other databases command accepts.
@@ -2308,6 +2368,9 @@ fn lineage_row(e: &LineageEntry, root: bool) -> String {
     }
     if !e.exists {
         notes.push("deleted".to_string());
+    }
+    if let Some(d) = &e.description {
+        notes.push(format!("\"{}\"", description_summary(d)));
     }
     if !notes.is_empty() {
         s.push(' ');
@@ -2393,6 +2456,7 @@ fn build_lineage_tree(
         name: db_name.map(str::to_string),
         snapshot_id: None,
         forked_at: None,
+        description: None,
         exists: true,
     };
     // Known descent, root-first: reversed ancestors (the segment the response
@@ -2400,7 +2464,7 @@ fn build_lineage_tree(
     let mut chain: Vec<LineageEntry> = lin.ancestors.iter().rev().cloned().collect();
     chain.push(self_entry);
     // The server annotates each ancestor entry with the fork edge BELOW it —
-    // the snapshot of that ancestor the next generation copied, and when.
+    // the snapshot of that ancestor the next generation copied, when, and why.
     // Tree rows carry their own creation edge (the forks-list convention), so
     // shift the metadata one generation down. The top of the chain keeps
     // none: a root has no fork event, and below a truncation the edge above
@@ -2408,10 +2472,12 @@ fn build_lineage_tree(
     for i in (1..chain.len()).rev() {
         chain[i].snapshot_id = chain[i - 1].snapshot_id;
         chain[i].forked_at = chain[i - 1].forked_at.clone();
+        chain[i].description = chain[i - 1].description.clone();
     }
     if let Some(first) = chain.first_mut() {
         first.snapshot_id = None;
         first.forked_at = None;
+        first.description = None;
     }
     // parent id → next generation toward the queried database, for grafting
     // past a node whose own lineage cannot be fetched.
@@ -2428,6 +2494,7 @@ fn build_lineage_tree(
             name: None,
             snapshot_id: None,
             forked_at: None,
+            description: None,
             exists: true,
         },
     };
@@ -3240,6 +3307,7 @@ mod tests {
                 name: Some("staging".to_string()),
                 snapshot_id: Some(42),
                 forked_at: Some("2026-09-01T14:00:00Z".to_string()),
+                description: Some("q3 what-if\nsecond line".to_string()),
                 exists: false,
             },
             true,
@@ -3250,6 +3318,9 @@ mod tests {
         assert!(row.contains("root, forked"), "row: {row}");
         assert!(row.contains("snapshot 42"), "row: {row}");
         assert!(row.contains("deleted"), "row: {row}");
+        // Only the first line of a description fits on a row.
+        assert!(row.contains("\"q3 what-if…\""), "row: {row}");
+        assert!(!row.contains("second line"), "row: {row}");
 
         // A bare entry (pre-lineage fork) is just the id — no dangling "—".
         let bare = lineage_row(
@@ -3258,6 +3329,7 @@ mod tests {
                 name: None,
                 snapshot_id: None,
                 forked_at: None,
+                description: None,
                 exists: true,
             },
             false,
@@ -3367,7 +3439,9 @@ mod tests {
             .with_body(lineage_body(
                 "db_c",
                 "db_a",
-                r#"{"database_id":"db_b","exists":false},{"database_id":"db_a","name":"prod","exists":true}"#,
+                // Each ancestor's description is why the generation BELOW it
+                // was forked: db_b's is C's reason, db_a's is B's.
+                r#"{"database_id":"db_b","exists":false,"description":"c from b"},{"database_id":"db_a","name":"prod","exists":true,"description":"b from a"}"#,
                 "",
                 0,
             ))
@@ -3381,7 +3455,7 @@ mod tests {
                 "db_a",
                 "db_a",
                 "",
-                r#"{"database_id":"db_b","exists":false}"#,
+                r#"{"database_id":"db_b","exists":false,"description":"b from a"}"#,
                 1,
             ))
             .create();
@@ -3401,6 +3475,11 @@ mod tests {
         assert_eq!(b.entry.database_id, "db_b");
         assert!(b.forks_unknown);
         assert_eq!(b.forks[0].entry.database_id, "db_c");
+        // The grafted node takes its reason from the shifted ancestor chain,
+        // so each description lands on the fork it explains.
+        assert_eq!(t.tree.entry.description, None);
+        assert_eq!(b.entry.description.as_deref(), Some("b from a"));
+        assert_eq!(b.forks[0].entry.description.as_deref(), Some("c from b"));
 
         let json = serde_json::to_value(&t).unwrap();
         assert_eq!(json["tree"]["forks"][0]["forks_unknown"], true);
@@ -3484,6 +3563,7 @@ mod tests {
             name: name.map(str::to_string),
             snapshot_id: None,
             forked_at: None,
+            description: None,
             exists: true,
         };
         let node = |id: &str, name: Option<&str>, unlisted: i64, forks: Vec<LineageTreeNode>| {
@@ -4097,18 +4177,66 @@ mod tests {
         let to_json = |r| serde_json::to_value(&r).unwrap();
         // Explicit --name wins over the derived default.
         assert_eq!(
-            to_json(fork_database_request(Some("my-fork"), Some("sales"), None)),
+            to_json(fork_database_request(
+                Some("my-fork"),
+                Some("sales"),
+                None,
+                None
+            )),
             serde_json::json!({"name": "my-fork"})
         );
         // Omitted --name derives "<source-label>-fork".
         assert_eq!(
-            to_json(fork_database_request(None, Some("sales"), Some("24h"))),
+            to_json(fork_database_request(
+                None,
+                Some("sales"),
+                Some("24h"),
+                None
+            )),
             serde_json::json!({"name": "sales-fork", "expires_at": "24h"})
         );
         // No name anywhere: send nothing and let the server default.
         assert_eq!(
-            to_json(fork_database_request(None, None, None)),
+            to_json(fork_database_request(None, None, None, None)),
             serde_json::json!({})
+        );
+        // --description is sent as given, line breaks intact.
+        assert_eq!(
+            to_json(fork_database_request(
+                None,
+                None,
+                None,
+                Some("what-if on Q3 pricing\nbefore the migration")
+            )),
+            serde_json::json!({"description": "what-if on Q3 pricing\nbefore the migration"})
+        );
+    }
+
+    #[test]
+    fn forked_from_row_leaves_the_description_to_its_own_line() {
+        let row = forked_from_row(&ForkedFrom {
+            database_id: "db_src".to_string(),
+            name: Some("sales".to_string()),
+            snapshot_id: Some(42),
+            forked_at: None,
+            description: Some("q3 what-if".to_string()),
+        });
+        assert!(row.contains("db_src"), "row: {row}");
+        assert!(!row.contains("q3 what-if"), "row: {row}");
+    }
+
+    #[test]
+    fn description_summary_keeps_one_short_line() {
+        assert_eq!(description_summary("q3 what-if"), "q3 what-if");
+        assert_eq!(description_summary("first line\nsecond"), "first line…");
+        let long = "x".repeat(DESCRIPTION_SUMMARY_CHARS + 5);
+        let summary = description_summary(&long);
+        assert_eq!(summary.chars().count(), DESCRIPTION_SUMMARY_CHARS + 1);
+        assert!(summary.ends_with('…'));
+        // Multi-byte text is cut on a character boundary, not a byte.
+        assert_eq!(
+            description_summary(&"é".repeat(70)).chars().count(),
+            DESCRIPTION_SUMMARY_CHARS + 1
         );
     }
 
@@ -4126,7 +4254,7 @@ mod tests {
             .mock("POST", "/v1/databases/db_src/fork")
             .match_header("X-Workspace-Id", "ws1")
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&fork_database_request(None, Some("sales"), Some("1h")))
+                serde_json::to_string(&fork_database_request(None, Some("sales"), Some("1h"), None))
                     .unwrap(),
             ))
             .with_status(201)
@@ -4138,7 +4266,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "k", Some("ws1"));
         let db = resolve_database(&api, "db_src");
-        let request = fork_database_request(None, db.name.as_deref(), Some("1h"));
+        let request = fork_database_request(None, db.name.as_deref(), Some("1h"), None);
         let resp = block(api.client().databases().fork(&db.id, request)).unwrap();
         assert_eq!(resp.id, "db_fork");
         assert_eq!(resp.name.flatten().as_deref(), Some("sales-fork"));
@@ -4166,7 +4294,7 @@ mod tests {
         let err = block(
             api.client()
                 .databases()
-                .fork("db_old", fork_database_request(None, None, None)),
+                .fork("db_old", fork_database_request(None, None, None, None)),
         )
         .expect_err("unforkable source should return an error");
         match err {
