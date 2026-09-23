@@ -270,12 +270,14 @@ fn main() {
                             database,
                             name,
                             expires_at,
+                            description,
                             output,
                         }) => databases::fork(
                             &workspace_id,
                             database.as_deref(),
                             name.as_deref(),
                             expires_at.as_deref(),
+                            description.as_deref(),
                             &output,
                         ),
                         Some(DatabasesCommands::Lineage {

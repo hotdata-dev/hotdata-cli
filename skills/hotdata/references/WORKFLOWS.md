@@ -161,7 +161,7 @@ Before destructive experimentation (bulk replaces, schema rework, testing a load
 ```bash
 hotdata databases list                    # note the source database id (dbid...)
 hotdata databases use <source_id>         # source to protect (`use` takes an id)
-hotdata databases fork --expires-at 24h   # deep copy; becomes the active database — note the fork id it prints
+hotdata databases fork --expires-at 24h --description "test risky.parquet load"   # deep copy; becomes the active database — note the fork id it prints
 hotdata databases load --catalog sales --table orders --file ./risky.parquet  # hits the fork
 ```
 
