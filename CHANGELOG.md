@@ -2,19 +2,15 @@
 
 ### 🚀 Features
 
-- *(databases)* Record why a fork was taken
+- *(databases)* Record why a fork was taken (#315)
 
 ### 🐛 Bug Fixes
 
-- *(tables)* Send --key-determines as constant_per_key
+- *(tables)* Send --key-determines as constant_per_key (#316)
 
 ### 💼 Other
 
-- *(deps)* Bump hotdata SDK to 0.19.0
-
-### 📚 Documentation
-
-- *(tables)* Move the add_table doc comment back onto add_table
+- *(deps)* Bump hotdata SDK to 0.19.0 (#317)
 ## [0.36.1] - 2026-09-22
 
 ### 📚 Documentation
