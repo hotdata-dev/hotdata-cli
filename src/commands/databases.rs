@@ -957,7 +957,6 @@ fn partition_keys(values: &[String]) -> Result<Vec<serde_json::Value>, String> {
         .collect()
 }
 
-/// `databases tables add` — declare a table on an existing instant database.
 /// Build the request body for `POST /v1/databases/{id}/schemas/{schema}/tables`,
 /// leaving out every empty list so the server applies its defaults.
 fn table_declaration_body(
@@ -985,6 +984,7 @@ fn table_declaration_body(
     body
 }
 
+/// `databases tables add` — declare a table on an existing instant database.
 #[allow(clippy::too_many_arguments)]
 pub fn add_table(
     workspace_id: &str,
