@@ -885,6 +885,7 @@ pub fn fork_database_request(
     hotdata::models::ForkDatabaseRequest {
         name: name.map(Some),
         expires_at: expires_at.map(|e| Some(e.to_string())),
+        description: None,
     }
 }
 
@@ -3897,7 +3898,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
         let page0 = server
@@ -3909,7 +3910,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
             )
             .create();
 
@@ -4023,7 +4024,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
+                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
             )
             .expect(1)
             .create();
@@ -4049,7 +4050,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
 
