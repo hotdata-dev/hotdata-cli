@@ -971,6 +971,33 @@ fn partition_keys(values: &[String]) -> Result<Vec<serde_json::Value>, String> {
         .collect()
 }
 
+/// Build the request body for `POST /v1/databases/{id}/schemas/{schema}/tables`,
+/// leaving out every empty list so the server applies its defaults.
+fn table_declaration_body(
+    table: &str,
+    key: &[String],
+    key_determines: &[String],
+    sorted_by: &[serde_json::Value],
+    partition_by: &[serde_json::Value],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({ "name": table });
+    if !key.is_empty() {
+        body["key"] = serde_json::json!(key);
+    }
+    if !key_determines.is_empty() {
+        // The API calls this `constant_per_key`; the flag keeps its original
+        // name. The server rejects unknown fields, so the old wire name fails.
+        body["constant_per_key"] = serde_json::json!(key_determines);
+    }
+    if !sorted_by.is_empty() {
+        body["sorted_by"] = serde_json::json!(sorted_by);
+    }
+    if !partition_by.is_empty() {
+        body["partition_by"] = serde_json::json!(partition_by);
+    }
+    body
+}
+
 /// `databases tables add` — declare a table on an existing instant database.
 #[allow(clippy::too_many_arguments)]
 pub fn add_table(
@@ -1015,19 +1042,7 @@ pub fn add_table(
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
 
-    let mut body = serde_json::json!({ "name": table });
-    if !key.is_empty() {
-        body["key"] = serde_json::json!(key);
-    }
-    if !key_determines.is_empty() {
-        body["key_determines"] = serde_json::json!(key_determines);
-    }
-    if !sorted_by.is_empty() {
-        body["sorted_by"] = serde_json::json!(sorted_by);
-    }
-    if !partition_by.is_empty() {
-        body["partition_by"] = serde_json::json!(partition_by);
-    }
+    let body = table_declaration_body(table, key, key_determines, &sorted_by, &partition_by);
 
     let (status, resp) = declare_table(&api, &db.id, schema, &body);
 
@@ -4170,6 +4185,29 @@ mod tests {
         assert_eq!(parsed.name.as_deref(), Some("mydb"));
         assert_eq!(parsed.default_connection_id, "conn_abc");
         mock.assert();
+    }
+
+    #[test]
+    fn table_declaration_body_sends_key_determines_as_constant_per_key() {
+        let cols = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            table_declaration_body(
+                "orders",
+                &cols(&["order_id"]),
+                &cols(&["event_date"]),
+                &[],
+                &[]
+            ),
+            serde_json::json!({
+                "name": "orders",
+                "key": ["order_id"],
+                "constant_per_key": ["event_date"],
+            })
+        );
+        assert_eq!(
+            table_declaration_body("orders", &[], &[], &[], &[]),
+            serde_json::json!({"name": "orders"})
+        );
     }
 
     #[test]
