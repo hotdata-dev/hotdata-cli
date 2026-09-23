@@ -1,3 +1,16 @@
+## [0.37.0] - 2026-09-23
+
+### 🚀 Features
+
+- *(databases)* Record why a fork was taken (#315)
+
+### 🐛 Bug Fixes
+
+- *(tables)* Send --key-determines as constant_per_key (#316)
+
+### 💼 Other
+
+- *(deps)* Bump hotdata SDK to 0.19.0 (#317)
 ## [0.36.1] - 2026-09-22
 
 ### 📚 Documentation
