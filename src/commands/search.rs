@@ -37,8 +37,8 @@ pub enum SearchCommands {
 
         /// Vector index algorithm (default: hnsw). `hnsw` searches an in-memory
         /// graph whose memory grows with the table. `ivf` clusters the vectors
-        /// and reads only the nearest clusters: slower searches, but it serves
-        /// tables too large for hnsw. `ivf` needs a column that already holds
+        /// and reads only the nearest clusters, so its memory follows how much
+        /// a search reads rather than the table's size. `ivf` needs a column that already holds
         /// vectors and the `l2` or `cosine` metric.
         #[arg(long, value_parser = ["hnsw", "ivf"])]
         algorithm: Option<String>,
