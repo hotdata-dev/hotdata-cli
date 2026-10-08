@@ -58,6 +58,8 @@ hotdata search list [--workspace-id <ws>] [--output table|json|yaml]
 hotdata search create <name> --type text|vector --from <catalog.schema.table> \
   --column <col> \
   [--metric l2|cosine|dot] [--async] \
+  [--algorithm hnsw|ivf] [--nlist <n>] [--probe-fraction <f>] \
+  [--vector-precision float64|float32|float16|float8|int8] \
   [--provider <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 
 # Show — by index name, in the active database (or -d/--database <id>)
@@ -70,6 +72,8 @@ hotdata search remove <name> [-d <db-id>]
 - **`--type` is required** on create: `text` (BM25; one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`** — [`../analytics/SKILL.md`](../analytics/SKILL.md).)
 - **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md)) — this skill focuses on retrieval types.
 - **`--async`:** poll with `hotdata jobs <job_id>` (see **`hotdata`** skill **Jobs**).
+- **Vector algorithm (`--algorithm`, default `hnsw`):** `hnsw` searches an in-memory graph — fastest, but memory grows with the table, so a large enough table cannot be served. `ivf` clusters the vectors and reads only the clusters nearest each search — slower, but memory follows how much is read, so it serves tables too large for `hnsw`. `ivf` needs a column that already holds vectors (no `--provider`) and the `l2` or `cosine` metric (`dot` is refused). IVF-only tuning: `--nlist <n>` (number of clusters, 1–65536; default chosen from the table's size) and `--probe-fraction <f>` (share of the index a search reads, 0 < f ≤ 1; higher = better recall, slower); both are rejected unless `--algorithm ivf`.
+- **`--vector-precision`:** how compactly the index stores each vector value. Defaults: the column's own precision for `hnsw`, `int8` for `ivf`. `ivf` accepts `int8` and `float32` only; `hnsw` accepts everything except `int8` (`float8` is its 8-bit option). Lower precision shrinks the index at some recall cost — measure on your own data. Changing it means removing and recreating the index.
 - **Auto-embedding:** `--type vector` on a **text** column generates embeddings server-side. Optional `--provider`; default output column `{column}_embedding` (override with `--output-column`). The generated column becomes part of the table, so it shows up in `information_schema.columns` and in a hand-written `SELECT *` — `hotdata search` leaves it out of its own projection (see `--select` above).
 
 Full workflow (gather workload → compare existing → create → verify): [references/INDEXES.md](references/INDEXES.md).
