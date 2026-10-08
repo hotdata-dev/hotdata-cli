@@ -31,3 +31,30 @@ fn search_create_help_documents_vector_algorithm_flags() {
         "help: {help}"
     );
 }
+
+#[test]
+fn search_create_help_documents_database_flag() {
+    let output = hotdata()
+        .args(["search", "create", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--database"), "help: {help}");
+}
+
+#[test]
+fn query_help_documents_id_output() {
+    for args in [
+        &["query", "--help"][..],
+        &["databases", "query", "--help"][..],
+    ] {
+        let output = hotdata().args(args).output().unwrap();
+        assert!(output.status.success());
+        let help = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            help.contains("possible values: table, json, csv, id"),
+            "{args:?} help: {help}"
+        );
+    }
+}
