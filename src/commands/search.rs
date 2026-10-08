@@ -35,6 +35,31 @@ pub enum SearchCommands {
         #[arg(long, value_parser = ["l2", "cosine", "dot"])]
         metric: Option<String>,
 
+        /// Vector index algorithm (default: hnsw). `hnsw` searches an in-memory
+        /// graph whose memory grows with the table. `ivf` clusters the vectors
+        /// and reads only the nearest clusters: slower searches, but it serves
+        /// tables too large for hnsw. `ivf` needs a column that already holds
+        /// vectors and the `l2` or `cosine` metric.
+        #[arg(long, value_parser = ["hnsw", "ivf"])]
+        algorithm: Option<String>,
+
+        /// Number of clusters for an `ivf` index, 1–65536 (default: chosen from
+        /// the table's size). Requires `--algorithm ivf`.
+        #[arg(long)]
+        nlist: Option<u32>,
+
+        /// Fraction of an `ivf` index a search reads, greater than 0 and at most
+        /// 1 (default: server's choice). Higher finds more true neighbours and
+        /// takes longer. Requires `--algorithm ivf`.
+        #[arg(long = "probe-fraction")]
+        probe_fraction: Option<f64>,
+
+        /// How precisely the vector index stores each vector value (default:
+        /// the column's precision for hnsw, `int8` for ivf). `ivf` accepts
+        /// `int8` and `float32`; `hnsw` accepts all but `int8`.
+        #[arg(long = "vector-precision", value_parser = ["float64", "float32", "float16", "float8", "int8"])]
+        vector_precision: Option<String>,
+
         /// Embedding provider ID (vector over a text column → auto-embeddings)
         #[arg(long = "provider")]
         provider: Option<String>,
@@ -110,6 +135,10 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             from,
             column,
             metric,
+            algorithm,
+            nlist,
+            probe_fraction,
+            vector_precision,
             provider,
             dimensions,
             output_column,
@@ -122,6 +151,12 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             &from,
             &column,
             metric.as_deref(),
+            &indexes::VectorIndexOptions {
+                algorithm: algorithm.as_deref(),
+                nlist,
+                probe_fraction,
+                vector_precision: vector_precision.as_deref(),
+            },
             provider.as_deref(),
             dimensions,
             output_column.as_deref(),
@@ -273,6 +308,7 @@ fn create(
     from: &str,
     column: &str,
     metric: Option<&str>,
+    vector: &indexes::VectorIndexOptions<'_>,
     provider: Option<&str>,
     dimensions: Option<u32>,
     output_column: Option<&str>,
@@ -327,6 +363,7 @@ fn create(
         dimensions,
         output_column,
         description,
+        vector,
     );
 }
 
@@ -441,6 +478,87 @@ fn remove(workspace_id: &str, database: Option<&str>, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(subcommand)]
+        cmd: SearchCommands,
+    }
+
+    fn parse(args: &[&str]) -> Result<SearchCommands, clap::Error> {
+        Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).map(|w| w.cmd)
+    }
+
+    const CREATE_VECTOR: &[&str] = &[
+        "create",
+        "--type",
+        "vector",
+        "--from",
+        "db.public.docs",
+        "--column",
+        "embedding",
+    ];
+
+    #[test]
+    fn create_leaves_vector_options_unset_by_default() {
+        match parse(CREATE_VECTOR).unwrap() {
+            SearchCommands::Create {
+                algorithm,
+                nlist,
+                probe_fraction,
+                vector_precision,
+                ..
+            } => {
+                assert_eq!(algorithm, None);
+                assert_eq!(nlist, None);
+                assert_eq!(probe_fraction, None);
+                assert_eq!(vector_precision, None);
+            }
+            _ => panic!("expected Create"),
+        }
+    }
+
+    #[test]
+    fn create_parses_ivf_options() {
+        let mut args = CREATE_VECTOR.to_vec();
+        args.extend([
+            "--algorithm",
+            "ivf",
+            "--nlist",
+            "1024",
+            "--probe-fraction",
+            "0.05",
+            "--vector-precision",
+            "int8",
+        ]);
+        match parse(&args).unwrap() {
+            SearchCommands::Create {
+                algorithm,
+                nlist,
+                probe_fraction,
+                vector_precision,
+                ..
+            } => {
+                assert_eq!(algorithm.as_deref(), Some("ivf"));
+                assert_eq!(nlist, Some(1024));
+                assert_eq!(probe_fraction, Some(0.05));
+                assert_eq!(vector_precision.as_deref(), Some("int8"));
+            }
+            _ => panic!("expected Create"),
+        }
+    }
+
+    #[test]
+    fn create_rejects_unknown_algorithm_and_precision() {
+        let mut args = CREATE_VECTOR.to_vec();
+        args.extend(["--algorithm", "flat"]);
+        assert!(parse(&args).is_err());
+
+        let mut args = CREATE_VECTOR.to_vec();
+        args.extend(["--vector-precision", "int4"]);
+        assert!(parse(&args).is_err());
+    }
 
     const EMB: &str = "txt_embedding";
 

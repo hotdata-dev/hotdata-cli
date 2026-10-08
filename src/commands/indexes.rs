@@ -435,6 +435,70 @@ impl IndexScope<'_> {
     }
 }
 
+/// How a vector index stores and searches its vectors. Every field is
+/// optional and is sent only when set, so leaving them all unset sends the
+/// same request as before these options existed and the server applies its
+/// defaults (an `hnsw` index). The server validates combinations — e.g. `nlist`
+/// without `algorithm = ivf` — and its message is surfaced as-is.
+#[derive(Default)]
+pub struct VectorIndexOptions<'a> {
+    pub algorithm: Option<&'a str>,
+    pub nlist: Option<u32>,
+    pub probe_fraction: Option<f64>,
+    pub vector_precision: Option<&'a str>,
+}
+
+/// Build the JSON body for `POST .../indexes`. Optional fields are omitted
+/// rather than sent as `null`.
+#[allow(clippy::too_many_arguments)]
+fn create_body(
+    name: &str,
+    cols: &[&str],
+    index_type: &str,
+    metric: Option<&str>,
+    async_mode: bool,
+    embedding_provider_id: Option<&str>,
+    dimensions: Option<u32>,
+    output_column: Option<&str>,
+    description: Option<&str>,
+    vector: &VectorIndexOptions<'_>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "index_name": name,
+        "columns": cols,
+        "index_type": index_type,
+        "async": async_mode,
+    });
+    if let Some(m) = metric {
+        body["metric"] = serde_json::json!(m);
+    }
+    if let Some(p) = embedding_provider_id {
+        body["embedding_provider_id"] = serde_json::json!(p);
+    }
+    if let Some(d) = dimensions {
+        body["dimensions"] = serde_json::json!(d);
+    }
+    if let Some(o) = output_column {
+        body["output_column"] = serde_json::json!(o);
+    }
+    if let Some(d) = description {
+        body["description"] = serde_json::json!(d);
+    }
+    if let Some(a) = vector.algorithm {
+        body["algorithm"] = serde_json::json!(a);
+    }
+    if let Some(n) = vector.nlist {
+        body["nlist"] = serde_json::json!(n);
+    }
+    if let Some(f) = vector.probe_fraction {
+        body["probe_fraction"] = serde_json::json!(f);
+    }
+    if let Some(p) = vector.vector_precision {
+        body["vector_precision"] = serde_json::json!(p);
+    }
+    body
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn create(
     workspace_id: &str,
@@ -448,6 +512,7 @@ pub fn create(
     dimensions: Option<u32>,
     output_column: Option<&str>,
     description: Option<&str>,
+    vector: &VectorIndexOptions<'_>,
 ) {
     use crossterm::style::Stylize;
 
@@ -474,27 +539,18 @@ pub fn create(
 
     let api = Api::new(Some(workspace_id));
 
-    let mut body = serde_json::json!({
-        "index_name": name,
-        "columns": cols,
-        "index_type": index_type,
-        "async": async_mode,
-    });
-    if let Some(m) = metric {
-        body["metric"] = serde_json::json!(m);
-    }
-    if let Some(p) = embedding_provider_id {
-        body["embedding_provider_id"] = serde_json::json!(p);
-    }
-    if let Some(d) = dimensions {
-        body["dimensions"] = serde_json::json!(d);
-    }
-    if let Some(o) = output_column {
-        body["output_column"] = serde_json::json!(o);
-    }
-    if let Some(d) = description {
-        body["description"] = serde_json::json!(d);
-    }
+    let body = create_body(
+        name,
+        &cols,
+        index_type,
+        metric,
+        async_mode,
+        embedding_provider_id,
+        dimensions,
+        output_column,
+        description,
+        vector,
+    );
 
     // POST stays on the seam's raw helper: the SDK's `create_index` deserializes
     // into `IndexInfoResponse`, which has no job `id` field, so the async-mode
@@ -1097,5 +1153,106 @@ mod tests {
         let rows = list_one_table_scan(&api, "x", "s", "t").unwrap();
         mock.assert();
         assert!(rows.is_empty());
+    }
+
+    fn vector_body(vector: &VectorIndexOptions<'_>) -> serde_json::Value {
+        create_body(
+            "docs_embedding_vector",
+            &["embedding"],
+            "vector",
+            Some("cosine"),
+            false,
+            None,
+            None,
+            None,
+            None,
+            vector,
+        )
+    }
+
+    #[test]
+    fn create_body_without_vector_options_sends_no_algorithm_fields() {
+        // Leaving the options unset must send exactly the request the CLI sent
+        // before they existed, so the server applies its default (hnsw).
+        let body = vector_body(&VectorIndexOptions::default());
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "index_name": "docs_embedding_vector",
+                "columns": ["embedding"],
+                "index_type": "vector",
+                "async": false,
+                "metric": "cosine",
+            })
+        );
+    }
+
+    #[test]
+    fn create_body_carries_ivf_algorithm_and_options() {
+        let body = vector_body(&VectorIndexOptions {
+            algorithm: Some("ivf"),
+            nlist: Some(1024),
+            probe_fraction: Some(0.05),
+            vector_precision: Some("int8"),
+        });
+        assert_eq!(body["algorithm"], "ivf");
+        assert_eq!(body["nlist"], 1024);
+        assert_eq!(body["probe_fraction"], 0.05);
+        assert_eq!(body["vector_precision"], "int8");
+        assert_eq!(body["metric"], "cosine");
+    }
+
+    #[test]
+    fn create_body_sends_only_the_options_that_are_set() {
+        // `--algorithm ivf` alone leaves nlist, probe_fraction and precision to
+        // the server's defaults: they are omitted, never sent as null.
+        let body = vector_body(&VectorIndexOptions {
+            algorithm: Some("ivf"),
+            ..Default::default()
+        });
+        let obj = body.as_object().unwrap();
+        assert_eq!(obj["algorithm"], "ivf");
+        for key in ["nlist", "probe_fraction", "vector_precision"] {
+            assert!(!obj.contains_key(key), "{key} should be omitted: {body}");
+        }
+    }
+
+    #[test]
+    fn create_posts_ivf_request_body() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/v1/connections/cid/tables/public/docs/indexes")
+            .match_header("Authorization", "Bearer k")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "index_name": "docs_embedding_vector",
+                "columns": ["embedding"],
+                "index_type": "vector",
+                "async": false,
+                "metric": "cosine",
+                "algorithm": "ivf",
+                "nlist": 256,
+                "probe_fraction": 0.1,
+                "vector_precision": "float32",
+            })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body("{}")
+            .create();
+
+        let scope = IndexScope::Connection {
+            connection_id: "cid",
+            schema: "public",
+            table: "docs",
+        };
+        let body = vector_body(&VectorIndexOptions {
+            algorithm: Some("ivf"),
+            nlist: Some(256),
+            probe_fraction: Some(0.1),
+            vector_precision: Some("float32"),
+        });
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let (status, _) = api.post_raw(&scope.create_path(), &body).unwrap();
+        mock.assert();
+        assert!(status.is_success());
     }
 }
