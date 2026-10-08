@@ -61,8 +61,9 @@ pub enum Commands {
         #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake"])]
         dialect: String,
 
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        /// Output format. `id` prints only the stored result's id, without
+        /// downloading rows (for commands that read a result by id)
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv", "id"])]
         output: String,
 
         #[command(subcommand)]
