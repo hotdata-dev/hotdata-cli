@@ -39,6 +39,7 @@ hotdata search "<query>" --in <name>
 - **Index name:** the index carries its own type, column, and provider — you only name the index. Use `search list` to see available index names.
 - **`--select`:** defaults to the table's own columns. An auto-embed vector index materialises a `{column}_embedding` column on the table, and a search leaves it out — it is a 1536-float list in every row, tens of kilobytes per search nobody asked for. Ask for it back with `--select '*'`, or name it (`--select 'id,body_embedding'`); pair either with `--output json`, since `--output table` abbreviates long lists for display.
 - **Custom embedding model, raw query vector, or no vector index?** Use `hotdata query` directly (e.g. `cosine_distance(col, [<vec>])`) — `search` only auto-embeds the query text via the index's own provider.
+- **`ivf` indexes are queried with SQL, not `search "<text>"`:** an `ivf` index is over a column that already holds vectors, so there is no model to embed the text; `search` refuses it and prints the query to run instead: `hotdata query 'SELECT * FROM <catalog.schema.table> ORDER BY <l2_distance|cosine_distance>(<col>, [<query vector>]) LIMIT <k>'` (the function matches the index's metric).
 - **Before search:** create the right index (`search create <name> --type text` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
 - Default `--limit` is 10.
 - **Database:** the search commands resolve the index in the **active** database (`hotdata databases use <id>`). Pass `-d/--database <id>` to target a different database explicitly — it is required when no active database is set. The same `-d/--database` works on `search show` and `search remove`.
@@ -55,8 +56,9 @@ Indexes are an **instant-database** concept, and belong to the database's own ta
 hotdata search list [--workspace-id <ws>] [--output table|json|yaml]
 
 # Create — index name is positional; --from is an instant database's table
+# (catalog.schema.table, or schema.table in -d/--database or the active database)
 hotdata search create <name> --type text|vector --from <catalog.schema.table> \
-  --column <col> \
+  --column <col> [-d <db-id>] \
   [--metric l2|cosine|dot] [--async] \
   [--algorithm hnsw|ivf] [--nlist <n>] [--probe-fraction <f>] \
   [--vector-precision float64|float32|float16|float8|int8] \
@@ -71,6 +73,8 @@ hotdata search remove <name> [-d <db-id>]
 
 - **`--type` is required** on create: `text` (BM25; one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`** — [`../analytics/SKILL.md`](../analytics/SKILL.md).)
 - **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md)) — this skill focuses on retrieval types.
+- **`-d/--database <id>`** on create picks the database for a `schema.table` `--from` (instead of the active one); it cannot be combined with a `catalog.schema.table` `--from`.
+- **`search show`** prints a vector index's `metric`, `algorithm`, `probe_fraction` and `vector_precision` when the API reports them; `search list` adds an `ALGORITHM` column, and its `-o json|yaml` carries all of them. The cluster count (`nlist`) is not reported back by the API.
 - **`--async`:** poll with `hotdata jobs <job_id>` (see **`hotdata`** skill **Jobs**).
 - **Vector algorithm (`--algorithm`, default `hnsw`):** `hnsw` searches an in-memory graph whose memory grows with the table. `ivf` clusters the vectors and reads only the clusters nearest each search, so its memory follows how much a search reads rather than the table's size. `ivf` needs a column that already holds vectors (no `--provider`) and the `l2` or `cosine` metric (`dot` is refused). IVF-only tuning: `--nlist <n>` (number of clusters, 1–65536; default chosen from the table's size) and `--probe-fraction <f>` (share of the index a search reads, 0 < f ≤ 1; higher = better recall, slower); both are rejected unless `--algorithm ivf`.
 - **`--vector-precision`:** how compactly the index stores each vector value. Defaults: the column's own precision for `hnsw`, `int8` for `ivf`. `ivf` accepts `int8` and `float32` only; `hnsw` accepts everything except `int8` (`float8` is its 8-bit option). Lower precision shrinks the index at some recall cost — measure on your own data. Changing it means removing and recreating the index.

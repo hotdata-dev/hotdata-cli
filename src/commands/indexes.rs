@@ -17,6 +17,18 @@ struct Index {
     /// (existing-column) vector indexes. Older servers omit it entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_column: Option<String>,
+    /// How a vector index organises its vectors: `hnsw` or `ivf`. Absent for
+    /// BM25 and sorted indexes, and from servers that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    algorithm: Option<String>,
+    /// Share of an `ivf` index a search reads, when the index was created with
+    /// an explicit one. Absent means the server's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    probe_fraction: Option<f64>,
+    /// Stored precision of a vector index, when created with an explicit one.
+    /// Absent means the column's own precision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vector_precision: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -363,6 +375,7 @@ pub fn list(
                             r.inner.index_type.clone(),
                             r.inner.columns.join(", "),
                             r.inner.metric.clone().unwrap_or_default(),
+                            r.inner.algorithm.clone().unwrap_or_default(),
                             r.inner.status.clone(),
                             crate::util::format_date(&r.inner.created_at),
                         ]
@@ -370,7 +383,14 @@ pub fn list(
                     .collect();
                 crate::output::table::print(
                     &[
-                        "TABLE", "NAME", "TYPE", "COLUMNS", "METRIC", "STATUS", "CREATED",
+                        "TABLE",
+                        "NAME",
+                        "TYPE",
+                        "COLUMNS",
+                        "METRIC",
+                        "ALGORITHM",
+                        "STATUS",
+                        "CREATED",
                     ],
                     &table_rows,
                 );
@@ -383,13 +403,22 @@ pub fn list(
                             r.inner.index_type.clone(),
                             r.inner.columns.join(", "),
                             r.inner.metric.clone().unwrap_or_default(),
+                            r.inner.algorithm.clone().unwrap_or_default(),
                             r.inner.status.clone(),
                             crate::util::format_date(&r.inner.created_at),
                         ]
                     })
                     .collect();
                 crate::output::table::print(
-                    &["NAME", "TYPE", "COLUMNS", "METRIC", "STATUS", "CREATED"],
+                    &[
+                        "NAME",
+                        "TYPE",
+                        "COLUMNS",
+                        "METRIC",
+                        "ALGORITHM",
+                        "STATUS",
+                        "CREATED",
+                    ],
                     &table_rows,
                 );
             }
@@ -596,6 +625,9 @@ pub struct LocatedIndex {
     pub generated_columns: Vec<String>,
     pub status: String,
     pub metric: Option<String>,
+    pub algorithm: Option<String>,
+    pub probe_fraction: Option<f64>,
+    pub vector_precision: Option<String>,
 }
 
 /// Find a search index by name within an instant database.
@@ -654,6 +686,9 @@ pub fn locate_by_name(
                 generated_columns: one.inner.generated_columns(),
                 status: one.inner.status.clone(),
                 metric: one.inner.metric.clone(),
+                algorithm: one.inner.algorithm.clone(),
+                probe_fraction: one.inner.probe_fraction,
+                vector_precision: one.inner.vector_precision.clone(),
             })
         }
         _ => Err(format!(
@@ -1254,5 +1289,47 @@ mod tests {
         let (status, _) = api.post_raw(&scope.create_path(), &body).unwrap();
         mock.assert();
         assert!(status.is_success());
+    }
+
+    #[test]
+    fn list_one_table_carries_vector_index_settings() {
+        // `search list -o json` and `search show` report how a vector index was
+        // built; a field the API leaves out stays out of the JSON too.
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/v1/connections/cid/tables/sch/tbl/indexes")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"indexes":[{
+                "index_name":"docs_ivf","index_type":"vector","columns":["embedding"],
+                "metric":"cosine","algorithm":"ivf","probe_fraction":0.05,
+                "vector_precision":"int8","status":"ready",
+                "created_at":"2020-01-01T00:00:00Z","updated_at":"2020-01-01T00:00:00Z"
+            },{
+                "index_name":"docs_body","index_type":"bm25","columns":["body"],
+                "metric":null,"status":"ready",
+                "created_at":"2020-01-01T00:00:00Z","updated_at":"2020-01-01T00:00:00Z"
+            }]}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", None);
+        let rows = list_one_table(&api, "cid", "sch", "tbl").unwrap();
+        mock.assert();
+        assert_eq!(rows[0].algorithm.as_deref(), Some("ivf"));
+        assert_eq!(rows[0].probe_fraction, Some(0.05));
+        assert_eq!(rows[0].vector_precision.as_deref(), Some("int8"));
+
+        let ivf = serde_json::to_value(&rows[0]).unwrap();
+        assert_eq!(ivf["algorithm"], "ivf");
+        assert_eq!(ivf["probe_fraction"], 0.05);
+        assert_eq!(ivf["vector_precision"], "int8");
+
+        let bm25 = serde_json::to_value(&rows[1]).unwrap();
+        let bm25 = bm25.as_object().unwrap();
+        for key in ["algorithm", "probe_fraction", "vector_precision"] {
+            assert!(!bm25.contains_key(key), "{key} should be omitted: {bm25:?}");
+        }
     }
 }
