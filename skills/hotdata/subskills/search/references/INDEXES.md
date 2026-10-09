@@ -25,7 +25,7 @@ High-cardinality **text** (`title`, `body`, …) → **bm25**. **Embedding** / f
 hotdata search list
 ```
 
-With no filters, this is a whole-workspace scan that **includes instant-database indexes** (shown under the internal `__db_<id>.<schema>.<table>` label). Skip duplicates (same table, column, and purpose).
+With no filters, this is a whole-workspace scan that **includes instant-database indexes** (shown as `<catalog>.<schema>.<table>`, the database's own catalog — the name you query and pass to `--from`). Skip duplicates (same table, column, and purpose).
 
 ## 3. Create indexes
 
@@ -37,7 +37,14 @@ hotdata search create <table>_body --type text \
 
 hotdata search create <table>_embedding_vec --type vector \
   --from <alias>.<schema>.<table> --column embedding --metric cosine
+
+# Table too large for an in-memory hnsw index: cluster it with ivf instead
+hotdata search create <table>_embedding_ivf --type vector \
+  --from <alias>.<schema>.<table> --column embedding --metric cosine \
+  --algorithm ivf [--nlist <n>] [--probe-fraction <f>] [--vector-precision int8|float32]
 ```
+
+Vector indexes default to `--algorithm hnsw`. Choose `ivf` when the table is too large to serve from memory; it works only on columns that already hold vectors, and supports `l2`/`cosine` (not `dot`). See the search skill for `--nlist`, `--probe-fraction`, and `--vector-precision`.
 
 Indexes are created on **instant databases** only, and on the database's own tables: an index is a write, and an attached database is read-only. To index a table that lives in another database, build the index there, or load a copy into this one — attaching it does not make it indexable here.
 

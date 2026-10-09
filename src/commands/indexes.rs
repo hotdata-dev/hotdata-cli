@@ -17,6 +17,18 @@ struct Index {
     /// (existing-column) vector indexes. Older servers omit it entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_column: Option<String>,
+    /// How a vector index organises its vectors: `hnsw` or `ivf`. Absent for
+    /// BM25 and sorted indexes, and from servers that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    algorithm: Option<String>,
+    /// Share of an `ivf` index a search reads, when the index was created with
+    /// an explicit one. Absent means the server's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    probe_fraction: Option<f64>,
+    /// Stored precision of a vector index, when created with an explicit one.
+    /// Absent means the column's own precision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vector_precision: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -114,16 +126,35 @@ fn scan_connection_id<'a>(
 }
 
 /// One table to scan for indexes, paired with the connection id its per-table
-/// index call must address. The `table.connection` field carries the display
-/// label (a connection name, or an instant database's internal `__db_*` label),
-/// which can differ from the real `conn_id` used for the API call.
+/// index call must address and the catalog its rows are labelled under.
+/// `table.connection` is what `information_schema` reports, which for an
+/// instant database is its internal `__db_*` label; `label` is the database's
+/// catalog instead, the name its tables are queried by.
 struct ScanTarget {
     conn_id: String,
+    label: String,
     table: InfoTable,
 }
 
-/// Resolve the `default_connection_id` of every instant database in the
-/// workspace, in parallel.
+/// The catalog an instant database's tables are queried under: its
+/// `default_catalog`, else its name, else `default`.
+pub(crate) fn database_catalog(db: &databases::Database) -> String {
+    catalog_label(db.default_catalog.as_deref(), db.name.as_deref())
+}
+
+fn catalog_label(default_catalog: Option<&str>, name: Option<&str>) -> String {
+    default_catalog.or(name).unwrap_or("default").to_string()
+}
+
+/// An instant database's own connection and the catalog its tables are
+/// labelled under in `search list`.
+pub struct DatabaseConnection<'a> {
+    pub connection_id: &'a str,
+    pub catalog: &'a str,
+}
+
+/// Resolve the `default_connection_id` and catalog of every instant database
+/// in the workspace, in parallel.
 ///
 /// These are exactly the connections the whole-workspace `information_schema`
 /// enumeration omits and `connections list` hides (#168), so the unscoped scan
@@ -131,15 +162,18 @@ struct ScanTarget {
 /// connection id, so each database needs a `databases get`; a database deleted
 /// between the list and the get (404) is skipped, any other error surfaces
 /// loudly to match the rest of this path.
-fn managed_db_connection_ids(api: &Api) -> Result<Vec<String>, ApiError> {
+fn managed_db_connections(api: &Api) -> Result<Vec<(String, String)>, ApiError> {
     let ids = databases::list_database_ids(api)?;
-    let conn_ids: Result<Vec<Option<String>>, ApiError> = ids
+    let conns: Result<Vec<Option<(String, String)>>, ApiError> = ids
         .par_iter()
         .map(|id| {
-            Ok(none_if_404(databases::get_database(api, id))?.map(|db| db.default_connection_id))
+            Ok(none_if_404(databases::get_database(api, id))?.map(|db| {
+                let catalog = database_catalog(&db);
+                (db.default_connection_id, catalog)
+            }))
         })
         .collect();
-    Ok(conn_ids?.into_iter().flatten().collect())
+    Ok(conns?.into_iter().flatten().collect())
 }
 
 /// Build the per-table scan list for a whole-workspace (unscoped) `indexes
@@ -148,7 +182,7 @@ fn managed_db_connection_ids(api: &Api) -> Result<Vec<String>, ApiError> {
 /// The workspace-wide `information_schema` enumeration returns only
 /// regular-connection tables — instant-database catalogs never appear there, and
 /// `connections list` hides their connections (#168). So instant databases are
-/// discovered separately via [`managed_db_connection_ids`] and each is scanned
+/// discovered separately via [`managed_db_connections`] and each is scanned
 /// with a connection-scoped `information_schema` call, exactly like the
 /// `--connection-id` path. The two table sets are disjoint: an instant database's
 /// connection is never returned by `connections list`.
@@ -164,21 +198,26 @@ fn workspace_scan_targets(
         .into_iter()
         .map(|t| {
             let conn_id = scan_connection_id(None, &t.connection, &name_to_id).to_string();
-            ScanTarget { conn_id, table: t }
+            ScanTarget {
+                conn_id,
+                label: t.connection.clone(),
+                table: t,
+            }
         })
         .collect();
 
     // Instant databases: discover their hidden connections, then scan each
     // scoped (the per-connection enumeration is what surfaces `__db_*` tables).
-    let db_conns = managed_db_connection_ids(api)?;
+    let db_conns = managed_db_connections(api)?;
     let managed: Result<Vec<Vec<ScanTarget>>, ApiError> = db_conns
         .par_iter()
-        .map(|conn| {
+        .map(|(conn, catalog)| {
             collect_tables(api, Some(conn), schema, table).map(|tables| {
                 tables
                     .into_iter()
                     .map(|t| ScanTarget {
                         conn_id: conn.clone(),
+                        label: catalog.clone(),
                         table: t,
                     })
                     .collect::<Vec<_>>()
@@ -192,22 +231,24 @@ fn workspace_scan_targets(
 /// Gather index rows across a connection's (or the workspace's) tables — the
 /// `indexes list` path when no full `connection.schema.table` triple is given.
 ///
-/// With a `--connection-id`, enumerates that connection's tables and fetches
-/// each table's indexes against it (the database-scoped case fixed in #161).
+/// With a database's connection, enumerates that connection's tables and
+/// fetches each table's indexes against it (the database-scoped case fixed in
+/// #161), labelling rows with the database's catalog.
 /// Without one, [`workspace_scan_targets`] assembles the list across both
 /// regular connections and instant databases (#168). Skipped connections /
 /// missing tables surface as no rows for that table, not an error.
 fn collect_connection_wide(
     api: &Api,
-    connection_id: Option<&str>,
+    database: Option<&DatabaseConnection<'_>>,
     schema: Option<&str>,
     table: Option<&str>,
 ) -> Result<Vec<IndexRow>, ApiError> {
-    let targets = match connection_id {
-        Some(cid) => collect_tables(api, Some(cid), schema, table)?
+    let targets = match database {
+        Some(db) => collect_tables(api, Some(db.connection_id), schema, table)?
             .into_iter()
             .map(|t| ScanTarget {
-                conn_id: cid.to_string(),
+                conn_id: db.connection_id.to_string(),
+                label: db.catalog.to_string(),
                 table: t,
             })
             .collect(),
@@ -217,7 +258,7 @@ fn collect_connection_wide(
         .par_iter()
         .map(|tg| {
             let t = &tg.table;
-            let full = format!("{}.{}.{}", t.connection, t.schema, t.table);
+            let full = format!("{}.{}.{}", tg.label, t.schema, t.table);
             let indexes = list_one_table_scan(api, &tg.conn_id, &t.schema, &t.table)?;
             Ok((full, indexes))
         })
@@ -318,7 +359,7 @@ fn list_one_table_scan(
 
 pub fn list(
     workspace_id: &str,
-    connection_id: Option<&str>,
+    database: Option<&DatabaseConnection<'_>>,
     schema: Option<&str>,
     table: Option<&str>,
     format: &str,
@@ -330,18 +371,20 @@ pub fn list(
     // The database discovery inside is deliberately spinner-less
     // (databases::list_database_ids) so nothing fights for the line.
     let spinner = crate::util::spinner("Loading indexes…");
-    let result = match (connection_id, schema, table) {
-        (Some(cid), Some(sch), Some(tbl)) => list_one_table(&api, cid, sch, tbl).map(|indexes| {
-            let rows: Vec<IndexRow> = indexes
-                .into_iter()
-                .map(|i| IndexRow {
-                    inner: i,
-                    table: None,
-                })
-                .collect();
-            (rows, false)
-        }),
-        _ => collect_connection_wide(&api, connection_id, schema, table).map(|rows| (rows, true)),
+    let result = match (database, schema, table) {
+        (Some(db), Some(sch), Some(tbl)) => {
+            list_one_table(&api, db.connection_id, sch, tbl).map(|indexes| {
+                let rows: Vec<IndexRow> = indexes
+                    .into_iter()
+                    .map(|i| IndexRow {
+                        inner: i,
+                        table: None,
+                    })
+                    .collect();
+                (rows, false)
+            })
+        }
+        _ => collect_connection_wide(&api, database, schema, table).map(|rows| (rows, true)),
     };
     spinner.finish_and_clear();
     let (rows, multi_table) = result.unwrap_or_else(|e| e.exit());
@@ -363,6 +406,7 @@ pub fn list(
                             r.inner.index_type.clone(),
                             r.inner.columns.join(", "),
                             r.inner.metric.clone().unwrap_or_default(),
+                            r.inner.algorithm.clone().unwrap_or_default(),
                             r.inner.status.clone(),
                             crate::util::format_date(&r.inner.created_at),
                         ]
@@ -370,7 +414,14 @@ pub fn list(
                     .collect();
                 crate::output::table::print(
                     &[
-                        "TABLE", "NAME", "TYPE", "COLUMNS", "METRIC", "STATUS", "CREATED",
+                        "TABLE",
+                        "NAME",
+                        "TYPE",
+                        "COLUMNS",
+                        "METRIC",
+                        "ALGORITHM",
+                        "STATUS",
+                        "CREATED",
                     ],
                     &table_rows,
                 );
@@ -383,13 +434,22 @@ pub fn list(
                             r.inner.index_type.clone(),
                             r.inner.columns.join(", "),
                             r.inner.metric.clone().unwrap_or_default(),
+                            r.inner.algorithm.clone().unwrap_or_default(),
                             r.inner.status.clone(),
                             crate::util::format_date(&r.inner.created_at),
                         ]
                     })
                     .collect();
                 crate::output::table::print(
-                    &["NAME", "TYPE", "COLUMNS", "METRIC", "STATUS", "CREATED"],
+                    &[
+                        "NAME",
+                        "TYPE",
+                        "COLUMNS",
+                        "METRIC",
+                        "ALGORITHM",
+                        "STATUS",
+                        "CREATED",
+                    ],
                     &table_rows,
                 );
             }
@@ -435,6 +495,70 @@ impl IndexScope<'_> {
     }
 }
 
+/// How a vector index stores and searches its vectors. Every field is
+/// optional and is sent only when set, so leaving them all unset sends the
+/// same request as before these options existed and the server applies its
+/// defaults (an `hnsw` index). The server validates combinations — e.g. `nlist`
+/// without `algorithm = ivf` — and its message is surfaced as-is.
+#[derive(Default)]
+pub struct VectorIndexOptions<'a> {
+    pub algorithm: Option<&'a str>,
+    pub nlist: Option<u32>,
+    pub probe_fraction: Option<f64>,
+    pub vector_precision: Option<&'a str>,
+}
+
+/// Build the JSON body for `POST .../indexes`. Optional fields are omitted
+/// rather than sent as `null`.
+#[allow(clippy::too_many_arguments)]
+fn create_body(
+    name: &str,
+    cols: &[&str],
+    index_type: &str,
+    metric: Option<&str>,
+    async_mode: bool,
+    embedding_provider_id: Option<&str>,
+    dimensions: Option<u32>,
+    output_column: Option<&str>,
+    description: Option<&str>,
+    vector: &VectorIndexOptions<'_>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "index_name": name,
+        "columns": cols,
+        "index_type": index_type,
+        "async": async_mode,
+    });
+    if let Some(m) = metric {
+        body["metric"] = serde_json::json!(m);
+    }
+    if let Some(p) = embedding_provider_id {
+        body["embedding_provider_id"] = serde_json::json!(p);
+    }
+    if let Some(d) = dimensions {
+        body["dimensions"] = serde_json::json!(d);
+    }
+    if let Some(o) = output_column {
+        body["output_column"] = serde_json::json!(o);
+    }
+    if let Some(d) = description {
+        body["description"] = serde_json::json!(d);
+    }
+    if let Some(a) = vector.algorithm {
+        body["algorithm"] = serde_json::json!(a);
+    }
+    if let Some(n) = vector.nlist {
+        body["nlist"] = serde_json::json!(n);
+    }
+    if let Some(f) = vector.probe_fraction {
+        body["probe_fraction"] = serde_json::json!(f);
+    }
+    if let Some(p) = vector.vector_precision {
+        body["vector_precision"] = serde_json::json!(p);
+    }
+    body
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn create(
     workspace_id: &str,
@@ -448,6 +572,7 @@ pub fn create(
     dimensions: Option<u32>,
     output_column: Option<&str>,
     description: Option<&str>,
+    vector: &VectorIndexOptions<'_>,
 ) {
     use crossterm::style::Stylize;
 
@@ -474,27 +599,18 @@ pub fn create(
 
     let api = Api::new(Some(workspace_id));
 
-    let mut body = serde_json::json!({
-        "index_name": name,
-        "columns": cols,
-        "index_type": index_type,
-        "async": async_mode,
-    });
-    if let Some(m) = metric {
-        body["metric"] = serde_json::json!(m);
-    }
-    if let Some(p) = embedding_provider_id {
-        body["embedding_provider_id"] = serde_json::json!(p);
-    }
-    if let Some(d) = dimensions {
-        body["dimensions"] = serde_json::json!(d);
-    }
-    if let Some(o) = output_column {
-        body["output_column"] = serde_json::json!(o);
-    }
-    if let Some(d) = description {
-        body["description"] = serde_json::json!(d);
-    }
+    let body = create_body(
+        name,
+        &cols,
+        index_type,
+        metric,
+        async_mode,
+        embedding_provider_id,
+        dimensions,
+        output_column,
+        description,
+        vector,
+    );
 
     // POST stays on the seam's raw helper: the SDK's `create_index` deserializes
     // into `IndexInfoResponse`, which has no job `id` field, so the async-mode
@@ -540,6 +656,9 @@ pub struct LocatedIndex {
     pub generated_columns: Vec<String>,
     pub status: String,
     pub metric: Option<String>,
+    pub algorithm: Option<String>,
+    pub probe_fraction: Option<f64>,
+    pub vector_precision: Option<String>,
 }
 
 /// Find a search index by name within an instant database.
@@ -564,13 +683,19 @@ pub fn locate_by_name(
                 .to_string()
         })?;
     let db = databases::get_database(&api, &db_id).unwrap_or_else(|e| e.exit());
+    let catalog = database_catalog(&db);
     let connection_id = db.default_connection_id;
-    let catalog = db
-        .default_catalog
-        .unwrap_or_else(|| db.name.unwrap_or_else(|| "default".to_string()));
 
-    let rows = collect_connection_wide(&api, Some(&connection_id), None, None)
-        .unwrap_or_else(|e| e.exit());
+    let rows = collect_connection_wide(
+        &api,
+        Some(&DatabaseConnection {
+            connection_id: &connection_id,
+            catalog: &catalog,
+        }),
+        None,
+        None,
+    )
+    .unwrap_or_else(|e| e.exit());
     let matches: Vec<&IndexRow> = rows.iter().filter(|r| r.inner.index_name == name).collect();
     match matches.as_slice() {
         [] => Err(format!(
@@ -598,6 +723,9 @@ pub fn locate_by_name(
                 generated_columns: one.inner.generated_columns(),
                 status: one.inner.status.clone(),
                 metric: one.inner.metric.clone(),
+                algorithm: one.inner.algorithm.clone(),
+                probe_fraction: one.inner.probe_fraction,
+                vector_precision: one.inner.vector_precision.clone(),
             })
         }
         _ => Err(format!(
@@ -758,6 +886,8 @@ mod tests {
         // mocked ONLY for the real id (`conn-real`); had the scan used the
         // `__db_*` label (the old behavior), it would miss this mock. No
         // `connections list` mock is needed — a supplied id skips that lookup.
+        // Rows are labelled with the database's catalog, never the `__db_*`
+        // label, so `search list` names tables the way they are queried.
         let mut server = mockito::Server::new();
         let info = server
             .mock("GET", "/v1/information_schema")
@@ -785,12 +915,16 @@ mod tests {
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws"));
-        let rows = collect_connection_wide(&api, Some("conn-real"), None, None).unwrap();
+        let scope = DatabaseConnection {
+            connection_id: "conn-real",
+            catalog: "shop",
+        };
+        let rows = collect_connection_wide(&api, Some(&scope), None, None).unwrap();
         info.assert();
         idx.assert();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].inner.index_name, "vec_mid_idx");
-        assert_eq!(rows[0].table.as_deref(), Some("__db_abc.public.vec_mid"));
+        assert_eq!(rows[0].table.as_deref(), Some("shop.public.vec_mid"));
     }
 
     #[test]
@@ -825,7 +959,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"databases":[{"id":"dbidabc","name":"airbnb","default_catalog":"default","default_schema":"main"}]}"#,
+                r#"{"databases":[{"id":"dbidabc","name":"airbnb","default_catalog":"airbnb_cat","default_schema":"main"}]}"#,
             )
             .create();
         let db = server
@@ -833,7 +967,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"dbidabc","name":"airbnb","default_catalog":"default","default_schema":"main",
+                r#"{"id":"dbidabc","name":"airbnb","default_catalog":"airbnb_cat","default_schema":"main",
                 "default_connection_id":"conn-managed","attachments":[]}"#,
             )
             .create();
@@ -876,7 +1010,7 @@ mod tests {
         idx.assert();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].inner.index_name, "listings_desc_bm25");
-        assert_eq!(rows[0].table.as_deref(), Some("__db_abc.public.listings"));
+        assert_eq!(rows[0].table.as_deref(), Some("airbnb_cat.public.listings"));
     }
 
     #[test]
@@ -925,7 +1059,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"databases":[{"id":"dbidabc","name":"airbnb","default_catalog":"default","default_schema":"main"}]}"#,
+                r#"{"databases":[{"id":"dbidabc","name":"airbnb","default_catalog":"airbnb_cat","default_schema":"main"}]}"#,
             )
             .create();
         let db = server
@@ -933,7 +1067,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"dbidabc","name":"airbnb","default_catalog":"default","default_schema":"main",
+                r#"{"id":"dbidabc","name":"airbnb","default_catalog":"airbnb_cat","default_schema":"main",
                 "default_connection_id":"conn-managed","attachments":[]}"#,
             )
             .create();
@@ -979,7 +1113,7 @@ mod tests {
         assert_eq!(rows[0].inner.index_name, "events_bm25");
         assert_eq!(rows[0].table.as_deref(), Some("Warehouse.public.events"));
         assert_eq!(rows[1].inner.index_name, "listings_desc_bm25");
-        assert_eq!(rows[1].table.as_deref(), Some("__db_abc.public.listings"));
+        assert_eq!(rows[1].table.as_deref(), Some("airbnb_cat.public.listings"));
     }
 
     #[test]
@@ -1097,5 +1231,155 @@ mod tests {
         let rows = list_one_table_scan(&api, "x", "s", "t").unwrap();
         mock.assert();
         assert!(rows.is_empty());
+    }
+
+    fn vector_body(vector: &VectorIndexOptions<'_>) -> serde_json::Value {
+        create_body(
+            "docs_embedding_vector",
+            &["embedding"],
+            "vector",
+            Some("cosine"),
+            false,
+            None,
+            None,
+            None,
+            None,
+            vector,
+        )
+    }
+
+    #[test]
+    fn create_body_without_vector_options_sends_no_algorithm_fields() {
+        // Leaving the options unset must send exactly the request the CLI sent
+        // before they existed, so the server applies its default (hnsw).
+        let body = vector_body(&VectorIndexOptions::default());
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "index_name": "docs_embedding_vector",
+                "columns": ["embedding"],
+                "index_type": "vector",
+                "async": false,
+                "metric": "cosine",
+            })
+        );
+    }
+
+    #[test]
+    fn create_body_carries_ivf_algorithm_and_options() {
+        let body = vector_body(&VectorIndexOptions {
+            algorithm: Some("ivf"),
+            nlist: Some(1024),
+            probe_fraction: Some(0.05),
+            vector_precision: Some("int8"),
+        });
+        assert_eq!(body["algorithm"], "ivf");
+        assert_eq!(body["nlist"], 1024);
+        assert_eq!(body["probe_fraction"], 0.05);
+        assert_eq!(body["vector_precision"], "int8");
+        assert_eq!(body["metric"], "cosine");
+    }
+
+    #[test]
+    fn create_body_sends_only_the_options_that_are_set() {
+        // `--algorithm ivf` alone leaves nlist, probe_fraction and precision to
+        // the server's defaults: they are omitted, never sent as null.
+        let body = vector_body(&VectorIndexOptions {
+            algorithm: Some("ivf"),
+            ..Default::default()
+        });
+        let obj = body.as_object().unwrap();
+        assert_eq!(obj["algorithm"], "ivf");
+        for key in ["nlist", "probe_fraction", "vector_precision"] {
+            assert!(!obj.contains_key(key), "{key} should be omitted: {body}");
+        }
+    }
+
+    #[test]
+    fn create_posts_ivf_request_body() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/v1/connections/cid/tables/public/docs/indexes")
+            .match_header("Authorization", "Bearer k")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "index_name": "docs_embedding_vector",
+                "columns": ["embedding"],
+                "index_type": "vector",
+                "async": false,
+                "metric": "cosine",
+                "algorithm": "ivf",
+                "nlist": 256,
+                "probe_fraction": 0.1,
+                "vector_precision": "float32",
+            })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body("{}")
+            .create();
+
+        let scope = IndexScope::Connection {
+            connection_id: "cid",
+            schema: "public",
+            table: "docs",
+        };
+        let body = vector_body(&VectorIndexOptions {
+            algorithm: Some("ivf"),
+            nlist: Some(256),
+            probe_fraction: Some(0.1),
+            vector_precision: Some("float32"),
+        });
+        let api = Api::test_new(&server.url(), "k", Some("ws"));
+        let (status, _) = api.post_raw(&scope.create_path(), &body).unwrap();
+        mock.assert();
+        assert!(status.is_success());
+    }
+
+    #[test]
+    fn list_one_table_carries_vector_index_settings() {
+        // `search list -o json` and `search show` report how a vector index was
+        // built; a field the API leaves out stays out of the JSON too.
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/v1/connections/cid/tables/sch/tbl/indexes")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"indexes":[{
+                "index_name":"docs_ivf","index_type":"vector","columns":["embedding"],
+                "metric":"cosine","algorithm":"ivf","probe_fraction":0.05,
+                "vector_precision":"int8","status":"ready",
+                "created_at":"2020-01-01T00:00:00Z","updated_at":"2020-01-01T00:00:00Z"
+            },{
+                "index_name":"docs_body","index_type":"bm25","columns":["body"],
+                "metric":null,"status":"ready",
+                "created_at":"2020-01-01T00:00:00Z","updated_at":"2020-01-01T00:00:00Z"
+            }]}"#,
+            )
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", None);
+        let rows = list_one_table(&api, "cid", "sch", "tbl").unwrap();
+        mock.assert();
+        assert_eq!(rows[0].algorithm.as_deref(), Some("ivf"));
+        assert_eq!(rows[0].probe_fraction, Some(0.05));
+        assert_eq!(rows[0].vector_precision.as_deref(), Some("int8"));
+
+        let ivf = serde_json::to_value(&rows[0]).unwrap();
+        assert_eq!(ivf["algorithm"], "ivf");
+        assert_eq!(ivf["probe_fraction"], 0.05);
+        assert_eq!(ivf["vector_precision"], "int8");
+
+        let bm25 = serde_json::to_value(&rows[1]).unwrap();
+        let bm25 = bm25.as_object().unwrap();
+        for key in ["algorithm", "probe_fraction", "vector_precision"] {
+            assert!(!bm25.contains_key(key), "{key} should be omitted: {bm25:?}");
+        }
+    }
+
+    #[test]
+    fn database_catalog_prefers_default_catalog_then_name() {
+        assert_eq!(catalog_label(Some("shop"), Some("Shop DB")), "shop");
+        assert_eq!(catalog_label(None, Some("shopdb")), "shopdb");
+        assert_eq!(catalog_label(None, None), "default");
     }
 }

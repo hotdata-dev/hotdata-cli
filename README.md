@@ -122,7 +122,8 @@ hotdata search create trips_notes --type text --from demo.public.trips --column 
 hotdata search "airport surcharge dispute" --index trips_notes
 ```
 
-Use `--type vector` for semantic search. Indexes resolve in the active database
+Use `--type vector` for semantic search; add `--algorithm ivf` for a vector
+column too large for the default in-memory `hnsw` index. Indexes resolve in the active database
 (`hotdata databases use <id>`); pass `-d/--database <id>` to target another.
 Bring your own model with `hotdata search embeddings add`.
 

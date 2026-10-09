@@ -247,15 +247,16 @@ hotdata databases context push <name> [--database <id>] [--dry-run]
 ### Execute SQL Query
 
 ```
-hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--dialect hotsql|duckdb|postgres|snowflake] [--output table|json|csv]
+hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--dialect hotsql|duckdb|postgres|snowflake] [--output table|json|csv|id]
 hotdata query status <query_run_id>
 
 # Same commands under the databases group (identical flags and exit codes)
-hotdata databases query "<sql>" [-d <database>] [--output table|json|csv]
+hotdata databases query "<sql>" [-d <database>] [--output table|json|csv|id]
 hotdata databases query status <query_run_id>
 ```
 
-- Default output is `table` (row count and execution time).
+- Default output is `table`; its footer reads `N rows (server execution T ms)`. That time is the server-measured `execution_time_ms` that `-o json` also reports — not the command's wall-clock time, which adds network transit and the result download. Two runs of the same SQL can differ widely (e.g. a cold first run).
+- **`-o id`** prints only the query's stored `result_id` and downloads no rows — use it to feed `--result-id` loads: `RID=$(hotdata query "<sql>" -o id)`. Exits `1` if the query left no stored result.
 - **A query runs inside one instant database** (active database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus whatever is attached to it only**. To read another database's tables or join across databases, attach it first — see [Querying across databases (attach)](#querying-across-databases-attach).
 - Use `hotdata databases tables list` and `hotdata databases tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes. To write DuckDB/Postgres/Snowflake SQL instead, pass `--dialect` (server-side transpile, read-only queries) — details in **`hotdata-analytics`**.
