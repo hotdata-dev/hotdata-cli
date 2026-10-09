@@ -25,7 +25,7 @@ High-cardinality **text** (`title`, `body`, …) → **bm25**. **Embedding** / f
 hotdata search list
 ```
 
-With no filters, this is a whole-workspace scan that **includes instant-database indexes** (shown under the internal `__db_<id>.<schema>.<table>` label). Skip duplicates (same table, column, and purpose).
+With no filters, this is a whole-workspace scan that **includes instant-database indexes** (shown as `<catalog>.<schema>.<table>`, the database's own catalog — the name you query and pass to `--from`). Skip duplicates (same table, column, and purpose).
 
 ## 3. Create indexes
 

@@ -95,7 +95,7 @@ Per table when you only need one:
 hotdata search list --schema <schema> --table <table> [-w <workspace_id>]
 ```
 
-Instant-database indexes are included in the no-flag whole-workspace `search list` (shown under the internal `__db_<id>.<schema>.<table>` label); narrow to one with `--schema` / `--table` as above.
+Instant-database indexes are included in the no-flag whole-workspace `search list` (shown as `<catalog>.<schema>.<table>`, using the database's own catalog); narrow to one with `--schema` / `--table` as above.
 
 Note:
 
