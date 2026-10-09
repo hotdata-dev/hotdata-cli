@@ -396,19 +396,17 @@ fn create(
 
 fn list(workspace_id: &str, schema: Option<&str>, table: Option<&str>, output: &str) {
     let api = Api::new(Some(workspace_id));
-    let connection_id =
-        crate::config::load_current_database("default", workspace_id).and_then(|db_id| {
-            databases::get_database(&api, &db_id)
-                .ok()
-                .map(|db| db.default_connection_id)
-        });
-    indexes::list(
-        workspace_id,
-        connection_id.as_deref(),
-        schema,
-        table,
-        output,
-    );
+    let db = crate::config::load_current_database("default", workspace_id)
+        .and_then(|db_id| databases::get_database(&api, &db_id).ok());
+    let catalog = db.as_ref().map(indexes::database_catalog);
+    let scope =
+        db.as_ref()
+            .zip(catalog.as_deref())
+            .map(|(db, catalog)| indexes::DatabaseConnection {
+                connection_id: &db.default_connection_id,
+                catalog,
+            });
+    indexes::list(workspace_id, scope.as_ref(), schema, table, output);
 }
 
 fn locate_or_exit(workspace_id: &str, database: Option<&str>, name: &str) -> indexes::LocatedIndex {
