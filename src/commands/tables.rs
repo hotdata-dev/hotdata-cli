@@ -117,7 +117,7 @@ pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
                     use crossterm::style::Stylize;
                     eprintln!(
                         "{}",
-                        "error: use catalog.schema.table, or set an active database with \
+                        "error: use catalog.schema.table, or set a current database with \
                          `hotdata databases use <id>`."
                             .red()
                     );

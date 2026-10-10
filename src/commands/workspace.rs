@@ -26,6 +26,9 @@ pub enum WorkspaceCommands {
 
 #[derive(Serialize)]
 struct Workspace {
+    /// The workspace commands use when `--workspace-id` is omitted. Set by
+    /// `list`; unrelated to the server's `active` flag.
+    current: bool,
     public_id: String,
     name: String,
     active: bool,
@@ -36,6 +39,7 @@ struct Workspace {
 impl From<&hotdata::models::WorkspaceListItem> for Workspace {
     fn from(w: &hotdata::models::WorkspaceListItem) -> Self {
         Workspace {
+            current: false,
             public_id: w.public_id.clone(),
             name: w.name.clone(),
             active: w.active,
@@ -52,6 +56,14 @@ fn fetch_workspaces() -> Vec<Workspace> {
 }
 
 pub fn set(workspace_id: Option<&str>) {
+    // Env lock wins over the saved choice, so saving one would have no effect.
+    if let Ok(ws) = std::env::var("HOTDATA_WORKSPACE") {
+        eprintln!(
+            "error: workspace is locked by HOTDATA_WORKSPACE environment variable ({ws}). \
+             Unset it to switch workspaces."
+        );
+        std::process::exit(1);
+    }
     let workspaces = fetch_workspaces();
 
     let chosen = match workspace_id {
@@ -115,12 +127,17 @@ pub fn list(format: &str) {
             std::process::exit(1);
         }
     };
+    // Same resolution commands use (env lock, then the credential's current
+    // workspace), so the marker shows where work actually lands.
     let current_id = std::env::var("HOTDATA_WORKSPACE")
         .ok()
-        .or_else(|| profile_config.current_workspace_id())
+        .or_else(|| crate::client::credentials::current_workspace_id(&profile_config))
         .unwrap_or_default();
 
-    let workspaces = fetch_workspaces();
+    let mut workspaces = fetch_workspaces();
+    for w in &mut workspaces {
+        w.current = w.public_id == current_id;
+    }
 
     match format {
         "json" => {
@@ -137,7 +154,7 @@ pub fn list(format: &str) {
                 let rows: Vec<Vec<String>> = workspaces
                     .iter()
                     .map(|w| {
-                        let marker = if w.public_id == current_id { "*" } else { "" };
+                        let marker = if w.current { "*" } else { "" };
                         vec![
                             marker.to_string(),
                             w.public_id.clone(),

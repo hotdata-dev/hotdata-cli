@@ -464,7 +464,7 @@ fn main() {
                                 })
                                 .unwrap_or_else(|| {
                                     eprintln!(
-                                        "error: no active database. Pass -d/--database <id> or set one with 'hotdata databases use <id>'."
+                                        "error: no current database. Pass -d/--database <id> or set one with 'hotdata databases use <id>'."
                                     );
                                     std::process::exit(1);
                                 });
