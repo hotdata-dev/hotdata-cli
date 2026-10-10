@@ -31,7 +31,7 @@ pub enum Commands {
         /// Database id or name (omit to use a subcommand)
         name_or_id: Option<String>,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
@@ -48,11 +48,11 @@ pub enum Commands {
         /// SQL query string (omit when using a subcommand)
         sql: Option<String>,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w')]
         workspace_id: Option<String>,
 
-        /// Run against a specific instant database (defaults to the current database set via `databases use`)
+        /// Run against a specific instant database, for this command only (defaults to the current database; switch with `databases use`)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
@@ -74,7 +74,7 @@ pub enum Commands {
         /// Job ID (omit to use a subcommand)
         id: Option<String>,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
@@ -93,7 +93,7 @@ pub enum Commands {
     /// future ones; `resume` never runs anything immediately. There is no
     /// `run`/`run-now` verb — use `ingest schedule <id> --next now`.
     Ingest {
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
@@ -115,7 +115,7 @@ pub enum Commands {
         #[arg(long, visible_alias = "in")]
         index: Option<String>,
 
-        /// Database the index lives in (id; defaults to the active database)
+        /// Database the index lives in (id; this command only; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
@@ -129,7 +129,7 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         limit: u32,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
@@ -163,7 +163,7 @@ pub enum ManageCommands {
         #[arg(long)]
         since: Option<String>,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 

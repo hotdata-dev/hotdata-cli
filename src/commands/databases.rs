@@ -86,7 +86,7 @@ pub enum DatabasesCommands {
     /// other). Catalogs attached to the source are re-attached to
     /// the fork; indexes are not carried over.
     Fork {
-        /// Source database id, catalog, or name (defaults to the current database)
+        /// Source database id, catalog, or name (this command only; defaults to the current database)
         database: Option<String>,
 
         /// Display name for the fork. Defaults to "<source-name>-fork" so the
@@ -119,7 +119,7 @@ pub enum DatabasesCommands {
     /// deleted generation stays in the chain, though what it forked cannot be
     /// listed. Forks made before the server recorded lineage carry none.
     Lineage {
-        /// Database id, catalog, or name (defaults to the current database)
+        /// Database id, catalog, or name (this command only; defaults to the current database)
         database: Option<String>,
 
         /// How many direct forks to list per database (server clamps to
@@ -147,7 +147,7 @@ pub enum DatabasesCommands {
         #[arg(value_name = "DATABASE")]
         catalog: String,
 
-        /// Database id, catalog, or name to attach into (defaults to the current database)
+        /// Database id, catalog, or name to attach into (this command only; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
@@ -166,15 +166,19 @@ pub enum DatabasesCommands {
         #[arg(value_name = "DATABASE")]
         catalog: String,
 
-        /// Database id, catalog, or name to detach from (defaults to the current database)
+        /// Database id, catalog, or name to detach from (this command only; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
     },
 
-    /// Set the current database (used by default when no database is specified)
+    /// Switch the current database for this workspace
+    ///
+    /// This is the only command that changes the current database.
+    /// `databases create`, `databases fork` and `-d/--database` do not.
+    /// The choice is saved on this machine and kept across logout and login.
     #[command(name = "use")]
     Set {
-        /// Database id
+        /// Database id, catalog, or name
         id: String,
     },
 
@@ -260,7 +264,7 @@ pub enum DatabasesCommands {
 
     /// Sync database context with local Markdown
     Context {
-        /// Instant database to scope to (defaults to the current database)
+        /// Instant database to scope to (this command only; defaults to the current database)
         #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
@@ -273,7 +277,7 @@ pub enum DatabasesCommands {
         /// SQL query string (omit when using a subcommand)
         sql: Option<String>,
 
-        /// Instant database to run against (defaults to the current database)
+        /// Instant database to run against (this command only; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
@@ -295,7 +299,7 @@ pub enum DatabasesCommands {
         /// Query run ID to show details
         id: Option<String>,
 
-        /// Instant database to scope to (defaults to the current database)
+        /// Instant database to scope to (this command only; defaults to the current database)
         #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
@@ -312,7 +316,7 @@ pub enum DatabasesCommands {
         /// Result ID (omit to use a subcommand)
         result_id: Option<String>,
 
-        /// Instant database to scope to (defaults to the current database)
+        /// Instant database to scope to (this command only; defaults to the current database)
         #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
@@ -330,7 +334,7 @@ pub enum DatabasesCommands {
 pub enum DatabaseTablesCommands {
     /// List tables in an instant database
     List {
-        /// Database id or name (defaults to current database)
+        /// Database id or name (this command only; defaults to the current database)
         #[arg(long)]
         database: Option<String>,
 
@@ -365,7 +369,7 @@ pub enum DatabaseTablesCommands {
         /// Table name, or `schema.table` to target a schema other than --schema
         table: String,
 
-        /// Database id or name (defaults to current database)
+        /// Database id or name (this command only; defaults to the current database)
         #[arg(long)]
         database: Option<String>,
 
@@ -419,7 +423,7 @@ pub enum DatabaseTablesCommands {
     /// Load a csv, json, or parquet file — or a saved query result — into a
     /// table, replacing it, appending, or matching rows by key
     Load {
-        /// Database id or name (defaults to current database)
+        /// Database id or name (this command only; defaults to the current database)
         #[arg(long)]
         database: Option<String>,
 
@@ -479,7 +483,7 @@ pub enum DatabaseTablesCommands {
     /// Delete a table from an instant database
     #[command(name = "remove")]
     Delete {
-        /// Database id or name (defaults to current database)
+        /// Database id or name (this command only; defaults to the current database)
         #[arg(long)]
         database: Option<String>,
 
@@ -1711,7 +1715,7 @@ pub fn list(workspace_id: &str, format: &str, limit: Option<u32>, cursor: Option
                         ]
                     })
                     .collect();
-                crate::output::table::print(&["DEFAULT", "ID", "NAME", "CREATED"], &rows);
+                crate::output::table::print(&["CURRENT", "ID", "NAME", "CREATED"], &rows);
             }
         }
         _ => unreachable!(),
@@ -2039,14 +2043,6 @@ pub fn create(
         forked_from: resp.forked_from.flatten().map(|f| ForkedFrom::from(*f)),
     };
 
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
-        use crossterm::style::Stylize;
-        eprintln!(
-            "{}",
-            format!("warning: database created but could not set as current: {e}").yellow()
-        );
-    }
-
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
@@ -2075,14 +2071,17 @@ pub fn create(
                 "{}",
                 format!(
                     concat!(
-                        "Load a table (csv, json, or parquet):\n",
+                        "Make it the current database (create does not switch):\n",
+                        "  hotdata databases use {1}\n",
+                        "\nLoad a table (csv, json, or parquet):\n",
                         "  hotdata databases load --catalog {0} --table <table> --file <path>\n",
                         "  hotdata databases load --catalog {0} --table <table> --url <url>\n",
                         "\nQuery with:\n",
-                        "  hotdata query \"SELECT * FROM {0}.public.<table> LIMIT 10\"\n",
+                        "  hotdata query -d {1} \"SELECT * FROM {0}.public.<table> LIMIT 10\"\n",
                         "\n  Tip: column names are case-sensitive — wrap uppercase names in double quotes",
                     ),
-                    catalog
+                    catalog,
+                    result.id
                 )
                 .dark_grey()
             );
@@ -2158,13 +2157,6 @@ pub fn fork(
         forked_from: resp.forked_from.flatten().map(|f| ForkedFrom::from(*f)),
     };
 
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
-        eprintln!(
-            "{}",
-            format!("warning: database forked but could not set as current: {e}").yellow()
-        );
-    }
-
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
@@ -2207,13 +2199,16 @@ pub fn fork(
                 "{}",
                 format!(
                     concat!(
-                        "The fork is now the current database; the source is unchanged.\n",
+                        "The source is unchanged, and your current database did not change.\n",
                         "It answers to the same catalog alias as its source inside its own scope.\n",
                         "Indexes are not carried over — recreate them on the fork if needed.\n",
-                        "\nQuery it now:\n",
-                        "  hotdata query \"SELECT * FROM {0}.public.<table> LIMIT 10\"",
+                        "\nSwitch to the fork:\n",
+                        "  hotdata databases use {1}\n",
+                        "\nOr query it once without switching:\n",
+                        "  hotdata query -d {1} \"SELECT * FROM {0}.public.<table> LIMIT 10\"",
                     ),
-                    catalog
+                    catalog,
+                    result.id
                 )
                 .dark_grey()
             );
@@ -2733,14 +2728,19 @@ fn database_exists_or_unverifiable(result: Result<Database, ApiError>) -> Result
     }
 }
 
-pub fn set(workspace_id: &str, id: &str) {
+pub fn set(workspace_id: &str, id_or_name: &str) {
     use crossterm::style::Stylize;
     // `set` only writes local config; the GET is just a friendly existence-check.
+    // Not an id → fall back to a catalog alias or name match, like `-d`.
     let api = Api::new(Some(workspace_id));
-    if !database_exists_or_unverifiable(get_database(&api, id)).unwrap_or_else(|e| e.exit()) {
-        eprintln!("{}", format!("error: no database with id '{id}'").red());
-        std::process::exit(1);
-    }
+    let id = if database_exists_or_unverifiable(get_database(&api, id_or_name))
+        .unwrap_or_else(|e| e.exit())
+    {
+        id_or_name.to_string()
+    } else {
+        resolve_database(&api, id_or_name).id
+    };
+    let id = id.as_str();
     if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
         std::process::exit(1);

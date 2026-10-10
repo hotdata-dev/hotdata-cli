@@ -1,6 +1,6 @@
 # Building a database data model (advanced)
 
-Optional **deep pass** for a single authoritative markdown document stored as **`context:DATAMODEL`** (database-scoped **context API** — the active database). For a short checklist only, use the **Model** section in [WORKFLOWS.md](WORKFLOWS.md) and [DATA_MODEL.template.md](DATA_MODEL.template.md).
+Optional **deep pass** for a single authoritative markdown document stored as **`context:DATAMODEL`** (database-scoped **context API** — the current database). For a short checklist only, use the **Model** section in [WORKFLOWS.md](WORKFLOWS.md) and [DATA_MODEL.template.md](DATA_MODEL.template.md).
 
 **Notation:** **`context:DATAMODEL`** is the live server document; **not** the same phrase as “building a data model” for a one-off analysis. **CLI** uses the bare stem: `hotdata databases context show DATAMODEL`.
 

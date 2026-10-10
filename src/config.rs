@@ -102,6 +102,10 @@ pub struct ProfileConfig {
     pub api_key_source: ApiKeySource,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspaces: Vec<WorkspaceEntry>,
+    /// Workspace this machine is working in (`workspaces use`). Local state,
+    /// kept across logout so the next login picks up where you left off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_workspace: Option<WorkspaceEntry>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub current_databases: HashMap<String, String>,
 }
@@ -202,8 +206,9 @@ fn update_config(create: bool, f: impl FnOnce(&mut ConfigFile)) -> Result<(), St
 }
 
 /// Wipe the workspace cache for a profile. Paired with
-/// `jwt::clear_session()` in `commands::auth::logout` — together they reset the
-/// on-disk state that login populates.
+/// `jwt::clear_session()` in `commands::auth::logout`. Leaves
+/// `current_workspace` and `current_databases` alone so the next login
+/// resumes in the same workspace and database.
 pub fn clear_workspaces(profile: &str) -> Result<(), String> {
     update_config(false, |config_file| {
         if let Some(entry) = config_file.profiles.get_mut(profile) {
@@ -212,24 +217,50 @@ pub fn clear_workspaces(profile: &str) -> Result<(), String> {
     })
 }
 
-pub fn save_workspaces(profile: &str, workspaces: Vec<WorkspaceEntry>) -> Result<(), String> {
+/// Replace the cached workspace list (what the account can access). If there
+/// is no current workspace yet, or it's no longer accessible, the first one
+/// becomes current. Returns the current workspace after the update.
+pub fn save_workspaces(
+    profile: &str,
+    workspaces: Vec<WorkspaceEntry>,
+) -> Result<Option<WorkspaceEntry>, String> {
+    let mut current = None;
+    update_config(true, |config_file| {
+        let entry = config_file.profiles.entry(profile.to_string()).or_default();
+        let kept = entry.current_workspace.as_ref().and_then(|c| {
+            workspaces
+                .iter()
+                .find(|w| w.public_id == c.public_id)
+                .cloned()
+        });
+        if let Some(w) = kept.or_else(|| workspaces.first().cloned()) {
+            entry.current_workspace = Some(w);
+        }
+        entry.workspaces = workspaces;
+        current = entry.current_workspace.clone();
+    })?;
+    Ok(current)
+}
+
+pub fn save_current_workspace(profile: &str, workspace: WorkspaceEntry) -> Result<(), String> {
     update_config(true, move |config_file| {
         config_file
             .profiles
             .entry(profile.to_string())
             .or_default()
-            .workspaces = workspaces;
+            .current_workspace = Some(workspace);
     })
 }
 
-pub fn save_default_workspace(profile: &str, workspace: WorkspaceEntry) -> Result<(), String> {
-    update_config(true, move |config_file| {
-        let entry = config_file.profiles.entry(profile.to_string()).or_default();
-        entry
-            .workspaces
-            .retain(|w| w.public_id != workspace.public_id);
-        entry.workspaces.insert(0, workspace);
-    })
+impl ProfileConfig {
+    /// The saved current workspace id. Configs written before
+    /// `current_workspace` existed fall back to the first cached workspace.
+    pub fn current_workspace_id(&self) -> Option<String> {
+        self.current_workspace
+            .as_ref()
+            .or(self.workspaces.first())
+            .map(|w| w.public_id.clone())
+    }
 }
 
 pub fn save_current_database(
@@ -394,16 +425,60 @@ mod tests {
     }
 
     #[test]
-    fn save_default_workspace_moves_to_front() {
+    fn save_current_workspace_does_not_reorder_cache() {
         let (_tmp, _guard) = with_temp_config_dir();
         save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
 
-        // Set ws-2 as default — should move to front
-        save_default_workspace("default", ws("ws-2", "Second")).unwrap();
+        save_current_workspace("default", ws("ws-2", "Second")).unwrap();
 
         let profile = load("default").unwrap();
-        assert_eq!(profile.workspaces[0].public_id, "ws-2");
-        assert_eq!(profile.workspaces[1].public_id, "ws-1");
+        assert_eq!(profile.current_workspace_id().as_deref(), Some("ws-2"));
+        assert_eq!(profile.workspaces[0].public_id, "ws-1");
+    }
+
+    #[test]
+    fn first_login_makes_first_workspace_current() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        let current =
+            save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
+        assert_eq!(current, Some(ws("ws-1", "First")));
+    }
+
+    #[test]
+    fn current_workspace_and_database_survive_logout_and_login() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
+        save_current_workspace("default", ws("ws-2", "Second")).unwrap();
+        save_current_database("default", "ws-2", "db-9").unwrap();
+
+        // logout, then login re-fetches workspaces
+        clear_workspaces("default").unwrap();
+        let current =
+            save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
+
+        assert_eq!(current.map(|w| w.public_id).as_deref(), Some("ws-2"));
+        assert_eq!(
+            load_current_database("default", "ws-2").as_deref(),
+            Some("db-9")
+        );
+    }
+
+    #[test]
+    fn inaccessible_current_workspace_is_replaced_on_login() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        save_current_workspace("default", ws("ws-old", "Old")).unwrap();
+        let current =
+            save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
+        assert_eq!(current.map(|w| w.public_id).as_deref(), Some("ws-1"));
+    }
+
+    #[test]
+    fn legacy_config_without_current_workspace_uses_first_cached() {
+        let profile = ProfileConfig {
+            workspaces: vec![ws("ws-1", "First"), ws("ws-2", "Second")],
+            ..Default::default()
+        };
+        assert_eq!(profile.current_workspace_id().as_deref(), Some("ws-1"));
     }
 
     #[test]

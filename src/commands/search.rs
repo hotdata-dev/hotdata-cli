@@ -76,7 +76,7 @@ pub enum SearchCommands {
         /// Index name
         name: String,
 
-        /// Database the index lives in (id; defaults to the active database)
+        /// Database the index lives in (id; this command only; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
@@ -90,7 +90,7 @@ pub enum SearchCommands {
         /// Index name
         name: String,
 
-        /// Database the index lives in (id; defaults to the active database)
+        /// Database the index lives in (id; this command only; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
     },

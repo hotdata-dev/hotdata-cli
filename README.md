@@ -32,6 +32,7 @@ Stay current with `hotdata manage upgrade`; enable tab completion with
 ```sh
 hotdata auth login                            # or: hotdata auth register
 hotdata databases create --catalog demo
+hotdata databases use demo                    # make it current (create does not switch)
 hotdata databases load --catalog demo --table trips \
   --url https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
 hotdata query "SELECT count(*) FROM demo.public.trips"
@@ -122,7 +123,7 @@ hotdata search create trips_notes --type text --from demo.public.trips --column 
 hotdata search "airport surcharge dispute" --index trips_notes
 ```
 
-Use `--type vector` for semantic search. Indexes resolve in the active database
+Use `--type vector` for semantic search. Indexes resolve in the current database
 (`hotdata databases use <id>`); pass `-d/--database <id>` to target another.
 Bring your own model with `hotdata search embeddings add`.
 
@@ -159,7 +160,7 @@ The full command surface. The top level has nine groups — `auth`, `workspaces`
 | `auth logout` | Remove authentication for a profile |
 | `auth status` | Show authentication status |
 | `workspaces list` | List all workspaces |
-| `workspaces use` | Set the default workspace |
+| `workspaces use` | Switch the current workspace (remembered across logins) |
 | `databases list` | List instant databases in the workspace |
 | `databases count` | Count instant databases in the workspace |
 | `databases show` | Show details for an instant database |
@@ -168,7 +169,7 @@ The full command surface. The top level has nine groups — `auth`, `workspaces`
 | `databases lineage` | Show a database's whole fork family tree |
 | `databases attach` | Attach another database so its tables are queryable |
 | `databases detach` | Detach a previously attached database |
-| `databases use` | Set the current (default) database |
+| `databases use` | Switch the current database (remembered across logins) |
 | `databases unset` | Clear the current database |
 | `databases remove` | Delete a database and all its tables |
 | `databases load` | Load a csv/json/parquet file or saved result into a table (`--mode replace\|append\|delete\|update\|upsert`) |
@@ -224,6 +225,18 @@ The full command surface. The top level has nine groups — `auth`, `workspaces`
 | `manage skills status` | Show the agent skill's installation status |
 | `manage skills list` | List installed skills (alias for `status`) |
 | `support report` | File a support ticket with the HotData team |
+
+## Current workspace and database
+
+The CLI saves a current workspace and, per workspace, a current database on
+this machine. Commands use them when you don't name one. They survive
+`auth logout` / `auth login`, so a new session resumes where you left off.
+
+- `hotdata workspaces use` and `hotdata databases use` are the only commands
+  that switch. `databases create` and `databases fork` do not.
+- `--workspace-id` / `-w` and `--database` / `-d` apply to one command only
+  and do not change the current selection.
+- `workspaces list` and `databases list` mark the current one with `*`.
 
 ## Configuration
 
