@@ -687,7 +687,7 @@ impl Api {
     pub fn require_database(&self) -> &str {
         self.database_id.as_deref().unwrap_or_else(|| {
             use crossterm::style::Stylize;
-            eprintln!("{}", "error: no active database.".red());
+            eprintln!("{}", "error: no current database.".red());
             eprintln!(
                 "{}",
                 "Results and query runs are scoped to an instant database. Set one with \

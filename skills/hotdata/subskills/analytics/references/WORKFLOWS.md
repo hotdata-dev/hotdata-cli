@@ -12,7 +12,7 @@ OLAP-style SQL, **History** (query runs and stored results), and **Chain** (mate
 
 ### Query runs
 
-Uses the **current workspace only** — no `--workspace-id` on `databases queries`. Switch to the right workspace with `hotdata workspaces use` first.
+Uses the current workspace and database. Pass `-w/--workspace-id` or `-d/--database` to look at another one for this command only, or switch with `hotdata workspaces use` / `hotdata databases use`.
 
 ```bash
 hotdata databases queries list [--limit N] [--cursor <token>] [--status <csv>]

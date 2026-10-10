@@ -175,7 +175,7 @@ fn parse_table(workspace_id: &str, table: &str) -> (FromTarget, String, String) 
                 .unwrap_or_else(|| {
                     eprintln!(
                         "{}",
-                        "error: use catalog.schema.table, or set an active database \
+                        "error: use catalog.schema.table, or set a current database \
                          with `hotdata databases use <id>`."
                             .red()
                     );

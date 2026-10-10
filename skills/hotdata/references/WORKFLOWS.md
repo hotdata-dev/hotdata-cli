@@ -204,6 +204,6 @@ Use `hotdata databases tables list` for discovery; do not query `information_sch
 
 ## Cross-cutting
 
-- **Workspace:** Current workspace or `--workspace-id`. **`hotdata databases queries`** uses the current workspace only (no `--workspace-id`).
+- **Workspace:** Current workspace, or `--workspace-id` / `-w` for one command (including **`hotdata databases queries`**).
 - **Jobs:** `hotdata jobs list` / `jobs <id>` for async refreshes and index builds.
 - **Discovery:** `hotdata databases tables list` — not `query` on `information_schema`.

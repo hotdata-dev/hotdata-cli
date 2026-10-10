@@ -44,10 +44,10 @@ Optional: pass **`--debug`** on any command to print verbose HTTP request/respon
 The CLI saves a **current workspace** and, for each workspace, a **current database** on this machine (`~/.hotdata/config.yml`). Commands use them when you don't name a workspace or database. They are kept across `hotdata auth logout` / `login`, so a new session resumes where you left off. There is no "default" workspace or database.
 
 - **Only `use` switches.** `hotdata workspaces use [<workspace_id>]` changes the current workspace (it prompts when the id is omitted). `hotdata databases use <id>` changes the current database. Nothing else changes them: `databases create` and `databases fork` do **not** switch to the new database.
-- **Flags apply to one command only.** `--workspace-id` / `-w` and `--database` / `-d` (`--database-id` on `ingest`) target that command and leave the current workspace and database unchanged.
+- **Flags apply to one command only.** `--workspace-id` / `-w` and `--database` (short `-d` on most commands; `--database-id` on `ingest`) target that command and leave the current workspace and database unchanged.
 - `hotdata workspaces list` and `hotdata databases list` mark the current one with `*` in the `CURRENT` column. `hotdata databases unset` clears the current database.
 
-If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked** to that value: passing a different `--workspace-id` is an error, and **`hotdata workspaces use` fails** (“workspace is locked”).
+If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked** to that value: passing a different `--workspace-id` is an error, and **`hotdata workspaces use` fails** (“workspace is locked by HOTDATA_WORKSPACE”). Unset the variable to switch.
 
 **Omit `--workspace-id` unless you need to target a specific workspace** (and it is not locked by env or session).
 
@@ -83,7 +83,7 @@ Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**
 ```
 hotdata workspaces list [--output table|json|yaml]
 ```
-Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_status`. Table output marks the current workspace with `*`.
+Returns workspaces with `current`, `public_id`, `name`, `active`, `favorite`, `provision_status`. `current: true` (`*` in table output) is the workspace commands use without `--workspace-id`. `active` is a server-side flag and does **not** mean current.
 
 ### Instant databases (`databases`)
 
@@ -213,14 +213,14 @@ Do **not** export a database to parquet just to query it — attach is the live 
 ### Tables
 
 ```
-hotdata databases tables list [--workspace-id <workspace_id>] [--schema <pattern>] [--table <pattern>] [--limit <int>] [--cursor <cursor>] [--output table|json|yaml]
+hotdata databases tables list [--database <id>] [--workspace-id <workspace_id>] [--schema <pattern>] [--table <pattern>] [--limit <int>] [--cursor <cursor>] [--output table|json|yaml]
 hotdata databases tables show <catalog.schema.table|schema.table> [--output table|json|yaml]
 ```
 
 **`databases tables list`**
 - **Always use this command to discover available tables.** Do NOT query `information_schema` via `hotdata query`.
-- With a **current database set** (`hotdata databases use <id>`): lists tables in that database — format `<catalog>.<schema>.<table>`, columns `TABLE`, `SYNCED`, `LAST_SYNC`.
-- With **no current database**: lists all tables across the workspace — format `<source>.<schema>.<table>`, same columns.
+- With a **current database set** (`hotdata databases use <id>`) or `--database <id>` (this command only): lists tables in that database — format `<catalog>.<schema>.<table>`, columns `TABLE`, `SYNCED`, `LAST_SYNC`.
+- With **no current database** and no `--database`: lists all tables across the workspace — format `<source>.<schema>.<table>`, same columns.
 - `--schema` and `--table` support SQL `%` wildcard patterns (e.g. `--table order%`).
 - Results are paginated (default 100 per page); a `--cursor` token is printed when more are available.
 
