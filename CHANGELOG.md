@@ -1,3 +1,14 @@
+## [0.38.0] - 2026-10-10
+
+### 🚀 Features
+
+- *(workspaces)* [**breaking**] Remember current workspace and database across logins (#326)
+
+### 🐛 Bug Fixes
+
+- *(skill)* Validate archive entry paths on extract (#319)
+- *(deps)* Bump vulnerable transitive crates (#324)
+- *(workspaces)* Refuse `use` under HOTDATA_WORKSPACE and mark current in JSON (#328)
 ## [0.37.0] - 2026-09-23
 
 ### 🚀 Features
