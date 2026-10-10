@@ -29,7 +29,7 @@ With no filters, this is a whole-workspace scan that **includes instant-database
 
 ## 3. Create indexes
 
-For instant databases (`--from` catalog alias — auto-selects the active database catalog):
+For instant databases (`--from` catalog alias — auto-selects the current database catalog):
 
 ```bash
 hotdata search create <table>_body --type text \

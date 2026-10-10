@@ -39,9 +39,13 @@ API URL defaults to `https://api.hotdata.dev/v1` or overridden via `HOTDATA_API_
 
 Optional: pass **`--debug`** on any command to print verbose HTTP request/response details.
 
-## Workspace ID
+## Current workspace and database
 
-Commands that accept `--workspace-id` default to the active workspace from config when omitted. Use `hotdata workspaces use` to switch interactively, or `hotdata workspaces use <workspace_id>` for a direct choice. In `hotdata workspaces list`, the `*` marker labels the **default** workspace the CLI resolves to.
+The CLI saves a **current workspace** and, for each workspace, a **current database** on this machine (`~/.hotdata/config.yml`). Commands use them when you don't name a workspace or database. They are kept across `hotdata auth logout` / `login`, so a new session resumes where you left off. There is no "default" workspace or database.
+
+- **Only `use` switches.** `hotdata workspaces use [<workspace_id>]` changes the current workspace (it prompts when the id is omitted). `hotdata databases use <id>` changes the current database. Nothing else changes them: `databases create` and `databases fork` do **not** switch to the new database.
+- **Flags apply to one command only.** `--workspace-id` / `-w` and `--database` / `-d` (`--database-id` on `ingest`) target that command and leave the current workspace and database unchanged.
+- `hotdata workspaces list` and `hotdata databases list` mark the current one with `*` in the `CURRENT` column. `hotdata databases unset` clears the current database.
 
 If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked** to that value: passing a different `--workspace-id` is an error, and **`hotdata workspaces use` fails** (“workspace is locked”).
 
@@ -53,7 +57,7 @@ A workspace's query worker scales to zero after inactivity. The **first** comman
 
 ## Database context (API)
 
-**`context:<STEM>`** (e.g. **context:DATAMODEL**, **context:GLOSSARY**) is an authoritative Markdown document stored server-side under that stem via the context API — *not* generic English ("a data model"), and *not* a local `./DATAMODEL.md` (local files are only `push`/`pull` transport). CLI commands take the bare stem: `hotdata databases context show DATAMODEL`. Context is scoped to the **active database** (`hotdata databases use <id>`); target another with `--database` / `-d`. Stems follow SQL identifier rules and accept a trailing `.md` (stored without it). Command reference: [Database context (named Markdown)](#database-context-named-markdown).
+**`context:<STEM>`** (e.g. **context:DATAMODEL**, **context:GLOSSARY**) is an authoritative Markdown document stored server-side under that stem via the context API — *not* generic English ("a data model"), and *not* a local `./DATAMODEL.md` (local files are only `push`/`pull` transport). CLI commands take the bare stem: `hotdata databases context show DATAMODEL`. Context is scoped to the **current database** (`hotdata databases use <id>`); target another with `--database` / `-d`. Stems follow SQL identifier rules and accept a trailing `.md` (stored without it). Command reference: [Database context (named Markdown)](#database-context-named-markdown).
 
 **Agents — list before show.** Run `hotdata databases context list` (optionally `--prefix DATAMODEL`) first; run `hotdata databases context show DATAMODEL` *only if* the stem is listed. A missing stem makes `show` exit 1 — normal for a fresh database, not a failure: don't retry in a loop or run speculative `show` in parallel with other tools. Proceed without context:DATAMODEL until one exists.
 
@@ -63,7 +67,7 @@ A workspace's query worker scales to zero after inactivity. The **first** comman
 
 These are **patterns** built from the commands below—not separate CLI subcommands:
 
-- **Model (`context:DATAMODEL`)** — The shared semantic map of the active database (entities, keys, joins across sources). Store and read it only via database context (`hotdata databases context list`, then `show DATAMODEL` **only when listed**, `push DATAMODEL`); refresh using `databases tables list` and `databases tables show`. For a deep pass (indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
+- **Model (`context:DATAMODEL`)** — The shared semantic map of the current database (entities, keys, joins across sources). Store and read it only via database context (`hotdata databases context list`, then `show DATAMODEL` **only when listed**, `push DATAMODEL`); refresh using `databases tables list` and `databases tables show`. For a deep pass (indexes, per-table detail), see [references/MODEL_BUILD.md](references/MODEL_BUILD.md).
 - **History / Chain / OLAP SQL** — See **`hotdata-analytics`** and [references/WORKFLOWS.md](references/WORKFLOWS.md).
 - **Search / retrieval indexes** — See **`hotdata-search`**.
 
@@ -79,7 +83,7 @@ Global CLI options: **`--api-key`**, **`-v` / `--version`**, **`-h` / `--help`**
 ```
 hotdata workspaces list [--output table|json|yaml]
 ```
-Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_status`. Table output marks the default workspace with `*`.
+Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_status`. Table output marks the current workspace with `*`.
 
 ### Instant databases (`databases`)
 
@@ -93,7 +97,7 @@ Returns workspaces with `public_id`, `name`, `active`, `favorite`, `provision_st
 - **"json in any shape" is the CLI's doing, not the API's.** `--file`/`--url` reshape an array or a pretty-printed document into newline-delimited json locally. The load API and the SDKs accept **newline-delimited json only** (`format: "json"`), so code that moves off the CLI must convert the file itself.
 - **Two json sources are refused before anything uploads — do not retry them unchanged.** `one object per row` means a row is a scalar or a list: reshape the file so every row is an object. `carries no json rows` means the source is `[]` or empty: there is nothing to load.
 
-**Active database:** `hotdata databases use <id>` saves the active database to config. `databases tables list`/`load`/`remove`, `databases queries`/`results`, and all `databases context` commands default to the active database; pass **`--database <id>`** to override per-command. (`databases tables show` instead takes a fully-qualified `catalog.schema.table`.)
+**Current database:** `hotdata databases use <id>` saves the current database to config (see [Current workspace and database](#current-workspace-and-database)). `databases tables list`/`load`/`remove`, `databases queries`/`results`, and all `databases context` commands default to the current database; pass **`--database <id>`** to target another database for that command only. (`databases tables show` instead takes a fully-qualified `catalog.schema.table`.)
 
 **Always select databases by id** (`dbid...`, from `databases list`). Display names and catalog aliases are not unique — several databases can share a name, and a fork answers to the same catalog as its source — so name-based selection is ambiguous.
 
@@ -123,29 +127,30 @@ hotdata databases tables load <table> [--database <id>] [--schema public] (--fil
 hotdata databases tables remove <table> [--database <id>] [--schema public] [--workspace-id <workspace_id>]
 ```
 
-- `list` — all instant databases in the workspace. Active database is marked with `*` under the DEFAULT column; CREATED shows when each database was made.
+- `list` — all instant databases in the workspace. Current database is marked with `*` under the CURRENT column; CREATED shows when each database was made.
 - `count` — the total number of instant databases in the workspace, across **all** pages (`list` shows one page). Prints a bare integer by default so it drops straight into scripts (`$(hotdata databases count)`); `--output json|yaml` render `{"count": N}` / `count: N`.
-- `create` — creates a new instant database. `--name` is an optional human-readable display name. `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`); must be `[a-z_][a-z0-9_]*`. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; omitting means no expiry. Repeat `--table` to declare tables up front.
-- `fork` — creates a new instant database that is an independent deep copy of an existing one (same schemas, tables, and data); the source is left unchanged and the two diverge freely afterwards. The source defaults to the active database; pass the database `<id>` to fork another. `--name` defaults to `<source>-fork` (so the two stay distinguishable in `list`); `--expires-at` accepts a relative duration or RFC 3339 timestamp, and when omitted a still-future source expiry is carried over. `--description` records why the fork was taken (for example `"what-if on Q3 pricing"`); it can be set only at fork time. The fork becomes the active database on success. The fork answers to the **same catalog alias** as its source inside its own scope; catalogs attached to the source are **re-attached** to the fork, but indexes are **not** carried over. Only databases created with the current (DuckLake) storage engine can be forked — older parquet-backed databases return an error. The fork's output (and its `databases <id>` view) records **`forked_from`** provenance: source id, the source's name at fork time, the copied snapshot, when, and the description if one was given.
-- `lineage` — renders a database's **whole fork family tree**, walked from the root down (defaults to the active database; one lineage request per database, fine for the small families forks produce in practice): every reachable generation, with the queried database marked `← this database`. A fork taken with `--description` shows the first line of it on its row; `-o json`/`yaml` carry the full text. Lineage is a historical record, not a live link — the databases stay independent, and a **deleted** generation stays in the chain (marked `deleted`), though its own fork list can't be enumerated: such branches end with `⋯ forks unknown`. Forks made before the server recorded lineage carry none. `--forks-limit <n>` pages each database's direct-fork list (server clamps to 1–100); a truncated branch closes with `⋯ N more`. `-o json`/`yaml` return `{database_id, root_id, tree}` with a recursive `tree` node.
-- `use` — saves the database **id** as the active database. Subsequent `databases tables` and `databases context` commands use it automatically. Note that a successful `fork` also updates this: the fork becomes the active database.
-- `unset` — clears the active database from config.
+- `create` — creates a new instant database. `--name` is an optional human-readable display name. `--catalog` sets the SQL alias used in queries (`SELECT … FROM <catalog>.schema.table`); must be `[a-z_][a-z0-9_]*`. `--expires-at` accepts relative durations (`24h`, `7d`, `90m`) or an RFC 3339 timestamp; omitting means no expiry. Repeat `--table` to declare tables up front. **Does not switch the current database** — run `hotdata databases use <id>` with the printed id (or pass `-d <id>`) to work in it.
+- `fork` — creates a new instant database that is an independent deep copy of an existing one (same schemas, tables, and data); the source is left unchanged and the two diverge freely afterwards. The source defaults to the current database; pass the database `<id>` to fork another. `--name` defaults to `<source>-fork` (so the two stay distinguishable in `list`); `--expires-at` accepts a relative duration or RFC 3339 timestamp, and when omitted a still-future source expiry is carried over. `--description` records why the fork was taken (for example `"what-if on Q3 pricing"`); it can be set only at fork time. **Does not switch the current database** — run `hotdata databases use <fork_id>` to work in the fork, or pass `-d <fork_id>` per command. The fork answers to the **same catalog alias** as its source inside its own scope; catalogs attached to the source are **re-attached** to the fork, but indexes are **not** carried over. Only databases created with the current (DuckLake) storage engine can be forked — older parquet-backed databases return an error. The fork's output (and its `databases <id>` view) records **`forked_from`** provenance: source id, the source's name at fork time, the copied snapshot, when, and the description if one was given.
+- `lineage` — renders a database's **whole fork family tree**, walked from the root down (defaults to the current database; one lineage request per database, fine for the small families forks produce in practice): every reachable generation, with the queried database marked `← this database`. A fork taken with `--description` shows the first line of it on its row; `-o json`/`yaml` carry the full text. Lineage is a historical record, not a live link — the databases stay independent, and a **deleted** generation stays in the chain (marked `deleted`), though its own fork list can't be enumerated: such branches end with `⋯ forks unknown`. Forks made before the server recorded lineage carry none. `--forks-limit <n>` pages each database's direct-fork list (server clamps to 1–100); a truncated branch closes with `⋯ N more`. `-o json`/`yaml` return `{database_id, root_id, tree}` with a recursive `tree` node.
+- `use` — saves the database as the current database (accepts an id, catalog alias, or name; prefer the id). Subsequent `query`, `databases tables`, and `databases context` commands use it automatically. This is the **only** command that changes the current database.
+- `unset` — clears the current database from config.
 - `show <id>` / `<id>` — inspect one database (returns id, catalog, name, expires_at, attached databases; a fork also shows its `forked_from` record).
 - `remove` — removes the instant database; clears the active-database config if it matched.
 - `load` (top-level shorthand) — loads a file into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). **Formats:** csv, json (`.json`/`.jsonl`/`.ndjson`), and parquet; the format comes from the file's extension, and `--format` overrides it (needed when the extension is absent or misleading). An unrecognised extension is not rejected — the server reads the bytes, and a file that plainly opens a json array is taken as json even without an extension. A json source in any shape (array, pretty-printed, one object per line) is reshaped locally to newline-delimited json before upload; an already-newline-delimited file is uploaded untouched. A table or schema that was never declared is declared by the server as part of the load, so no up-front `--table` is required.
 - **Load modes** (`--mode`, default `replace`) — `replace` supersedes the table's contents; `append` adds rows; `delete`, `update`, and `upsert` match existing rows **by key**. `--append` is the old shorthand for `--mode append` and still works, but the two cannot be combined. The keyed modes need a key: declare one with `databases tables add --key`, or name it per-load with `--key` (repeat for a composite key). `delete` uploads only the key columns; `update` replaces matching rows and ignores unmatched ones; `upsert` inserts the unmatched instead. Keyed modes are not available with `--result-id`.
-- `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses active database when `--database` is omitted.
+- `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses current database when `--database` is omitted.
 - `tables add` — declares a table **with its key and storage layout**, which a load cannot infer. `--key` (repeatable) is what enables the `delete`/`update`/`upsert` load modes on that table. `--sorted-by <col>` or `<col>=desc` sets sort order; `--partition-by <col>` partitions on the value, `<col>=month` (or `year`/`day`/`hour`) on a calendar part — one partition per calendar month needs **both** `<col>=year` and `<col>=month`, or every March shares a partition. Sort and partition are fixed once the table exists. `--key-determines` (repeatable) asserts a column's value is fixed by the key: it prunes keyed loads harder, and is **correctness-affecting** — declare it only where the invariant really holds, or a keyed load can leave a duplicate key behind. Re-adding an existing table is a conflict (409), and `tables remove` does not clear the declaration — the table leaves the listing but the name stays declared and still conflicts. So **a key cannot be retrofitted onto a table declared without one**: declare it with `--key` up front, or use a new table name.
 - `tables load` — publishes to an instant-database table from a local file (`--file`), a remote URL (`--url`), a pre-staged upload (`--upload-id`), or a saved query result (`--result-id`, must belong to the target database). Same `--mode`, `--format`, and `--key` flags as the top-level `load` above.
 - `tables remove` — drops a table from the instant database.
-- `attach` — attaches **another instant database** to this one, so its **live** tables become visible inside this database's query scope. Name the other database by name, catalog alias, or id. Defaults to the active database; target another with `--database`. `--alias` sets the SQL name it answers to (defaults to the attached database's own catalog alias). **Required when that alias is `default`** — the stock name for a database created without `--catalog` — since `default` cannot be attached under its own name. This is how you **join across databases** — see [Querying across databases](#querying-across-databases-attach). Read-only: loads still target your own database, and attaching is not transitive — you see what you attached, not what it attached.
-- `detach` — removes an attachment, withdrawing visibility without deleting any data. Accepts the attached database's name/id **or** the alias you attached it under. Defaults to the active database.
+- `attach` — attaches **another instant database** to this one, so its **live** tables become visible inside this database's query scope. Name the other database by name, catalog alias, or id. Defaults to the current database; target another with `--database`. `--alias` sets the SQL name it answers to (defaults to the attached database's own catalog alias). **Required when that alias is `default`** — the stock name for a database created without `--catalog` — since `default` cannot be attached under its own name. This is how you **join across databases** — see [Querying across databases](#querying-across-databases-attach). Read-only: loads still target your own database, and attaching is not transitive — you see what you attached, not what it attached.
+- `detach` — removes an attachment, withdrawing visibility without deleting any data. Accepts the attached database's name/id **or** the alias you attached it under. Defaults to the current database.
 - `create --attach <database>[=<alias>]` — attach one or more databases at creation time (repeatable), e.g. `--attach reference --attach salesdb=sales`.
 
 Example:
 
 ```
-hotdata databases create --catalog airbnb
+hotdata databases create --catalog airbnb      # prints the new id
+hotdata databases use <id>                     # create does not switch
 hotdata databases load --catalog airbnb --table listings --url https://example.com/listings.parquet
 hotdata query "SELECT count(*) FROM airbnb.public.listings"
 ```
@@ -175,7 +180,7 @@ a key, name one per load instead: `--mode upsert --key booking_id`.
 
 #### Querying across databases (attach)
 
-**A `hotdata query` runs inside exactly one instant database** — the active database (`hotdata databases use <id>`) or the one named by `--database`. With none set, the query fails with *"a database is required."* That database's query scope sees **only its own catalog plus whatever is explicitly attached to it** — another database is **not** visible just because it exists. Referencing something unattached fails with *"table '\<catalog\>.\<schema\>.\<table\>' not found."*
+**A `hotdata query` runs inside exactly one instant database** — the current database (`hotdata databases use <id>`) or the one named by `--database`. With none set, the query fails with *"a database is required."* That database's query scope sees **only its own catalog plus whatever is explicitly attached to it** — another database is **not** visible just because it exists. Referencing something unattached fails with *"table '\<catalog\>.\<schema\>.\<table\>' not found."*
 
 To read another database's tables, or **join your own tables against them in one query**, attach it first. The data stays **live** — this is not a copy:
 
@@ -214,21 +219,21 @@ hotdata databases tables show <catalog.schema.table|schema.table> [--output tabl
 
 **`databases tables list`**
 - **Always use this command to discover available tables.** Do NOT query `information_schema` via `hotdata query`.
-- With an **active database set** (`hotdata databases use <id>`): lists tables in that database — format `<catalog>.<schema>.<table>`, columns `TABLE`, `SYNCED`, `LAST_SYNC`.
-- With **no active database**: lists all tables across the workspace — format `<source>.<schema>.<table>`, same columns.
+- With a **current database set** (`hotdata databases use <id>`): lists tables in that database — format `<catalog>.<schema>.<table>`, columns `TABLE`, `SYNCED`, `LAST_SYNC`.
+- With **no current database**: lists all tables across the workspace — format `<source>.<schema>.<table>`, same columns.
 - `--schema` and `--table` support SQL `%` wildcard patterns (e.g. `--table order%`).
 - Results are paginated (default 100 per page); a `--cursor` token is printed when more are available.
 
 **`databases tables show`**
 - Fetches column definitions (`COLUMN`, `DATA_TYPE`, `NULLABLE`) for a single table.
 - **`catalog.schema.table`** — three-part form; the catalog resolves to an instant database or an attached database by name.
-- **`schema.table`** — two-part form; uses the active database (errors if none is set).
+- **`schema.table`** — two-part form; uses the current database (errors if none is set).
 - Copy the name directly from `databases tables list` output — both forms match what `list` prints.
 - **Always use `databases tables show` to inspect columns before writing queries.**
 
 ### Database context (named Markdown)
 
-Reads and writes **database-scoped context API** documents. Context is tied to the **active database** (set via `hotdata databases use`); pass **`--database <id>`** (short: **`-d`**) to target a specific database. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Database context (API)](#database-context-api).
+Reads and writes **database-scoped context API** documents. Context is tied to the **current database** (set via `hotdata databases use`); pass **`--database <id>`** (short: **`-d`**) to target a specific database. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Database context (API)](#database-context-api).
 
 ```
 hotdata databases context list [--database <id>] [--prefix <stem>] [--output table|json|yaml]
@@ -237,7 +242,7 @@ hotdata databases context pull <name> [--database <id>] [--force] [--dry-run]
 hotdata databases context push <name> [--database <id>] [--dry-run]
 ```
 
-- `list` — names, `updated_at`, and character counts for each stored context in the active database. Use `--prefix` to narrow names (case-sensitive). **Agents:** call **`list` before `show`** for `DATAMODEL` (or any stem) so you do not rely on `show` failing when the document does not exist yet.
+- `list` — names, `updated_at`, and character counts for each stored context in the current database. Use `--prefix` to narrow names (case-sensitive). **Agents:** call **`list` before `show`** for `DATAMODEL` (or any stem) so you do not rely on `show` failing when the document does not exist yet.
 - `show` — print the Markdown body to **stdout** (use this when there is **no** local `./<NAME>.md`; ideal for agents). **Errors** if no context with that `name` exists (exit 1)—expected for a new database; use `list` first to avoid that path.
 - `pull` — download context `name` to `./<NAME>.md`. Refuses to overwrite an existing file unless `--force`. `--dry-run` prints target path and size only.
 - `push` — upload `./<NAME>.md` to upsert context `name` on the server. `--dry-run` prints size only. Body size must stay within the API limit (order of 512k characters).
@@ -256,8 +261,8 @@ hotdata databases query status <query_run_id>
 ```
 
 - Default output is `table` (row count and execution time).
-- **A query runs inside one instant database** (active database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus whatever is attached to it only**. To read another database's tables or join across databases, attach it first — see [Querying across databases (attach)](#querying-across-databases-attach).
-- Use `hotdata databases tables list` and `hotdata databases tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the active database's scope.)
+- **A query runs inside one instant database** (current database or `--database`); with none set it fails *"a database is required."* The scope sees the database's own catalog **plus whatever is attached to it only**. To read another database's tables or join across databases, attach it first — see [Querying across databases (attach)](#querying-across-databases-attach).
+- Use `hotdata databases tables list` and `hotdata databases tables show` for discovery — not `information_schema` via `query`. (Discovery lists every workspace table; queryability still requires the table's catalog to be in the current database's scope.)
 - **PostgreSQL dialect.** Quote non-lowercase columns with double quotes. To write DuckDB/Postgres/Snowflake SQL instead, pass `--dialect` (server-side transpile, read-only queries) — details in **`hotdata-analytics`**.
 - Async runs return `query_run_id` → poll with `query status <id>` (do not re-run the same heavy SQL). `query status` exit codes: `0` succeeded, `1` failed, `2` still running (poll again), `3` succeeded but the result is a truncated/incomplete preview.
 - **Large results: `-o csv` / `-o json` are complete, `-o table` is capped.** The server returns inline rows only up to a bounded cap and persists the full set under a `result_id`. For `csv` and `json` the CLI **streams** that full result batch by batch, so output size is unbounded and memory stays flat — pipe a big result to a file with `-o csv`/`-o json`, never `table`. For `table` the CLI fetches at most **10,000 rows** and the footer says `N of TOTAL rows — INCOMPLETE PREVIEW` (with `?` when the server sent no total); the process exits **3** so a pipeline cannot mistake it for the whole set. Same rules for `hotdata databases results get`. A result the server is still writing is waited for (up to 5 minutes, honoring `Retry-After`) rather than returned partial. If the full result can't be retrieved, the CLI prints the inline preview, a `warning:` to stderr, and exits 3. `-o json` carries `row_count`, `total_row_count`, and `truncated` — branch on `truncated`, not on the row count.
@@ -496,7 +501,7 @@ hotdata auth logout           # Remove saved auth for the default profile
 hotdata support report -m "<body>" --subject "<subject>" [--kind bug|question|billing|feature|account|other] [--severity urgent|high|medium|low] [-w <workspace_id> | --no-workspace] [--logs <path>|-] [--context KEY=VALUE ...] [-o table|json|yaml]
 ```
 
-Files a support ticket via the API — no browser needed. `-m`/`--message` and `--subject` are required together for non-interactive use (agents: always pass both); omit both in an interactive terminal to compose in `$EDITOR` instead. Attaches the active workspace by default (`--no-workspace` to omit, `-w` for a specific one); `--logs` reads a file or `-` for stdin (cap 256 KiB); `--context key=value` adds extra diagnostic pairs (repeatable, max 20). Prints the ticket's `public_id` on success — replies go to the email on the HotData account, not to the CLI.
+Files a support ticket via the API — no browser needed. `-m`/`--message` and `--subject` are required together for non-interactive use (agents: always pass both); omit both in an interactive terminal to compose in `$EDITOR` instead. Attaches the current workspace by default (`--no-workspace` to omit, `-w` for a specific one); `--logs` reads a file or `-` for stdin (cap 256 KiB); `--context key=value` adds extra diagnostic pairs (repeatable, max 20). Prints the ticket's `public_id` on success — replies go to the email on the HotData account, not to the CLI.
 
 ## Workflows
 

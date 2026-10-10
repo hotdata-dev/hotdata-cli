@@ -12,7 +12,7 @@ OLAP-style SQL, **History** (query runs and stored results), and **Chain** (mate
 
 ### Query runs
 
-Uses the **active workspace only** — no `--workspace-id` on `databases queries`. Set default workspace with `hotdata workspaces use` first.
+Uses the **current workspace only** — no `--workspace-id` on `databases queries`. Switch to the right workspace with `hotdata workspaces use` first.
 
 ```bash
 hotdata databases queries list [--limit N] [--cursor <token>] [--status <csv>]
@@ -67,7 +67,8 @@ hotdata query "SELECT ..."
 Land a smaller table in an **instant database** (parquet → `<database>.<schema>.<table>`):
 
 ```bash
-hotdata databases create --catalog chain_db
+hotdata databases create --catalog chain_db   # prints the new id
+hotdata databases use <id>                    # create does not switch
 hotdata databases load --catalog chain_db --table revenue_slice --file ./revenue_slice.parquet
 ```
 

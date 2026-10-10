@@ -12,10 +12,14 @@ pub enum WorkspaceCommands {
         output: String,
     },
 
-    /// Set the default workspace
+    /// Switch the current workspace
+    ///
+    /// This is the only command that changes the current workspace.
+    /// `--workspace-id` applies to one command and does not switch.
+    /// The choice is saved on this machine and kept across logout and login.
     #[command(name = "use")]
     Set {
-        /// Workspace ID to set as default (omit for interactive selection)
+        /// Workspace ID to switch to (omit for interactive selection)
         workspace_id: Option<String>,
     },
 }
@@ -79,7 +83,7 @@ pub fn set(workspace_id: Option<&str>) {
                 .map(|w| format!("{} ({})", w.name, w.public_id))
                 .collect();
             let selection =
-                match inquire::Select::new("Select default workspace:", options.clone()).prompt() {
+                match inquire::Select::new("Select workspace:", options.clone()).prompt() {
                     Ok(s) => s,
                     Err(_) => std::process::exit(1),
                 };
@@ -92,13 +96,13 @@ pub fn set(workspace_id: Option<&str>) {
         }
     };
 
-    if let Err(e) = config::save_default_workspace("default", chosen.clone()) {
+    if let Err(e) = config::save_current_workspace("default", chosen.clone()) {
         eprintln!("error saving config: {e}");
         std::process::exit(1);
     }
 
     use crossterm::style::Stylize;
-    println!("{}", "Default workspace updated".green());
+    println!("{}", "Switched workspace".green());
     println!("id:   {}", chosen.public_id);
     println!("name: {}", chosen.name);
 }
@@ -111,13 +115,10 @@ pub fn list(format: &str) {
             std::process::exit(1);
         }
     };
-    let default_id = std::env::var("HOTDATA_WORKSPACE").unwrap_or_else(|_| {
-        profile_config
-            .workspaces
-            .first()
-            .map(|w| w.public_id.clone())
-            .unwrap_or_default()
-    });
+    let current_id = std::env::var("HOTDATA_WORKSPACE")
+        .ok()
+        .or_else(|| profile_config.current_workspace_id())
+        .unwrap_or_default();
 
     let workspaces = fetch_workspaces();
 
@@ -136,7 +137,7 @@ pub fn list(format: &str) {
                 let rows: Vec<Vec<String>> = workspaces
                     .iter()
                     .map(|w| {
-                        let marker = if w.public_id == default_id { "*" } else { "" };
+                        let marker = if w.public_id == current_id { "*" } else { "" };
                         vec![
                             marker.to_string(),
                             w.public_id.clone(),
@@ -146,7 +147,7 @@ pub fn list(format: &str) {
                     })
                     .collect();
                 crate::output::table::print(
-                    &["DEFAULT", "PUBLIC_ID", "NAME", "PROVISION_STATUS"],
+                    &["CURRENT", "PUBLIC_ID", "NAME", "PROVISION_STATUS"],
                     &rows,
                 );
             }

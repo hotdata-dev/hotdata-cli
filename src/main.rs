@@ -74,20 +74,20 @@ fn resolve_workspace(provided: Option<String>) -> String {
         let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
         return id;
     }
-    // Otherwise the profile's default, computed by the same helper `auth
-    // status` displays — so the reported workspace is the one commands hit.
-    // For an api-key credential that's its own authorized workspace (a database
-    // token's sole one, or the saved default when the key can reach it), not a
-    // possibly-different CLI-session cache.
-    match credentials::default_workspace_id(&profile) {
+    // Otherwise the profile's current workspace, computed by the same helper
+    // `auth status` displays — so the reported workspace is the one commands
+    // hit. For an api-key credential that's its own authorized workspace (a
+    // database token's sole one, or the saved current workspace when the key
+    // can reach it), not a possibly-different CLI-session cache.
+    match credentials::current_workspace_id(&profile) {
         Some(id) => {
             let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
             id
         }
         None => {
             eprintln!(
-                "error: no workspace-id provided and no default workspace found. \
-                 Run 'hotdata auth login' or specify --workspace-id."
+                "error: no workspace-id provided and no current workspace set. \
+                 Run 'hotdata auth login', 'hotdata workspaces use', or specify --workspace-id."
             );
             std::process::exit(1);
         }

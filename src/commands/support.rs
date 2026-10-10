@@ -52,7 +52,7 @@ pub enum SupportCommands {
         #[arg(long, default_value = "medium", value_parser = ["urgent", "high", "medium", "low"])]
         severity: String,
 
-        /// Workspace to attach (defaults to the active workspace from config)
+        /// Workspace to attach (defaults to the current workspace)
         #[arg(short = 'w', long = "workspace-id", conflicts_with = "no_workspace")]
         workspace_id: Option<String>,
 
@@ -277,7 +277,7 @@ fn build_request(
 }
 
 /// Resolve the workspace to attach. Unlike `main::resolve_workspace`, an
-/// unconfigured default is not an error here — proceed with none rather than
+/// unset current workspace is not an error here — proceed with none rather than
 /// block the one caller most likely to have a broken setup. Still honors the
 /// `HOTDATA_WORKSPACE` lock: an explicit `--workspace-id` that disagrees with
 /// it is still rejected, same as every other command.
@@ -305,19 +305,15 @@ fn resolve_optional_workspace(
     if let Some(id) = provided {
         return Ok((Some(id), false));
     }
-    // Deliberately NOT `client::credentials::default_workspace_id`: for an
+    // Deliberately NOT `client::credentials::current_workspace_id`: for an
     // api-key credential (`--api-key`/`HOTDATA_API_KEY`) that helper probes
     // `GET /workspaces` to discover scope. An exact workspace is optional for
     // filing a report, and the API being slow or down is exactly the
     // situation this command exists for — it must never block on a network
-    // round trip just to guess a default. Read only the saved default
-    // (`workspaces set` / a prior login moves one to the front); if there is
-    // none, or the current credential can't actually reach it, file with no
-    // workspace instead of guessing.
-    Ok((
-        profile.workspaces.first().map(|w| w.public_id.clone()),
-        false,
-    ))
+    // round trip just to guess one. Read only the saved current workspace
+    // (`workspaces use` / login); if there is none, or the current credential
+    // can't actually reach it, file with no workspace instead of guessing.
+    Ok((profile.current_workspace_id(), false))
 }
 
 /// Produce (subject, body, from_editor) from `-m`/`--subject`, or by
@@ -1031,12 +1027,12 @@ Second paragraph.
     // --- workspace resolution -----------------------------------------------------
 
     #[test]
-    fn no_workspace_flag_wins_even_with_a_saved_default() {
+    fn no_workspace_flag_wins_even_with_a_saved_current_workspace() {
         let profile = ProfileConfig {
-            workspaces: vec![config::WorkspaceEntry {
+            current_workspace: Some(config::WorkspaceEntry {
                 public_id: "work_saved".into(),
                 name: "Saved".into(),
-            }],
+            }),
             ..Default::default()
         };
         let (id, locked) = resolve_optional_workspace(&profile, None, true).unwrap();
@@ -1054,7 +1050,7 @@ Second paragraph.
     }
 
     #[test]
-    fn no_configured_default_resolves_to_none_without_erroring() {
+    fn no_current_workspace_resolves_to_none_without_erroring() {
         // The behavior that differs from main::resolve_workspace: an
         // unconfigured profile must not error here.
         let profile = ProfileConfig::default();
@@ -1064,8 +1060,8 @@ Second paragraph.
     }
 
     #[test]
-    fn build_request_with_env_api_key_and_no_configured_default_makes_zero_http_calls() {
-        // `client::credentials::default_workspace_id` would probe `GET
+    fn build_request_with_env_api_key_and_no_current_workspace_makes_zero_http_calls() {
+        // `client::credentials::current_workspace_id` would probe `GET
         // /workspaces` for an env/flag-sourced api key with no single-
         // workspace answer already known -- resolve_optional_workspace must
         // never do that. A report is exactly what gets filed when the API
@@ -1078,7 +1074,7 @@ Second paragraph.
         profile.api_key_source = config::ApiKeySource::Env;
         assert!(
             profile.workspaces.is_empty(),
-            "test setup: no saved default"
+            "test setup: no saved current workspace"
         );
 
         let (_req, id, _from_editor) = build_request(
@@ -1098,12 +1094,12 @@ Second paragraph.
     }
 
     #[test]
-    fn saved_default_is_used_when_no_flag_given() {
+    fn saved_current_workspace_is_used_when_no_flag_given() {
         let profile = ProfileConfig {
-            workspaces: vec![config::WorkspaceEntry {
+            current_workspace: Some(config::WorkspaceEntry {
                 public_id: "work_saved".into(),
                 name: "Saved".into(),
-            }],
+            }),
             ..Default::default()
         };
         let (id, locked) = resolve_optional_workspace(&profile, None, false).unwrap();
@@ -1133,7 +1129,7 @@ Second paragraph.
         .unwrap_err();
         assert!(err.contains("KEY=VALUE"), "got: {err}");
         // build_request never talks to the network at all -- workspace
-        // resolution reads only the saved default, never probes -- so this
+        // resolution reads only the saved current workspace, never probes -- so this
         // always holds regardless of which validation failed; asserted
         // anyway as the documented guarantee.
         m.assert();

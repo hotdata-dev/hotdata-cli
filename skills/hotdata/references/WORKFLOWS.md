@@ -1,6 +1,6 @@
 # Hotdata CLI workflows
 
-**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the database-scoped document stored via the **context API** (active database; `-d`/`--database` to target another)—CLI uses bare stems: `hotdata databases context show DATAMODEL`.
+**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the database-scoped document stored via the **context API** (current database; `-d`/`--database` to target another)—CLI uses bare stems: `hotdata databases context show DATAMODEL`.
 
 ---
 
@@ -49,7 +49,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 **Skill:** **`hotdata-analytics`** (catalog via **`hotdata`**)
 
 1. [ ] Run base SQL: `hotdata query "SELECT …"` — poll `hotdata query status <id>` if async
-2. [ ] Materialize into an instant database: `hotdata databases create --catalog <alias> --table <name>` then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
+2. [ ] Materialize into an instant database: `hotdata databases create --catalog <alias> --table <name>`, then `hotdata databases use <id>` (create does not switch), then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
 3. [ ] Query with the catalog-qualified name `<alias>.public.<name>`
 4. [ ] Chain: `hotdata query "SELECT … FROM <alias>.public.<name> WHERE …"`
 5. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
@@ -77,7 +77,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 A `hotdata query` runs inside **one** instant database; its scope sees that database's own catalog plus whatever is **attached** to it only. To read another database's tables — or join your own tables against them in one query — attach that database. (No instant database set → *"a database is required."*; something unattached → *"table not found."*)
 
-1. [ ] Pick/create the instant database that will be the query context (`hotdata databases use <id>` or `databases create --catalog <alias>`)
+1. [ ] Pick/create the instant database that will be the query context (`databases create --catalog <alias>` if needed, then `hotdata databases use <id>` — create does not switch)
 2. [ ] Attach the database(s) you need (live, no copy): `hotdata databases attach <database> [--alias <a>]`
    - Or attach at creation: `hotdata databases create --catalog <alias> --attach <database>[=<alias>]`
 3. [ ] Confirm scope: `hotdata databases <id>` lists what is attached
@@ -110,7 +110,8 @@ Attaching is read-only (loads still target your own database) and not transitive
 1. Create the database with a catalog alias:
 
    ```bash
-   hotdata databases create --catalog sales
+   hotdata databases create --catalog sales   # prints the new id
+   hotdata databases use <id>                 # create does not switch
    ```
 
 2. **Before the first load**, declare any table that needs a key, a sort order,
@@ -160,8 +161,9 @@ Before destructive experimentation (bulk replaces, schema rework, testing a load
 
 ```bash
 hotdata databases list                    # note the source database id (dbid...)
-hotdata databases use <source_id>         # source to protect (`use` takes an id)
-hotdata databases fork --expires-at 24h --description "test risky.parquet load"   # deep copy; becomes the active database — note the fork id it prints
+hotdata databases use <source_id>         # source to protect
+hotdata databases fork --expires-at 24h --description "test risky.parquet load"   # deep copy; note the fork id it prints
+hotdata databases use <fork_id>           # fork does not switch — do it explicitly
 hotdata databases load --catalog sales --table orders --file ./risky.parquet  # hits the fork
 ```
 
@@ -202,6 +204,6 @@ Use `hotdata databases tables list` for discovery; do not query `information_sch
 
 ## Cross-cutting
 
-- **Workspace:** Active workspace or `--workspace-id`. **`hotdata databases queries`** uses the active workspace only (no `--workspace-id`).
+- **Workspace:** Current workspace or `--workspace-id`. **`hotdata databases queries`** uses the current workspace only (no `--workspace-id`).
 - **Jobs:** `hotdata jobs list` / `jobs <id>` for async refreshes and index builds.
 - **Discovery:** `hotdata databases tables list` — not `query` on `information_schema`.

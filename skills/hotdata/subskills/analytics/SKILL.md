@@ -35,7 +35,7 @@ hotdata query status <query_run_id>
 Typical analytics SQL (all via `hotdata query`):
 
 - **Aggregations:** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` with `GROUP BY`
-- **Joins:** `INNER` / `LEFT JOIN` across `<catalog>.<schema>.<table>` names — every referenced catalog (the instant database's own or an attached one) must be in the active database's scope; attach catalogs first (`hotdata databases attach`)
+- **Joins:** `INNER` / `LEFT JOIN` across `<catalog>.<schema>.<table>` names — every referenced catalog (the instant database's own or an attached one) must be in the current database's scope; attach catalogs first (`hotdata databases attach`)
 - **Filtering:** `WHERE` on partition-friendly columns (consider **sorted** indexes below)
 - **Ordering:** `ORDER BY` on metrics or dimensions
 - **Bounded exploration:** always `LIMIT` while iterating; widen once validated
@@ -46,7 +46,7 @@ Column names from CSV uploads may be case-sensitive — use double quotes when n
 
 ## Query run history
 
-Scoped to the **active database** (set with `hotdata databases use`); pass `-d/--database <id>` to target another, `-w/--workspace-id` for another workspace.
+Scoped to the **current database** (set with `hotdata databases use`); pass `-d/--database <id>` to target another, `-w/--workspace-id` for another workspace.
 
 ```bash
 hotdata databases queries list [-d <db-id>] [--workspace-id <workspace_id>] [--limit <int>] [--cursor <token>] [--status <csv>] [--output table|json|yaml]
@@ -66,7 +66,7 @@ hotdata databases results list [-d <db-id>] [--workspace-id <workspace_id>] [--l
 hotdata databases results get <result_id> [-d <db-id>] [--workspace-id <workspace_id>] [--output table|json|csv]
 ```
 
-- Prefer **`databases results get <id>`** over re-running identical heavy queries. It renders like `query`: `csv`/`json` stream the whole result, `table` is capped at 10,000 rows and exits `3` when the result is larger. Results and query runs scope to the active database; pass `-d/--database <id>` to target another.
+- Prefer **`databases results get <id>`** over re-running identical heavy queries. It renders like `query`: `csv`/`json` stream the whole result, `table` is capped at 10,000 rows and exits `3` when the result is larger. Results and query runs scope to the current database; pass `-d/--database <id>` to target another.
 - Query footers may include `[result-id: rslt...]`; also available from `databases queries <query_run_id>`.
 - `databases results list --limit` defaults to **100** (max **1000**) — unlike `databases queries list`, which defaults to **20**.
 
@@ -86,7 +86,8 @@ hotdata databases results get <result_id> [-d <db-id>] [--workspace-id <workspac
 2. **Materialize** into an instant database (parquet)
 
    ```bash
-   hotdata databases create --catalog analytics
+   hotdata databases create --catalog analytics   # prints the new id
+   hotdata databases use <id>                     # create does not switch
    hotdata databases load --catalog analytics --table slice --file ./slice.parquet
    ```
 
