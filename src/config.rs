@@ -212,6 +212,11 @@ fn update_config(create: bool, f: impl FnOnce(&mut ConfigFile)) -> Result<(), St
 pub fn clear_workspaces(profile: &str) -> Result<(), String> {
     update_config(false, |config_file| {
         if let Some(entry) = config_file.profiles.get_mut(profile) {
+            // Legacy config: the choice lives in `workspaces[0]`. Keep it
+            // before the list is wiped.
+            if entry.current_workspace.is_none() {
+                entry.current_workspace = entry.workspaces.first().cloned();
+            }
             entry.workspaces.clear();
         }
     })
@@ -227,12 +232,10 @@ pub fn save_workspaces(
     let mut current = None;
     update_config(true, |config_file| {
         let entry = config_file.profiles.entry(profile.to_string()).or_default();
-        let kept = entry.current_workspace.as_ref().and_then(|c| {
-            workspaces
-                .iter()
-                .find(|w| w.public_id == c.public_id)
-                .cloned()
-        });
+        // `current_workspace_id` also covers legacy configs (`workspaces[0]`).
+        let kept = entry
+            .current_workspace_id()
+            .and_then(|id| workspaces.iter().find(|w| w.public_id == id).cloned());
         if let Some(w) = kept.or_else(|| workspaces.first().cloned()) {
             entry.current_workspace = Some(w);
         }
@@ -470,6 +473,32 @@ mod tests {
         let current =
             save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
         assert_eq!(current.map(|w| w.public_id).as_deref(), Some("ws-1"));
+    }
+
+    /// Write a pre-`current_workspace` config: the choice is `workspaces[0]`.
+    fn write_legacy_config() {
+        let legacy = "profiles:\n  default:\n    workspaces:\n    - public_id: ws-2\n      name: Second\n    - public_id: ws-1\n      name: First\n";
+        fs::create_dir_all(config_dir().unwrap()).unwrap();
+        fs::write(config_path().unwrap(), legacy).unwrap();
+    }
+
+    #[test]
+    fn legacy_choice_survives_first_login() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        write_legacy_config();
+        let current =
+            save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
+        assert_eq!(current.map(|w| w.public_id).as_deref(), Some("ws-2"));
+    }
+
+    #[test]
+    fn legacy_choice_survives_logout_and_login() {
+        let (_tmp, _guard) = with_temp_config_dir();
+        write_legacy_config();
+        clear_workspaces("default").unwrap();
+        let current =
+            save_workspaces("default", vec![ws("ws-1", "First"), ws("ws-2", "Second")]).unwrap();
+        assert_eq!(current.map(|w| w.public_id).as_deref(), Some("ws-2"));
     }
 
     #[test]

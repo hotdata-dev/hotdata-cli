@@ -8,7 +8,7 @@ version: 0.37.0
 
 Retrieval workloads in Hotdata: **BM25 full-text**, **vector similarity**, and the **indexes** and **embedding providers** that power them.
 
-**Prerequisites:** Authenticate, set a workspace, and set an current database (`hotdata databases use <id>`) — see the **`hotdata`** skill. Use fully qualified table names: `<catalog>.<schema>.<table>`.
+**Prerequisites:** Authenticate, set a workspace, and set a current database (`hotdata databases use <id>`) — see the **`hotdata`** skill. Use fully qualified table names: `<catalog>.<schema>.<table>`.
 
 **Related sub-skills** (bundled alongside this one — `Read` on demand): **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md) — OLAP SQL, query history, materialized chains), **`hotdata-geospatial`** ([`../geospatial/SKILL.md`](../geospatial/SKILL.md) — PostGIS-style functions).
 
@@ -48,7 +48,7 @@ hotdata search "<query>" --in <name>
 
 ## Indexes (text and vector)
 
-Indexes are an **instant-database** concept, and belong to the database's own tables — an attached database is read-only, so index its tables there rather than here. Create names the index (positional) and attaches to a table via `--from` — `catalog.schema.table` (the database's own catalog), or `schema.table` with an current database set. `list` narrows to the **current database** when one is set; without one it scans the whole workspace. `show`/`remove` resolve the index by name in the current database (or `--database <id>`).
+Indexes are an **instant-database** concept, and belong to the database's own tables — an attached database is read-only, so index its tables there rather than here. Create names the index (positional) and attaches to a table via `--from` — `catalog.schema.table` (the database's own catalog), or `schema.table` with a current database set. `list` narrows to the **current database** when one is set; without one it scans the whole workspace. `show`/`remove` resolve the index by name in the current database (or `--database <id>`).
 
 ```bash
 # List — active-database scope when a DB is set, else whole-workspace scan
@@ -94,7 +94,7 @@ hotdata search embeddings remove <id> [--workspace-id <workspace_id>]
 
 ## Quick workflow
 
-1. `hotdata databases use <id>` — set an current database, then `hotdata databases tables list` to confirm column types.
+1. `hotdata databases use <id>` — set a current database, then `hotdata databases tables list` to confirm column types.
 2. `hotdata search list` — avoid duplicate indexes (scoped to active DB automatically).
 3. `hotdata search create <name> --type text|vector --from <catalog.schema.table> --column <col>` (add `--async` if large).
 4. `hotdata search "..." --index <name>` — address the index you created by name.

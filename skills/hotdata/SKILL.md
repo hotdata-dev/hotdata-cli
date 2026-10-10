@@ -49,8 +49,6 @@ The CLI saves a **current workspace** and, for each workspace, a **current datab
 
 If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked** to that value: passing a different `--workspace-id` is an error, and **`hotdata workspaces use` fails** (“workspace is locked”).
 
-If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked** to that value: passing a different `--workspace-id` is an error, and **`hotdata workspaces use` fails** (“workspace is locked”).
-
 **Omit `--workspace-id` unless you need to target a specific workspace** (and it is not locked by env or session).
 
 ### Cold starts (worker wake-up)
@@ -221,7 +219,7 @@ hotdata databases tables show <catalog.schema.table|schema.table> [--output tabl
 
 **`databases tables list`**
 - **Always use this command to discover available tables.** Do NOT query `information_schema` via `hotdata query`.
-- With an **current database set** (`hotdata databases use <id>`): lists tables in that database — format `<catalog>.<schema>.<table>`, columns `TABLE`, `SYNCED`, `LAST_SYNC`.
+- With a **current database set** (`hotdata databases use <id>`): lists tables in that database — format `<catalog>.<schema>.<table>`, columns `TABLE`, `SYNCED`, `LAST_SYNC`.
 - With **no current database**: lists all tables across the workspace — format `<source>.<schema>.<table>`, same columns.
 - `--schema` and `--table` support SQL `%` wildcard patterns (e.g. `--table order%`).
 - Results are paginated (default 100 per page); a `--cursor` token is printed when more are available.
