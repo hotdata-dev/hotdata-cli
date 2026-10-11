@@ -49,14 +49,15 @@ hotdata search "<query>" --in <name>
 
 ## Indexes (text and vector)
 
-Indexes are an **instant-database** concept, and belong to the database's own tables — an attached database is read-only, so index its tables there rather than here. Create names the index (positional) and attaches to a table via `--from` — `catalog.schema.table` (the database's own catalog), or `schema.table` with a current database set. `list` narrows to the **current database** when one is set; without one it scans the whole workspace. `show`/`remove` resolve the index by name in the current database (or `--database <id>`).
+Indexes are an **instant-database** concept, and belong to the database's own tables — an attached database is read-only, so index its tables there rather than here. Create names the index (positional) and attaches to a table via `--from` — `catalog.schema.table` (the database's own catalog), or `schema.table` with a current database set. `list` narrows to `-d/--database <id>`, else the **current database** when one is set; without either it scans the whole workspace. `show`/`remove` resolve the index by name in the current database (or `--database <id>`).
 
 ```bash
-# List — active-database scope when a DB is set, else whole-workspace scan
-hotdata search list [--workspace-id <ws>] [--output table|json|yaml]
+# List — -d/--database <id>, else the current database, else whole-workspace scan
+hotdata search list [-d <db-id>] [--schema <schema>] [--table <table>] \
+  [--workspace-id <ws>] [--output table|json|yaml]
 
 # Create — index name is positional; --from is an instant database's table
-# (catalog.schema.table, or schema.table in -d/--database or the active database)
+# (catalog.schema.table, or schema.table in -d/--database or the current database)
 hotdata search create <name> --type text|vector --from <catalog.schema.table> \
   --column <col> [-d <db-id>] \
   [--metric l2|cosine|dot] [--async] \
@@ -74,8 +75,8 @@ hotdata search remove <name> [-d <db-id>]
 - **`--type` is required** on create: `text` (BM25; one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`** — [`../analytics/SKILL.md`](../analytics/SKILL.md).)
 - **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md)) — this skill focuses on retrieval types.
 - **`-d/--database <id>`** on create picks the database for a `schema.table` `--from` (instead of the active one); it cannot be combined with a `catalog.schema.table` `--from`.
-- **`search show`** prints a vector index's `metric`, `algorithm`, `probe_fraction` and `vector_precision` when the API reports them; `search list` adds an `ALGORITHM` column, and its `-o json|yaml` carries all of them. The cluster count (`nlist`) is not reported back by the API.
-- **`--async`:** poll with `hotdata jobs <job_id>` (see **`hotdata`** skill **Jobs**).
+- **`search show`** prints a vector index's `metric`, `algorithm`, `nlist`, `probe_fraction` and `vector_precision` when the API reports them; `search list` adds `ALGORITHM` and `NLIST` columns, and its `-o json|yaml` carries all of them. `nlist` is the number of clusters an `ivf` index was built with, which can be fewer than the `--nlist` requested on a small table.
+- **`--async`:** poll with `hotdata jobs <job_id>` (see **`hotdata`** skill **Jobs**). An index is listed by `search list` only once its build finishes; while builds are running, `search list` prints a note with their count.
 - **Vector algorithm (`--algorithm`, default `hnsw`):** `hnsw` searches an in-memory graph whose memory grows with the table. `ivf` clusters the vectors and reads only the clusters nearest each search, so its memory follows how much a search reads rather than the table's size. `ivf` needs a column that already holds vectors (no `--provider`) and the `l2` or `cosine` metric (`dot` is refused). IVF-only tuning: `--nlist <n>` (number of clusters, 1–65536; default chosen from the table's size) and `--probe-fraction <f>` (share of the index a search reads, 0 < f ≤ 1; higher = better recall, slower); both are rejected unless `--algorithm ivf`.
 - **`--vector-precision`:** how compactly the index stores each vector value. Defaults: the column's own precision for `hnsw`, `int8` for `ivf`. `ivf` accepts `int8` and `float32` only; `hnsw` accepts everything except `int8` (`float8` is its 8-bit option). Lower precision shrinks the index at some recall cost — measure on your own data. Changing it means removing and recreating the index.
 - **Auto-embedding:** `--type vector` on a **text** column generates embeddings server-side. Optional `--provider`; default output column `{column}_embedding` (override with `--output-column`). The generated column becomes part of the table, so it shows up in `information_schema.columns` and in a hand-written `SELECT *` — `hotdata search` leaves it out of its own projection (see `--select` above).

@@ -155,6 +155,20 @@ fn fetch_jobs(
     resp.jobs.into_iter().map(Job::from).collect()
 }
 
+/// How many index builds are pending or running in the workspace, or `None`
+/// when the lookup fails. For callers that only want to mention active builds,
+/// so an error here is not worth surfacing.
+pub fn active_index_builds(api: &Api) -> Option<usize> {
+    crate::client::sdk::block(api.client().jobs().list(
+        Some(JobType::CreateIndex),
+        Some("pending,running"),
+        None,
+        None,
+    ))
+    .ok()
+    .map(|resp| resp.jobs.len())
+}
+
 pub fn list(
     workspace_id: &str,
     job_type: Option<&str>,

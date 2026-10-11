@@ -29,6 +29,11 @@ struct Index {
     /// Absent means the column's own precision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     vector_precision: Option<String>,
+    /// Number of clusters an `ivf` index was built with — what the build
+    /// fitted, which can be fewer than the `--nlist` requested. Absent for
+    /// every other kind of index, and from servers that predate the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nlist: Option<u64>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -386,6 +391,16 @@ pub fn list(
         }
         _ => collect_connection_wide(&api, database, schema, table).map(|rows| (rows, true)),
     };
+    // An index appears in the listing only once its build has finished, so an
+    // `--async` build still running would otherwise leave no trace here. The
+    // jobs listing carries no index name or table, so this can only say how
+    // many builds are active in the workspace. Best-effort: a failed lookup
+    // just leaves the note out.
+    let active_builds = if format == "table" && result.is_ok() {
+        crate::commands::jobs::active_index_builds(&api)
+    } else {
+        None
+    };
     spinner.finish_and_clear();
     let (rows, multi_table) = result.unwrap_or_else(|e| e.exit());
 
@@ -396,66 +411,69 @@ pub fn list(
             if rows.is_empty() {
                 use crossterm::style::Stylize;
                 eprintln!("{}", "No indexes found.".dark_grey());
-            } else if multi_table {
-                let table_rows: Vec<Vec<String>> = rows
-                    .iter()
-                    .map(|r| {
-                        vec![
-                            r.table.clone().unwrap_or_default(),
-                            r.inner.index_name.clone(),
-                            r.inner.index_type.clone(),
-                            r.inner.columns.join(", "),
-                            r.inner.metric.clone().unwrap_or_default(),
-                            r.inner.algorithm.clone().unwrap_or_default(),
-                            r.inner.status.clone(),
-                            crate::util::format_date(&r.inner.created_at),
-                        ]
-                    })
-                    .collect();
-                crate::output::table::print(
-                    &[
-                        "TABLE",
-                        "NAME",
-                        "TYPE",
-                        "COLUMNS",
-                        "METRIC",
-                        "ALGORITHM",
-                        "STATUS",
-                        "CREATED",
-                    ],
-                    &table_rows,
-                );
             } else {
-                let table_rows: Vec<Vec<String>> = rows
-                    .iter()
-                    .map(|r| {
-                        vec![
-                            r.inner.index_name.clone(),
-                            r.inner.index_type.clone(),
-                            r.inner.columns.join(", "),
-                            r.inner.metric.clone().unwrap_or_default(),
-                            r.inner.algorithm.clone().unwrap_or_default(),
-                            r.inner.status.clone(),
-                            crate::util::format_date(&r.inner.created_at),
-                        ]
-                    })
-                    .collect();
-                crate::output::table::print(
-                    &[
-                        "NAME",
-                        "TYPE",
-                        "COLUMNS",
-                        "METRIC",
-                        "ALGORITHM",
-                        "STATUS",
-                        "CREATED",
-                    ],
-                    &table_rows,
-                );
+                let table_rows: Vec<Vec<String>> =
+                    rows.iter().map(|r| list_row(r, multi_table)).collect();
+                crate::output::table::print(list_headers(multi_table), &table_rows);
+            }
+            if let Some(note) = active_builds.and_then(active_builds_note) {
+                use crossterm::style::Stylize;
+                eprintln!("{}", note.dark_grey());
             }
         }
         _ => unreachable!(),
     }
+}
+
+/// The note `search list` prints while index builds are still running, or
+/// `None` when there are none.
+fn active_builds_note(count: usize) -> Option<String> {
+    let lead = match count {
+        0 => return None,
+        1 => "1 index build is".to_string(),
+        n => format!("{n} index builds are"),
+    };
+    Some(format!(
+        "{lead} still running in this workspace; an index is listed once its build \
+         finishes. Track builds with 'hotdata jobs list --job-type create_index'."
+    ))
+}
+
+/// Column headers for `search list`'s table output. A connection-wide listing
+/// spans tables, so it leads with the table each index belongs to.
+fn list_headers(multi_table: bool) -> &'static [&'static str] {
+    const MULTI: &[&str] = &[
+        "TABLE",
+        "NAME",
+        "TYPE",
+        "COLUMNS",
+        "METRIC",
+        "ALGORITHM",
+        "NLIST",
+        "STATUS",
+        "CREATED",
+    ];
+    if multi_table { MULTI } else { &MULTI[1..] }
+}
+
+/// One `search list` table row, matching `list_headers`. Settings an index
+/// does not have (a BM25 index's metric, an hnsw index's `nlist`) are blank.
+fn list_row(r: &IndexRow, multi_table: bool) -> Vec<String> {
+    let mut row = Vec::with_capacity(9);
+    if multi_table {
+        row.push(r.table.clone().unwrap_or_default());
+    }
+    row.extend([
+        r.inner.index_name.clone(),
+        r.inner.index_type.clone(),
+        r.inner.columns.join(", "),
+        r.inner.metric.clone().unwrap_or_default(),
+        r.inner.algorithm.clone().unwrap_or_default(),
+        r.inner.nlist.map(|n| n.to_string()).unwrap_or_default(),
+        r.inner.status.clone(),
+        crate::util::format_date(&r.inner.created_at),
+    ]);
+    row
 }
 
 /// Where an index is being created or deleted.
@@ -659,6 +677,8 @@ pub struct LocatedIndex {
     pub algorithm: Option<String>,
     pub probe_fraction: Option<f64>,
     pub vector_precision: Option<String>,
+    /// Clusters an `ivf` index was built with; `None` for other indexes.
+    pub nlist: Option<u64>,
 }
 
 /// Find a search index by name within an instant database.
@@ -726,6 +746,7 @@ pub fn locate_by_name(
                 algorithm: one.inner.algorithm.clone(),
                 probe_fraction: one.inner.probe_fraction,
                 vector_precision: one.inner.vector_precision.clone(),
+                nlist: one.inner.nlist,
             })
         }
         _ => Err(format!(
@@ -1347,7 +1368,7 @@ mod tests {
                 r#"{"indexes":[{
                 "index_name":"docs_ivf","index_type":"vector","columns":["embedding"],
                 "metric":"cosine","algorithm":"ivf","probe_fraction":0.05,
-                "vector_precision":"int8","status":"ready",
+                "vector_precision":"int8","nlist":256,"status":"ready",
                 "created_at":"2020-01-01T00:00:00Z","updated_at":"2020-01-01T00:00:00Z"
             },{
                 "index_name":"docs_body","index_type":"bm25","columns":["body"],
@@ -1368,12 +1389,73 @@ mod tests {
         assert_eq!(ivf["algorithm"], "ivf");
         assert_eq!(ivf["probe_fraction"], 0.05);
         assert_eq!(ivf["vector_precision"], "int8");
+        assert_eq!(ivf["nlist"], 256);
 
         let bm25 = serde_json::to_value(&rows[1]).unwrap();
         let bm25 = bm25.as_object().unwrap();
-        for key in ["algorithm", "probe_fraction", "vector_precision"] {
+        for key in ["algorithm", "probe_fraction", "vector_precision", "nlist"] {
             assert!(!bm25.contains_key(key), "{key} should be omitted: {bm25:?}");
         }
+    }
+
+    fn index_row(algorithm: Option<&str>, nlist: Option<u64>, table: Option<&str>) -> IndexRow {
+        IndexRow {
+            inner: Index {
+                index_name: "docs_vec".into(),
+                index_type: "vector".into(),
+                columns: vec!["embedding".into()],
+                metric: Some("l2".into()),
+                source_column: None,
+                algorithm: algorithm.map(str::to_string),
+                probe_fraction: None,
+                vector_precision: None,
+                nlist,
+                status: "ready".into(),
+                created_at: "2020-01-01T00:00:00Z".into(),
+                updated_at: "2020-01-01T00:00:00Z".into(),
+            },
+            table: table.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn list_row_shows_nlist_under_its_header() {
+        for multi_table in [false, true] {
+            let headers = list_headers(multi_table);
+            let nlist_at = headers.iter().position(|h| *h == "NLIST").unwrap();
+
+            let ivf = list_row(
+                &index_row(Some("ivf"), Some(256), Some("shop.public.docs")),
+                multi_table,
+            );
+            assert_eq!(ivf.len(), headers.len());
+            assert_eq!(ivf[nlist_at], "256");
+
+            let hnsw = list_row(
+                &index_row(Some("hnsw"), None, Some("shop.public.docs")),
+                multi_table,
+            );
+            assert_eq!(hnsw[nlist_at], "");
+        }
+        assert_eq!(list_headers(true)[0], "TABLE");
+        assert_eq!(
+            list_row(&index_row(None, None, Some("shop.public.docs")), true)[0],
+            "shop.public.docs"
+        );
+        assert_eq!(list_headers(false)[0], "NAME");
+    }
+
+    #[test]
+    fn active_builds_note_counts_running_builds() {
+        assert_eq!(active_builds_note(0), None);
+        let one = active_builds_note(1).unwrap();
+        assert!(one.starts_with("1 index build is still running"), "{one}");
+        assert!(
+            one.contains("hotdata jobs list --job-type create_index"),
+            "{one}"
+        );
+        let two = active_builds_note(2).unwrap();
+        assert!(two.starts_with("2 index builds are still running"), "{two}");
     }
 
     #[test]

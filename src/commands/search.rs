@@ -89,6 +89,10 @@ pub enum SearchCommands {
 
     /// List search indexes
     List {
+        /// Database to list indexes in (id; defaults to the active database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
         /// Filter by schema name
         #[arg(long)]
         schema: Option<String>,
@@ -172,10 +176,17 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             r#async,
         ),
         SearchCommands::List {
+            database,
             schema,
             table,
             output,
-        } => list(workspace_id, schema.as_deref(), table.as_deref(), &output),
+        } => list(
+            workspace_id,
+            database.as_deref(),
+            schema.as_deref(),
+            table.as_deref(),
+            &output,
+        ),
         SearchCommands::Show {
             name,
             database,
@@ -394,10 +405,21 @@ fn create(
     );
 }
 
-fn list(workspace_id: &str, schema: Option<&str>, table: Option<&str>, output: &str) {
+fn list(
+    workspace_id: &str,
+    database: Option<&str>,
+    schema: Option<&str>,
+    table: Option<&str>,
+    output: &str,
+) {
     let api = Api::new(Some(workspace_id));
-    let db = crate::config::load_current_database("default", workspace_id)
-        .and_then(|db_id| databases::get_database(&api, &db_id).ok());
+    // An explicit --database must resolve; the active database is a default
+    // that falls back to the whole-workspace scan when it no longer exists.
+    let db = match database {
+        Some(db_id) => Some(databases::get_database(&api, db_id).unwrap_or_else(|e| e.exit())),
+        None => crate::config::load_current_database("default", workspace_id)
+            .and_then(|db_id| databases::get_database(&api, &db_id).ok()),
+    };
     let catalog = db.as_ref().map(indexes::database_catalog);
     let scope =
         db.as_ref()
@@ -445,6 +467,18 @@ fn search_kind(index_type: &str) -> &'static str {
     }
 }
 
+/// What `search show` puts in parentheses after the kind: the algorithm of a
+/// vector index (`hnsw` / `ivf`), or the API index type of a text or sorted
+/// one. `None` when it would only repeat the kind — a vector index from a
+/// server that does not report its algorithm, or a sorted index.
+fn kind_detail(loc: &indexes::LocatedIndex) -> Option<&str> {
+    let detail = match search_kind(&loc.index_type) {
+        "vector" => loc.algorithm.as_deref()?,
+        _ => loc.index_type.as_str(),
+    };
+    (detail != search_kind(&loc.index_type)).then_some(detail)
+}
+
 /// `search show -o json|yaml`. The vector fields are `null` when the API
 /// leaves them out (non-vector indexes, or a server default applies).
 fn show_value(name: &str, loc: &indexes::LocatedIndex) -> serde_json::Value {
@@ -458,19 +492,20 @@ fn show_value(name: &str, loc: &indexes::LocatedIndex) -> serde_json::Value {
         "algorithm": loc.algorithm,
         "probe_fraction": loc.probe_fraction,
         "vector_precision": loc.vector_precision,
+        "nlist": loc.nlist,
         "status": loc.status,
     })
 }
 
 /// `search show` table output: one `key: value` line per field the index has.
 fn show_lines(name: &str, loc: &indexes::LocatedIndex) -> Vec<String> {
+    let kind = match kind_detail(loc) {
+        Some(detail) => format!("{} ({detail})", search_kind(&loc.index_type)),
+        None => search_kind(&loc.index_type).to_string(),
+    };
     let mut lines = vec![
         format!("name:             {name}"),
-        format!(
-            "kind:             {} ({})",
-            search_kind(&loc.index_type),
-            loc.index_type
-        ),
+        format!("kind:             {kind}"),
         format!(
             "table:            {}.{}.{}",
             loc.catalog, loc.schema, loc.table
@@ -482,6 +517,9 @@ fn show_lines(name: &str, loc: &indexes::LocatedIndex) -> Vec<String> {
     }
     if let Some(a) = &loc.algorithm {
         lines.push(format!("algorithm:        {a}"));
+    }
+    if let Some(n) = loc.nlist {
+        lines.push(format!("nlist:            {n}"));
     }
     if let Some(f) = loc.probe_fraction {
         lines.push(format!("probe_fraction:   {f}"));
@@ -503,23 +541,92 @@ fn distance_function(metric: Option<&str>) -> &'static str {
     }
 }
 
+/// Spell a column for the SQL in a hint: bare when it is a plain lowercase
+/// identifier, double-quoted otherwise.
+fn sql_ident(name: &str) -> String {
+    let plain = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if plain {
+        name.to_string()
+    } else {
+        quote_ident(name)
+    }
+}
+
+/// How many of the table's other columns the ivf hint's example query names.
+const IVF_HINT_COLUMNS: usize = 3;
+
+/// The columns the ivf hint's example query selects: the first few of the
+/// table's columns other than the indexed vector column. Returning the vector
+/// column stops the index from serving the query, so it is never one of them.
+fn ivf_hint_columns(table_columns: &[String], vector_column: &str) -> Vec<String> {
+    table_columns
+        .iter()
+        .filter(|c| c.as_str() != vector_column)
+        .take(IVF_HINT_COLUMNS)
+        .map(|c| sql_ident(c))
+        .collect()
+}
+
 /// Why `search "<text>"` cannot run against an `ivf` index, and the SQL that
 /// queries it instead. An `ivf` index is built over a column that already
 /// holds vectors, so there is no embedding model to turn the search text into
 /// a query vector; the caller supplies one.
-fn ivf_search_error(name: &str, loc: &indexes::LocatedIndex, limit: u32) -> String {
+///
+/// The example selects named columns plus the distance, never `*`: a query
+/// that returns the indexed vector column is answered by an exact scan rather
+/// than the index. `hint_columns` are the columns to name; when empty (the
+/// table's columns could not be read) a placeholder stands in.
+fn ivf_search_error(
+    name: &str,
+    loc: &indexes::LocatedIndex,
+    hint_columns: &[String],
+    limit: u32,
+) -> String {
+    let columns = if hint_columns.is_empty() {
+        "<columns>".to_string()
+    } else {
+        hint_columns.join(", ")
+    };
+    let vector_column = sql_ident(&loc.search_column);
     format!(
         "error: index '{name}' is an ivf index, which 'hotdata search' cannot query: it \
          indexes a column that already holds vectors, so there is no model to embed the \
          search text. Query it with SQL and your own query vector, ordering by the \
-         index's distance function:\n  hotdata query 'SELECT * FROM {}.{}.{} ORDER BY \
-         {}({}, [<query vector>]) LIMIT {limit}'",
+         index's distance function. Select the columns you need and the distance, but \
+         not {vector_column} itself: a query that returns the vector column (including \
+         SELECT *) scans the whole table instead of using the index.\n  hotdata query \
+         'SELECT {columns}, {func}({vector_column}, ARRAY[<query vector>]) AS dist FROM \
+         {}.{}.{} ORDER BY dist LIMIT {limit}'",
         loc.catalog,
         loc.schema,
         loc.table,
-        distance_function(loc.metric.as_deref()),
-        loc.search_column,
+        func = distance_function(loc.metric.as_deref()),
     )
+}
+
+/// The table's column names, in order, for the ivf hint's example query.
+/// Best-effort: an empty list when they cannot be read, and the hint falls
+/// back to a placeholder.
+fn table_columns(api: &Api, loc: &indexes::LocatedIndex) -> Vec<String> {
+    crate::client::sdk::block(api.client().information_schema().get(
+        Some(&loc.connection_id),
+        Some(&loc.schema),
+        Some(&loc.table),
+        Some(true),
+        None,
+        None,
+    ))
+    .ok()
+    .and_then(|body| body.tables.into_iter().find(|t| t.table == loc.table))
+    .and_then(|t| t.columns.flatten())
+    .map(|cols| cols.into_iter().map(|c| c.name).collect())
+    .unwrap_or_default()
 }
 
 /// Run a search against the named index (`search "text" --index <name>`).
@@ -547,7 +654,12 @@ pub fn run(
     }
     if loc.algorithm.as_deref() == Some("ivf") {
         use crossterm::style::Stylize;
-        eprintln!("{}", ivf_search_error(name, &loc, limit).red());
+        let api = Api::new(Some(workspace_id));
+        let hint_columns = ivf_hint_columns(&table_columns(&api, &loc), &loc.search_column);
+        eprintln!(
+            "{}",
+            ivf_search_error(name, &loc, &hint_columns, limit).red()
+        );
         std::process::exit(1);
     }
     let table_fqn = format!("{}.{}.{}", loc.catalog, loc.schema, loc.table);
@@ -617,6 +729,7 @@ mod tests {
             algorithm: Some("ivf".into()),
             probe_fraction: Some(0.05),
             vector_precision: Some("int8".into()),
+            nlist: Some(256),
         }
     }
 
@@ -636,8 +749,17 @@ mod tests {
             lines.contains(&"vector_precision: int8".to_string()),
             "{lines:?}"
         );
+        assert!(
+            lines.contains(&"nlist:            256".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"kind:             vector (ivf)".to_string()),
+            "{lines:?}"
+        );
 
         let v = show_value("docs_ivf", &loc);
+        assert_eq!(v["nlist"], 256);
         assert_eq!(v["algorithm"], "ivf");
         assert_eq!(v["probe_fraction"], 0.05);
         assert_eq!(v["vector_precision"], "int8");
@@ -653,30 +775,105 @@ mod tests {
             algorithm: None,
             probe_fraction: None,
             vector_precision: None,
+            nlist: None,
             ..ivf_located()
         };
         let lines = show_lines("docs_body", &loc).join("\n");
         for key in [
             "metric:",
             "algorithm:",
+            "nlist:",
             "probe_fraction:",
             "vector_precision:",
         ] {
             assert!(!lines.contains(key), "{key} in {lines}");
         }
         assert!(show_value("docs_body", &loc)["algorithm"].is_null());
+        assert!(show_value("docs_body", &loc)["nlist"].is_null());
+        assert!(lines.contains("kind:             text (bm25)"), "{lines}");
     }
 
     #[test]
-    fn ivf_search_error_points_at_sql_with_the_metric_distance_function() {
-        let msg = ivf_search_error("docs_ivf", &ivf_located(), 10);
+    fn show_kind_names_the_vector_algorithm_and_never_repeats_the_kind() {
+        let hnsw = indexes::LocatedIndex {
+            algorithm: Some("hnsw".into()),
+            nlist: None,
+            ..ivf_located()
+        };
+        assert_eq!(kind_detail(&hnsw), Some("hnsw"));
+        assert_eq!(kind_detail(&ivf_located()), Some("ivf"));
+
+        // A server that does not report the algorithm: no "vector (vector)".
+        let unreported = indexes::LocatedIndex {
+            algorithm: None,
+            ..ivf_located()
+        };
+        assert_eq!(kind_detail(&unreported), None);
+        assert!(show_lines("v", &unreported).contains(&"kind:             vector".to_string()));
+
+        let sorted = indexes::LocatedIndex {
+            index_type: "sorted".into(),
+            algorithm: None,
+            ..ivf_located()
+        };
+        assert_eq!(kind_detail(&sorted), None);
+    }
+
+    #[test]
+    fn ivf_search_error_suggests_sql_the_index_can_serve() {
+        let cols = vec!["id".to_string(), "title".to_string()];
+        let msg = ivf_search_error("docs_ivf", &ivf_located(), &cols, 10);
         assert!(msg.contains("ivf index"), "{msg}");
         assert!(
             msg.contains(
-                "SELECT * FROM shop.public.docs ORDER BY cosine_distance(embedding, [<query vector>]) LIMIT 10"
+                "SELECT id, title, cosine_distance(embedding, ARRAY[<query vector>]) AS dist \
+                 FROM shop.public.docs ORDER BY dist LIMIT 10"
             ),
             "{msg}"
         );
+        // `SELECT *` returns the vector column, which the index cannot serve:
+        // the prose may warn about it, but the suggested query never uses it.
+        assert!(!msg.contains("'SELECT *"), "{msg}");
+
+        let l2 = indexes::LocatedIndex {
+            metric: Some("l2".into()),
+            ..ivf_located()
+        };
+        let msg = ivf_search_error("docs_ivf", &l2, &[], 5);
+        assert!(
+            msg.contains(
+                "SELECT <columns>, l2_distance(embedding, ARRAY[<query vector>]) AS dist \
+                 FROM shop.public.docs ORDER BY dist LIMIT 5"
+            ),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn ivf_hint_columns_leave_out_the_vector_column_and_quote_odd_names() {
+        let cols: Vec<String> = ["id", "embedding", "Title", "body", "extra"]
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+        assert_eq!(
+            ivf_hint_columns(&cols, "embedding"),
+            vec!["id", "\"Title\"", "body"]
+        );
+        assert!(ivf_hint_columns(&["embedding".to_string()], "embedding").is_empty());
+    }
+
+    #[test]
+    fn list_accepts_database_flag() {
+        for flag in ["-d", "--database"] {
+            let cmd = parse(&["list", flag, "db1"]).unwrap();
+            assert!(
+                matches!(cmd, SearchCommands::List { database: Some(ref d), .. } if d == "db1")
+            );
+        }
+        assert!(matches!(
+            parse(&["list"]).unwrap(),
+            SearchCommands::List { database: None, .. }
+        ));
     }
 
     #[test]
