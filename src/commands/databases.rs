@@ -286,8 +286,9 @@ pub enum DatabasesCommands {
         #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake"])]
         dialect: String,
 
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        /// Output format. `id` prints only the stored result's id, without
+        /// downloading rows (for commands that read a result by id)
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv", "id"])]
         output: String,
 
         #[command(subcommand)]
@@ -487,10 +488,11 @@ pub enum DatabaseTablesCommands {
         #[arg(long)]
         database: Option<String>,
 
-        /// Table name
+        /// Table name, `schema.table`, or `catalog.schema.table` (the catalog
+        /// names the database, in place of --database)
         table: String,
 
-        /// Schema name (default: public)
+        /// Schema for a bare table name (default: public)
         #[arg(long, default_value = "public")]
         schema: String,
     },
@@ -3009,6 +3011,38 @@ pub fn tables_load(
     );
 }
 
+/// Split a table argument into (catalog, schema, table).
+///
+/// Accepts a bare `table` (in `schema`, the --schema flag), `schema.table`, or
+/// `catalog.schema.table`, whose catalog names the database. A catalog together
+/// with `database` is refused: they would name the database twice, possibly
+/// differently.
+fn split_table_ref<'a>(
+    table: &'a str,
+    schema: &'a str,
+    database: Option<&str>,
+) -> Result<(Option<&'a str>, &'a str, &'a str), &'static str> {
+    let parts: Vec<&str> = table.split('.').collect();
+    let split = match parts.as_slice() {
+        [t] => (None, schema, *t),
+        [s, t] => (None, *s, *t),
+        [_, _, _] if database.is_some() => {
+            return Err(
+                "error: --database takes a table or 'schema.table'; drop the catalog from the \
+                 table, or drop --database",
+            );
+        }
+        [c, s, t] => (Some(*c), *s, *t),
+        _ => {
+            return Err("error: table must be 'table', 'schema.table', or 'catalog.schema.table'");
+        }
+    };
+    if [split.1, split.2].iter().any(|p| p.is_empty()) || split.0.is_some_and(str::is_empty) {
+        return Err("error: table must be 'table', 'schema.table', or 'catalog.schema.table'");
+    }
+    Ok(split)
+}
+
 pub fn tables_delete(
     workspace_id: &str,
     database: Option<&str>,
@@ -3017,10 +3051,19 @@ pub fn tables_delete(
 ) {
     use crossterm::style::Stylize;
 
-    let database = resolve_current_database(database, workspace_id);
+    let (catalog, schema, table) = split_table_ref(table, schema_name(schema), database)
+        .unwrap_or_else(|e| {
+            eprintln!("{}", e.red());
+            std::process::exit(1);
+        });
+    // A `catalog.schema.table` names its database by catalog; otherwise it is
+    // --database or the active one.
+    let database = match catalog {
+        Some(catalog) => catalog.to_string(),
+        None => resolve_current_database(database, workspace_id),
+    };
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
-    let schema = schema_name(schema);
 
     let path = managed_table_delete_path(&db.default_connection_id, schema, table);
     let (status, resp_body) = api.delete_raw(&path).unwrap_or_else(|e| e.exit());
@@ -3044,6 +3087,36 @@ pub fn tables_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_table_ref_reads_each_qualification() {
+        assert_eq!(
+            split_table_ref("orders", "public", None).unwrap(),
+            (None, "public", "orders")
+        );
+        assert_eq!(
+            split_table_ref("orders", "sales", Some("db1")).unwrap(),
+            (None, "sales", "orders")
+        );
+        // A schema in the name wins over --schema.
+        assert_eq!(
+            split_table_ref("sales.orders", "public", None).unwrap(),
+            (None, "sales", "orders")
+        );
+        // The catalog names the database; it is not folded into the table.
+        assert_eq!(
+            split_table_ref("shop.sales.orders", "public", None).unwrap(),
+            (Some("shop"), "sales", "orders")
+        );
+    }
+
+    #[test]
+    fn split_table_ref_refuses_a_catalog_with_database_and_bad_shapes() {
+        assert!(split_table_ref("shop.sales.orders", "public", Some("db1")).is_err());
+        assert!(split_table_ref("a.b.c.d", "public", None).is_err());
+        assert!(split_table_ref("sales.", "public", None).is_err());
+        assert!(split_table_ref(".sales.orders", "public", None).is_err());
+    }
 
     #[test]
     fn schema_name_defaults_to_public() {

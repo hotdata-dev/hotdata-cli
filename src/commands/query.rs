@@ -486,6 +486,9 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
         // come back truncated to a preview even on this fast path, so follow it
         // to the full set (resolve_inline) rather than printing the preview.
         hotdata::QueryOutcome::Inline(resp) => {
+            if format == "id" {
+                print_result_id(resp.result_id.flatten());
+            }
             print_inline(&api, resp, format);
             return;
         }
@@ -514,6 +517,9 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
         match run.status.as_str() {
             "succeeded" => {
                 spinner.finish_and_clear();
+                if format == "id" {
+                    print_result_id(run.result_id.flatten());
+                }
                 let execution_time_ms = run.execution_time_ms;
                 match run.result_id.flatten() {
                     Some(result_id) => {
@@ -579,6 +585,9 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
 
     match run.status.as_str() {
         "succeeded" => {
+            if format == "id" {
+                print_result_id(run.result_id.flatten());
+            }
             let execution_time_ms = run.execution_time_ms;
             match run.result_id.flatten() {
                 Some(result_id) => {
@@ -616,6 +625,30 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
     }
 }
 
+/// `-o id`: print only the stored result's id, without downloading any rows,
+/// so a script can hand it to a command that reads a result by id. Exits: `0`
+/// with the id on stdout, `1` when the query left no stored result.
+fn print_result_id(result_id: Option<String>) -> ! {
+    match result_id_line(result_id) {
+        Ok(line) => {
+            println!("{line}");
+            std::process::exit(0)
+        }
+        Err(msg) => {
+            use crossterm::style::Stylize;
+            eprintln!("{}", msg.red());
+            std::process::exit(1)
+        }
+    }
+}
+
+/// What `-o id` prints for a finished query, split out to be testable.
+fn result_id_line(result_id: Option<String>) -> Result<String, &'static str> {
+    result_id
+        .filter(|id| !id.is_empty())
+        .ok_or("error: the query finished but produced no stored result, so there is no result id")
+}
+
 /// Process exit code after rendering a result: [`EXIT_INCOMPLETE_RESULT`] when
 /// the rows are an incomplete preview (fail closed so pipelines break), else `0`.
 fn result_exit_code(result: &QueryResponse) -> i32 {
@@ -628,7 +661,10 @@ fn result_exit_code(result: &QueryResponse) -> i32 {
 
 /// The unstyled summary line printed under a `table` result.
 ///
-/// A complete result reads `N rows (time) [result-id]`. An incomplete preview is
+/// A complete result reads `N rows (server execution T ms) [result-id]`. The
+/// time is the server-measured `execution_time_ms` that `-o json` reports, not
+/// the command's wall-clock time, so it leaves out network transit and the
+/// result download. An incomplete preview is
 /// loud — `N of TOTAL rows — INCOMPLETE PREVIEW (...)` — with `?` standing in for
 /// a total the server didn't report. The caller colours it (red vs grey).
 fn table_footer(result: &QueryResponse) -> String {
@@ -643,7 +679,7 @@ fn table_footer(result: &QueryResponse) -> String {
         .map(|id| format!(" [result-id: {id}]"))
         .unwrap_or_default();
     let time_part = match result.execution_time_ms {
-        Some(ms) => format!("{ms} ms"),
+        Some(ms) => format!("server execution {ms} ms"),
         None => "\u{2014}".to_string(), // em dash
     };
     if result.truncated {
@@ -1939,6 +1975,31 @@ mod tests {
         let run_at = footer.find("[run:").unwrap();
         let res_at = footer.find("[result-id:").unwrap();
         assert!(run_at < res_at, "run id should precede result id: {footer}");
+    }
+
+    #[test]
+    fn result_id_line_prints_the_id_alone() {
+        assert_eq!(
+            result_id_line(Some("rslt_abc".to_string())).unwrap(),
+            "rslt_abc"
+        );
+    }
+
+    #[test]
+    fn result_id_line_errors_without_a_stored_result() {
+        assert!(result_id_line(None).is_err());
+        assert!(result_id_line(Some(String::new())).is_err());
+    }
+
+    #[test]
+    fn table_footer_labels_time_as_server_execution() {
+        // The footer's time is the same `execution_time_ms` that `-o json`
+        // carries; the label keeps it from being read as the round trip.
+        let footer = table_footer(&display_result(2, Some(2), false));
+        assert!(
+            footer.contains("(server execution 5 ms)"),
+            "footer: {footer}"
+        );
     }
 
     #[test]
