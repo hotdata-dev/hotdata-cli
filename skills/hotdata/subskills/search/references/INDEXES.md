@@ -42,9 +42,14 @@ hotdata search create <table>_embedding_vec --type vector \
 hotdata search create <table>_embedding_ivf --type vector \
   --from <alias>.<schema>.<table> --column embedding --metric cosine \
   --algorithm ivf [--nlist <n>] [--probe-fraction <f>] [--vector-precision int8|float32]
+
+# ivf over a text column: the provider generates the embeddings
+hotdata search create <table>_body_ivf --type vector \
+  --from <alias>.<schema>.<table> --column body --provider <provider-id> \
+  --metric cosine --algorithm ivf
 ```
 
-Vector indexes default to `--algorithm hnsw`. Choose `ivf` when the table is too large to serve from memory; it works only on columns that already hold vectors, and supports `l2`/`cosine` (not `dot`). See the search skill for `--nlist`, `--probe-fraction`, and `--vector-precision`.
+Vector indexes default to `--algorithm hnsw`. Choose `ivf` when the table is too large to serve from memory; it works on columns that already hold vectors and on text columns with `--provider`, and supports `l2`/`cosine` (not `dot`). An `ivf` index with a provider is searched with `hotdata search "<text>" --index <name>`; one over a vector column is queried with SQL and a query vector. See the search skill for `--nlist`, `--probe-fraction`, and `--vector-precision`.
 
 Indexes are created on **instant databases** only, and on the database's own tables: an index is a write, and an attached database is read-only. To index a table that lives in another database, build the index there, or load a copy into this one — attaching it does not make it indexable here.
 
