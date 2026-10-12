@@ -1,3 +1,8 @@
+## [0.39.0] - 2026-10-12
+
+### 🚀 Features
+
+- *(search)* Add IVF vector index options (#325)
 ## [0.38.0] - 2026-10-10
 
 ### 🚀 Features
