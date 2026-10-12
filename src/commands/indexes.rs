@@ -466,7 +466,7 @@ fn list_row(r: &IndexRow, multi_table: bool) -> Vec<String> {
     row.extend([
         r.inner.index_name.clone(),
         r.inner.index_type.clone(),
-        r.inner.columns.join(", "),
+        list_columns(&r.inner),
         r.inner.metric.clone().unwrap_or_default(),
         r.inner.algorithm.clone().unwrap_or_default(),
         r.inner.nlist.map(|n| n.to_string()).unwrap_or_default(),
@@ -474,6 +474,17 @@ fn list_row(r: &IndexRow, multi_table: bool) -> Vec<String> {
         crate::util::format_date(&r.inner.created_at),
     ]);
     row
+}
+
+/// The `COLUMNS` cell of `search list`. An embedding-backed vector index
+/// indexes the column it generated, so the cell also names the text column the
+/// embeddings come from — the column a search names.
+fn list_columns(index: &Index) -> String {
+    let columns = index.columns.join(", ");
+    match &index.source_column {
+        Some(source) => format!("{columns} (from {source})"),
+        None => columns,
+    }
 }
 
 /// Where an index is being created or deleted.
@@ -666,6 +677,11 @@ pub struct LocatedIndex {
     pub table: String,
     pub index_type: String,
     pub search_column: String,
+    /// Source text column of an embedding-backed vector index — one created
+    /// over a text column with an embedding provider, whose vectors the server
+    /// generates. `None` for every other index, including a vector index over
+    /// a column that already holds vectors.
+    pub source_column: Option<String>,
     /// Columns the index generated on the table rather than columns that were
     /// already there — the `{column}_embedding` an auto-embed vector index
     /// materialises. Empty for every other index kind. A search excludes these
@@ -740,6 +756,7 @@ pub fn locate_by_name(
                 table,
                 index_type: one.inner.index_type.clone(),
                 search_column,
+                source_column: one.inner.source_column.clone(),
                 generated_columns: one.inner.generated_columns(),
                 status: one.inner.status.clone(),
                 metric: one.inner.metric.clone(),
@@ -1443,6 +1460,24 @@ mod tests {
             "shop.public.docs"
         );
         assert_eq!(list_headers(false)[0], "NAME");
+    }
+
+    #[test]
+    fn list_row_names_the_source_column_of_an_embedding_backed_index() {
+        let headers = list_headers(false);
+        let columns_at = headers.iter().position(|h| *h == "COLUMNS").unwrap();
+
+        let mut embedded = index_row(Some("ivf"), Some(256), None);
+        embedded.inner.columns = vec!["body_embedding".into()];
+        embedded.inner.source_column = Some("body".into());
+        assert_eq!(
+            list_row(&embedded, false)[columns_at],
+            "body_embedding (from body)"
+        );
+
+        // A vector index over a column that already holds vectors names only it.
+        let direct = index_row(Some("ivf"), Some(256), None);
+        assert_eq!(list_row(&direct, false)[columns_at], "embedding");
     }
 
     #[test]
