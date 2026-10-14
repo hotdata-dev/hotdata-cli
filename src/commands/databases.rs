@@ -282,7 +282,8 @@ pub enum DatabasesCommands {
         database: Option<String>,
 
         /// SQL dialect the query is written in — a non-`hotsql` dialect is
-        /// transpiled to HotSQL server-side before it runs (read-only only)
+        /// transpiled to HotSQL server-side before it runs (writes follow the same
+        /// rules as hotsql)
         #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake"])]
         dialect: String,
 

@@ -87,7 +87,7 @@ hotdata query "<sql>" [-o table|json|csv]      # HotSQL (PostgreSQL dialect)
 
 Write SQL in another dialect and the server transpiles it to HotSQL —
 `--dialect` accepts `hotsql` (default), `duckdb`, `postgres`, `snowflake`
-(read-only for a non-default dialect):
+(writes follow the same rules as `hotsql`):
 
 ```sh
 hotdata query "SELECT IFF(n > 0, 'pos', 'neg') FROM t" --dialect snowflake

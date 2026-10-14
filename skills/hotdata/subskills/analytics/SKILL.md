@@ -22,7 +22,7 @@ hotdata query status <query_run_id>
 ```
 
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
-- **`--dialect`** (default `hotsql`): write SQL in `duckdb`/`postgres`/`snowflake` and the server transpiles it to HotSQL before running (e.g. Snowflake `IFF(...)`, DuckDB `len(...)`). Read-only queries only for a non-`hotsql` dialect.
+- **`--dialect`** (default `hotsql`): write SQL in `duckdb`/`postgres`/`snowflake` and the server transpiles it to HotSQL before running (e.g. Snowflake `IFF(...)`, DuckDB `len(...)`). Writes follow the same rules as `hotsql`.
 - Use **`hotdata databases tables list`** for schema discovery — not `information_schema` via `query`.
 - Fully qualified names: `<catalog>.<schema>.<table>`, `<database>.<schema>.<table>`.
 - **Query scope:** every query runs inside one instant database (active or `--database`); it sees that database's own catalog plus whatever is **attached** to it only. To read another database's table, or **join your own table against one**, attach that database first: `hotdata databases attach <database>` — see **`hotdata`** skill → [Querying across databases](../../SKILL.md#querying-across-databases-attach). No instant database set → *"a database is required."*
