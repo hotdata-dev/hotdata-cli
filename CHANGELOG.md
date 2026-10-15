@@ -4,7 +4,20 @@
 
 - *(release)* Refuse a release without notes (#343)
 ## [0.42.0] - 2026-10-15
+
+No changes since 0.41.0. The 0.41.0 release PR waited on review long enough for #340 and #341 to merge ahead of it, so they shipped in 0.41.0 and this tag carries the same code; the release-notes guard in #343 prevents this recurring.
 ## [0.41.0] - 2026-10-15
+
+### 🚀 Features
+
+- *(databases)* Add `--if-not-exists` to `create`: get-or-create by name, matching the SDK (#340)
+- *(databases)* Add `--database <id>` to `load`, for loading by id when a fork shares the catalog alias (#341)
+
+### 🐛 Bug Fixes
+
+- *(databases)* `tables show` on a catalog alias shared by a fork now reports the ambiguity instead of "no catalog" (#341)
+- *(query)* `-d`/`-o` accepted after `status`, so `hotdata query status <run> -d <id>` works (#341)
+- *(jobs)* `jobs <id>` on a `database_fork` job no longer fails to parse; `--job-type database_fork` accepted (#338)
 
 ### 💼 Other
 
