@@ -63,6 +63,12 @@ case "$COMMAND" in
             python3 scripts/validate-changelog.py origin/main
         fi
 
+        # A release needs notes: git-cliff writes an empty section when nothing
+        # landed since the last tag, and that ships as an empty GitHub Release.
+        echo ""
+        echo "→ Checking release notes for $VERSION..."
+        python3 scripts/check-release-notes.py "$VERSION"
+
         echo ""
         echo "→ Opening pull request..."
         PR_URL=$(gh pr create \
@@ -104,6 +110,14 @@ case "$COMMAND" in
 
         echo "→ Checking agent skills against the code and version..."
         scripts/check-skills.sh --require-version
+
+        # The notes were generated when the release PR opened. Anything merged
+        # while it waited lands in this tag but in no changelog section (the
+        # next git-cliff run starts at this tag), so refuse to tag until the
+        # release is cut again from current main.
+        PREV_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+        echo "→ Checking release notes for $VERSION cover everything since ${PREV_TAG:-the start}..."
+        python3 scripts/check-release-notes.py "$VERSION" ${PREV_TAG:+--since "$PREV_TAG"}
 
         if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "error: tag $TAG already exists locally. Delete it or pick a new version." >&2
