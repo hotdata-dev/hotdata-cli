@@ -1,3 +1,16 @@
+## [0.40.0] - 2026-10-15
+
+### 🚀 Features
+
+- *(load)* Retry a load while another load holds the table (#335)
+
+### 💼 Other
+
+- Cut releases from a workflow that runs release.sh (#336)
+
+### 📚 Documentation
+
+- *(query)* Dialect writes follow the same rules as hotsql (#334)
 ## [0.39.0] - 2026-10-12
 
 ### 🚀 Features
