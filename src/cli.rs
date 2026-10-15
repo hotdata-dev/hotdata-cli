@@ -53,7 +53,7 @@ pub enum Commands {
         workspace_id: Option<String>,
 
         /// Run against a specific instant database, for this command only (defaults to the current database; switch with `databases use`)
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
         /// SQL dialect the query is written in — a non-`hotsql` dialect is
@@ -64,7 +64,7 @@ pub enum Commands {
 
         /// Output format. `id` prints only the stored result's id, without
         /// downloading rows (for commands that read a result by id)
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv", "id"])]
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv", "id"], global = true)]
         output: String,
 
         #[command(subcommand)]
