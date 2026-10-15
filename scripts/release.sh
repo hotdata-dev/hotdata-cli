@@ -81,7 +81,7 @@ case "$COMMAND" in
         echo ""
         echo "Next steps:"
         echo "  1. Review and merge the PR (use 'Squash and merge')"
-        echo "  2. Run: scripts/release.sh finish"
+        echo "  2. On merge, CI (cut-release.yml) runs 'scripts/release.sh finish' to tag"
         ;;
 
     finish)
