@@ -5,7 +5,7 @@
 - *(release)* Refuse a release without notes (#343)
 ## [0.42.0] - 2026-10-15
 
-No changes since 0.41.0. The 0.41.0 release PR waited on review long enough for #340 and #341 to merge ahead of it, so they shipped in 0.41.0 and this tag carries the same code; the release-notes guard in #343 prevents this recurring.
+No changes since 0.41.0.
 ## [0.41.0] - 2026-10-15
 
 ### 🚀 Features
