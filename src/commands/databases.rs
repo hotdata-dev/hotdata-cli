@@ -45,7 +45,8 @@ pub enum DatabasesCommands {
         name: Option<String>,
 
         /// SQL catalog alias used in queries: SELECT … FROM <catalog>.schema.table.
-        /// Must be [a-z_][a-z0-9_]*, globally unique.
+        /// Must be [a-z_][a-z0-9_]*. Not required to be unique — a fork answers
+        /// to its source's alias — so select databases by id when it matters.
         #[arg(long)]
         catalog: Option<String>,
 
@@ -201,9 +202,16 @@ pub enum DatabasesCommands {
     /// Load a csv, json, or parquet file — or a saved query result — into an
     /// instant database table
     Load {
-        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
-        #[arg(long)]
-        catalog: String,
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`).
+        /// A fork answers to the same alias as its source, so once a database
+        /// has been forked the alias is ambiguous: pass `--database <id>` instead.
+        #[arg(long, required_unless_present = "database")]
+        catalog: Option<String>,
+
+        /// Database id (or name) to load into. Takes precedence over `--catalog`
+        /// and is the unambiguous form when forks share a catalog alias.
+        #[arg(long, conflicts_with = "catalog")]
+        database: Option<String>,
 
         /// Schema to load into (default: public)
         #[arg(long, default_value = "public")]
@@ -291,7 +299,7 @@ pub enum DatabasesCommands {
         sql: Option<String>,
 
         /// Instant database to run against (this command only; defaults to the current database)
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
         /// SQL dialect the query is written in — a non-`hotsql` dialect is
@@ -302,7 +310,7 @@ pub enum DatabasesCommands {
 
         /// Output format. `id` prints only the stored result's id, without
         /// downloading rows (for commands that read a result by id)
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv", "id"])]
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv", "id"], global = true)]
         output: String,
 
         #[command(subcommand)]

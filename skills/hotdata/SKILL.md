@@ -118,7 +118,7 @@ hotdata databases detach <database> [--database <id>]                     # or t
 
 # Preferred: load by catalog alias (server declares the table/schema if missing).
 # Loads csv, json, or parquet — format read from the extension.
-hotdata databases load --catalog <alias> --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--mode replace|append|delete|update|upsert] [--append] [--format csv|json|parquet] [--key <col>]... [--retry-timeout <secs>] [--workspace-id <workspace_id>]
+hotdata databases load (--catalog <alias> | --database <id>) --table <table> [--schema public] (--file <path> | --url <url> | --upload-id <id> | --result-id <id>) [--mode replace|append|delete|update|upsert] [--append] [--format csv|json|parquet] [--key <col>]... [--retry-timeout <secs>] [--workspace-id <workspace_id>]
 
 # Also available via tables subcommand
 hotdata databases tables list [--database <id>] [--schema <name>] [--workspace-id <workspace_id>] [--output table|json|yaml]
@@ -136,8 +136,9 @@ hotdata databases tables remove <table> [--database <id>] [--schema public] [--w
 - `use` — saves the database as the current database (accepts an id, catalog alias, or name; prefer the id). Subsequent `query`, `databases tables`, and `databases context` commands use it automatically. This is the **only** command that changes the current database.
 - `unset` — clears the current database from config.
 - `show <id>` / `<id>` — inspect one database (returns id, catalog, name, expires_at, attached databases; a fork also shows its `forked_from` record).
-- `remove` — removes the instant database; clears the active-database config if it matched.
+- `remove` — removes the instant database immediately, with no confirmation prompt (safe to script; there is no `--yes` because none is needed); clears the active-database config if it matched.
 - `load` (top-level shorthand) — loads a file into `--catalog.--schema.--table`. Accepts `--file`, `--url`, `--upload-id`, or `--result-id` (load a saved query result by id — from `hotdata databases results` or a query's `[result-id: …]` footer — instead of a file; the result must belong to the target database). **Formats:** csv, json (`.json`/`.jsonl`/`.ndjson`), and parquet; the format comes from the file's extension, and `--format` overrides it (needed when the extension is absent or misleading). An unrecognised extension is not rejected — the server reads the bytes, and a file that plainly opens a json array is taken as json even without an extension. A json source in any shape (array, pretty-printed, one object per line) is reshaped locally to newline-delimited json before upload; an already-newline-delimited file is uploaded untouched. A table or schema that was never declared is declared by the server as part of the load, so no up-front `--table` is required.
+- **After a fork, `--catalog` is ambiguous.** A fork answers to the same catalog alias as its source, so `databases load --catalog <alias>` (and `tables show <alias>.schema.table`) fail with `multiple databases have catalog …` once a fork exists. Pass the database id instead: `databases load --database <id> …` or `databases tables load <table> --database <id> …`. Prefer the id form in scripts.
 - **Concurrent loads** — loads into one table run one at a time. While another load holds the table the server answers 409 `RESOURCE_LOCKED` with a `Retry-After`; the CLI waits and retries for up to `--retry-timeout` seconds (default 60). Pass `--retry-timeout 0` to fail immediately instead. Loads into different tables never block each other.
 - **Load modes** (`--mode`, default `replace`) — `replace` supersedes the table's contents; `append` adds rows; `delete`, `update`, and `upsert` match existing rows **by key**. `--append` is the old shorthand for `--mode append` and still works, but the two cannot be combined. The keyed modes need a key: declare one with `databases tables add --key`, or name it per-load with `--key` (repeat for a composite key). `delete` uploads only the key columns; `update` replaces matching rows and ignores unmatched ones; `upsert` inserts the unmatched instead. Keyed modes are not available with `--result-id`.
 - `tables list` — lists tables with `TABLE` (`<catalog>.<schema>.<table>`), `SYNCED`, `LAST_SYNC`. Uses current database when `--database` is omitted.
@@ -255,7 +256,7 @@ hotdata databases context push <name> [--database <id>] [--dry-run]
 
 ```
 hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--dialect hotsql|duckdb|postgres|snowflake] [--output table|json|csv|id]
-hotdata query status <query_run_id>
+hotdata query [-d <database_id>] status <query_run_id>   # -d before `status`, or set a current database first
 
 # Same commands under the databases group (identical flags and exit codes)
 hotdata databases query "<sql>" [-d <database>] [--output table|json|csv|id]
@@ -280,7 +281,7 @@ hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status 
 hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
-- `--job-type`: `create_index`, `managed_load`, `database_fork`. (`data_refresh_table` / `data_refresh_connection` were retired server-side — the engine is push-only; nothing refreshes.)
+- `--job-type`: `create_index`, `managed_load`, `database_fork`. (`database_fork` is accepted for forward compatibility; today a fork completes synchronously and records no job.) (`data_refresh_table` / `data_refresh_connection` were retired server-side — the engine is push-only; nothing refreshes.)
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 

@@ -48,11 +48,13 @@ pub fn try_resolve_connection_id(api: &Api, name_or_id: &str) -> Result<String, 
     }
 
     // Fall back to instant databases: treat name_or_id as a catalog alias.
-    if let Ok(db) = crate::commands::databases::try_resolve_database(api, name_or_id) {
-        return Ok(db.default_connection_id);
+    // An ambiguous alias (a fork shares its source's catalog) is reported as
+    // such, not as "no catalog": the caller's fix is to pass the id.
+    match crate::commands::databases::try_resolve_database(api, name_or_id) {
+        Ok(db) => Ok(db.default_connection_id),
+        Err(e) if e.contains("multiple databases") => Err(e),
+        Err(_) => Err(format!("no catalog with id '{name_or_id}'")),
     }
-
-    Err(format!("no catalog with id '{name_or_id}'"))
 }
 
 /// Resolve a connection name or ID to a connection ID, exiting on failure.

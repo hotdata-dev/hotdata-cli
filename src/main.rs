@@ -312,6 +312,7 @@ fn main() {
                         }
                         Some(DatabasesCommands::Load {
                             catalog,
+                            database,
                             schema,
                             table,
                             file,
@@ -325,7 +326,7 @@ fn main() {
                             retry_timeout,
                         }) => databases::tables_load(
                             &workspace_id,
-                            Some(catalog.as_str()),
+                            database.as_deref().or(catalog.as_deref()),
                             &table,
                             Some(schema.as_str()),
                             file.as_deref(),
