@@ -73,6 +73,12 @@ pub enum DatabasesCommands {
         #[arg(long = "attach")]
         attach: Vec<String>,
 
+        /// Get-or-create: when a database with this `--name` already exists,
+        /// return it instead of creating another. Lets a script bind to its
+        /// database on every run without looking it up first. Requires `--name`.
+        #[arg(long, requires = "name")]
+        if_not_exists: bool,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
@@ -627,6 +633,10 @@ struct CreateDatabaseResponse {
     /// responses never carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     forked_from: Option<ForkedFrom>,
+    /// Only with `--if-not-exists`: `true` when this call created the database,
+    /// `false` when an existing one was returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -824,11 +834,18 @@ pub fn create_database_request(
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
+    if_not_exists: bool,
 ) -> serde_json::Value {
     let mut req = serde_json::Map::new();
 
     if let Some(n) = name {
         req.insert("name".to_string(), serde_json::Value::String(n.to_string()));
+    }
+
+    // Omitted rather than `false`: the field is new on the server, and an older
+    // deployment rejects unknown keys it would otherwise never see.
+    if if_not_exists {
+        req.insert("if_not_exists".to_string(), serde_json::Value::Bool(true));
     }
 
     if let Some(c) = catalog {
@@ -933,9 +950,15 @@ fn create_database_typed_request(
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
+    if_not_exists: bool,
 ) -> hotdata::models::CreateDatabaseRequest {
     serde_json::from_value(create_database_request(
-        name, catalog, schema, tables, expires_at,
+        name,
+        catalog,
+        schema,
+        tables,
+        expires_at,
+        if_not_exists,
     ))
     .expect("create_database_request always emits a valid CreateDatabaseRequest body")
 }
@@ -2072,11 +2095,13 @@ pub fn create(
     tables: &[String],
     expires_at: Option<&str>,
     attach: &[String],
+    if_not_exists: bool,
     format: &str,
 ) {
     use crossterm::style::Stylize;
 
-    let request = create_database_typed_request(name, catalog, schema, tables, expires_at);
+    let request =
+        create_database_typed_request(name, catalog, schema, tables, expires_at, if_not_exists);
 
     let api = Api::new(Some(workspace_id));
     let resp = if format == "table" {
@@ -2089,6 +2114,11 @@ pub fn create(
         block(api.client().databases().create(request))
     }
     .unwrap_or_else(|e| e.exit());
+
+    // With `--if-not-exists` the server says whether it created or found the
+    // database; `created` is absent on older servers, which never return an
+    // existing one here, so absent reads as created.
+    let created = resp.created.flatten().unwrap_or(true);
 
     // Attach requested connection catalogs onto the fresh database so a single
     // `databases create --attach …` lands a cross-source-ready context. A failed
@@ -2122,13 +2152,19 @@ pub fn create(
         // Never set on a plain create; mapped anyway so the shape can't drift
         // from fork's if the server ever returns an existing fork here.
         forked_from: resp.forked_from.flatten().map(|f| ForkedFrom::from(*f)),
+        // Only meaningful with `--if-not-exists`, where a script branches on it.
+        created: if if_not_exists { Some(created) } else { None },
     };
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
         "table" => {
-            println!("{}", "Database created".green());
+            if created {
+                println!("{}", "Database created".green());
+            } else {
+                println!("{}", "Database already exists".green());
+            }
             if let Some(n) = &result.name {
                 println!("name:        {}", n.clone().cyan());
             }
@@ -2236,6 +2272,7 @@ pub fn fork(
         default_connection_id: resp.default_connection_id,
         expires_at: resp.expires_at.flatten(),
         forked_from: resp.forked_from.flatten().map(|f| ForkedFrom::from(*f)),
+        created: None,
     };
 
     match format {
@@ -3230,8 +3267,22 @@ mod tests {
     }
 
     #[test]
+    fn create_database_request_sends_if_not_exists_only_when_set() {
+        let req = create_database_request(Some("app"), None, "public", &[], None, true);
+        assert_eq!(req["if_not_exists"], serde_json::json!(true));
+        let req = create_database_request(Some("app"), None, "public", &[], None, false);
+        assert!(
+            req.get("if_not_exists").is_none(),
+            "an older server rejects unknown keys, so false is omitted, not sent"
+        );
+        // The typed request carries it through to the SDK model.
+        let typed = create_database_typed_request(Some("app"), None, "public", &[], None, true);
+        assert_eq!(typed.if_not_exists, Some(true));
+    }
+
+    #[test]
     fn create_database_request_declares_schema_without_name_or_tables() {
-        let req = create_database_request(None, None, "public", &[], None);
+        let req = create_database_request(None, None, "public", &[], None, false);
         assert_eq!(
             req,
             serde_json::json!({"schemas": [{"name": "public"}]}),
@@ -3241,7 +3292,7 @@ mod tests {
 
     #[test]
     fn create_database_request_declares_custom_schema_without_tables() {
-        let req = create_database_request(None, None, "analytics", &[], None);
+        let req = create_database_request(None, None, "analytics", &[], None, false);
         assert_eq!(req["schemas"][0]["name"], "analytics");
         // An empty schema declaration omits `tables` entirely — the server
         // treats that as "declare the schema, add tables later".
@@ -3252,7 +3303,7 @@ mod tests {
     fn create_database_request_typed_round_trip_without_tables() {
         // The typed builder deserializes the JSON body and panics on a shape the
         // SDK model rejects, so the tables-less schema declaration must survive it.
-        let req = create_database_typed_request(None, None, "public", &[], None);
+        let req = create_database_typed_request(None, None, "public", &[], None, false);
         let schemas = req.schemas.expect("schemas is always sent");
         assert_eq!(schemas.len(), 1);
         assert_eq!(schemas[0].name, "public");
@@ -3261,7 +3312,7 @@ mod tests {
 
     #[test]
     fn create_database_request_includes_name() {
-        let req = create_database_request(Some("jaffle_shop"), None, "public", &[], None);
+        let req = create_database_request(Some("jaffle_shop"), None, "public", &[], None, false);
         assert_eq!(req["name"], "jaffle_shop");
         assert_eq!(req["schemas"][0]["name"], "public");
     }
@@ -3274,6 +3325,7 @@ mod tests {
             "public",
             &["orders".to_string(), "customers".to_string()],
             None,
+            false,
         );
         assert_eq!(req["schemas"][0]["name"], "public");
         assert_eq!(req["schemas"][0]["tables"][0]["name"], "orders");
@@ -3282,7 +3334,14 @@ mod tests {
 
     #[test]
     fn create_database_request_schemas_without_name() {
-        let req = create_database_request(None, None, "analytics", &["events".to_string()], None);
+        let req = create_database_request(
+            None,
+            None,
+            "analytics",
+            &["events".to_string()],
+            None,
+            false,
+        );
         assert!(req.get("name").is_none());
         assert_eq!(req["schemas"][0]["name"], "analytics");
     }
@@ -3292,7 +3351,14 @@ mod tests {
         // Every --table dot-qualified elsewhere: --schema still has to be
         // declared, or a later bare-name declaration into it fails the same way
         // an empty --table list used to.
-        let req = create_database_request(None, None, "public", &["raw.orders".to_string()], None);
+        let req = create_database_request(
+            None,
+            None,
+            "public",
+            &["raw.orders".to_string()],
+            None,
+            false,
+        );
         assert_eq!(req["schemas"][0]["name"], "public");
         assert!(
             req["schemas"][0].get("tables").is_none(),
@@ -3312,6 +3378,7 @@ mod tests {
             "public",
             &["orders".to_string(), "public.customers".to_string()],
             None,
+            false,
         );
         assert_eq!(req["schemas"].as_array().unwrap().len(), 1);
         assert_eq!(req["schemas"][0]["name"], "public");
@@ -3321,13 +3388,13 @@ mod tests {
 
     #[test]
     fn create_database_request_includes_expires_at_when_provided() {
-        let req = create_database_request(None, None, "public", &[], Some("24h"));
+        let req = create_database_request(None, None, "public", &[], Some("24h"), false);
         assert_eq!(req["expires_at"], "24h");
     }
 
     #[test]
     fn create_database_request_omits_expires_at_when_none() {
-        let req = create_database_request(None, None, "public", &[], None);
+        let req = create_database_request(None, None, "public", &[], None, false);
         assert!(req.get("expires_at").is_none());
     }
 
@@ -3343,6 +3410,7 @@ mod tests {
                 "raw.raw_customers".to_string(),
             ],
             None,
+            false,
         );
         // bare "orders" → default schema "public"
         assert_eq!(req["schemas"][0]["name"], "public");
@@ -4331,14 +4399,21 @@ mod tests {
                     "public",
                     &["gdp".to_string()],
                     None,
-                ))
+        false,
+    ))
                 .unwrap(),
             ))
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws-test"));
-        let body =
-            create_database_request(Some("mydb"), None, "public", &["gdp".to_string()], None);
+        let body = create_database_request(
+            Some("mydb"),
+            None,
+            "public",
+            &["gdp".to_string()],
+            None,
+            false,
+        );
         let (status, resp_body) = api.post_raw("/databases", &body).unwrap();
         assert_eq!(status.as_u16(), 201);
         let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();
