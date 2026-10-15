@@ -320,6 +320,7 @@ fn main() {
                             mode,
                             format,
                             key,
+                            retry_timeout,
                         }) => databases::tables_load(
                             &workspace_id,
                             Some(catalog.as_str()),
@@ -333,6 +334,7 @@ fn main() {
                             mode.as_deref(),
                             format.as_deref(),
                             &key,
+                            retry_timeout,
                         ),
                         Some(DatabasesCommands::Tables { database, command }) => match command {
                             Some(DatabaseTablesCommands::List {
@@ -409,6 +411,7 @@ fn main() {
                                 mode,
                                 format,
                                 key,
+                                retry_timeout,
                             }) => databases::tables_load(
                                 &workspace_id,
                                 db_flag.as_deref().or(database.as_deref()),
@@ -422,6 +425,7 @@ fn main() {
                                 mode.as_deref(),
                                 format.as_deref(),
                                 &key,
+                                retry_timeout,
                             ),
                             Some(DatabaseTablesCommands::Delete {
                                 database: db_flag,
