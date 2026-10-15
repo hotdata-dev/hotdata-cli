@@ -8,7 +8,7 @@ pub enum JobsCommands {
     /// List background jobs (shows active jobs by default)
     List {
         /// Filter by job type
-        #[arg(long, value_parser = ["create_index", "managed_load"])]
+        #[arg(long, value_parser = ["create_index", "managed_load", "database_fork"])]
         job_type: Option<String>,
 
         /// Filter by status
@@ -73,6 +73,7 @@ fn parse_job_type(s: &str) -> Option<JobType> {
         // connections removal (the engine is push-only; nothing refreshes).
         "create_index" => Some(JobType::CreateIndex),
         "managed_load" => Some(JobType::ManagedLoad),
+        "database_fork" => Some(JobType::DatabaseFork),
         _ => None,
     }
 }
