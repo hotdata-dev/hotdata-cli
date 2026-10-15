@@ -855,6 +855,19 @@ impl Api {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<(reqwest::StatusCode, String), ApiError> {
+        self.post_raw_with_headers(path, body)
+            .map(|(status, _, body)| (status, body))
+    }
+
+    /// [`post_raw`](Self::post_raw) that also returns the response headers.
+    ///
+    /// For callers that act on a header as well as the status — the load
+    /// endpoint's `Retry-After` on a `RESOURCE_LOCKED` 409 is the one in use.
+    pub fn post_raw_with_headers(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<(reqwest::StatusCode, reqwest::header::HeaderMap, String), ApiError> {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
@@ -867,11 +880,12 @@ impl Api {
                 .await
                 .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
             let status = resp.status();
+            let headers = resp.headers().clone();
             let body = resp
                 .text()
                 .await
                 .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
-            Ok((status, body))
+            Ok((status, headers, body))
         })
     }
 

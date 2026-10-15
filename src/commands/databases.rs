@@ -251,6 +251,13 @@ pub enum DatabasesCommands {
         /// table was declared with.
         #[arg(long = "key")]
         key: Vec<String>,
+
+        /// Seconds to keep retrying while another load holds the table
+        /// (default 60; 0 fails immediately). Concurrent loads into one table
+        /// are serialised server-side, and a busy table answers 409
+        /// `RESOURCE_LOCKED` with a `Retry-After` the CLI honours.
+        #[arg(long = "retry-timeout", default_value = "60")]
+        retry_timeout: u64,
     },
 
     /// Manage tables inside an instant database
@@ -480,6 +487,13 @@ pub enum DatabaseTablesCommands {
         /// table was declared with.
         #[arg(long = "key")]
         key: Vec<String>,
+
+        /// Seconds to keep retrying while another load holds the table
+        /// (default 60; 0 fails immediately). Concurrent loads into one table
+        /// are serialised server-side, and a busy table answers 409
+        /// `RESOURCE_LOCKED` with a `Retry-After` the CLI honours.
+        #[arg(long = "retry-timeout", default_value = "60")]
+        retry_timeout: u64,
     },
 
     /// Delete a table from an instant database
@@ -1219,6 +1233,70 @@ pub fn load_table_request_from_result(
         body["key"] = serde_json::json!(key);
     }
     body
+}
+
+/// The wait a load 409 asks for, or `None` when the 409 is not the table lock.
+///
+/// Loads into one table are serialised server-side; a second writer gets a 409
+/// whose code is `RESOURCE_LOCKED` and whose `Retry-After` says how long to
+/// hold off. Matched on the code, never the message: a permanent `CONFLICT`
+/// (idempotency-key reuse, a catalog scoped elsewhere) is also a 409 and must
+/// not be retried. A missing or unparsable `Retry-After` falls back to
+/// [`LOCK_RETRY_FALLBACK`] — the lock is still transient without it.
+pub fn lock_retry_after(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+) -> Option<std::time::Duration> {
+    if status != reqwest::StatusCode::CONFLICT {
+        return None;
+    }
+    let code = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    if code["error"]["code"].as_str() != Some("RESOURCE_LOCKED") {
+        return None;
+    }
+    let secs = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(LOCK_RETRY_FALLBACK);
+    Some(secs)
+}
+
+/// Wait between load attempts when the lock 409 carries no usable
+/// `Retry-After`. Matches what the server advertises today.
+pub const LOCK_RETRY_FALLBACK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `POST` a load, retrying while the table is held by another load.
+///
+/// Every attempt is the same request — a load is idempotent per upload, and
+/// the server either ran it or rejected it outright — so repeating it is safe.
+/// Retries stop at `retry_timeout_secs` after the first attempt; the final 409
+/// is then returned as-is so the caller renders the server's own message. A
+/// timeout of `0` sends exactly once. `on_wait` is told each pause before it
+/// happens, so a long wait is never silent.
+pub fn post_load_with_retry(
+    api: &Api,
+    path: &str,
+    body: &serde_json::Value,
+    retry_timeout_secs: u64,
+    mut on_wait: impl FnMut(std::time::Duration),
+) -> Result<(reqwest::StatusCode, String), ApiError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(retry_timeout_secs);
+    loop {
+        let (status, headers, resp_body) = api.post_raw_with_headers(path, body)?;
+        let Some(wait) = lock_retry_after(status, &headers, &resp_body) else {
+            return Ok((status, resp_body));
+        };
+        // The deadline bounds the whole wait, so a pause that would overrun it
+        // is not taken: better to report "still busy" on time than late.
+        if std::time::Instant::now() + wait > deadline {
+            return Ok((status, resp_body));
+        }
+        on_wait(wait);
+        std::thread::sleep(wait);
+    }
 }
 
 /// The load-request `format` implied by `name`'s extension, or `None` when the
@@ -2870,6 +2948,7 @@ pub fn tables_load(
     mode: Option<&str>,
     format: Option<&str>,
     key: &[String],
+    retry_timeout_secs: u64,
 ) {
     use crossterm::style::Stylize;
 
@@ -2964,10 +3043,17 @@ pub fn tables_load(
     let path = managed_table_load_path(&db.default_connection_id, schema, table);
 
     let spinner = crate::util::spinner("Loading table...");
-    let (status, resp_body) = api.post_raw(&path, &body).unwrap_or_else(|e| {
-        spinner.finish_and_clear();
-        e.exit()
-    });
+    let (status, resp_body) =
+        post_load_with_retry(&api, &path, &body, retry_timeout_secs, |wait| {
+            spinner.set_message(format!(
+                "Loading table... another load holds the table, retrying in {}s",
+                wait.as_secs()
+            ));
+        })
+        .unwrap_or_else(|e| {
+            spinner.finish_and_clear();
+            e.exit()
+        });
     spinner.finish_and_clear();
 
     // No undeclared-table recovery here: the load endpoint declares a missing
@@ -4420,6 +4506,93 @@ mod tests {
             other => panic!("expected Status error, got {other:?}"),
         }
         fork.assert();
+    }
+
+    #[test]
+    fn lock_retry_after_matches_resource_locked_only() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+        let locked = r#"{"error":{"code":"RESOURCE_LOCKED","message":"another operation is already running for conn:c:public:t; retry shortly"}}"#;
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("5"));
+        assert_eq!(
+            lock_retry_after(reqwest::StatusCode::CONFLICT, &headers, locked),
+            Some(std::time::Duration::from_secs(5))
+        );
+        // No header: still transient, fall back rather than give up.
+        assert_eq!(
+            lock_retry_after(reqwest::StatusCode::CONFLICT, &HeaderMap::new(), locked),
+            Some(LOCK_RETRY_FALLBACK)
+        );
+        // A permanent 409 is never retried, however it is worded.
+        let conflict = r#"{"error":{"code":"CONFLICT","message":"another operation is already running; retry shortly"}}"#;
+        assert_eq!(
+            lock_retry_after(reqwest::StatusCode::CONFLICT, &headers, conflict),
+            None
+        );
+        // Same code on a different status is not a lock.
+        assert_eq!(
+            lock_retry_after(reqwest::StatusCode::BAD_REQUEST, &headers, locked),
+            None
+        );
+    }
+
+    #[test]
+    fn load_retries_resource_locked_until_it_succeeds() {
+        let mut server = mockito::Server::new();
+        let locked = server
+            .mock("POST", "/v1/connections/c1/schemas/public/tables/t/loads")
+            .with_status(409)
+            .with_header("retry-after", "0")
+            .with_body(r#"{"error":{"code":"RESOURCE_LOCKED","message":"another operation is already running for conn:c1:public:t; retry shortly"}}"#)
+            .expect(2)
+            .create();
+        let ok = server
+            .mock("POST", "/v1/connections/c1/schemas/public/tables/t/loads")
+            .with_status(200)
+            .with_body(r#"{"connection_id":"c1","schema_name":"public","table_name":"t","row_count":1,"arrow_schema_json":"{}"}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws1"));
+        let body = load_table_request("upl_1", "append", None, &[]);
+        let mut waits = 0;
+        let (status, _) = post_load_with_retry(
+            &api,
+            "/connections/c1/schemas/public/tables/t/loads",
+            &body,
+            30,
+            |_| waits += 1,
+        )
+        .unwrap();
+        assert!(status.is_success());
+        assert_eq!(waits, 2, "caller is told about every pause");
+        locked.assert();
+        ok.assert();
+    }
+
+    #[test]
+    fn load_retry_timeout_zero_sends_once_and_returns_the_409() {
+        let mut server = mockito::Server::new();
+        let locked = server
+            .mock("POST", "/v1/connections/c1/schemas/public/tables/t/loads")
+            .with_status(409)
+            .with_header("retry-after", "5")
+            .with_body(r#"{"error":{"code":"RESOURCE_LOCKED","message":"busy"}}"#)
+            .expect(1)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws1"));
+        let body = load_table_request("upl_1", "append", None, &[]);
+        let (status, resp) = post_load_with_retry(
+            &api,
+            "/connections/c1/schemas/public/tables/t/loads",
+            &body,
+            0,
+            |_| panic!("must not wait with a zero budget"),
+        )
+        .unwrap();
+        assert_eq!(status.as_u16(), 409);
+        assert_eq!(crate::util::api_error(resp), "busy");
+        locked.assert();
     }
 
     #[test]
