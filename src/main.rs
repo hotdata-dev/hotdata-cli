@@ -255,6 +255,7 @@ fn main() {
                             tables,
                             expires_at,
                             attach,
+                            if_not_exists,
                             output,
                         }) => databases::create(
                             &workspace_id,
@@ -264,6 +265,7 @@ fn main() {
                             &tables,
                             expires_at.as_deref(),
                             &attach,
+                            if_not_exists,
                             &output,
                         ),
                         Some(DatabasesCommands::Fork {
