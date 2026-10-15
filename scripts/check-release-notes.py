@@ -8,8 +8,9 @@ Two checks:
   * The `## [<version>]` section exists and has at least one bullet. git-cliff
     writes an empty section when nothing landed since the last tag, and an
     empty section ships as an empty GitHub Release (0.42.0 did).
-  * With --since <ref>: every pull request merged between <ref> and HEAD is
-    mentioned in the section by its `(#N)` number, release commits aside.
+  * With --since <ref>: every pull request merged between <ref> and HEAD that
+    git-cliff would list (a conventional subject that cliff.toml does not
+    skip) is mentioned in the section by its `(#N)` number.
     The changelog is generated when the release PR opens; anything merged
     while that PR waits for review ends up inside the tag but outside its
     notes, and the next release's git-cliff run (which starts at the tag)
@@ -25,8 +26,21 @@ import sys
 from pathlib import Path
 
 SECTION_START = re.compile(r"^## \[([^\]]+)\]", re.MULTILINE)
-RELEASE_COMMIT = re.compile(r"^chore: Release hotdata-cli version")
 PR_NUMBER = re.compile(r"\(#(\d+)\)")
+
+# What git-cliff keeps, mirroring cliff.toml: a conventional subject
+# (filter_unconventional = true) that no `skip = true` parser matches.
+CONVENTIONAL = re.compile(r"^[a-z]+(\([^)]*\))?!?: ")
+SKIPPED = [
+    re.compile(r"^docs\(changelog\)"),
+    re.compile(r"^chore: Release hotdata-cli version"),
+    re.compile(r"^chore: bump version"),
+    re.compile(r"^Merge pull request"),
+]
+
+
+def in_changelog(subject: str) -> bool:
+    return bool(CONVENTIONAL.match(subject)) and not any(p.match(subject) for p in SKIPPED)
 
 
 def section_for(text: str, version: str) -> str | None:
@@ -67,8 +81,7 @@ def main() -> None:
         noted = set(PR_NUMBER.findall(body))
         missing = [
             s for s in subjects
-            if not RELEASE_COMMIT.match(s)
-            and (m := PR_NUMBER.search(s)) and m.group(1) not in noted
+            if in_changelog(s) and (m := PR_NUMBER.search(s)) and m.group(1) not in noted
         ]
         if missing:
             print(
