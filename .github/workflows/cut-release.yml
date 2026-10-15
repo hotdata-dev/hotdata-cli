@@ -6,12 +6,15 @@
 #        gh workflow run cut-release.yml -f version=0.40.0
 #      The `prepare` job runs `scripts/release.sh prepare <version>`: skill
 #      check, release/<version> branch, cargo-release bump (no publish, no
-#      tag), changelog validation, pushes the branch and opens the release PR.
+#      tag), changelog validation, a release-notes check (the new section
+#      must have bullets), pushes the branch and opens the release PR.
 #      The job then enables auto-merge (squash) on that PR.
 #   2. The release PR merges on its own once CI and the review gate pass.
 #   3. The merge fires this workflow again (pull_request closed, head
 #      release/*). The `publish` job runs `scripts/release.sh finish` on main:
-#      skill check with --require-version, annotated v<version> tag, push.
+#      skill check with --require-version, a release-notes check (every PR
+#      merged since the previous tag must be in the section, or the release
+#      is cut again from current main), annotated v<version> tag, push.
 #      The tag push triggers release.yml (cargo-dist), which builds, publishes
 #      the GitHub Release and the Homebrew formula.
 #
