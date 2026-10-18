@@ -19,9 +19,13 @@ commands.
 ## Install
 
 ```sh
-brew install hotdata-dev/tap/cli        # Homebrew
-cargo install --path .                  # from source (requires Rust)
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/hotdata-dev/hotdata-cli/releases/latest/download/install.sh | sh
 ```
+
+The script uses Homebrew (`brew install hotdata-dev/tap/cli`) when `brew` is
+present and otherwise drops a prebuilt binary into `~/.hotdata/cli`. Set
+`HOTDATA_NO_BREW=1` to skip Homebrew. To build from source instead:
+`cargo install --path .` (requires Rust).
 
 Or grab a binary from [Releases](https://github.com/hotdata-dev/hotdata-cli/releases).
 Stay current with `hotdata manage upgrade`; enable tab completion with
