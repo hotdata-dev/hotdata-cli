@@ -1,5 +1,6 @@
 {
   "name": "hotdata-cli",
+  "displayName": "Hotdata CLI",
   "description": "Teach Claude the Hotdata CLI: workspaces, databases, SQL, ingest, search, analytics, and geospatial",
   "version": "0.44.0",
   "author": {
@@ -8,5 +9,6 @@
   },
   "homepage": "https://www.hotdata.dev",
   "repository": "https://github.com/hotdata-dev/hotdata-cli",
-  "license": "MIT"
+  "license": "MIT",
+  "icon": "./.claude-plugin/icon.png"
 }
