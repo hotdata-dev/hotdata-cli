@@ -486,6 +486,14 @@ hotdata manage upgrade
 
 Upgrades the CLI in place to the latest release (`brew upgrade` for Homebrew installs, otherwise a direct binary download), refreshing bundled skills to match. After a successful upgrade, re-run your command.
 
+If `hotdata` is not installed at all (not on PATH and not at `~/.hotdata/cli/hotdata`), install it with:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/hotdata-dev/hotdata-cli/releases/latest/download/install.sh | sh
+```
+
+The installer uses Homebrew (`brew install hotdata-dev/tap/cli`) when `brew` is present, otherwise it places a prebuilt binary at `~/.hotdata/cli/hotdata`, and then installs this skill. `HOTDATA_NO_BREW=1` forces the prebuilt path; `HOTDATA_NO_SKILLS=1` skips the skill step.
+
 A newer release can be incompatible with the API, so in an **interactive terminal** the CLI checks for a new release before running any API-touching command and prompts to upgrade. Declining (or `Ctrl-D`) exits without running the command — `hotdata manage upgrade` is then required to continue. The check is a **no-op in non-interactive sessions** (no TTY, `--no-input`, or `HOTDATA_NO_UPDATE_CHECK` set), so typical agent and CI usage is never blocked; set `HOTDATA_NO_UPDATE_CHECK=1` to disable it entirely.
 
 ### Auth
