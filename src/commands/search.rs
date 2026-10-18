@@ -90,7 +90,7 @@ pub enum SearchCommands {
 
     /// List search indexes
     List {
-        /// Database to list indexes in (id; defaults to the active database)
+        /// Database to list indexes in (id, catalog, or name; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
@@ -112,7 +112,7 @@ pub enum SearchCommands {
         /// Index name
         name: String,
 
-        /// Database the index lives in (id; this command only; defaults to the current database)
+        /// Database the index lives in (id, catalog, or name; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
@@ -126,7 +126,7 @@ pub enum SearchCommands {
         /// Index name
         name: String,
 
-        /// Database the index lives in (id; this command only; defaults to the current database)
+        /// Database the index lives in (id, catalog, or name; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
     },
@@ -368,20 +368,25 @@ fn create(
     // its own error (e.g. an ambiguous forked-catalog alias) is surfaced as-is.
     let db = match target {
         FromTarget::Database(db) => *db,
-        FromTarget::Catalog(catalog) => databases::try_resolve_database(&api, &catalog)
-            .unwrap_or_else(|e| {
+        // Prefer the active database when the catalog is ambiguous — the same
+        // rule `databases load --catalog` applies — so a `--from` naming the
+        // active database's own catalog (e.g. `default` shared across forks)
+        // resolves to it instead of erroring.
+        FromTarget::Catalog(catalog) => {
+            databases::try_resolve_database_preferring_active(&api, &catalog).unwrap_or_else(|e| {
                 use crossterm::style::Stylize;
                 eprintln!(
                     "{}",
                     format!(
-                        "error: {e}\nSearch indexes are created on instant databases — pass a \
+                        "error: {e}\nSearch indexes are created on instant databases — pass an \
                          instant database's catalog or id, or 'schema.table' with an active \
                          database set via 'hotdata databases use <id>'."
                     )
                     .red()
                 );
                 std::process::exit(1);
-            }),
+            })
+        }
     };
     let conn_id = db.default_connection_id;
     let auto_name = format!("{table}_{}_{index_type}", column.replace(',', "_"));
@@ -417,7 +422,10 @@ fn list(
     // An explicit --database must resolve; the active database is a default
     // that falls back to the whole-workspace scan when it no longer exists.
     let db = match database {
-        Some(db_id) => Some(databases::get_database(&api, db_id).unwrap_or_else(|e| e.exit())),
+        Some(flag) => {
+            let db_id = databases::resolve_database_flag(&api, flag);
+            Some(databases::get_database(&api, &db_id).unwrap_or_else(|e| e.exit()))
+        }
         None => crate::config::load_current_database("default", workspace_id)
             .and_then(|db_id| databases::get_database(&api, &db_id).ok()),
     };
@@ -433,7 +441,12 @@ fn list(
 }
 
 fn locate_or_exit(workspace_id: &str, database: Option<&str>, name: &str) -> indexes::LocatedIndex {
-    indexes::locate_by_name(workspace_id, database, name).unwrap_or_else(|e| {
+    // `--database` accepts a catalog or name as well as an id, like every
+    // other database flag; locate_by_name needs the id. Ids short-circuit in
+    // resolve_database_flag, so the Api built here costs no round trip then.
+    let database =
+        database.map(|d| databases::resolve_database_flag(&Api::new(Some(workspace_id)), d));
+    indexes::locate_by_name(workspace_id, database.as_deref(), name).unwrap_or_else(|e| {
         use crossterm::style::Stylize;
         eprintln!("{}", e.red());
         std::process::exit(1);
