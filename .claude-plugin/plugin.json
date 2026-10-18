@@ -9,5 +9,6 @@
   },
   "homepage": "https://www.hotdata.dev",
   "repository": "https://github.com/hotdata-dev/hotdata-cli",
-  "license": "MIT"
+  "license": "MIT",
+  "icon": "./.claude-plugin/icon.png"
 }
