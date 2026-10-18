@@ -51,6 +51,8 @@ If **`HOTDATA_WORKSPACE`** is set in the environment, the workspace is **locked*
 
 **Omit `--workspace-id` unless you need to target a specific workspace** (and it is not locked by env or session).
 
+**`HOTDATA_DATABASE`** names the database a command uses when `-d/--database` is not given, taking precedence over the saved current database (`hotdata databases use`). An explicit `-d` still wins. Useful for pinning a script or agent session to one database without touching the saved selection.
+
 ### Cold starts (worker wake-up)
 
 A workspace's query worker scales to zero after inactivity. The **first** command against an idle workspace (e.g. `databases list`, `query`, `search`) blocks while it wakes — typically ~10s, up to ~20s — and the spinner upgrades to `waking up worker after inactivity (this can take ~20s)…`. **This is normal, not a hang:** don't kill the command, retry, or treat the pause as an error. Subsequent commands return promptly; warm workspaces are unaffected.
