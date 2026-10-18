@@ -3,8 +3,11 @@
 #
 # The plugin ships the skill, not the binary. Stay silent when the CLI is
 # reachable. When it isn't, stdout becomes session context asking Claude to
-# offer the installer rather than run it: piping curl into sh on every session
+# offer an install rather than run one: installing software on every session
 # start is not something users agreed to by installing a skill.
+#
+# The install command itself lives in the skill, not here, so this hook runs
+# nothing and fetches nothing that the directory's validator has to follow.
 
 set -u
 
@@ -23,15 +26,10 @@ if [ -x "$DIST_BIN_DIR/hotdata" ]; then
     exit 0
 fi
 
-# HOTDATA_NO_SKILLS=1: the plugin already provides the skill, so the installer
-# must not add a second copy to ~/.claude/skills.
 cat <<'EOF'
 The hotdata CLI is not installed. Before running any hotdata command, tell the
-user and ask whether to install it. If they agree, run:
-
-  curl -fsSL https://hotdata.dev/install | HOTDATA_NO_SKILLS=1 sh
-
-If the binary lands in ~/.hotdata/cli, call it as ~/.hotdata/cli/hotdata for the
-rest of this session.
+user and ask whether to install it. If they agree, follow the install steps in
+the hotdata skill (the "Upgrade" section of skills/hotdata/SKILL.md), and set
+HOTDATA_NO_SKILLS=1 because this plugin already provides the skill.
 EOF
 exit 0
