@@ -18,6 +18,7 @@ use commands::queries::{self, QueriesCommands};
 use commands::query::{self, QueryCommands};
 use commands::results::{self, ResultsCommands};
 use commands::skill::{self, SkillCommands};
+use commands::support::{self, SupportCommands};
 use commands::tables;
 use commands::workspace::{self, WorkspaceCommands};
 use commands::{update, usage};
@@ -73,20 +74,20 @@ fn resolve_workspace(provided: Option<String>) -> String {
         let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
         return id;
     }
-    // Otherwise the profile's default, computed by the same helper `auth
-    // status` displays — so the reported workspace is the one commands hit.
-    // For an api-key credential that's its own authorized workspace (a database
-    // token's sole one, or the saved default when the key can reach it), not a
-    // possibly-different CLI-session cache.
-    match credentials::default_workspace_id(&profile) {
+    // Otherwise the profile's current workspace, computed by the same helper
+    // `auth status` displays — so the reported workspace is the one commands
+    // hit. For an api-key credential that's its own authorized workspace (a
+    // database token's sole one, or the saved current workspace when the key
+    // can reach it), not a possibly-different CLI-session cache.
+    match credentials::current_workspace_id(&profile) {
         Some(id) => {
             let _ = ACTIVE_WORKSPACE_ID.set(id.clone());
             id
         }
         None => {
             eprintln!(
-                "error: no workspace-id provided and no default workspace found. \
-                 Run 'hotdata auth login' or specify --workspace-id."
+                "error: no workspace-id provided and no current workspace set. \
+                 Run 'hotdata auth login', 'hotdata workspaces use', or specify --workspace-id."
             );
             std::process::exit(1);
         }
@@ -254,6 +255,7 @@ fn main() {
                             tables,
                             expires_at,
                             attach,
+                            if_not_exists,
                             output,
                         }) => databases::create(
                             &workspace_id,
@@ -263,18 +265,21 @@ fn main() {
                             &tables,
                             expires_at.as_deref(),
                             &attach,
+                            if_not_exists,
                             &output,
                         ),
                         Some(DatabasesCommands::Fork {
                             database,
                             name,
                             expires_at,
+                            description,
                             output,
                         }) => databases::fork(
                             &workspace_id,
                             database.as_deref(),
                             name.as_deref(),
                             expires_at.as_deref(),
+                            description.as_deref(),
                             &output,
                         ),
                         Some(DatabasesCommands::Lineage {
@@ -307,6 +312,7 @@ fn main() {
                         }
                         Some(DatabasesCommands::Load {
                             catalog,
+                            database,
                             schema,
                             table,
                             file,
@@ -314,9 +320,13 @@ fn main() {
                             upload_id,
                             result_id,
                             append,
+                            mode,
+                            format,
+                            key,
+                            retry_timeout,
                         }) => databases::tables_load(
                             &workspace_id,
-                            Some(catalog.as_str()),
+                            database.as_deref().or(catalog.as_deref()),
                             &table,
                             Some(schema.as_str()),
                             file.as_deref(),
@@ -324,6 +334,10 @@ fn main() {
                             upload_id.as_deref(),
                             result_id.as_deref(),
                             append,
+                            mode.as_deref(),
+                            format.as_deref(),
+                            &key,
+                            retry_timeout,
                         ),
                         Some(DatabasesCommands::Tables { database, command }) => match command {
                             Some(DatabaseTablesCommands::List {
@@ -365,6 +379,26 @@ fn main() {
                                     )
                                 }
                             }
+                            Some(DatabaseTablesCommands::Add {
+                                table,
+                                database: db_flag,
+                                schema,
+                                key,
+                                key_determines,
+                                sorted_by,
+                                partition_by,
+                                output,
+                            }) => databases::add_table(
+                                &workspace_id,
+                                db_flag.as_deref().or(database.as_deref()),
+                                &table,
+                                &schema,
+                                &key,
+                                &key_determines,
+                                &sorted_by,
+                                &partition_by,
+                                &output,
+                            ),
                             Some(DatabaseTablesCommands::Show { table, output }) => {
                                 tables::show(&workspace_id, &table, &output)
                             }
@@ -377,6 +411,10 @@ fn main() {
                                 upload_id,
                                 result_id,
                                 append,
+                                mode,
+                                format,
+                                key,
+                                retry_timeout,
                             }) => databases::tables_load(
                                 &workspace_id,
                                 db_flag.as_deref().or(database.as_deref()),
@@ -387,6 +425,10 @@ fn main() {
                                 upload_id.as_deref(),
                                 result_id.as_deref(),
                                 append,
+                                mode.as_deref(),
+                                format.as_deref(),
+                                &key,
+                                retry_timeout,
                             ),
                             Some(DatabaseTablesCommands::Delete {
                                 database: db_flag,
@@ -435,7 +477,7 @@ fn main() {
                             }
                             .unwrap_or_else(|| {
                                 eprintln!(
-                                    "error: no active database. Pass -d/--database <id> or set one with 'hotdata databases use <id>'."
+                                    "error: no current database. Pass -d/--database <id> or set one with 'hotdata databases use <id>'."
                                 );
                                 std::process::exit(1);
                             });
@@ -709,6 +751,29 @@ fn main() {
                     }
                     SkillCommands::Status | SkillCommands::List => skill::status(),
                 },
+            },
+            Commands::Support { command } => match command {
+                SupportCommands::Report {
+                    message,
+                    subject,
+                    kind,
+                    severity,
+                    workspace_id,
+                    no_workspace,
+                    logs,
+                    context,
+                    output,
+                } => support::report(
+                    message,
+                    subject,
+                    kind,
+                    severity,
+                    workspace_id,
+                    no_workspace,
+                    logs,
+                    context,
+                    &output,
+                ),
             },
         },
     }

@@ -1,7 +1,7 @@
 ---
 name: hotdata-geospatial
 description: Use this skill only when the user is working with geospatial data in Hotdata (PostGIS-style SQL like ST_* functions, geometry/WKB, bbox filtering, point-in-polygon, distance/area, lat/lon, spatial joins, “geospatial”, “GIS”, “PostGIS”). Do not load this skill for non-geospatial SQL or general Hotdata usage.
-version: 0.30.0
+version: 0.43.0
 ---
 
 # Hotdata Geospatial Skill
@@ -18,9 +18,9 @@ All SQL below runs through the core CLI:
 hotdata query "<sql>" [--workspace-id <id>] [--database <db>] [--output table|json|csv]
 ```
 
-- **Fully qualify tables** as `<catalog>.<schema>.<table>` (or `<catalog>.<schema>.<table>` for an instant database) — every `<table>` placeholder below means a qualified name.
+- **Fully qualify tables** as `<catalog>.<schema>.<table>`, where the catalog is the instant database's `--catalog` alias (or the alias of an attached database) — every `<table>` placeholder below means a qualified name.
 - **PostgreSQL dialect:** double-quote any non-lowercase identifier (e.g. `"GeoID"`).
-- Discover candidate tables/columns with **`hotdata databases tables list`** (filter with `--schema`/`--table`) or **`hotdata databases tables list`** (tables inside an instant database) — see core skill.
+- Discover candidate tables with **`hotdata databases tables list`** (filter with `--schema`/`--table`) and columns with **`hotdata databases tables show <catalog.schema.table>`** — see core skill.
 
 ---
 

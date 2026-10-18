@@ -1,0 +1,170 @@
+# Cut Release — run scripts/release.sh from CI.
+#
+# Three steps, one workflow:
+#
+#   1. Dispatch with an explicit version:
+#        gh workflow run cut-release.yml -f version=0.40.0
+#      The `prepare` job runs `scripts/release.sh prepare <version>`: skill
+#      check, release/<version> branch, cargo-release bump (no publish, no
+#      tag), changelog validation, a release-notes check (the new section
+#      must have bullets), pushes the branch and opens the release PR.
+#      The job then enables auto-merge (squash) on that PR.
+#   2. The release PR merges on its own once CI and the review gate pass.
+#   3. The merge fires this workflow again (pull_request closed, head
+#      release/*). The `publish` job runs `scripts/release.sh finish` on main:
+#      skill check with --require-version, a release-notes check (every PR
+#      merged since the previous tag must be in the section, or the release
+#      is cut again from current main), annotated v<version> tag, push.
+#      The tag push triggers release.yml (cargo-dist), which builds, publishes
+#      the GitHub Release and the Homebrew formula.
+#
+# Both jobs act as the hotdata-automation GitHub App rather than GITHUB_TOKEN:
+# a PR opened or a tag pushed with GITHUB_TOKEN triggers no other workflows,
+# so CI would never run on the release PR and release.yml would never see the
+# tag.
+#
+# The skill-drift check inside `prepare` is not bypassed here (no
+# SKIP_SKILL_DRIFT). If the job fails on it, update skills/ on main first and
+# dispatch again.
+
+name: Cut Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.40.0'
+        required: true
+        type: string
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: cut-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Open release PR
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOTDATA_AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.HOTDATA_AUTOMATION_PRIVATE_KEY }}
+          owner: hotdata-dev
+
+      # Full history and tags: check-skills.sh diffs against the last v* tag,
+      # and cargo-release pushes the release branch with the app token.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # cargo-release does the bump; git-cliff is its pre-release-hook
+      # (Cargo.toml [package.metadata.release]) and writes CHANGELOG.md.
+      - name: Install cargo-release and git-cliff
+        uses: taiki-e/install-action@9afc45b9c8ff2049b2e4e34df3db97754711d5c1 # cargo-llvm-cov tag, same pin as ci.yml
+        with:
+          tool: cargo-release,git-cliff
+
+      - name: Configure git identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          slug="${APP_SLUG}[bot]"
+          id="$(gh api "/users/${slug}" --jq .id)"
+          git config user.name "$slug"
+          git config user.email "${id}+${slug}@users.noreply.github.com"
+
+      - name: Prepare release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ inputs.version }}
+        run: scripts/release.sh prepare "$VERSION"
+
+      - name: Enable auto-merge on the release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')"
+          [[ -n "$number" ]] || { echo "::error::no open PR for $branch"; exit 1; }
+          gh pr merge "$number" --squash --auto
+
+  publish:
+    name: Tag release
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.merged == true
+      && startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOTDATA_AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.HOTDATA_AUTOMATION_PRIVATE_KEY }}
+          owner: hotdata-dev
+
+      # finish expects to be on main and pushes the tag with the app token.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Configure git identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          slug="${APP_SLUG}[bot]"
+          id="$(gh api "/users/${slug}" --jq .id)"
+          git config user.name "$slug"
+          git config user.email "${id}+${slug}@users.noreply.github.com"
+
+      - name: Tag and push
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: scripts/release.sh finish

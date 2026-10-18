@@ -3,8 +3,9 @@ use crate::client::sdk::{Api, ApiError};
 use arrow::datatypes::FieldRef;
 use arrow::error::ArrowError;
 use arrow::json::writer::{EncoderOptions, NullableEncoder, make_encoder};
+use hotdata::{JsonCell, JsonCellKind};
 use serde::Serialize;
-use serde_json::Value;
+use std::io::Write;
 use std::sync::LazyLock;
 
 /// Subcommands for `hotdata query`.
@@ -19,7 +20,7 @@ pub enum QueryCommands {
     },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct QueryResponse {
     /// ID of the query run that produced this result. Surfaced so a user can
     /// look up run-level metadata (e.g. bytes/rows scanned) with
@@ -28,7 +29,10 @@ pub struct QueryResponse {
     pub query_run_id: Option<String>,
     pub result_id: Option<String>,
     pub columns: Vec<String>,
-    pub rows: Vec<Vec<Value>>,
+    /// Cells hold the JSON text the service sent, not a parsed value: a
+    /// number too wide for an `f64` (`DECIMAL(38,2)` at full width, say) keeps
+    /// every digit, and `-o json` re-emits it as the same unquoted number.
+    pub rows: Vec<Vec<JsonCell>>,
     /// Rows actually carried here (`rows.len()`). For a complete result this is
     /// the whole result; for an incomplete preview (`truncated`) it's a bounded
     /// subset.
@@ -99,20 +103,21 @@ fn query_response_from_sdk(resp: hotdata::models::QueryResponse) -> QueryRespons
     }
 }
 
-fn value_to_string(v: &Value) -> String {
-    match v {
-        Value::Null => "NULL".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.clone(),
-        Value::Array(arr) => {
-            let (formatted, count) = crate::output::table::truncate_array(arr);
-            match count {
-                Some(n) => format!("{formatted} ({n} items)"),
-                None => formatted,
-            }
-        }
-        Value::Object(_) => v.to_string(),
+fn value_to_string(v: &JsonCell) -> String {
+    match v.kind() {
+        JsonCellKind::Null => "NULL".to_string(),
+        // `kind` reported String, so this cannot decline; an empty string
+        // here would be a value the service never sent.
+        JsonCellKind::String => v.as_str().expect("kind() reported String").into_owned(),
+        // Everything else is written as the cell's own JSON text. For a number
+        // that is every digit the service sent, however wide.
+        //
+        // Composites are rendered whole, not abbreviated. `value_to_string`
+        // feeds `-o csv`, whose consumer is a program: a long list shortened
+        // to "[1, 2, 3, ..., 9] (1536 items)" is silent data loss in a format
+        // nobody re-reads by eye. The table renderer abbreviates separately,
+        // where a human is the reader and the width is the constraint.
+        _ => v.as_json_str().to_string(),
     }
 }
 
@@ -130,29 +135,39 @@ fn value_to_string(v: &Value) -> String {
 static ENCODER_OPTIONS: LazyLock<EncoderOptions> =
     LazyLock::new(|| EncoderOptions::default().with_explicit_nulls(true));
 
-/// Encode one already-prepared cell to a `serde_json::Value`.
+/// Encode one already-prepared cell to a [`JsonCell`].
 ///
-/// The service encodes with the same arrow-json encoder but writes its bytes
-/// straight to the response and never builds a `Value`. This has to, because
-/// it also draws tables and CSV, which need the cells individually. That extra
-/// step is the only asymmetry left between the two, and it cannot change the
-/// rendering — the text being parsed here is exactly what the service emits.
+/// The service encodes with the same arrow-json encoder and writes its bytes
+/// straight to the response. This keeps those bytes too — a cell holds the
+/// encoder's text, not a value parsed out of it — so the two sides render a
+/// value identically, down to the digits of a decimal wider than an `f64`.
+/// The text is still validated as JSON: an encoder that produced something
+/// unparseable is an error, never a silently mangled cell.
 ///
-/// `buf` is reused across cells so a wide result does not allocate per value.
+/// `buf` is reused across cells, so the encode buffer is allocated once
+/// rather than per cell. The cell's text is then copied out of it, which
+/// is one `String` per value.
 fn encode_cell(
     enc: &mut NullableEncoder<'_>,
     row: usize,
     buf: &mut Vec<u8>,
-) -> Result<Value, ArrowError> {
+) -> Result<JsonCell, ArrowError> {
     // A null the service really did send. Distinct from a value we could not
     // render, which is an error below and never a null.
     if enc.is_null(row) {
-        return Ok(Value::Null);
+        return Ok(JsonCell::null());
     }
     buf.clear();
     enc.encode(row, buf);
 
-    serde_json::from_slice(buf).map_err(|e| {
+    let text = std::str::from_utf8(buf)
+        .map_err(|e| {
+            ArrowError::JsonError(format!(
+                "arrow-json produced text that is not valid UTF-8 ({e})"
+            ))
+        })?
+        .to_owned();
+    JsonCell::from_json_text(text).map_err(|e| {
         ArrowError::JsonError(format!(
             "arrow-json produced text that is not valid JSON ({e}): {}",
             String::from_utf8_lossy(buf)
@@ -169,7 +184,7 @@ fn arrow_cell(
     col: &dyn arrow::array::Array,
     field: &FieldRef,
     row: usize,
-) -> Result<Value, ArrowError> {
+) -> Result<JsonCell, ArrowError> {
     let mut enc = make_encoder(field, col, &ENCODER_OPTIONS)?;
     let mut buf = Vec::new();
     encode_cell(&mut enc, row, &mut buf)
@@ -210,7 +225,7 @@ fn arrow_result_to_query_response(
         .iter()
         .map(|f| f.name().clone())
         .collect();
-    let mut rows: Vec<Vec<Value>> = Vec::new();
+    let mut rows: Vec<Vec<JsonCell>> = Vec::new();
 
     let mut buf: Vec<u8> = Vec::new();
     for batch in &result.batches {
@@ -226,7 +241,7 @@ fn arrow_result_to_query_response(
             .map_err(|e| render_failure(&schema, None, &e))?;
 
         for row in 0..batch.num_rows() {
-            let mut cells: Vec<Value> = Vec::with_capacity(encoders.len());
+            let mut cells: Vec<JsonCell> = Vec::with_capacity(encoders.len());
             for (c, enc) in encoders.iter_mut().enumerate() {
                 cells.push(
                     encode_cell(enc, row, &mut buf)
@@ -260,29 +275,6 @@ fn arrow_result_to_query_response(
     })
 }
 
-/// Fetch `/results/{result_id}` as Arrow and return a `QueryResponse`, returning
-/// the error instead of exiting.
-///
-/// Both transport and decode are owned by the SDK's `get_result_arrow` (via the
-/// [`Api::get_result_arrow`] seam), so the CLI shares one `arrow` major version
-/// with the SDK.
-///
-/// The fallible form lets callers that hold a fallback (e.g. an inline preview)
-/// degrade gracefully rather than terminate the process; [`fetch_arrow_result`]
-/// is the exiting wrapper for callers with nothing else to show.
-pub(crate) fn try_fetch_arrow_result(
-    api: &Api,
-    result_id: &str,
-) -> Result<QueryResponse, ApiError> {
-    let result = api.get_result_arrow(result_id)?;
-    arrow_result_to_query_response(result, result_id.to_owned())
-}
-
-/// Fetch `/results/{result_id}` as Arrow, exiting the process on failure.
-pub(crate) fn fetch_arrow_result(api: &Api, result_id: &str) -> QueryResponse {
-    try_fetch_arrow_result(api, result_id).unwrap_or_else(|e| e.exit())
-}
-
 /// Convert a query run's wire `execution_time_ms` (a double-option: outer = field
 /// presence, inner = JSON null) into the display value. A reported time clamps
 /// negatives to 0 (mirroring the inline path); an absent/null time stays `None`
@@ -291,61 +283,92 @@ fn run_execution_time_ms(raw: Option<Option<i64>>) -> Option<u64> {
     raw.flatten().map(|ms| ms.max(0) as u64)
 }
 
-/// Fetch a succeeded run's persisted Arrow result and stamp it with the run's own
-/// `execution_time_ms`. The Arrow result body carries no timing
-/// (`arrow_result_to_query_response` hardcodes `None`), so the async/poll display
-/// paths would otherwise report `execution_time_ms: null` for every query slow
-/// enough to fall back to async — exactly the queries you most want timed (#183).
-fn fetch_arrow_result_with_timing(
-    api: &Api,
-    result_id: &str,
-    execution_time_ms: Option<Option<i64>>,
-) -> QueryResponse {
-    let mut result = fetch_arrow_result(api, result_id);
-    result.execution_time_ms = run_execution_time_ms(execution_time_ms);
-    result
+/// What to do with an inline (HTTP 200) query response.
+///
+/// Kept separate from the printing so the decision is unit-testable: which
+/// responses carry their whole result, which have to be followed to the
+/// persisted one, and which are stuck with a preview.
+#[derive(Debug)]
+enum InlinePlan {
+    /// The rows in hand are what to print.
+    Render(QueryResponse),
+    /// The rows in hand are a bounded preview; the full result is persisted and
+    /// should be streamed. `preview` is what to print instead if the stream
+    /// cannot be started.
+    Stream {
+        meta: StreamMeta,
+        preview: QueryResponse,
+    },
 }
 
-/// Resolve an inline (HTTP 200) query response for display.
+/// Decide how to present an inline query response.
 ///
-/// A non-truncated response carries the whole result in `rows`, so it's shown
-/// as-is. A truncated one (#640) carries only a bounded preview — the full set
-/// is persisted under `result_id` — so follow it to the full result via Arrow,
-/// the same path the async (202) branch uses. Truncation rides on result *size*
+/// A non-truncated response carries the whole result. A truncated one (#640)
+/// carries only a bounded preview — the full set is persisted under `result_id`
+/// — so it is streamed rather than printed. Truncation rides on result *size*
 /// while `async_after_ms` gates on *time*, so a fast-completing but large query
-/// returns a truncated inline 200; without this follow the CLI would silently
+/// returns a truncated inline 200; without the follow-up the CLI would silently
 /// print only the preview rows.
-///
-/// If a truncated response has no `result_id` (persistence could not be
-/// initiated — see the SDK's `warning` field), or the follow-up Arrow fetch
-/// fails, the full result is unreachable. Rather than exiting and discarding the
-/// preview the inline body already carries, fall back to that preview, mark it
-/// incomplete (`truncated`), and surface a warning. `print_result` then fails
-/// closed (non-zero exit) so the partial data can't be silently consumed.
-fn resolve_inline(api: &Api, resp: hotdata::models::QueryResponse) -> QueryResponse {
+fn plan_inline(resp: hotdata::models::QueryResponse) -> InlinePlan {
     if !resp.truncated {
-        return query_response_from_sdk(resp);
+        return InlinePlan::Render(query_response_from_sdk(resp));
     }
     match resp.result_id.clone().flatten() {
-        Some(result_id) => match try_fetch_arrow_result(api, &result_id) {
-            // The Arrow fetch returns only schema + rows; carry the query-level
-            // warning, execution time, and run id the inline response reported,
-            // which `arrow_result_to_query_response` otherwise hardcodes to None.
-            Ok(mut full) => {
-                full.warning = resp.warning.flatten();
-                full.execution_time_ms = Some(resp.execution_time_ms.max(0) as u64);
-                full.query_run_id = (!resp.query_run_id.is_empty()).then_some(resp.query_run_id);
-                full
+        Some(result_id) => {
+            let meta = StreamMeta {
+                result_id,
+                // The streamed body carries only schema + rows; the run id,
+                // timing and warning come from the inline response that pointed
+                // at the result.
+                query_run_id: (!resp.query_run_id.is_empty()).then(|| resp.query_run_id.clone()),
+                execution_time_ms: Some(resp.execution_time_ms.max(0) as u64),
+                warning: resp.warning.clone().flatten(),
+            };
+            InlinePlan::Stream {
+                meta,
+                preview: query_response_from_sdk(resp),
             }
-            // The full result is persisted but the follow-up fetch failed (e.g.
-            // transport error, persistence still in progress). Degrade to the
-            // preview instead of hard-exiting and losing the rows in hand.
-            Err(e) => incomplete_preview(
-                resp,
-                &format!("could not fetch full result ({})", e.message()),
-            ),
-        },
-        None => incomplete_preview(resp, "full result unavailable (persistence not initiated)"),
+        }
+        // Persistence never started (see the SDK's `warning`), so the full
+        // result is unreachable and the preview is all there is.
+        None => InlinePlan::Render(incomplete_preview(
+            resp,
+            "full result unavailable (persistence not initiated)",
+        )),
+    }
+}
+
+/// Print an inline query response, streaming the full result when the response
+/// is only a preview of it.
+fn print_inline(api: &Api, resp: hotdata::models::QueryResponse, format: &str) {
+    match plan_inline(resp) {
+        InlinePlan::Render(result) => print_result(&result, format),
+        InlinePlan::Stream { meta, preview } => {
+            match print_streamed_result(api, meta, format) {
+                Ok(0) => {}
+                Ok(code) => std::process::exit(code),
+                // The full result is persisted but the fetch can still fail
+                // (transport error, persistence still in progress). While
+                // nothing has been printed, degrade to the preview rather than
+                // hard-exiting and losing the rows in hand.
+                Err(failure) if !failure.wrote_output => {
+                    let note = format!("could not fetch full result ({})", failure.err.message());
+                    print_result(&note_preview(preview, &note), format)
+                }
+                Err(failure) => failure.exit(),
+            }
+        }
+    }
+}
+
+/// Print a result persisted under a result id, streaming its body.
+///
+/// For callers with nothing to fall back to: any failure reports and exits.
+pub(crate) fn print_persisted_result(api: &Api, meta: StreamMeta, format: &str) {
+    match print_streamed_result(api, meta, format) {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(failure) => failure.exit(),
     }
 }
 
@@ -353,7 +376,14 @@ fn resolve_inline(api: &Api, resp: hotdata::models::QueryResponse) -> QueryRespo
 /// `note` into the warning (preserving any SDK-provided warning that explains
 /// *why* the full result is unreachable).
 fn incomplete_preview(resp: hotdata::models::QueryResponse, note: &str) -> QueryResponse {
-    let mut preview = query_response_from_sdk(resp);
+    note_preview(query_response_from_sdk(resp), note)
+}
+
+/// Mark an already-converted preview incomplete and fold `note` into its
+/// warning. Split from [`incomplete_preview`] because the streamed path decides
+/// the note only after the stream fails, by which point the response has already
+/// been converted.
+fn note_preview(mut preview: QueryResponse, note: &str) -> QueryResponse {
     let note = format!("result truncated to a preview; {note}");
     preview.warning = Some(match preview.warning {
         Some(w) => format!("{w}; {note}"),
@@ -459,7 +489,10 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
         // come back truncated to a preview even on this fast path, so follow it
         // to the full set (resolve_inline) rather than printing the preview.
         hotdata::QueryOutcome::Inline(resp) => {
-            print_result(&resolve_inline(&api, resp), format);
+            if format == "id" {
+                print_result_id(resp.result_id.flatten());
+            }
+            print_inline(&api, resp, format);
             return;
         }
         // Still running — poll the query run, then fetch the result as Arrow.
@@ -487,13 +520,19 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
         match run.status.as_str() {
             "succeeded" => {
                 spinner.finish_and_clear();
+                if format == "id" {
+                    print_result_id(run.result_id.flatten());
+                }
                 let execution_time_ms = run.execution_time_ms;
                 match run.result_id.flatten() {
-                    Some(ref result_id) => {
-                        let mut result =
-                            fetch_arrow_result_with_timing(&api, result_id, execution_time_ms);
-                        result.query_run_id = Some(run_id.clone());
-                        print_result(&result, format);
+                    Some(result_id) => {
+                        let meta = StreamMeta {
+                            result_id,
+                            query_run_id: Some(run_id.clone()),
+                            execution_time_ms: run_execution_time_ms(execution_time_ms),
+                            warning: None,
+                        };
+                        print_persisted_result(&api, meta, format);
                     }
                     None => {
                         use crossterm::style::Stylize;
@@ -551,13 +590,19 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
 
     match run.status.as_str() {
         "succeeded" => {
+            if format == "id" {
+                print_result_id(run.result_id.flatten());
+            }
             let execution_time_ms = run.execution_time_ms;
             match run.result_id.flatten() {
-                Some(ref result_id) => {
-                    let mut result =
-                        fetch_arrow_result_with_timing(&api, result_id, execution_time_ms);
-                    result.query_run_id = Some(run.id.clone());
-                    print_result(&result, format);
+                Some(result_id) => {
+                    let meta = StreamMeta {
+                        result_id,
+                        query_run_id: Some(run.id.clone()),
+                        execution_time_ms: run_execution_time_ms(execution_time_ms),
+                        warning: None,
+                    };
+                    print_persisted_result(&api, meta, format);
                 }
                 None => {
                     use crossterm::style::Stylize;
@@ -585,6 +630,30 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
     }
 }
 
+/// `-o id`: print only the stored result's id, without downloading any rows,
+/// so a script can hand it to a command that reads a result by id. Exits: `0`
+/// with the id on stdout, `1` when the query left no stored result.
+fn print_result_id(result_id: Option<String>) -> ! {
+    match result_id_line(result_id) {
+        Ok(line) => {
+            println!("{line}");
+            std::process::exit(0)
+        }
+        Err(msg) => {
+            use crossterm::style::Stylize;
+            eprintln!("{}", msg.red());
+            std::process::exit(1)
+        }
+    }
+}
+
+/// What `-o id` prints for a finished query, split out to be testable.
+fn result_id_line(result_id: Option<String>) -> Result<String, &'static str> {
+    result_id
+        .filter(|id| !id.is_empty())
+        .ok_or("error: the query finished but produced no stored result, so there is no result id")
+}
+
 /// Process exit code after rendering a result: [`EXIT_INCOMPLETE_RESULT`] when
 /// the rows are an incomplete preview (fail closed so pipelines break), else `0`.
 fn result_exit_code(result: &QueryResponse) -> i32 {
@@ -597,7 +666,10 @@ fn result_exit_code(result: &QueryResponse) -> i32 {
 
 /// The unstyled summary line printed under a `table` result.
 ///
-/// A complete result reads `N rows (time) [result-id]`. An incomplete preview is
+/// A complete result reads `N rows (server execution T ms) [result-id]`. The
+/// time is the server-measured `execution_time_ms` that `-o json` reports, not
+/// the command's wall-clock time, so it leaves out network transit and the
+/// result download. An incomplete preview is
 /// loud — `N of TOTAL rows — INCOMPLETE PREVIEW (...)` — with `?` standing in for
 /// a total the server didn't report. The caller colours it (red vs grey).
 fn table_footer(result: &QueryResponse) -> String {
@@ -612,7 +684,7 @@ fn table_footer(result: &QueryResponse) -> String {
         .map(|id| format!(" [result-id: {id}]"))
         .unwrap_or_default();
     let time_part = match result.execution_time_ms {
-        Some(ms) => format!("{ms} ms"),
+        Some(ms) => format!("server execution {ms} ms"),
         None => "\u{2014}".to_string(), // em dash
     };
     if result.truncated {
@@ -636,33 +708,458 @@ fn table_footer(result: &QueryResponse) -> String {
     }
 }
 
+/// A streamed render that failed, and whether any of it reached stdout.
+///
+/// Only a failure before the first byte can be swapped for another rendering:
+/// once part of a body is out, the honest report is an error over the partial
+/// output, not a second, different result printed after it.
+#[derive(Debug)]
+pub(crate) struct StreamFailure {
+    pub err: ApiError,
+    pub wrote_output: bool,
+}
+
+impl StreamFailure {
+    /// Failed before anything was written.
+    fn early(err: ApiError) -> Self {
+        Self {
+            err,
+            wrote_output: false,
+        }
+    }
+
+    /// Failed with part of the body already on stdout.
+    fn mid_output(err: ApiError) -> Self {
+        Self {
+            err,
+            wrote_output: true,
+        }
+    }
+
+    /// Report and exit. Used where there is nothing to fall back to.
+    fn exit(self) -> ! {
+        if self.wrote_output {
+            eprintln!("error: the result above is incomplete — the download failed partway");
+        }
+        self.err.exit()
+    }
+}
+
+/// How long to wait for a result the server is still writing.
+///
+/// A query that returns a bounded preview names a result that is still being
+/// drained to storage, so the first fetch routinely arrives too early. Matches
+/// the async path's own 5-minute ceiling, so a query is given the same patience
+/// however its rows are delivered.
+const RESULT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Rows fetched for `-o table`.
+///
+/// A table is read by a human, so the whole of a large result is never wanted.
+/// The cap is applied as `?limit=` so the rest is never downloaded either, and
+/// the response still reports the true total in `X-Total-Row-Count`, so a capped
+/// table is marked incomplete by the existing footer rather than looking whole.
+const TABLE_ROW_CAP: i64 = 10_000;
+
+/// Query-level facts a streamed body does not carry.
+///
+/// The Arrow body is schema plus batches; the run id, timing and any warning
+/// come from the JSON response that pointed at the result, and are stamped
+/// around the rows by the writers below.
+#[derive(Debug)]
+pub(crate) struct StreamMeta {
+    pub result_id: String,
+    pub query_run_id: Option<String>,
+    pub execution_time_ms: Option<u64>,
+    pub warning: Option<String>,
+}
+
+/// Render a persisted result to stdout without holding it in memory.
+///
+/// `csv` and `json` are written batch by batch, so peak memory is one record
+/// batch whatever the result size. `table` is fetched capped and handed to the
+/// buffered renderer, which needs every row it prints to size the columns.
+///
+/// Returns the process exit code (mirroring [`print_result`]): non-zero when
+/// what was printed is an incomplete subset.
+pub(crate) fn print_streamed_result(
+    api: &Api,
+    meta: StreamMeta,
+    format: &str,
+) -> Result<i32, StreamFailure> {
+    if format == "table" {
+        // Buffered, so nothing reaches stdout unless the whole window arrived:
+        // a failure here is always recoverable by the caller.
+        let mut result = fetch_capped(api, &meta, TABLE_ROW_CAP).map_err(StreamFailure::early)?;
+        result.warning = meta.warning;
+        print_result_body(&result, format);
+        return Ok(result_exit_code(&result));
+    }
+
+    if let Some(ref warning) = meta.warning {
+        eprintln!("warning: {warning}");
+    }
+
+    let stream = api
+        .open_result_arrow_when_ready(&meta.result_id, None, RESULT_READY_TIMEOUT)
+        .map_err(StreamFailure::early)?;
+    let columns: Vec<String> = stream
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
+
+    // One buffered writer for the whole body. The buffered path prints a line at
+    // a time through `println!`, which flushes per line — fine for a screenful,
+    // a syscall per row for a million.
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::with_capacity(256 * 1024, stdout.lock());
+
+    // Past this point bytes are on their way to stdout, so a failure can no
+    // longer be swapped for a fallback rendering — it is reported as one.
+    // Hand the stream to a reader on the runtime and render from its queue, so
+    // the socket keeps draining while a batch is being written.
+    let total_row_count = stream.total_row_count();
+    let mut batches = api.stream_result_batches(stream);
+
+    let written = match format {
+        "csv" => stream_csv(&mut batches, &columns, &mut out),
+        "json" => stream_json(&mut batches, &columns, &meta, total_row_count, &mut out),
+        _ => unreachable!("streamed formats are csv and json"),
+    }
+    .map_err(StreamFailure::mid_output)?;
+
+    out.flush()
+        .map_err(write_failure)
+        .map_err(StreamFailure::mid_output)?;
+    drop(out);
+
+    // The server reports the full result size independently of what was read, so
+    // a body that ended early is caught even though the rows themselves looked
+    // well-formed.
+    if let Some(total) = total_row_count {
+        let total = u64::try_from(total).unwrap_or(written);
+        if written != total {
+            eprintln!(
+                "error: result {} reported {total} rows but the body carried {written}; \
+                 the output above is incomplete",
+                meta.result_id
+            );
+            return Ok(EXIT_INCOMPLETE_RESULT);
+        }
+    }
+    Ok(0)
+}
+
+/// Fetch at most `cap` rows of a result into a [`QueryResponse`].
+///
+/// `?limit=` bounds the download server-side. When the result is larger than the
+/// window, the response is marked `truncated`, which is what makes the footer
+/// say `N of TOTAL rows — INCOMPLETE PREVIEW` and the exit code non-zero.
+fn fetch_capped(api: &Api, meta: &StreamMeta, cap: i64) -> Result<QueryResponse, ApiError> {
+    // Ask for one row past the window. That row's existence is the proof there
+    // is more, and it needs nothing from the server beyond the rows themselves:
+    // deriving truncation from `total_row_count` alone was wrong, because
+    // `arrow_result_to_query_response` backfills that total from the rows in
+    // hand when the response carries no `X-Total-Row-Count`. A window with no
+    // such header then had `total == row_count` and printed as a complete
+    // table — the silent truncation this command exists to avoid.
+    let probe = cap.saturating_add(1);
+    let mut stream =
+        api.open_result_arrow_when_ready(&meta.result_id, Some(probe), RESULT_READY_TIMEOUT)?;
+    let schema = stream.schema();
+    // Only what the server actually reported. Never the backfill, which for a
+    // window is a count of the window and not of the result.
+    let reported_total = stream
+        .total_row_count()
+        .and_then(|total| u64::try_from(total).ok());
+    let mut batches = Vec::new();
+    while let Some(batch) = api.next_result_batch(&mut stream)? {
+        batches.push(batch);
+    }
+    // The server's own "there is more" signal. Independent of the probe row,
+    // which only fires when `?limit=` was honoured exactly: a server free to
+    // clamp the limit to its own maximum returns the window full and no more,
+    // and without this that would read as a complete result all over again.
+    let more_pages = stream.next_link().is_some();
+    let result = hotdata::ArrowResult {
+        batches,
+        schema,
+        total_row_count: stream.total_row_count(),
+        next_link: stream.next_link().map(str::to_owned),
+    };
+    let mut response = arrow_result_to_query_response(result, meta.result_id.clone())?;
+    response.query_run_id = meta.query_run_id.clone();
+    response.execution_time_ms = meta.execution_time_ms;
+
+    // The probe row came back, so the result is larger than the window. Drop it
+    // — it was never meant to be shown — and report what remains as a preview.
+    let cap_rows = u64::try_from(cap).unwrap_or(u64::MAX);
+    let beyond_window = response.row_count > cap_rows;
+    if beyond_window {
+        response.rows.truncate(cap_rows as usize);
+        response.row_count = cap_rows;
+    }
+    response.truncated = beyond_window
+        || more_pages
+        || reported_total.is_some_and(|total| total > response.row_count);
+    // `?` in the footer beats a total derived from the window, which would read
+    // as "10000 of 10000" for a result of a million.
+    response.total_row_count = reported_total;
+    Ok(response)
+}
+
+/// Batches in flight between the socket reader and the renderer.
+type BatchQueue = tokio::sync::mpsc::Receiver<crate::client::sdk::BatchMessage>;
+
+/// Take the next batch, waiting for the reader.
+///
+/// `blocking_recv` is correct here and only here: the renderer is a plain
+/// synchronous loop, and the reader it waits on runs on the shared runtime.
+///
+/// A queue that closes without [`BatchMessage::Done`] is an error, not an end.
+/// `spawn` stores a task panic in a `JoinHandle` this code drops, so a reader
+/// that dies mid-decode is invisible except for its silence — and reading that
+/// silence as "the result ended" is how a truncated download becomes a short
+/// result reported as complete.
+fn next_queued(batches: &mut BatchQueue) -> Result<Option<arrow::array::RecordBatch>, ApiError> {
+    use crate::client::sdk::BatchMessage;
+    match batches.blocking_recv() {
+        Some(BatchMessage::Batch(batch)) => Ok(Some(batch)),
+        Some(BatchMessage::Done) => Ok(None),
+        Some(BatchMessage::Failed(e)) => Err(e),
+        None => Err(ApiError::Transport(
+            "the result reader stopped before the end of the stream; the rows \
+             read so far are incomplete"
+                .to_string(),
+        )),
+    }
+}
+
+/// A stdout write that failed. Reported as a transport error so it exits the
+/// same way every other unrecoverable render failure does.
+fn write_failure(err: std::io::Error) -> ApiError {
+    ApiError::Transport(format!("could not write the result to stdout: {err}"))
+}
+
+/// Build one encoder per column for `batch`, matching the buffered path.
+fn batch_encoders<'a>(
+    batch: &'a arrow::array::RecordBatch,
+    schema: &arrow::datatypes::Schema,
+) -> Result<Vec<NullableEncoder<'a>>, ApiError> {
+    batch
+        .columns()
+        .iter()
+        .zip(batch.schema_ref().fields())
+        .map(|(col, field)| make_encoder(field, col.as_ref(), &ENCODER_OPTIONS))
+        .collect::<Result<_, _>>()
+        .map_err(|e| render_failure(schema, None, &e))
+}
+
+/// Render each row of `batch` into `cells`, calling `emit` once per row.
+///
+/// Cell rendering goes through the same [`encode_cell`] the buffered path uses,
+/// so a streamed row is byte-identical to a buffered one.
+fn for_each_row<F>(
+    batch: &arrow::array::RecordBatch,
+    buf: &mut Vec<u8>,
+    mut emit: F,
+) -> Result<u64, ApiError>
+where
+    F: FnMut(&[JsonCell]) -> Result<(), ApiError>,
+{
+    let schema = batch.schema();
+    let mut encoders = batch_encoders(batch, &schema)?;
+    let mut cells: Vec<JsonCell> = Vec::with_capacity(encoders.len());
+    for row in 0..batch.num_rows() {
+        cells.clear();
+        for (c, enc) in encoders.iter_mut().enumerate() {
+            cells.push(
+                encode_cell(enc, row, buf).map_err(|e| render_failure(&schema, Some(c), &e))?,
+            );
+        }
+        emit(&cells)?;
+    }
+    Ok(batch.num_rows() as u64)
+}
+
+/// Write a result as CSV, one batch at a time. Returns the rows written.
+fn stream_csv(
+    batches: &mut BatchQueue,
+    columns: &[String],
+    out: &mut impl Write,
+) -> Result<u64, ApiError> {
+    writeln!(out, "{}", columns.join(",")).map_err(write_failure)?;
+    let mut written = 0u64;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut line = String::new();
+    while let Some(batch) = next_queued(batches)? {
+        written += for_each_row(&batch, &mut buf, |cells| {
+            line.clear();
+            for (i, cell) in cells.iter().enumerate() {
+                if i > 0 {
+                    line.push(',');
+                }
+                line.push_str(&csv_field(cell));
+            }
+            writeln!(out, "{line}").map_err(write_failure)
+        })?;
+    }
+    Ok(written)
+}
+
+/// One CSV field, quoted exactly as the buffered path quotes it.
+fn csv_field(cell: &JsonCell) -> String {
+    let s = value_to_string(cell);
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s
+    }
+}
+
+/// Write a result as the same JSON envelope [`print_result`] emits, streaming
+/// the `rows` array. Returns the rows written.
+///
+/// The envelope is written by hand because `row_count` is only known once the
+/// rows have been read, and it follows them in the serialized order — so the
+/// fields before `rows` go out first, the rows stream, then the tail. Field
+/// order, indentation and null rendering are asserted against
+/// `serde_json::to_string_pretty` of the equivalent [`QueryResponse`] in
+/// `streamed_json_is_byte_identical_to_the_buffered_envelope`.
+fn stream_json(
+    batches: &mut BatchQueue,
+    columns: &[String],
+    meta: &StreamMeta,
+    reported_total: Option<i64>,
+    out: &mut impl Write,
+) -> Result<u64, ApiError> {
+    let total_row_count = reported_total.and_then(|t| u64::try_from(t).ok());
+
+    write!(out, "{{\n  \"query_run_id\": ").map_err(write_failure)?;
+    write_compact(out, &meta.query_run_id)?;
+    write!(out, ",\n  \"result_id\": ").map_err(write_failure)?;
+    write_compact(out, &Some(meta.result_id.clone()))?;
+    write!(out, ",\n  \"columns\": ").map_err(write_failure)?;
+    write_indented(out, &to_pretty(&columns)?, 2)?;
+    write!(out, ",\n  \"rows\": [").map_err(write_failure)?;
+
+    let mut written = 0u64;
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(batch) = next_queued(batches)? {
+        for_each_row(&batch, &mut buf, |cells| {
+            if written > 0 {
+                write!(out, ",").map_err(write_failure)?;
+            }
+            written += 1;
+            // The element's own indentation; `write_indented` then shifts the
+            // lines after the first to match.
+            write!(out, "\n    ").map_err(write_failure)?;
+            write_indented(out, &to_pretty(&cells)?, 4)
+        })?;
+    }
+    if written > 0 {
+        write!(out, "\n  ").map_err(write_failure)?;
+    }
+
+    // `truncated` is written after the rows, so by now the body's real shape is
+    // known: a server-reported total that disagrees with what arrived means the
+    // rows above are an incomplete subset. Saying `false` there while the caller
+    // exits non-zero would leave a consumer that branches on the field reading
+    // an incomplete result as complete.
+    let truncated = total_row_count.is_some_and(|total| total != written);
+    write!(
+        out,
+        "],\n  \"row_count\": {written},\n  \"total_row_count\": {},\n  \"truncated\": {truncated},\n  \"execution_time_ms\": {}\n}}\n",
+        total_row_count.unwrap_or(written),
+        match meta.execution_time_ms {
+            Some(ms) => ms.to_string(),
+            None => "null".to_string(),
+        }
+    )
+    .map_err(write_failure)
+    .map(|()| written)
+}
+
+/// `serde_json::to_string_pretty`, with the serializer's error mapped.
+fn to_pretty<T: Serialize>(value: &T) -> Result<String, ApiError> {
+    serde_json::to_string_pretty(value)
+        .map_err(|e| ApiError::Transport(format!("could not render a result row as JSON: {e}")))
+}
+
+/// Write a scalar field compactly (a string or null has no multi-line form).
+fn write_compact<T: Serialize>(out: &mut impl Write, value: &T) -> Result<(), ApiError> {
+    let text = serde_json::to_string(value)
+        .map_err(|e| ApiError::Transport(format!("could not render a result field: {e}")))?;
+    write!(out, "{text}").map_err(write_failure)
+}
+
+/// Write pretty-printed JSON nested at `indent` spaces: every line after the
+/// first is shifted, which is what `to_string_pretty` of the whole envelope
+/// would have produced for a value at that depth.
+fn write_indented(out: &mut impl Write, pretty: &str, indent: usize) -> Result<(), ApiError> {
+    let pad = " ".repeat(indent);
+    for (i, line) in pretty.lines().enumerate() {
+        if i == 0 {
+            write!(out, "{line}").map_err(write_failure)?;
+        } else {
+            write!(out, "\n{pad}{line}").map_err(write_failure)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn print_result(result: &QueryResponse, format: &str) {
+    print_result_body(result, format);
+
+    // Fail closed: an incomplete preview was just printed (with a stderr
+    // warning). Exit non-zero so a pipeline consuming the output breaks rather
+    // than silently ingesting a subset of the result as if it were complete.
+    let code = result_exit_code(result);
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+/// Write a buffered result as JSON.
+///
+/// The display struct is serialized directly; `warning` is `#[serde(skip)]`
+/// (stderr-only), the rest is the JSON body. [`stream_json`] reproduces this
+/// envelope field by field, and
+/// `streamed_json_matches_the_buffered_envelope` holds the two to the same
+/// bytes.
+fn write_json_body(result: &QueryResponse, out: &mut impl Write) -> std::io::Result<()> {
+    writeln!(out, "{}", serde_json::to_string_pretty(result).unwrap())
+}
+
+/// Write a buffered result as CSV. [`stream_csv`] reproduces this row for row.
+fn write_csv_body(result: &QueryResponse, out: &mut impl Write) -> std::io::Result<()> {
+    writeln!(out, "{}", result.columns.join(","))?;
+    for row in &result.rows {
+        let cells: Vec<String> = row.iter().map(csv_field).collect();
+        writeln!(out, "{}", cells.join(","))?;
+    }
+    Ok(())
+}
+
+/// Render a result, without deciding the process exit.
+///
+/// Split out so the streaming paths can print a capped table through the same
+/// renderer and then return their exit code rather than terminating here.
+fn print_result_body(result: &QueryResponse, format: &str) {
     if let Some(ref warning) = result.warning {
         eprintln!("warning: {warning}");
     }
 
     match format {
         "json" => {
-            // Serialize the display struct directly; `warning` is `#[serde(skip)]`
-            // (stderr-only), the rest is the JSON body.
-            println!("{}", serde_json::to_string_pretty(result).unwrap());
+            let mut out = std::io::stdout().lock();
+            write_json_body(result, &mut out).expect("stdout write failed");
         }
         "csv" => {
-            println!("{}", result.columns.join(","));
-            for row in &result.rows {
-                let cells: Vec<String> = row
-                    .iter()
-                    .map(|v| {
-                        let s = value_to_string(v);
-                        if s.contains(',') || s.contains('"') || s.contains('\n') {
-                            format!("\"{}\"", s.replace('"', "\"\""))
-                        } else {
-                            s
-                        }
-                    })
-                    .collect();
-                println!("{}", cells.join(","));
-            }
+            let mut out = std::io::stdout().lock();
+            write_csv_body(result, &mut out).expect("stdout write failed");
         }
         "table" => {
             crate::output::table::print_json(&result.columns, &result.rows);
@@ -678,20 +1175,13 @@ pub fn print_result(result: &QueryResponse, format: &str) {
         }
         _ => unreachable!(),
     }
-
-    // Fail closed: an incomplete preview was just printed (with a stderr
-    // warning). Exit non-zero so a pipeline consuming the output breaks rather
-    // than silently ingesting a subset of the result as if it were complete.
-    let code = result_exit_code(result);
-    if code != 0 {
-        std::process::exit(code);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::client::sdk::Api;
+    use serde_json::Value;
     use std::sync::Arc;
 
     /// A truncated inline 200: one preview row standing in for a larger result.
@@ -699,14 +1189,14 @@ mod tests {
     /// null, i.e. persistence not initiated).
     fn truncated_preview(result_id: Option<&str>) -> hotdata::models::QueryResponse {
         let mut resp = hotdata::models::QueryResponse::new(
-            vec!["id".to_string()],           // columns
-            5,                                // execution_time_ms
-            vec![false],                      // nullable
-            1,                                // preview_row_count
-            "qrun_1".to_string(),             // query_run_id
-            1,                                // row_count (deprecated, == preview)
-            vec![vec![serde_json::json!(1)]], // rows (preview only)
-            true,                             // truncated
+            vec!["id".to_string()],                           // columns
+            5,                                                // execution_time_ms
+            vec![false],                                      // nullable
+            1,                                                // preview_row_count
+            "qrun_1".to_string(),                             // query_run_id
+            1,                                                // row_count (deprecated, == preview)
+            vec![vec![JsonCell::from(serde_json::json!(1))]], // rows (preview only)
+            true,                                             // truncated
         );
         resp.result_id = Some(result_id.map(|s| s.to_string()));
         resp
@@ -738,7 +1228,7 @@ mod tests {
         let list: ArrayRef = Arc::new(lb.finish());
         let got = arrow_cell(list.as_ref(), &field_for(list.as_ref()), 0).expect("list renders");
         assert_eq!(
-            got,
+            got.to_value(),
             serde_json::json!([1, 2]),
             "list must be a JSON array, got {got:?}"
         );
@@ -755,7 +1245,7 @@ mod tests {
         ]));
         let got = arrow_cell(st.as_ref(), &field_for(st.as_ref()), 0).expect("struct renders");
         assert_eq!(
-            got,
+            got.to_value(),
             serde_json::json!({"a": 1, "b": "x"}),
             "struct must be a JSON object, got {got:?}"
         );
@@ -771,7 +1261,9 @@ mod tests {
     #[test]
     fn the_batch_path_renders_a_whole_result() {
         use arrow::array::TimestampMicrosecondArray;
-        use arrow::array::{ArrayRef, Int64Array, Int64Builder, ListBuilder, RecordBatch};
+        use arrow::array::{
+            ArrayRef, Decimal128Array, Int64Array, Int64Builder, ListBuilder, RecordBatch,
+        };
         use arrow::datatypes::{DataType, Field, Schema};
 
         // Two rows, and a nested column so shape is actually asserted.
@@ -789,12 +1281,20 @@ mod tests {
         );
         let ints: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
 
+        // 22 significant digits: five more than an f64 carries.
+        let dec: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![9_999_999_999_999_999_999_999i128, 1i128])
+                .with_precision_and_scale(38, 2)
+                .expect("valid decimal"),
+        );
+
         let schema = Arc::new(Schema::new(vec![
             Field::new("n", DataType::Int64, false),
             Field::new("l", list.data_type().clone(), true),
             Field::new("t", ts.data_type().clone(), true),
+            Field::new("d", dec.data_type().clone(), false),
         ]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![ints, list, ts]).expect("batch");
+        let batch = RecordBatch::try_new(schema.clone(), vec![ints, list, ts, dec]).expect("batch");
 
         let result = hotdata::ArrowResult {
             batches: vec![batch],
@@ -805,7 +1305,7 @@ mod tests {
         let resp = arrow_result_to_query_response(result, "rslt_test".to_string())
             .expect("the batch path renders");
 
-        assert_eq!(resp.columns, vec!["n", "l", "t"]);
+        assert_eq!(resp.columns, vec!["n", "l", "t", "d"]);
         assert_eq!(resp.row_count, 2);
         assert_eq!(resp.total_row_count, Some(2));
         assert_eq!(resp.result_id.as_deref(), Some("rslt_test"));
@@ -813,13 +1313,18 @@ mod tests {
 
         // The nested column must be a JSON array, not display text — the
         // invariant that failed before, asserted through the real path.
-        assert_eq!(resp.rows[0][0], serde_json::json!(1));
-        assert_eq!(resp.rows[0][1], serde_json::json!([7, 8]));
-        assert_eq!(resp.rows[1][1], serde_json::json!([9]));
+        assert_eq!(resp.rows[0][0].to_value(), serde_json::json!(1));
+        assert_eq!(resp.rows[0][1].to_value(), serde_json::json!([7, 8]));
+        assert_eq!(resp.rows[1][1].to_value(), serde_json::json!([9]));
 
         // And the named zone resolves rather than nulling.
         let t = resp.rows[0][2].as_str().expect("timestamp is a string");
         assert!(t.contains("+05:30"), "expected a resolved offset, got {t}");
+
+        // The decimal column keeps every digit through the batch path, which
+        // is the one a truncated or async result is fetched over.
+        assert_eq!(resp.rows[0][3].as_json_str(), "99999999999999999999.99");
+        assert_eq!(resp.rows[1][3].as_json_str(), "0.01");
     }
 
     /// A timestamp carrying a *named* IANA zone must render, not come back as
@@ -839,7 +1344,7 @@ mod tests {
             let cell = arrow_cell(&col, &field_for(&col), 0)
                 .unwrap_or_else(|e| panic!("zone {zone} failed: {e}"));
             assert!(
-                cell.is_string(),
+                cell.to_value().is_string(),
                 "zone {zone} rendered as {cell:?}, expected a formatted string"
             );
         }
@@ -850,19 +1355,23 @@ mod tests {
         assert!(
             arrow_cell(&offset, &field_for(&offset), 0)
                 .unwrap()
+                .to_value()
                 .is_string()
         );
         let naive = TimestampMicrosecondArray::from(vec![micros]);
         assert!(
             arrow_cell(&naive, &field_for(&naive), 0)
                 .unwrap()
+                .to_value()
                 .is_string()
         );
 
         // A genuine null is still a null — that one the service really did send.
         let with_null = TimestampMicrosecondArray::from(vec![None::<i64>]).with_timezone("UTC");
         assert_eq!(
-            arrow_cell(&with_null, &field_for(&with_null), 0).unwrap(),
+            arrow_cell(&with_null, &field_for(&with_null), 0)
+                .unwrap()
+                .to_value(),
             Value::Null
         );
     }
@@ -964,7 +1473,7 @@ mod tests {
                 panic!("{label} has a value at row 0 but failed to render: {e}")
             });
             assert_ne!(
-                cell,
+                cell.to_value(),
                 Value::Null,
                 "{label} has a value at row 0 but rendered as null"
             );
@@ -990,7 +1499,7 @@ mod tests {
         let col = TimestampSecondArray::from(vec![i64::MAX]);
         let cell = arrow_cell(&col, &field_for(&col), 0).expect("arrow-json reports success here");
 
-        match &cell {
+        match &cell.to_value() {
             Value::Null => panic!("a present value was reported as null"),
             Value::String(s) => assert!(
                 s.starts_with("ERROR:"),
@@ -1026,27 +1535,30 @@ mod tests {
         for (label, col) in cases {
             let got = arrow_cell(col.as_ref(), &field_for(col.as_ref()), 0)
                 .unwrap_or_else(|e| panic!("{label} aborted the result: {e}"));
-            assert_eq!(got, Value::Null, "{label} rendered as {got:?}");
+            // Assert on the cell text, not `to_value()`: that parses, and a
+            // parse it could not complete also yields `Value::Null`, so this
+            // would pass for the wrong reason.
+            assert_eq!(got.as_json_str(), "null", "{label} rendered as {got:?}");
         }
     }
 
-    /// A decimal wider than an `f64` is rounded here. Known limitation, pinned
-    /// so it is a discovered fact rather than a surprise.
+    /// A decimal wider than an `f64` keeps every digit.
     ///
-    /// arrow-json writes a decimal as an unquoted JSON number at full width and
-    /// the service passes those bytes through untouched, so a `DECIMAL(38,2)`
-    /// reaches this side with all its digits and then loses everything past the
-    /// 17th when parsed into a `Value`.
+    /// arrow-json writes a decimal as an unquoted JSON number at full width,
+    /// and a cell holds that text rather than a number parsed out of it, so a
+    /// `DECIMAL(38,2)` renders with all 36 of its digits. Routing the cell
+    /// through `serde_json::Value` — which has no arbitrary-precision number —
+    /// is what used to round it to 17.
     ///
-    /// `serde_json`'s `arbitrary_precision` would fix it and must not be used:
-    /// the feature is crate-wide, and with it on a `Number` serializes as the
-    /// private struct `$serde_json::private::Number`, which serde_yaml renders
-    /// as a nested mapping — corrupting `-o yaml` for commands that have
-    /// nothing to do with rendering results. The honest fix is to stop routing
-    /// the json output path through `Value` at all, as the service does; that
-    /// is a change to the output layer, not to this function.
+    /// `serde_json`'s `arbitrary_precision` is the other way to keep the
+    /// digits and must not be used: the feature is crate-wide, and with it on
+    /// a `Number` serializes as the private struct
+    /// `$serde_json::private::Number`, which serde_yaml renders as a nested
+    /// mapping — corrupting `-o yaml` for commands that have nothing to do
+    /// with rendering results. `yaml_renders_a_json_number_as_a_number` pins
+    /// that.
     #[test]
-    fn a_wide_decimal_is_rounded_a_known_limitation() {
+    fn a_wide_decimal_keeps_every_digit() {
         use arrow::array::Decimal128Array;
 
         let col = Decimal128Array::from(vec![123456789012345678901234567890123456i128])
@@ -1054,8 +1566,98 @@ mod tests {
             .expect("valid decimal");
         let got = arrow_cell(&col, &field_for(&col), 0).expect("decimal renders");
 
-        // Full precision would be 1234567890123456789012345678901234.56.
-        assert_eq!(got.to_string(), "1.2345678901234568e+33");
+        assert_eq!(got.as_json_str(), "1234567890123456789012345678901234.56");
+        // `-o csv` and `-o table` read the same text.
+        assert_eq!(
+            value_to_string(&got),
+            "1234567890123456789012345678901234.56"
+        );
+        // `-o json` re-emits it as an unquoted number, not a string: a `jq`
+        // pipeline that did arithmetic on this column still can.
+        assert_eq!(
+            serde_json::to_string(&got).unwrap(),
+            "1234567890123456789012345678901234.56"
+        );
+    }
+
+    /// The inline (HTTP 200) path keeps a wide decimal too.
+    ///
+    /// A separate loss site from the Arrow path above: this body is parsed
+    /// by the SDK straight off the wire and never touches arrow-json.
+    #[test]
+    fn a_wide_decimal_survives_the_inline_path() {
+        let wide = "99999999999999999999.99";
+        let body = format!(
+            r#"{{"columns":["w"],"execution_time_ms":1,"nullable":[false],
+               "preview_row_count":1,"query_run_id":"qrun_1","row_count":1,
+               "rows":[[{wide}]],"truncated":false,"total_row_count":1}}"#
+        );
+        let sdk: hotdata::models::QueryResponse =
+            serde_json::from_str(&body).expect("inline body parses");
+
+        let resp = query_response_from_sdk(sdk);
+        assert_eq!(resp.rows[0][0].as_json_str(), wide);
+        assert_eq!(value_to_string(&resp.rows[0][0]), wide);
+    }
+
+    /// `-o json` prints a wide decimal as an unquoted number.
+    ///
+    /// Quoting it would keep the digits and break every downstream consumer
+    /// that treats the column as numeric — one wire-contract break traded for
+    /// another — so the whole rendered body is asserted, not just the cell.
+    #[test]
+    fn json_output_prints_a_wide_decimal_unquoted() {
+        let wide = "99999999999999999999.99";
+        let result = QueryResponse {
+            query_run_id: None,
+            result_id: None,
+            columns: vec!["w".to_string()],
+            rows: vec![vec![JsonCell::from_json_text(wide.to_string()).unwrap()]],
+            row_count: 1,
+            total_row_count: Some(1),
+            truncated: false,
+            execution_time_ms: None,
+            warning: None,
+        };
+        let rendered = serde_json::to_string_pretty(&result).unwrap();
+        assert!(
+            rendered.contains(&format!("      {wide}\n")),
+            "expected an unquoted {wide} in:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(&format!("\"{wide}\"")),
+            "the decimal was quoted into a string:\n{rendered}"
+        );
+    }
+
+    /// `-o json` writes a composite cell as one line.
+    ///
+    /// A cell holds JSON text and is re-emitted verbatim, so the pretty
+    /// printer indents the rows around it but not inside it. Scalars are
+    /// unaffected; only a list or struct column looks different from a
+    /// `Value`-rendered body. Pinned because it is a visible difference in
+    /// stdout, and a deliberate one: re-indenting the text would mean
+    /// re-parsing it, which is what loses the digits.
+    #[test]
+    fn json_output_writes_a_composite_cell_on_one_line() {
+        let result = QueryResponse {
+            query_run_id: None,
+            result_id: None,
+            columns: vec!["l".to_string()],
+            rows: vec![vec![
+                JsonCell::from_json_text("[1,2,3]".to_string()).unwrap(),
+            ]],
+            row_count: 1,
+            total_row_count: Some(1),
+            truncated: false,
+            execution_time_ms: None,
+            warning: None,
+        };
+        let rendered = serde_json::to_string_pretty(&result).unwrap();
+        assert!(
+            rendered.contains("      [1,2,3]\n"),
+            "expected the cell on one line, got:\n{rendered}"
+        );
     }
 
     /// `-o yaml` must render a JSON number as a number.
@@ -1111,64 +1713,29 @@ mod tests {
     }
 
     #[test]
-    fn resolve_inline_follows_truncated_result_to_full_arrow() {
-        use arrow::array::{Int64Array, RecordBatch};
-        use arrow::datatypes::{DataType, Field, Schema};
-        use arrow::ipc::writer::StreamWriter;
-
-        // Full result has 3 rows — more than the 1-row inline preview.
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
-        )
-        .unwrap();
-        let mut ipc: Vec<u8> = Vec::new();
-        {
-            let mut writer = StreamWriter::try_new(&mut ipc, &schema).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-        }
-
-        let mut server = mockito::Server::new();
-        let m = server
-            .mock("GET", "/v1/results/res_1")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "format".into(),
-                "arrow".into(),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/vnd.apache.arrow.stream")
-            .with_body(ipc)
-            .create();
-
-        // The inline response carries a query-level warning and execution time
-        // (execution_time_ms=5 from `truncated_preview`) that must survive the
-        // Arrow follow, which otherwise hardcodes them to None.
+    fn plan_inline_streams_a_truncated_result_and_carries_run_metadata() {
+        // A truncated inline response holds only a preview; the plan must point
+        // at the persisted result and carry forward the query-level facts the
+        // Arrow body does not have (run id, timing, warning).
         let mut resp = truncated_preview(Some("res_1"));
         resp.warning = Some(Some("approximate aggregate".to_string()));
 
-        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
-        let resolved = resolve_inline(&api, resp);
-
-        // Followed the truncated preview to the full 3-row result.
-        assert_eq!(resolved.row_count, 3);
-        assert_eq!(resolved.rows.len(), 3);
-        assert_eq!(resolved.result_id.as_deref(), Some("res_1"));
-        // The held rows are now the whole result: complete, not a preview.
-        assert!(!resolved.truncated);
-        assert_eq!(resolved.total_row_count, Some(3));
-        // Inline warning + timing carried through, not dropped by the fetch.
-        assert_eq!(resolved.warning.as_deref(), Some("approximate aggregate"));
-        assert_eq!(resolved.execution_time_ms, Some(5));
-        // The run id from the inline response must survive the Arrow follow — the
-        // Arrow path itself has no run id, so the follow branch must stamp it.
-        assert_eq!(resolved.query_run_id.as_deref(), Some("qrun_1"));
-        m.assert();
+        match plan_inline(resp) {
+            InlinePlan::Stream { meta, preview } => {
+                assert_eq!(meta.result_id, "res_1");
+                assert_eq!(meta.query_run_id.as_deref(), Some("qrun_1"));
+                assert_eq!(meta.execution_time_ms, Some(5));
+                assert_eq!(meta.warning.as_deref(), Some("approximate aggregate"));
+                // The preview is retained only as the fallback; it is the
+                // bounded subset, not the result.
+                assert_eq!(preview.row_count, 1);
+            }
+            other => panic!("expected a streamed plan, got {other:?}"),
+        }
     }
 
     #[test]
-    fn resolve_inline_falls_back_to_preview_when_follow_fetch_fails() {
+    fn a_stream_that_cannot_open_falls_back_to_the_preview() {
         // Truncated with a result_id, but the follow-up Arrow fetch fails (500).
         // The CLI must NOT hard-exit (which would also discard the preview it
         // already holds) — it degrades to the preview, marks it incomplete, and
@@ -1182,11 +1749,29 @@ mod tests {
                 "arrow".into(),
             ))
             .with_status(500)
-            .with_body("boom")
+            // An error envelope, the shape the server actually sends: the
+            // warning must carry the sentence inside it, not the JSON.
+            .with_body(r#"{"error":{"message":"result res_1 has expired","code":"NOT_FOUND"}}"#)
             .create();
 
         let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
-        let resolved = resolve_inline(&api, truncated_preview(Some("res_1")));
+        let (meta, preview) = match plan_inline(truncated_preview(Some("res_1"))) {
+            InlinePlan::Stream { meta, preview } => (meta, preview),
+            other => panic!("expected a streamed plan, got {other:?}"),
+        };
+
+        // The stream fails to open, so nothing was written and the caller is
+        // free to render the preview instead.
+        let failure =
+            print_streamed_result(&api, meta, "csv").expect_err("a 500 must fail the stream");
+        assert!(
+            !failure.wrote_output,
+            "a failure at open must not have written any output"
+        );
+        let resolved = note_preview(
+            preview,
+            &format!("could not fetch full result ({})", failure.err.message()),
+        );
 
         // Preview kept, flagged incomplete so print_result fails closed.
         assert!(resolved.truncated);
@@ -1197,6 +1782,10 @@ mod tests {
         let warning = resolved.warning.as_deref().unwrap_or("");
         assert!(warning.contains("truncated"), "warning: {warning:?}");
         assert!(
+            warning.contains("result res_1 has expired") && !warning.contains("{\"error\""),
+            "the warning should quote the server's sentence, not its envelope: {warning}"
+        );
+        assert!(
             warning.contains("could not fetch full result"),
             "warning: {warning:?}"
         );
@@ -1204,11 +1793,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_inline_returns_untruncated_preview_without_fetching() {
-        // truncated=false short-circuits before any network call; point the Api
-        // at a server with no mocks so an erroneous fetch would fail loudly.
-        let server = mockito::Server::new();
-        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+    fn plan_inline_renders_an_untruncated_response_without_fetching() {
+        // truncated=false means the rows in hand are the whole result: the plan
+        // must render them, never reach for the persisted copy.
 
         let mut resp = hotdata::models::QueryResponse::new(
             vec!["x".to_string()],
@@ -1217,16 +1804,25 @@ mod tests {
             2,
             "qrun_2".to_string(),
             2,
-            vec![vec![serde_json::json!(1)], vec![serde_json::json!(2)]],
+            vec![
+                vec![JsonCell::from(serde_json::json!(1))],
+                vec![JsonCell::from(serde_json::json!(2))],
+            ],
             false, // not truncated
         );
         resp.result_id = Some(Some("res_2".to_string()));
 
-        let resolved = resolve_inline(&api, resp);
+        let resolved = match plan_inline(resp) {
+            InlinePlan::Render(result) => result,
+            other => panic!("expected a rendered plan, got {other:?}"),
+        };
         assert_eq!(resolved.row_count, 2);
         assert_eq!(
             resolved.rows,
-            vec![vec![serde_json::json!(1)], vec![serde_json::json!(2)]]
+            vec![
+                vec![JsonCell::from(serde_json::json!(1))],
+                vec![JsonCell::from(serde_json::json!(2))]
+            ]
         );
         assert_eq!(resolved.result_id.as_deref(), Some("res_2"));
         // Complete result: not a preview, total backfilled from held rows.
@@ -1235,18 +1831,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_inline_truncated_without_result_id_warns_and_keeps_preview() {
+    fn plan_inline_truncated_without_result_id_warns_and_keeps_preview() {
         // Truncated but persistence never started (result_id is null): the full
         // result is unfetchable, so keep the preview and surface a warning.
-        let server = mockito::Server::new();
-        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
 
         // The server reports the grand total even though it couldn't persist;
         // it must survive onto the preview so structured output exposes it.
         let mut resp = truncated_preview(None);
         resp.total_row_count = Some(Some(100));
 
-        let resolved = resolve_inline(&api, resp);
+        let resolved = match plan_inline(resp) {
+            InlinePlan::Render(result) => result,
+            other => panic!("expected a rendered plan, got {other:?}"),
+        };
         assert!(resolved.truncated);
         assert_eq!(resolved.row_count, 1);
         assert_eq!(resolved.rows.len(), 1);
@@ -1269,7 +1866,7 @@ mod tests {
             query_run_id: None,
             result_id: None,
             columns: vec!["id".to_string()],
-            rows: vec![vec![serde_json::json!(1)]],
+            rows: vec![vec![JsonCell::from(serde_json::json!(1))]],
             row_count: 1,
             total_row_count: Some(100),
             truncated: true,
@@ -1289,7 +1886,10 @@ mod tests {
             query_run_id: Some("qrun_9".to_string()),
             result_id: Some("res_9".to_string()),
             columns: vec!["id".to_string()],
-            rows: vec![vec![serde_json::json!(1)], vec![serde_json::json!(2)]],
+            rows: vec![
+                vec![JsonCell::from(serde_json::json!(1))],
+                vec![JsonCell::from(serde_json::json!(2))],
+            ],
             row_count: 2,
             total_row_count: Some(2),
             truncated: false,
@@ -1313,7 +1913,7 @@ mod tests {
             query_run_id: None,
             result_id: None,
             columns: vec!["id".to_string()],
-            rows: vec![vec![serde_json::json!(1)]],
+            rows: vec![vec![JsonCell::from(serde_json::json!(1))]],
             row_count: 1,
             total_row_count: Some(100),
             truncated: true,
@@ -1383,6 +1983,31 @@ mod tests {
     }
 
     #[test]
+    fn result_id_line_prints_the_id_alone() {
+        assert_eq!(
+            result_id_line(Some("rslt_abc".to_string())).unwrap(),
+            "rslt_abc"
+        );
+    }
+
+    #[test]
+    fn result_id_line_errors_without_a_stored_result() {
+        assert!(result_id_line(None).is_err());
+        assert!(result_id_line(Some(String::new())).is_err());
+    }
+
+    #[test]
+    fn table_footer_labels_time_as_server_execution() {
+        // The footer's time is the same `execution_time_ms` that `-o json`
+        // carries; the label keeps it from being read as the round trip.
+        let footer = table_footer(&display_result(2, Some(2), false));
+        assert!(
+            footer.contains("(server execution 5 ms)"),
+            "footer: {footer}"
+        );
+    }
+
+    #[test]
     fn table_footer_omits_run_id_when_absent() {
         // The Arrow-only fetch path has no run id; the footer must not render an
         // empty `[run: ]` tag.
@@ -1406,19 +2031,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_inline_preserves_existing_warning_when_following_fails() {
+    fn plan_inline_preserves_an_existing_warning_on_the_preview() {
         // A truncated response with no result_id often arrives with an SDK
         // warning explaining why persistence didn't start. The truncation note
         // is appended to it, not allowed to clobber it.
-        let server = mockito::Server::new();
-        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
 
         let mut resp = truncated_preview(None);
         resp.warning = Some(Some(
             "result persistence could not be initiated".to_string(),
         ));
 
-        let resolved = resolve_inline(&api, resp);
+        let resolved = match plan_inline(resp) {
+            InlinePlan::Render(result) => result,
+            other => panic!("expected a rendered plan, got {other:?}"),
+        };
         let warning = resolved.warning.as_deref().unwrap_or("");
         assert!(
             warning.contains("result persistence could not be initiated"),
@@ -1440,30 +2066,280 @@ mod tests {
         assert_eq!(run_execution_time_ms(Some(Some(-1))), Some(0));
     }
 
-    #[test]
-    fn fetch_arrow_result_with_timing_carries_run_execution_time() {
-        // Regression for #183: a query that falls back to async fetches its result
-        // via Arrow (which carries no timing) and must be stamped with the run's
-        // own `execution_time_ms`, not the hardcoded None.
-        use arrow::array::{Int64Array, RecordBatch};
+    // --- streaming render ---------------------------------------------------
+
+    /// An IPC stream over one batch with the awkward values: a null, a string
+    /// needing CSV quoting *and* JSON escaping, a nested list, and a decimal
+    /// too wide for an f64.
+    fn awkward_ipc() -> Vec<u8> {
+        use arrow::array::{Decimal128Array, Int64Array, ListArray, RecordBatch, StringArray};
         use arrow::datatypes::{DataType, Field, Schema};
         use arrow::ipc::writer::StreamWriter;
 
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let ids = Int64Array::from(vec![Some(1), None, Some(3)]);
+        let notes = StringArray::from(vec![
+            Some("plain"),
+            Some("has,comma \"quote\" and\nnewline"),
+            None,
+        ]);
+        let tags = ListArray::from_iter_primitive::<arrow::datatypes::Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![]),
+            None,
+        ]);
+        let money = Decimal128Array::from(vec![
+            Some(99999999999999999999999999999999999999),
+            Some(-1),
+            None,
+        ])
+        .with_precision_and_scale(38, 2)
+        .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("note", DataType::Utf8, true),
+            Field::new(
+                "tags",
+                DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
+                true,
+            ),
+            Field::new("money", DataType::Decimal128(38, 2), true),
+        ]));
         let batch = RecordBatch::try_new(
             schema.clone(),
-            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+            vec![
+                Arc::new(ids),
+                Arc::new(notes),
+                Arc::new(tags),
+                Arc::new(money),
+            ],
         )
         .unwrap();
+
         let mut ipc: Vec<u8> = Vec::new();
         {
             let mut writer = StreamWriter::try_new(&mut ipc, &schema).unwrap();
+            // Two batches, so a multi-batch body is exercised as well.
+            writer.write(&batch).unwrap();
             writer.write(&batch).unwrap();
             writer.finish().unwrap();
         }
+        ipc
+    }
+
+    /// Serve `ipc` from a mock and return a scoped `Api` plus the mock.
+    fn serve_ipc(
+        server: &mut mockito::Server,
+        ipc: Vec<u8>,
+        total_row_count: Option<&str>,
+    ) -> mockito::Mock {
+        let mut mock = server
+            .mock("GET", "/v1/results/res_1")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "format".into(),
+                "arrow".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/vnd.apache.arrow.stream");
+        if let Some(total) = total_row_count {
+            mock = mock.with_header("X-Total-Row-Count", total);
+        }
+        mock.with_body(ipc).create()
+    }
+
+    fn meta_for(result_id: &str) -> StreamMeta {
+        StreamMeta {
+            result_id: result_id.to_string(),
+            query_run_id: Some("qrun_1".to_string()),
+            execution_time_ms: Some(4200),
+            warning: None,
+        }
+    }
+
+    /// Read the same result both ways and return (buffered, streamed) bytes.
+    fn render_both(format: &str) -> (Vec<u8>, Vec<u8>) {
+        let ipc = awkward_ipc();
+        let mut server = mockito::Server::new();
+        let _m = serve_ipc(&mut server, ipc.clone(), Some("6"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+        let meta = meta_for("res_1");
+
+        // Streamed: batch by batch, off the socket.
+        let stream = api
+            .open_result_arrow_when_ready("res_1", None, RESULT_READY_TIMEOUT)
+            .unwrap();
+        let columns: Vec<String> = stream
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        let reported_total = stream.total_row_count();
+        let mut batches = api.stream_result_batches(stream);
+        let mut streamed: Vec<u8> = Vec::new();
+        match format {
+            "csv" => {
+                stream_csv(&mut batches, &columns, &mut streamed).unwrap();
+            }
+            "json" => {
+                stream_json(&mut batches, &columns, &meta, reported_total, &mut streamed).unwrap();
+            }
+            _ => unreachable!(),
+        }
+
+        // Buffered: the whole result in memory, rendered by the old path.
+        let reader =
+            arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(ipc), None).unwrap();
+        let schema = reader.schema();
+        let batches: Vec<_> = reader.collect::<Result<_, _>>().unwrap();
+        let mut buffered_result = arrow_result_to_query_response(
+            hotdata::ArrowResult {
+                batches,
+                schema,
+                total_row_count: Some(6),
+                next_link: None,
+            },
+            "res_1".to_string(),
+        )
+        .unwrap();
+        buffered_result.query_run_id = meta.query_run_id.clone();
+        buffered_result.execution_time_ms = meta.execution_time_ms;
+
+        let mut buffered: Vec<u8> = Vec::new();
+        match format {
+            "csv" => write_csv_body(&buffered_result, &mut buffered).unwrap(),
+            "json" => write_json_body(&buffered_result, &mut buffered).unwrap(),
+            _ => unreachable!(),
+        }
+
+        (buffered, streamed)
+    }
+
+    /// The point of the whole change: streaming must not alter a single byte of
+    /// output. Nulls, embedded commas/quotes/newlines, nested lists and wide
+    /// decimals are the values most likely to drift between two renderers.
+    #[test]
+    fn streamed_csv_matches_the_buffered_render() {
+        let (buffered, streamed) = render_both("csv");
+        assert_eq!(
+            String::from_utf8(streamed).unwrap(),
+            String::from_utf8(buffered).unwrap()
+        );
+    }
+
+    /// The JSON envelope is written by hand by the streaming path (row_count is
+    /// only known after the rows), so field order, indentation and null
+    /// rendering are all asserted against the serde-derived output.
+    #[test]
+    fn streamed_json_matches_the_buffered_envelope() {
+        let (buffered, streamed) = render_both("json");
+        assert_eq!(
+            String::from_utf8(streamed).unwrap(),
+            String::from_utf8(buffered).unwrap()
+        );
+    }
+
+    /// An empty result still has to produce the header row (CSV) and a
+    /// well-formed empty `rows` array (JSON) — the case the hand-written
+    /// envelope is most likely to get wrong.
+    #[test]
+    fn a_zero_row_result_streams_the_same_as_it_buffers() {
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let mut ipc: Vec<u8> = Vec::new();
+        {
+            let writer = StreamWriter::try_new(&mut ipc, &schema).unwrap();
+            writer.into_inner().unwrap();
+        }
 
         let mut server = mockito::Server::new();
-        let m = server
+        let _m = serve_ipc(&mut server, ipc, Some("0"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+        let meta = meta_for("res_1");
+
+        let stream = api
+            .open_result_arrow_when_ready("res_1", None, RESULT_READY_TIMEOUT)
+            .unwrap();
+        let columns = vec!["id".to_string()];
+        let mut batches = api.stream_result_batches(stream);
+        let mut csv: Vec<u8> = Vec::new();
+        stream_csv(&mut batches, &columns, &mut csv).unwrap();
+        assert_eq!(String::from_utf8(csv).unwrap(), "id\n");
+
+        let stream = api
+            .open_result_arrow_when_ready("res_1", None, RESULT_READY_TIMEOUT)
+            .unwrap();
+        let reported_total = stream.total_row_count();
+        let mut batches = api.stream_result_batches(stream);
+        let mut json: Vec<u8> = Vec::new();
+        stream_json(&mut batches, &columns, &meta, reported_total, &mut json).unwrap();
+        let expected = QueryResponse {
+            query_run_id: meta.query_run_id.clone(),
+            result_id: Some("res_1".to_string()),
+            columns,
+            rows: vec![],
+            row_count: 0,
+            total_row_count: Some(0),
+            truncated: false,
+            execution_time_ms: meta.execution_time_ms,
+            warning: None,
+        };
+        let mut buffered: Vec<u8> = Vec::new();
+        write_json_body(&expected, &mut buffered).unwrap();
+        assert_eq!(
+            String::from_utf8(json).unwrap(),
+            String::from_utf8(buffered).unwrap()
+        );
+    }
+
+    /// Regression for #183: a query that falls back to async fetches its result
+    /// as Arrow (which carries no timing) and must be stamped with the run's own
+    /// `execution_time_ms`, not dropped to null.
+    #[test]
+    fn streamed_json_carries_the_run_execution_time() {
+        let (_buffered, streamed) = render_both("json");
+        let text = String::from_utf8(streamed).unwrap();
+        assert!(
+            text.contains("\"execution_time_ms\": 4200"),
+            "run timing missing from the streamed envelope: {text}"
+        );
+        assert!(
+            text.contains("\"query_run_id\": \"qrun_1\""),
+            "run id missing from the streamed envelope: {text}"
+        );
+    }
+
+    /// `-o table` fetches a bounded window, so a larger result is reported as
+    /// the incomplete preview it is — the existing loud footer and non-zero
+    /// exit, not a quietly clipped table.
+    #[test]
+    fn a_capped_table_fetch_is_marked_incomplete() {
+        let mut server = mockito::Server::new();
+        // Six rows served, but the server reports twenty million in the result.
+        let _m = serve_ipc(&mut server, awkward_ipc(), Some("20000000"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+
+        let result = fetch_capped(&api, &meta_for("res_1"), 6).unwrap();
+        assert_eq!(result.row_count, 6);
+        assert_eq!(result.total_row_count, Some(20_000_000));
+        assert!(result.truncated, "a capped window must not look complete");
+        assert_eq!(result_exit_code(&result), EXIT_INCOMPLETE_RESULT);
+        assert!(table_footer(&result).contains("INCOMPLETE PREVIEW"));
+        // The run's timing is stamped on, as the buffered path did (#183).
+        assert_eq!(result.execution_time_ms, Some(4200));
+    }
+
+    /// A server that clamps `?limit=` to its own maximum returns the window
+    /// exactly full, so the probe row never arrives and cannot prove anything.
+    /// The `Link: rel="next"` header is the server saying there is more, and it
+    /// is what keeps that case from printing as a complete result.
+    #[test]
+    fn a_next_link_marks_a_window_incomplete_when_the_probe_row_never_arrives() {
+        let mut server = mockito::Server::new();
+        // Exactly the window, no total header — but a next link.
+        let _m = server
             .mock("GET", "/v1/results/res_1")
             .match_query(mockito::Matcher::UrlEncoded(
                 "format".into(),
@@ -1471,16 +2347,136 @@ mod tests {
             ))
             .with_status(200)
             .with_header("content-type", "application/vnd.apache.arrow.stream")
-            .with_body(ipc)
+            .with_header(
+                "Link",
+                "<https://api.hotdata.dev/v1/results/res_1?offset=6>; rel=\"next\"",
+            )
+            .with_body(awkward_ipc())
             .create();
-
         let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
-        // The async poll response reported the run took 4200ms.
-        let result = fetch_arrow_result_with_timing(&api, "res_1", Some(Some(4200)));
 
-        assert_eq!(result.row_count, 3);
-        // The slow query's timing is preserved, not dropped to null (#183).
-        assert_eq!(result.execution_time_ms, Some(4200));
-        m.assert();
+        // cap 6 == the rows served, so `beyond_window` is false and only the
+        // link can carry the fact.
+        let result = fetch_capped(&api, &meta_for("res_1"), 6).unwrap();
+
+        assert_eq!(result.row_count, 6, "the whole window is shown");
+        assert!(
+            result.truncated,
+            "the server said there is a next page; a full window with no total \
+             header must not print as a complete result"
+        );
+        assert_eq!(result_exit_code(&result), EXIT_INCOMPLETE_RESULT);
+    }
+
+    /// The cap must not depend on the server reporting a row count.
+    ///
+    /// `arrow_result_to_query_response` backfills `total_row_count` from the
+    /// rows in hand, so deriving truncation from that total made a window with
+    /// no `X-Total-Row-Count` look like a complete result: 10,000 rows of a
+    /// million printed with a plain footer and exit 0. The probe row is what
+    /// makes the answer independent of the header.
+    #[test]
+    fn a_capped_window_is_incomplete_even_with_no_row_count_header() {
+        let mut server = mockito::Server::new();
+        // Six rows available, no X-Total-Row-Count at all.
+        let _m = serve_ipc(&mut server, awkward_ipc(), None);
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+
+        let result = fetch_capped(&api, &meta_for("res_1"), 5).unwrap();
+
+        assert!(
+            result.truncated,
+            "a window filled to the cap must be reported incomplete without a \
+             row-count header; got truncated=false, which prints as a whole result"
+        );
+        assert_eq!(
+            result.row_count, 5,
+            "the probe row is a signal, not data to show; got {} rows",
+            result.row_count
+        );
+        assert_eq!(result.rows.len(), 5);
+        assert_eq!(
+            result.total_row_count, None,
+            "with no header the total is unknown — the footer shows `?` rather \
+             than a total derived from the window; got {:?}",
+            result.total_row_count
+        );
+        assert_eq!(result_exit_code(&result), EXIT_INCOMPLETE_RESULT);
+        assert!(table_footer(&result).contains("5 of ? rows"));
+    }
+
+    /// A window that covers the whole result is complete, and must not be
+    /// mislabelled a preview.
+    #[test]
+    fn a_table_fetch_that_covers_the_result_is_complete() {
+        let mut server = mockito::Server::new();
+        let _m = serve_ipc(&mut server, awkward_ipc(), Some("6"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+
+        let result = fetch_capped(&api, &meta_for("res_1"), TABLE_ROW_CAP).unwrap();
+        assert_eq!(result.row_count, 6);
+        assert!(!result.truncated);
+        assert_eq!(result_exit_code(&result), 0);
+    }
+
+    /// A body that dies mid-stream must surface as an error, not as the end of
+    /// the result.
+    ///
+    /// This is the path that failed in production: the reader gets
+    /// `error decoding response body` partway through and the rows already
+    /// written are a fraction of the result. The error travels through the
+    /// queue as `BatchMessage::Failed`, so the renderer stops and the process
+    /// exits non-zero rather than reporting a short result as complete.
+    #[test]
+    fn a_body_that_dies_mid_stream_is_an_error_not_an_ending() {
+        let ipc = awkward_ipc();
+        // Cut inside the second batch: the schema and first batch decode, then
+        // the stream ends where a message should continue.
+        let truncated = ipc[..ipc.len() - 40].to_vec();
+
+        let mut server = mockito::Server::new();
+        // No X-Total-Row-Count, so nothing but the stream error can reveal the
+        // truncation — the row-count guard cannot fire.
+        let _m = serve_ipc(&mut server, truncated, None);
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+
+        let stream = api
+            .open_result_arrow_when_ready("res_1", None, RESULT_READY_TIMEOUT)
+            .expect("the schema is intact, so opening succeeds");
+        let columns = vec!["id".to_string()];
+        let mut batches = api.stream_result_batches(stream);
+        let mut out: Vec<u8> = Vec::new();
+
+        let err = stream_csv(&mut batches, &columns, &mut out)
+            .expect_err("a body that ends mid-message must not read as a clean end of stream");
+        let msg = err.message();
+        // Both error paths carry a message, so an emptiness check would pass on
+        // either. This has to be the decode failure travelling as
+        // `BatchMessage::Failed` — if the reader panicked instead, the queue
+        // would close with no marker and `next_queued` would produce its own
+        // reader-stopped error, which is a different bug wearing the same exit
+        // code.
+        assert!(
+            !msg.contains("the result reader stopped"),
+            "the reader died instead of reporting the decode failure: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("arrow") || msg.to_lowercase().contains("ipc"),
+            "the failure should name the decode that failed, got {msg}"
+        );
+    }
+
+    /// The row count the server advertises is checked against what was read, so
+    /// a body that ends early is reported rather than passed off as complete.
+    #[test]
+    fn a_short_body_is_reported_as_incomplete() {
+        let mut server = mockito::Server::new();
+        // Body carries 6 rows; the header claims 9.
+        let _m = serve_ipc(&mut server, awkward_ipc(), Some("9"));
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
+
+        let code = print_streamed_result(&api, meta_for("res_1"), "csv")
+            .expect("the rows themselves decode fine");
+        assert_eq!(code, EXIT_INCOMPLETE_RESULT);
     }
 }

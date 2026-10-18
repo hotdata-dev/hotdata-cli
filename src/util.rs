@@ -24,6 +24,46 @@ pub fn atomic_write(path: &std::path::Path, bytes: &[u8], mode: u32) -> Result<(
     Ok(())
 }
 
+/// Open `$EDITOR` (falling back to `$VISUAL`, then `vi`) on a temp file
+/// pre-filled with `initial`, wait for it to exit, and return the file's
+/// final contents. `EDITOR`/`VISUAL` may carry arguments (e.g. `code --wait`);
+/// the first whitespace-separated token is the program, the rest are passed
+/// through before the file path.
+///
+/// Not unit-tested: spawning a real editor process has no place in a test
+/// suite. Callers that need to test compose behavior should test the pure
+/// parsing of the returned text instead.
+pub fn open_editor(initial: &str) -> Result<String, String> {
+    use std::io::Write;
+
+    let mut tmp = tempfile::Builder::new()
+        .suffix(".md")
+        .tempfile()
+        .map_err(|e| format!("creating temp file: {e}"))?;
+    tmp.write_all(initial.as_bytes())
+        .map_err(|e| format!("writing temp file: {e}"))?;
+    tmp.flush().map_err(|e| format!("writing temp file: {e}"))?;
+    let path = tmp.path().to_path_buf();
+
+    let editor_cmd = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".to_string());
+    let mut parts = editor_cmd.split_whitespace();
+    let program = parts.next().ok_or("EDITOR/VISUAL is set but empty")?;
+    let args: Vec<&str> = parts.collect();
+
+    let status = std::process::Command::new(program)
+        .args(&args)
+        .arg(&path)
+        .status()
+        .map_err(|e| format!("launching editor '{editor_cmd}': {e}"))?;
+    if !status.success() {
+        return Err(format!("editor '{editor_cmd}' exited with {status}"));
+    }
+
+    std::fs::read_to_string(&path).map_err(|e| format!("reading composed file: {e}"))
+}
+
 /// Create a steady-ticking spinner with a cyan glyph and the given message.
 /// Writes to stderr so stdout (json/yaml output) stays clean.
 pub fn spinner(msg: &str) -> indicatif::ProgressBar {
@@ -133,13 +173,22 @@ pub fn debug_response_redacted(
 /// (`XXXX...YYYY`), or `***` if it's too short to reveal anything
 /// safely. The tail makes it easy to distinguish which token is on
 /// the wire (e.g. user JWT vs database-scoped JWT vs opaque API token).
+///
+/// Counts and slices by `char`, not byte: real credentials are ASCII, but
+/// this also runs over arbitrary `--logs` text, and byte-slicing an
+/// arbitrary string panics the moment it lands mid multi-byte character.
 pub fn mask_credential(s: &str) -> String {
-    if s.len() >= 12 {
-        format!("{}...{}", &s[..4], &s[s.len() - 4..])
-    } else if s.len() > 4 {
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    if len >= 12 {
+        let head: String = chars[..4].iter().collect();
+        let tail: String = chars[len - 4..].iter().collect();
+        format!("{head}...{tail}")
+    } else if len > 4 {
         // Short-ish — still better to show head than nothing, but
-        // don't double up on bytes by showing a tail.
-        format!("{}...", &s[..4])
+        // don't double up on chars by showing a tail.
+        let head: String = chars[..4].iter().collect();
+        format!("{head}...")
     } else {
         "***".into()
     }
@@ -516,6 +565,13 @@ mod tests {
     fn mask_credential_short() {
         assert_eq!(mask_credential("abcd"), "***");
         assert_eq!(mask_credential(""), "***");
+    }
+
+    #[test]
+    fn mask_credential_non_ascii_does_not_panic() {
+        // Byte-slicing this would panic mid multi-byte char; char-slicing
+        // must not. 14 chars total, so the long-form head+tail branch.
+        assert_eq!(mask_credential("token€12345678"), "toke...5678");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Hotdata CLI workflows
 
-**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the database-scoped document stored via the **context API** (active database; `-d`/`--database` to target another)—CLI uses bare stems: `hotdata databases context show DATAMODEL`.
+**Notation:** **`context:<STEM>`** (e.g. **`context:DATAMODEL`**) means the database-scoped document stored via the **context API** (current database; `-d`/`--database` to target another)—CLI uses bare stems: `hotdata databases context show DATAMODEL`.
 
 ---
 
@@ -11,7 +11,7 @@ The `hotdata` skill is always loaded first (auth and workspace setup). The three
 | User goal | Skill | Key commands |
 |-----------|--------|----------------|
 | Login, workspaces, datasources, tables, context | **`hotdata`** | `auth`, `workspaces`, `ingest sources`, `ingest`, `databases tables`, `databases context` |
-| Load parquet files into an instant database | **`hotdata`** | `databases create` + `databases load` |
+| Load csv/json/parquet files into an instant database | **`hotdata`** | `databases create` + `databases tables add` + `databases load` |
 | SQL analytics, aggregations, history, Chain | **`hotdata-analytics`** (`subskills/analytics/SKILL.md`) | `query`, `databases queries`, `databases results` |
 | BM25 / vector search, retrieval indexes | **`hotdata-search`** (`subskills/search/SKILL.md`) | `search`, `search create`, `search embeddings` |
 | Geospatial / PostGIS-style SQL | **`hotdata-geospatial`** (`subskills/geospatial/SKILL.md`) | `query` with `ST_*`, WKB columns |
@@ -49,7 +49,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 **Skill:** **`hotdata-analytics`** (catalog via **`hotdata`**)
 
 1. [ ] Run base SQL: `hotdata query "SELECT …"` — poll `hotdata query status <id>` if async
-2. [ ] Materialize into an instant database: `hotdata databases create --catalog <alias> --table <name>` then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
+2. [ ] Materialize into an instant database: `hotdata databases create --catalog <alias> --table <name>`, then `hotdata databases use <id>` (create does not switch), then `hotdata databases load --catalog <alias> --table <name> --file ./….parquet`
 3. [ ] Query with the catalog-qualified name `<alias>.public.<name>`
 4. [ ] Chain: `hotdata query "SELECT … FROM <alias>.public.<name> WHERE …"`
 5. [ ] Record stable chains in **context:DATAMODEL** when they should outlive the session
@@ -63,7 +63,7 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 1. [ ] `hotdata databases tables list` (filter with `--schema`/`--table`) — pick text column (BM25) or embedding/text column (vector)
 2. [ ] `hotdata search list` — avoid duplicate text/vector indexes on the same column
 3. [ ] Create index (address by name):
-   - [ ] **Instant DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). An external catalog must be attached to an instant database first (`hotdata databases attach`).
+   - [ ] **Instant DB only:** `hotdata search create <tbl>_<col> --type text --from <alias>.public.<tbl> --column <text_col>` (vector: `--type vector [--provider <p>]`). Indexes belong to the database that owns the table: to index a table in another database, build the index there, or load a copy into this one. Attaching does not make it indexable — an attached database is read-only.
    - [ ] Large build: add `--async`, then `hotdata jobs <job_id>`
 4. [ ] Search (address the index by name):
    - [ ] `hotdata search "…" --index <tbl>_<col>`
@@ -71,20 +71,22 @@ End-to-end checklists. Use the linked sections for command detail and guardrails
 
 **Detail:** [hotdata-search INDEXES.md](../subskills/search/references/INDEXES.md)
 
-### Cross-source query (attach a catalog)
+### Cross-database query (attach another database)
 
 **Skill:** **`hotdata`**
 
-A `hotdata query` runs inside **one** instant database; its scope sees that database's own catalog plus **attached** catalog catalogs only. To query a catalog's tables — or join a managed table against a live catalog table in one query — attach the catalog. (No instant database set → *"a database is required."*; an unattached catalog → *"table not found."*)
+A `hotdata query` runs inside **one** instant database; its scope sees that database's own catalog plus whatever is **attached** to it only. To read another database's tables — or join your own tables against them in one query — attach that database. (No instant database set → *"a database is required."*; something unattached → *"table not found."*)
 
-1. [ ] Pick/create the instant database that will be the query context (`hotdata databases use <id>` or `databases create --catalog <alias>`)
-2. [ ] Attach the catalog(s) you need (live, sync intact): `hotdata databases attach <catalog> [--alias <a>]`
-   - Or attach at creation: `hotdata databases create --catalog <alias> --attach <catalog>[=<alias>]`
-3. [ ] Confirm scope: `hotdata databases <id>` lists attached catalogs
-4. [ ] Query across sources: `hotdata query "SELECT … FROM <my_catalog>.public.<t> JOIN <catalog_or_alias>.<schema>.<table> ON …"`
-5. [ ] (Optional) `hotdata databases detach <catalog|alias>` when finished; record required attachments in **context:DATAMODEL → Cross-catalog joins**
+1. [ ] Pick/create the instant database that will be the query context (`databases create --catalog <alias>` if needed, then `hotdata databases use <id>` — create does not switch)
+2. [ ] Attach the database(s) you need (live, no copy): `hotdata databases attach <database> [--alias <a>]`
+   - Or attach at creation: `hotdata databases create --catalog <alias> --attach <database>[=<alias>]`
+3. [ ] Confirm scope: `hotdata databases <id>` lists what is attached
+4. [ ] Query across databases: `hotdata query "SELECT … FROM <my_catalog>.public.<t> JOIN <attached_or_alias>.<schema>.<table> ON …"`
+5. [ ] (Optional) `hotdata databases detach <database|alias>` when finished; record required attachments in **context:DATAMODEL → Cross-database joins**
 
-**Do not** export a catalog to parquet just to query it — attach is the live, sync-preserving path.
+Attaching is read-only (loads still target your own database) and not transitive (you see what you attached, not what it attached). The source cannot be deleted while you hold it, but an *expiring* source still goes on its `expires_at` — check that date before depending on one.
+
+**Do not** export a database to parquet just to query it — attach is the live path.
 
 ---
 
@@ -94,33 +96,57 @@ A `hotdata query` runs inside **one** instant database; its scope sees that data
 
 | | **Instant databases** |
 |---|------------------------|
-| **Best for** | Parquet files you own; catalog-style `alias.schema.table` |
+| **Best for** | Files you own (csv, json, parquet); catalog-style `alias.schema.table` |
 | **SQL prefix** | `<catalog>.<schema>.<table>` where catalog = `--catalog` alias |
 | **CLI** | `hotdata databases create --catalog` + `databases load` |
-| **Declare schema up front** | Yes — `--table` on create (auto-declared on first `databases load`) |
-| **Parquet file uploads** | `databases load --file` / `--url` / `--upload-id` |
-| **Refresh** | Replace via `databases load` again |
+| **Declare schema up front** | Optional — the load declares a missing table/schema. Declare with `databases tables add --key` when you need the keyed load modes; a key cannot be added later |
+| **File uploads** | `databases load --file` / `--url` / `--upload-id`; format from the extension, or `--format` |
+| **Refresh** | `databases load` again — `--mode replace` (default) or `append`, or `delete`/`update`/`upsert` against a declared key |
 
-**Rule of thumb:** Parquet files you control as **`mydb.public.orders`** → **instant databases**.
+**Rule of thumb:** Files you control as **`mydb.public.orders`** → **instant databases**.
 
-### Workflow: instant database (parquet)
+### Workflow: instant database (file upload)
 
 1. Create the database with a catalog alias:
 
    ```bash
-   hotdata databases create --catalog sales
+   hotdata databases create --catalog sales   # prints the new id
+   hotdata databases use <id>                 # create does not switch
    ```
 
-2. Load parquet per table (tables are auto-declared if needed):
+2. **Before the first load**, declare any table that needs a key, a sort order,
+   or partitioning — the load cannot infer these, and a key cannot be added to
+   a table that already exists:
 
    ```bash
-   hotdata databases load --catalog sales --table orders --file ./orders.parquet
+   hotdata databases tables add orders --key order_id --sorted-by created_at=desc
+   ```
+
+   Skip this for a table you will only ever replace or append to.
+
+3. Load a file per table. A table or schema not declared above is declared as
+   part of the load, and the format comes from the file's extension:
+
+   ```bash
+   hotdata databases load --catalog sales --table orders --file ./orders.csv
    hotdata databases load --catalog sales --table customers --url https://example.com/customers.parquet
    ```
 
-   > Auto-declaring a *new* table recreates the database (no add-table API), which **changes its `id`** — the id returned by `databases create` goes stale after the next `load` of an undeclared table. Declare tables up front (`databases create --table orders --table customers`) to avoid the recreate, and don't cache ids across loads: re-read the current id from `databases list` at time of use. (Selection is still always by id — names and catalogs are not unique.)
+   > The database keeps its `id` and its other tables across a load into an
+   > undeclared table — nothing is recreated. Selection is still always by id,
+   > since names and catalogs are not unique.
 
-3. Confirm and query:
+4. Keep a keyed table in sync by loading only what changed:
+
+   ```bash
+   hotdata databases load --catalog sales --table orders --file ./changed.csv --mode upsert
+   hotdata databases load --catalog sales --table orders --file ./removed.csv --mode delete
+   ```
+
+   `removed.csv` carries only the key columns. This needs the key declared in
+   step 2, or named per load with `--key order_id`.
+
+5. Confirm and query:
 
    ```bash
    hotdata databases tables list
@@ -135,8 +161,9 @@ Before destructive experimentation (bulk replaces, schema rework, testing a load
 
 ```bash
 hotdata databases list                    # note the source database id (dbid...)
-hotdata databases use <source_id>         # source to protect (`use` takes an id)
-hotdata databases fork --expires-at 24h   # deep copy; becomes the active database — note the fork id it prints
+hotdata databases use <source_id>         # source to protect
+hotdata databases fork --expires-at 24h --description "test risky.parquet load"   # deep copy; note the fork id it prints
+hotdata databases use <fork_id>           # fork does not switch — do it explicitly
 hotdata databases load --catalog sales --table orders --file ./risky.parquet  # hits the fork
 ```
 
@@ -177,6 +204,6 @@ Use `hotdata databases tables list` for discovery; do not query `information_sch
 
 ## Cross-cutting
 
-- **Workspace:** Active workspace or `--workspace-id`. **`hotdata databases queries`** uses the active workspace only (no `--workspace-id`).
+- **Workspace:** Current workspace, or `--workspace-id` / `-w` for one command (including **`hotdata databases queries`**).
 - **Jobs:** `hotdata jobs list` / `jobs <id>` for async refreshes and index builds.
 - **Discovery:** `hotdata databases tables list` — not `query` on `information_schema`.

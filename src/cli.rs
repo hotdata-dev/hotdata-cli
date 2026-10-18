@@ -5,6 +5,7 @@ use crate::commands::jobs::JobsCommands;
 use crate::commands::query::QueryCommands;
 use crate::commands::search::SearchCommands;
 use crate::commands::skill::SkillCommands;
+use crate::commands::support::SupportCommands;
 use crate::commands::workspace::WorkspaceCommands;
 use clap::Subcommand;
 
@@ -30,7 +31,7 @@ pub enum Commands {
         /// Database id or name (omit to use a subcommand)
         name_or_id: Option<String>,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
@@ -47,21 +48,23 @@ pub enum Commands {
         /// SQL query string (omit when using a subcommand)
         sql: Option<String>,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w')]
         workspace_id: Option<String>,
 
-        /// Run against a specific instant database (defaults to the current database set via `databases use`)
-        #[arg(long, short = 'd')]
+        /// Run against a specific instant database, for this command only (defaults to the current database; switch with `databases use`)
+        #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
         /// SQL dialect the query is written in — a non-`hotsql` dialect is
-        /// transpiled to HotSQL server-side before it runs (read-only only)
+        /// transpiled to HotSQL server-side before it runs (writes follow the same
+        /// rules as hotsql)
         #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake"])]
         dialect: String,
 
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        /// Output format. `id` prints only the stored result's id, without
+        /// downloading rows (for commands that read a result by id)
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv", "id"], global = true)]
         output: String,
 
         #[command(subcommand)]
@@ -73,7 +76,7 @@ pub enum Commands {
         /// Job ID (omit to use a subcommand)
         id: Option<String>,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
@@ -92,7 +95,7 @@ pub enum Commands {
     /// future ones; `resume` never runs anything immediately. There is no
     /// `run`/`run-now` verb — use `ingest schedule <id> --next now`.
     Ingest {
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
@@ -114,11 +117,13 @@ pub enum Commands {
         #[arg(long, visible_alias = "in")]
         index: Option<String>,
 
-        /// Database the index lives in (id, catalog, or name; defaults to the active database)
+        /// Database the index lives in (id, catalog, or name; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
-        /// Columns to display (comma-separated, defaults to all)
+        /// Columns to display (comma-separated). Defaults to the table's own
+        /// columns; a vector index's generated embedding column is left out.
+        /// Pass `--select '*'` to include it.
         #[arg(long)]
         select: Option<String>,
 
@@ -126,7 +131,7 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         limit: u32,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 
@@ -143,6 +148,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: ManageCommands,
     },
+
+    /// Get help — file a support ticket with the HotData team
+    Support {
+        #[command(subcommand)]
+        command: SupportCommands,
+    },
 }
 
 /// Subcommands for `hotdata manage` — account and CLI utilities.
@@ -154,7 +165,7 @@ pub enum ManageCommands {
         #[arg(long)]
         since: Option<String>,
 
-        /// Workspace ID (defaults to first workspace from login)
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
         #[arg(long, short = 'w', global = true)]
         workspace_id: Option<String>,
 

@@ -97,11 +97,54 @@ fn upload_reqwest_client() -> reqwest::Client {
         .expect("reqwest client should build without a timeout")
 }
 
-/// Content type recorded for a managed-table parquet upload. Advisory only —
-/// the managed-table load keys off the parquet file extension, not the upload's
-/// recorded content type — but a correct MIME type is the right metadata to
-/// persist alongside the file.
 const PARQUET_CONTENT_TYPE: &str = "application/vnd.apache.parquet";
+const CSV_CONTENT_TYPE: &str = "text/csv";
+/// Newline-delimited JSON — one object per line, which is what the load reads
+/// for `json`. Not `application/json`, which implies a single document.
+const JSON_CONTENT_TYPE: &str = "application/x-ndjson";
+/// Announced when the extension names no format we recognise, which is the
+/// case the load resolves by reading the bytes.
+const UNKNOWN_CONTENT_TYPE: &str = "application/octet-stream";
+
+/// The MIME type to record for `name`, keyed off its extension.
+///
+/// The recorded content type is **not** advisory to the managed-table load: the
+/// load resolves the file's format from it first, and takes a confidently wrong
+/// one at its word rather than sniffing past it — CSV bytes announced as
+/// parquet fail with "failed to parse parquet metadata: Corrupt footer". So an
+/// unrecognised extension announces [`UNKNOWN_CONTENT_TYPE`] rather than
+/// guessing, leaving the server to read the bytes.
+///
+/// `name` is the *user-supplied* file name or URL, never a temp path: `--url`
+/// stages its download under a generated name, and typing that would announce
+/// the wrong format for the bytes inside.
+pub fn content_type_for_path(name: &str) -> &'static str {
+    match extension_of(name).to_ascii_lowercase().as_str() {
+        "parquet" => PARQUET_CONTENT_TYPE,
+        "csv" => CSV_CONTENT_TYPE,
+        "json" | "jsonl" | "ndjson" => JSON_CONTENT_TYPE,
+        _ => UNKNOWN_CONTENT_TYPE,
+    }
+}
+
+/// The extension of a file name or URL, as written, or `""` when it has none.
+/// Callers lowercase it before matching — extensions arrive in any case.
+///
+/// A URL's query and fragment are dropped first: a presigned storage URL ends
+/// in `…/listings.parquet?X-Amz-Signature=…`, and reading the extension off the
+/// raw string would yield `parquet?x-amz-signature=…` and match nothing. Any
+/// `/` after the last `.` also means the last path segment has no extension of
+/// its own (`…/data.d/export`).
+pub fn extension_of(name: &str) -> &str {
+    let path = name
+        .split_once(['?', '#'])
+        .map(|(before, _)| before)
+        .unwrap_or(name);
+    match path.rsplit_once('.') {
+        Some((_, ext)) if !ext.contains('/') => ext,
+        _ => "",
+    }
+}
 
 /// Default number of multipart part `PUT`s the SDK keeps in flight for an
 /// upload. 12 saturates a typical uplink without overwhelming the socket pool
@@ -233,11 +276,19 @@ impl ApiError {
 
     /// A printable, single-line description of the failure.
     ///
-    /// Used where the error is surfaced inline (e.g. folded into a query
-    /// `warning`) rather than printed-and-exited via [`exit`](Self::exit).
+    /// Used where the error is surfaced inline (folded into a query `warning`,
+    /// the `create --attach` warning) rather than printed-and-exited via
+    /// [`exit`](Self::exit). Carries the status so a non-JSON body still says
+    /// what happened, and runs the body through [`server_explanation`] so an
+    /// error envelope renders as the sentence inside it, never as raw JSON.
+    /// The exit path ([`format_fail_message`]) shares that base and adds the
+    /// credential-probe hints on top, which need a live `Api` this does not
+    /// have.
     pub fn message(&self) -> String {
         match self {
-            ApiError::Status { status, body } => format!("{status}: {body}"),
+            ApiError::Status { status, body } => {
+                format!("{status}: {}", server_explanation(*status, body))
+            }
             ApiError::Transport(msg) => msg.clone(),
         }
     }
@@ -404,7 +455,7 @@ pub fn none_if_404<T>(r: Result<T, ApiError>) -> Result<Option<T>, ApiError> {
 /// url through verbatim would produce `/v1/v1/...` on every call. Strip one
 /// trailing `/v1` (and any trailing slash) so both paths resolve to a single
 /// `/v1`.
-fn sdk_base_path(api_url: &str) -> String {
+pub(crate) fn sdk_base_path(api_url: &str) -> String {
     let trimmed = api_url.trim_end_matches('/');
     trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string()
 }
@@ -439,6 +490,25 @@ async fn apply_seam_headers(
     }
     req
 }
+
+/// What the result reader hands to the renderer.
+///
+/// `Done` is explicit because a dropped sender is ambiguous: it is what a clean
+/// finish looks like *and* what a panicked reader looks like, and reading the
+/// second as the first turns a truncated download into a short result reported
+/// as complete.
+pub enum BatchMessage {
+    Batch(arrow::array::RecordBatch),
+    /// The stream ended cleanly. Nothing follows.
+    Done,
+    Failed(ApiError),
+}
+
+/// How often to re-check a result the server is still writing.
+const RESULT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+/// Upper bound on a single wait, so a generous `Retry-After` cannot stall the
+/// poll past the point of being responsive.
+const RESULT_POLL_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Api {
     /// Build an [`Api`], reproducing `ApiClient::new`'s auth-source precedence
@@ -617,7 +687,7 @@ impl Api {
     pub fn require_database(&self) -> &str {
         self.database_id.as_deref().unwrap_or_else(|| {
             use crossterm::style::Stylize;
-            eprintln!("{}", "error: no active database.".red());
+            eprintln!("{}", "error: no current database.".red());
             eprintln!(
                 "{}",
                 "Results and query runs are scoped to an instant database. Set one with \
@@ -681,7 +751,7 @@ impl Api {
         &self.client
     }
 
-    /// Upload a local parquet file directly to object storage via the SDK's
+    /// Upload a local data file directly to object storage via the SDK's
     /// presigned-upload flow ([`Client::upload_file`]), returning the upload id.
     ///
     /// The flow is `POST /v1/uploads` (open a session) → direct `PUT`(s) to
@@ -700,14 +770,24 @@ impl Api {
     ///
     /// `progress` is the SDK [`UploadProgress`] callback, invoked with
     /// cumulative `(bytes_done, total)` as bytes flow; the caller drives a
-    /// progress bar from it. The recorded content type is parquet (advisory).
-    pub fn upload(&self, path: &Path, progress: UploadProgress) -> Result<String, ApiError> {
+    /// progress bar from it.
+    ///
+    /// `content_type` is recorded with the upload and is what the managed-table
+    /// load resolves the file's format from, so it must describe the bytes —
+    /// see [`content_type_for_path`], which callers use to derive it from the
+    /// name the user gave (not from `path`, which may be a staged temp file).
+    pub fn upload(
+        &self,
+        path: &Path,
+        content_type: &str,
+        progress: UploadProgress,
+    ) -> Result<String, ApiError> {
         let mut cfg = self.client.configuration().clone();
         cfg.client = upload_reqwest_client();
         let upload_client = Client::from_configuration(cfg);
 
         let opts = UploadOptions {
-            content_type: Some(PARQUET_CONTENT_TYPE.to_string()),
+            content_type: Some(content_type.to_string()),
             progress: Some(progress),
             max_concurrency: Some(upload_concurrency()),
             ..UploadOptions::default()
@@ -775,6 +855,19 @@ impl Api {
         path: &str,
         body: &serde_json::Value,
     ) -> Result<(reqwest::StatusCode, String), ApiError> {
+        self.post_raw_with_headers(path, body)
+            .map(|(status, _, body)| (status, body))
+    }
+
+    /// [`post_raw`](Self::post_raw) that also returns the response headers.
+    ///
+    /// For callers that act on a header as well as the status — the load
+    /// endpoint's `Retry-After` on a `RESOURCE_LOCKED` 409 is the one in use.
+    pub fn post_raw_with_headers(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<(reqwest::StatusCode, reqwest::header::HeaderMap, String), ApiError> {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
         let database_id = self.database_id.clone();
@@ -787,11 +880,12 @@ impl Api {
                 .await
                 .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
             let status = resp.status();
+            let headers = resp.headers().clone();
             let body = resp
                 .text()
                 .await
                 .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
-            Ok((status, body))
+            Ok((status, headers, body))
         })
     }
 
@@ -799,10 +893,10 @@ impl Api {
     /// `Configuration`, returning the raw status + body text.
     ///
     /// The seam's DELETE counterpart to [`post_raw`](Self::post_raw): used by
-    /// `databases.rs`, where the delete bodies feed the same CLI-side
-    /// `(status, body)` control flow as the old raw `delete_raw` (e.g. the
-    /// delete+recreate path inspects the failure body), so non-success is
-    /// returned as `Ok((status, body))` rather than an error.
+    /// `databases.rs`, where a delete's response body feeds the same CLI-side
+    /// `(status, body)` control flow the raw calls used, so non-success is
+    /// returned as `Ok((status, body))` rather than an error and the caller
+    /// renders the server's own message.
     pub fn delete_raw(&self, path: &str) -> Result<(reqwest::StatusCode, String), ApiError> {
         let cfg = self.client.configuration();
         let url = format!("{}/v1{path}", cfg.base_path);
@@ -824,21 +918,137 @@ impl Api {
         })
     }
 
-    /// Fetch `/v1/results/{id}` as Arrow IPC and decode it through the SDK's
-    /// `get_result_arrow`, returning the fully-buffered [`hotdata::ArrowResult`].
+    /// Open a persisted result once it is ready, waiting if it is still being
+    /// written.
     ///
-    /// The SDK owns transport (same reqwest client, bearer via the
-    /// `token_provider`, `X-Workspace-Id`) and decode. Results are
-    /// database-scoped, so the active database is forwarded as the required
-    /// `X-Database-Id`; [`require_database`](Self::require_database) exits with a
-    /// hint when none is set. Its `ArrowError` (the Arrow-path error type, which
-    /// is not an `Error<T>`) is mapped to [`ApiError`] via
-    /// [`from_arrow`](ApiError::from_arrow) so callers keep the same `.exit()`
-    /// handling.
-    pub fn get_result_arrow(&self, id: &str) -> Result<hotdata::ArrowResult, ApiError> {
+    /// A result becomes fetchable only after the server finishes draining the
+    /// query to storage, so a large result is routinely still `processing` when
+    /// the response that named it arrives. Fetching once and giving up would
+    /// hand back the bounded preview and call it a day, which is data loss
+    /// wearing an exit code — so this polls, honouring the server's
+    /// `Retry-After` where it sends one.
+    ///
+    /// `ArrowError::NotReady` is matched as a typed variant here rather than
+    /// after [`ApiError::from_arrow`] has collapsed it into a message, so the
+    /// retry decision never depends on error text.
+    ///
+    /// Returns the last not-ready state as an error once `deadline` passes; the
+    /// caller decides whether it has something to fall back on.
+    pub fn open_result_arrow_when_ready(
+        &self,
+        id: &str,
+        limit: Option<i64>,
+        deadline: std::time::Duration,
+    ) -> Result<hotdata::ArrowResultStream, ApiError> {
         let database_id = self.require_database();
-        rt().block_on(self.client.get_result_arrow(id, database_id, None, None))
+        let start = std::time::Instant::now();
+        let mut waiting: Option<indicatif::ProgressBar> = None;
+
+        let outcome = loop {
+            match rt().block_on(self.client.open_result_arrow(id, database_id, None, limit)) {
+                Ok(stream) => break Ok(stream),
+                Err(hotdata::ArrowError::NotReady { retry_after, .. }) => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= deadline {
+                        break Err(ApiError::Transport(format!(
+                            "result {id} was still being written after {}s; \
+                             retrieve it later with `hotdata databases results get {id}`",
+                            deadline.as_secs()
+                        )));
+                    }
+                    // The wait is visible: a large result can take a while to
+                    // finish writing, and a silent pause reads as a hang.
+                    if waiting.is_none() {
+                        waiting = Some(crate::util::spinner("waiting for the full result..."));
+                    }
+                    // Honour the server's hint, but keep the poll responsive:
+                    // a generous `Retry-After` should not outlast the deadline.
+                    let hint = retry_after
+                        .map(std::time::Duration::from_secs)
+                        .unwrap_or(RESULT_POLL_INTERVAL)
+                        .clamp(RESULT_POLL_INTERVAL, RESULT_POLL_MAX_INTERVAL);
+                    std::thread::sleep(hint.min(deadline - elapsed));
+                }
+                Err(e) => break Err(ApiError::from_arrow(e)),
+            }
+        };
+
+        if let Some(pb) = waiting {
+            pb.finish_and_clear();
+        }
+        outcome
+    }
+
+    /// Pull the next batch from a stream opened by
+    /// [`open_result_arrow`](Self::open_result_arrow).
+    ///
+    /// Kept on `Api` rather than exposed as a raw async call so the renderer
+    /// stays synchronous and every `block_on` in the CLI goes through one seam.
+    pub fn next_result_batch(
+        &self,
+        stream: &mut hotdata::ArrowResultStream,
+    ) -> Result<Option<arrow::array::RecordBatch>, ApiError> {
+        rt().block_on(stream.next_batch())
             .map_err(ApiError::from_arrow)
+    }
+
+    /// Drain a result stream on the runtime, handing batches back through a
+    /// bounded queue.
+    ///
+    /// Rendering a batch takes far longer than reading one, so a caller that
+    /// decodes and reads on the same thread leaves the socket idle for most of
+    /// the transfer. Over a WAN link that is a slow consumer: throughput
+    /// collapses against the receive window, and a connection held open for
+    /// minutes is one an intermediary is entitled to drop — measured at 20M
+    /// rows as a 7x slowdown ending in `error decoding response body`.
+    ///
+    /// Reading on the runtime while the caller renders keeps the socket drained
+    /// at full speed. `QUEUE_DEPTH` is what keeps that from being the buffering
+    /// this all exists to avoid: the reader waits once the queue is full, so
+    /// resident batches are bounded by the queue rather than by the result.
+    ///
+    /// The stream ends with an explicit [`BatchMessage::Done`]. A closed queue
+    /// without one means the reader stopped without finishing — a panic inside
+    /// decoding, which `spawn` swallows into a dropped `JoinHandle` — and the
+    /// consumer reports that rather than reading it as the end of the result.
+    pub fn stream_result_batches(
+        &self,
+        mut stream: hotdata::ArrowResultStream,
+    ) -> tokio::sync::mpsc::Receiver<BatchMessage> {
+        /// Batches held between the reader and the renderer. Enough to cover a
+        /// render while the next reads, small enough that peak memory stays a
+        /// handful of batches.
+        const QUEUE_DEPTH: usize = 4;
+
+        // A tokio channel, not `std::sync::mpsc`: the reader is async and its
+        // send must yield when the queue is full, not block a runtime worker.
+        let (tx, rx) = tokio::sync::mpsc::channel(QUEUE_DEPTH);
+        rt().spawn(async move {
+            loop {
+                match stream.next_batch().await {
+                    Ok(Some(batch)) => {
+                        // A send error means the renderer is gone — it failed,
+                        // or stopped early. Stop reading rather than draining
+                        // the rest of the result into a dropped queue.
+                        if tx.send(BatchMessage::Batch(batch)).await.is_err() {
+                            return;
+                        }
+                    }
+                    // Say so, rather than letting the dropped sender say it: a
+                    // closed queue alone cannot be told apart from this task
+                    // dying mid-decode.
+                    Ok(None) => {
+                        let _ = tx.send(BatchMessage::Done).await;
+                        return;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BatchMessage::Failed(ApiError::from_arrow(e))).await;
+                        return;
+                    }
+                }
+            }
+        });
+        rx
     }
 
     // --- Sample migrated call (workspace.rs uses this) -----------------------
@@ -849,6 +1059,21 @@ impl Api {
         organization_public_id: Option<&str>,
     ) -> Result<hotdata::models::ListWorkspacesResponse, ApiError> {
         block(self.client.workspaces().list(organization_public_id))
+    }
+}
+
+/// What the server said, as one line a person can read.
+///
+/// An error envelope (`{"error":{"message":…}}`, and the other shapes
+/// `util::api_error` knows) renders as the sentence inside it; a bodyless
+/// response says so instead of printing a blank. This is the one place that
+/// unwrapping lives — both `ApiError::message` (inline) and
+/// `format_fail_message` (fatal) build on it.
+fn server_explanation(status: reqwest::StatusCode, body: &str) -> String {
+    if body.trim().is_empty() {
+        format!("HTTP {status} (empty response body)")
+    } else {
+        util::api_error(body.to_string())
     }
 }
 
@@ -867,12 +1092,13 @@ pub fn format_fail_message(
     body: &str,
     auth_status: Option<&credentials::AuthStatus>,
 ) -> String {
-    // Base: the server's own explanation, or the status line when there is none.
-    let mut msg = if body.trim().is_empty() {
-        format!("error: HTTP {status} (empty response body)")
-    } else {
-        util::api_error(body.to_string())
-    };
+    // Base: the server's own explanation, or the status line when there is
+    // none. Shared with `ApiError::message` so the inline and the fatal
+    // rendering of one response never drift apart.
+    let mut msg = server_explanation(status, body);
+    if body.trim().is_empty() {
+        msg = format!("error: {msg}");
+    }
     // A 403 ACCESS_DENIED is the allow-list guard rejecting an operation the
     // credential can't perform — typically a database API token (which is
     // limited to create/query/upload) hitting a workspace-level endpoint. Keep
@@ -900,6 +1126,39 @@ pub fn format_fail_message(
 mod tests {
     use super::*;
     use credentials::AuthStatus;
+
+    /// An inline warning is read by a person, so the envelope must be gone.
+    /// `create --attach` used to print `409 Conflict: {"error":{"message":…}}`.
+    #[test]
+    fn api_error_message_unwraps_the_error_envelope() {
+        let err = ApiError::Status {
+            status: reqwest::StatusCode::CONFLICT,
+            body: r#"{"error":{"message":"this catalog is scoped to another database and cannot be attached here","code":"CONFLICT"}}"#.to_string(),
+        };
+        assert_eq!(
+            err.message(),
+            "409 Conflict: this catalog is scoped to another database and cannot be attached here"
+        );
+    }
+
+    /// A bodyless response names the status instead of printing a blank, and
+    /// says the same thing the fatal path says (minus its `error:` prefix).
+    #[test]
+    fn api_error_message_and_fail_message_agree_on_an_empty_body() {
+        let status = reqwest::StatusCode::BAD_GATEWAY;
+        let err = ApiError::Status {
+            status,
+            body: String::new(),
+        };
+        assert_eq!(
+            err.message(),
+            "502 Bad Gateway: HTTP 502 Bad Gateway (empty response body)"
+        );
+        assert_eq!(
+            format_fail_message(status, "", None),
+            "error: HTTP 502 Bad Gateway (empty response body)"
+        );
+    }
 
     #[test]
     fn api_error_message_formats_status_and_transport() {
@@ -1341,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    fn get_result_arrow_fetches_decodes_and_forwards_headers() {
+    fn open_result_arrow_decodes_and_forwards_headers() {
         use arrow::array::{Int64Array, RecordBatch, StringArray};
         use arrow::datatypes::{DataType, Field, Schema};
         use arrow::ipc::writer::StreamWriter;
@@ -1366,8 +1625,9 @@ mod tests {
             writer.finish().unwrap();
         }
 
-        // The SDK's get_result_arrow carries the bearer + X-Workspace-Id like
-        // every SDK call and negotiates Arrow via ?format=arrow + Accept.
+        // The streaming opener carries the bearer + X-Workspace-Id like every
+        // SDK call and negotiates Arrow via ?format=arrow + Accept, the same as
+        // the buffered fetch it replaced.
         let mut server = mockito::Server::new();
         let m = server
             .mock("GET", "/v1/results/res_1")
@@ -1385,18 +1645,117 @@ mod tests {
             .create();
 
         let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
-        let result = api
-            .get_result_arrow("res_1")
-            .expect("get_result_arrow should succeed");
-        assert_eq!(result.num_rows(), 3);
-        assert_eq!(result.schema.fields().len(), 2);
-        assert_eq!(result.schema.field(0).name(), "id");
-        assert_eq!(result.schema.field(1).name(), "name");
+        let mut stream = api
+            .open_result_arrow_when_ready("res_1", None, Duration::from_secs(30))
+            .expect("open_result_arrow should succeed");
+
+        // The schema is known before any batch is pulled.
+        let schema = stream.schema();
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "name");
+
+        let mut rows = 0;
+        while let Some(batch) = api
+            .next_result_batch(&mut stream)
+            .expect("batch decode should succeed")
+        {
+            rows += batch.num_rows();
+        }
+        assert_eq!(rows, 3);
         m.assert();
     }
 
+    use std::time::Duration;
+
+    /// A result the server is still writing must be waited for, not abandoned.
+    ///
+    /// Fetching once and giving up is what made a bounded preview look like the
+    /// whole answer: the caller got the preview rows and a non-zero exit while
+    /// the real result finished writing a moment later.
     #[test]
-    fn get_result_arrow_maps_not_found_to_status() {
+    fn open_result_arrow_waits_while_a_result_is_still_processing() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/v1/results/pending")
+            .match_query(mockito::Matcher::Any)
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"processing","result_id":"pending"}"#)
+            .expect_at_least(2)
+            .create();
+
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
+        let started = std::time::Instant::now();
+        let err = api
+            .open_result_arrow_when_ready("pending", None, Duration::from_millis(300))
+            .expect_err("a result that never becomes ready must not hang forever");
+
+        // It polled rather than returning on the first 202 ...
+        m.assert();
+        // ... and it respected the deadline instead of waiting indefinitely.
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "gave up far later than the deadline: {:?}",
+            started.elapsed()
+        );
+        let msg = err.message();
+        assert!(
+            msg.contains("still being written"),
+            "the error should say the result was not finished, got {msg:?}"
+        );
+        assert!(
+            msg.contains("results get"),
+            "the error should name the command that retrieves it later, got {msg:?}"
+        );
+    }
+
+    /// A result that is already ready is returned on the first call, with no
+    /// poll delay.
+    #[test]
+    fn open_result_arrow_when_ready_returns_a_ready_result_immediately() {
+        use arrow::array::{Int64Array, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let mut ipc: Vec<u8> = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut ipc, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/v1/results/ready")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/vnd.apache.arrow.stream")
+            .with_body(ipc)
+            .expect(1)
+            .create();
+
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
+        let started = std::time::Instant::now();
+        let stream = api
+            .open_result_arrow_when_ready("ready", None, Duration::from_secs(300))
+            .expect("a ready result opens on the first try");
+        assert_eq!(stream.schema().fields().len(), 1);
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "a ready result must not pay a poll interval; took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn open_result_arrow_maps_not_found_to_status() {
         // A 404 surfaces as ApiError::Status so the CLI's 4xx re-auth hint path
         // still fires.
         let mut server = mockito::Server::new();
@@ -1408,7 +1767,10 @@ mod tests {
             .create();
 
         let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
-        match api.get_result_arrow("missing").unwrap_err() {
+        match api
+            .open_result_arrow_when_ready("missing", None, Duration::from_secs(30))
+            .unwrap_err()
+        {
             ApiError::Status { status, .. } => {
                 assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
             }
@@ -1417,7 +1779,7 @@ mod tests {
     }
 
     #[test]
-    fn get_result_arrow_preserves_generic_http_status() {
+    fn open_result_arrow_preserves_generic_http_status() {
         // Statuses outside the SDK's explicitly-mapped set (404/400/409/202)
         // come back as ArrowError::Http; from_arrow must preserve them so a
         // 401/403 still reaches the CLI's 4xx re-auth hint. 403 stands in for
@@ -1431,7 +1793,10 @@ mod tests {
             .create();
 
         let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
-        match api.get_result_arrow("forbidden").unwrap_err() {
+        match api
+            .open_result_arrow_when_ready("forbidden", None, Duration::from_secs(30))
+            .unwrap_err()
+        {
             ApiError::Status { status, body } => {
                 assert_eq!(status, reqwest::StatusCode::FORBIDDEN);
                 assert_eq!(body, "forbidden");
@@ -1517,6 +1882,37 @@ mod tests {
         m.assert();
     }
 
+    #[test]
+    fn content_type_follows_the_extension_in_any_case() {
+        assert_eq!(content_type_for_path("a.parquet"), PARQUET_CONTENT_TYPE);
+        assert_eq!(content_type_for_path("A.PARQUET"), PARQUET_CONTENT_TYPE);
+        assert_eq!(content_type_for_path("a.csv"), CSV_CONTENT_TYPE);
+        assert_eq!(content_type_for_path("a.CSV"), CSV_CONTENT_TYPE);
+        for name in ["a.json", "a.jsonl", "a.ndjson"] {
+            assert_eq!(content_type_for_path(name), JSON_CONTENT_TYPE, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_extension_announces_nothing_specific() {
+        // The load sniffs an octet-stream, so this is the permissive answer —
+        // announcing parquet here is what made a csv fail with "Corrupt footer".
+        for name in ["a.txt", "a", "archive.tar.zst", ""] {
+            assert_eq!(content_type_for_path(name), UNKNOWN_CONTENT_TYPE, "{name}");
+        }
+    }
+
+    #[test]
+    fn extension_of_reads_past_a_query_and_fragment() {
+        assert_eq!(extension_of("https://h/b/f.parquet?sig=a.b.c"), "parquet");
+        assert_eq!(extension_of("https://h/f.csv#frag"), "csv");
+        assert_eq!(extension_of("/local/f.csv"), "csv");
+        // No extension on the last segment, despite dots earlier in the path.
+        assert_eq!(extension_of("https://h/v1.2/export"), "");
+        assert_eq!(extension_of("/data.d/export"), "");
+        assert_eq!(extension_of("plain"), "");
+    }
+
     // --- presigned direct-to-storage upload ---------------------------------
 
     /// A deterministic ASCII payload of `len` bytes written to a temp parquet
@@ -1578,7 +1974,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let id = api
-            .upload(tf.path(), noop_progress())
+            .upload(tf.path(), "application/vnd.apache.parquet", noop_progress())
             .expect("presigned upload should succeed");
 
         assert_eq!(id, "upload_test");
@@ -1604,7 +2000,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let err = api
-            .upload(tf.path(), noop_progress())
+            .upload(tf.path(), "application/vnd.apache.parquet", noop_progress())
             .expect_err("a 501 must map to an error, not a fallback");
 
         match err {
@@ -1642,7 +2038,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "test-jwt", Some("ws-1"));
         let err = api
-            .upload(tf.path(), noop_progress())
+            .upload(tf.path(), "application/vnd.apache.parquet", noop_progress())
             .expect_err("a storage 403 must map to an error");
 
         match err {
@@ -1807,7 +2203,7 @@ mod tests {
         write_session(SESSION_JWT, 5);
 
         let id = api
-            .upload(tf.path(), noop_progress())
+            .upload(tf.path(), "application/vnd.apache.parquet", noop_progress())
             .expect("upload must succeed when every leg resolves its own bearer");
 
         assert_eq!(id, "upload_fresh");

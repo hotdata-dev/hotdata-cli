@@ -61,12 +61,28 @@ def main() -> None:
             )
             failed = True
         elif cur_sections[ver] != body:
-            print(
-                f"CHANGELOG.md: section [{ver}] differs from {base} "
-                "(released sections must not be rewritten)",
-                file=sys.stderr,
-            )
-            failed = True
+            # A released section may gain notes (a correction after the fact,
+            # as when the 0.41.0 notes missed two PRs that merged while its
+            # release PR waited for review) but never lose any: every bullet
+            # the base carries must still be there verbatim. That keeps the
+            # guard against git-cliff regenerations dropping history while
+            # letting an additive fix through.
+            missing = [
+                line
+                for line in body.splitlines()
+                if line.startswith("- ") and line not in cur_sections[ver].splitlines()
+            ]
+            if missing:
+                print(
+                    f"CHANGELOG.md: section [{ver}] drops bullets present on {base} "
+                    "(released notes may be added to, never rewritten):",
+                    file=sys.stderr,
+                )
+                for line in missing:
+                    print(f"  {line}", file=sys.stderr)
+                failed = True
+            else:
+                print(f"changelog: section [{ver}] amended additively")
 
     if failed:
         sys.exit(1)

@@ -8,7 +8,7 @@ pub enum JobsCommands {
     /// List background jobs (shows active jobs by default)
     List {
         /// Filter by job type
-        #[arg(long, value_parser = ["create_index", "managed_load"])]
+        #[arg(long, value_parser = ["create_index", "managed_load", "database_fork"])]
         job_type: Option<String>,
 
         /// Filter by status
@@ -73,6 +73,7 @@ fn parse_job_type(s: &str) -> Option<JobType> {
         // connections removal (the engine is push-only; nothing refreshes).
         "create_index" => Some(JobType::CreateIndex),
         "managed_load" => Some(JobType::ManagedLoad),
+        "database_fork" => Some(JobType::DatabaseFork),
         _ => None,
     }
 }
@@ -153,6 +154,20 @@ fn fetch_jobs(
     ))
     .unwrap_or_else(|e| e.exit());
     resp.jobs.into_iter().map(Job::from).collect()
+}
+
+/// How many index builds are pending or running in the workspace, or `None`
+/// when the lookup fails. For callers that only want to mention active builds,
+/// so an error here is not worth surfacing.
+pub fn active_index_builds(api: &Api) -> Option<usize> {
+    crate::client::sdk::block(api.client().jobs().list(
+        Some(JobType::CreateIndex),
+        Some("pending,running"),
+        None,
+        None,
+    ))
+    .ok()
+    .map(|resp| resp.jobs.len())
 }
 
 pub fn list(

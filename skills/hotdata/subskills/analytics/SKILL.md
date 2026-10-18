@@ -1,7 +1,7 @@
 ---
 name: hotdata-analytics
 description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into instant databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for tables and auth.
-version: 0.30.0
+version: 0.43.0
 ---
 
 # Hotdata Analytics Skill
@@ -22,11 +22,13 @@ hotdata query status <query_run_id>
 ```
 
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
-- **`--dialect`** (default `hotsql`): write SQL in `duckdb`/`postgres`/`snowflake` and the server transpiles it to HotSQL before running (e.g. Snowflake `IFF(...)`, DuckDB `len(...)`). Read-only queries only for a non-`hotsql` dialect.
+- **`--dialect`** (default `hotsql`): write SQL in `duckdb`/`postgres`/`snowflake` and the server transpiles it to HotSQL before running (e.g. Snowflake `IFF(...)`, DuckDB `len(...)`). Writes follow the same rules as `hotsql`.
+- **Writes:** `INSERT` (append only), `CREATE TABLE`, `CREATE TABLE AS SELECT`, and `DROP TABLE` run through `query` against the current database's own tables and return one row, `rows_affected`; `UPDATE`/`DELETE` are not supported in SQL yet (use keyed `hotdata databases load --mode update|delete|upsert`). Rules and refusals in the **`hotdata`** skill → Execute SQL Query.
 - Use **`hotdata databases tables list`** for schema discovery — not `information_schema` via `query`.
 - Fully qualified names: `<catalog>.<schema>.<table>`, `<database>.<schema>.<table>`.
-- **Query scope:** every query runs inside one instant database (active or `--database`); it sees that database's own catalog plus **attached** catalogs only. To query an attached catalog's table, or **join a managed table against an attached catalog's table**, attach the catalog first: `hotdata databases attach <catalog>` — see **`hotdata`** skill → [Querying across catalogs](../../SKILL.md#querying-across-catalogs-attach). No instant database set → *"a database is required."*
-- Long-running queries may return `query_run_id` → poll with **`query status`** (exit `2` = still running). Do not re-run identical heavy SQL while polling.
+- **Query scope:** every query runs inside one instant database (active or `--database`); it sees that database's own catalog plus whatever is **attached** to it only. To read another database's table, or **join your own table against one**, attach that database first: `hotdata databases attach <database>` — see **`hotdata`** skill → [Querying across databases](../../SKILL.md#querying-across-databases-attach). No instant database set → *"a database is required."*
+- Long-running queries may return `query_run_id` → poll with **`query status`** — exit `0` succeeded, `1` failed, `2` still running (poll again), `3` succeeded but the printed result is an incomplete/truncated preview. Do not re-run identical heavy SQL while polling.
+- **Big result sets:** use `-o csv` or `-o json` — both stream the full persisted result with flat memory. `-o table` is a human view capped at 10,000 rows; past that the footer reads `N of TOTAL rows — INCOMPLETE PREVIEW` and the command exits `3`. Details in the **`hotdata`** skill → Execute SQL Query.
 - For **workspace-wide** joins and naming, load **context:DATAMODEL** when listed (`hotdata databases context list` → `show DATAMODEL`) — see **`hotdata`** skill.
 
 ### OLAP patterns
@@ -34,7 +36,7 @@ hotdata query status <query_run_id>
 Typical analytics SQL (all via `hotdata query`):
 
 - **Aggregations:** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` with `GROUP BY`
-- **Joins:** `INNER` / `LEFT JOIN` across `<catalog>.<schema>.<table>` names — every referenced catalog (the instant database's own or an attached one) must be in the active database's scope; attach catalogs first (`hotdata databases attach`)
+- **Joins:** `INNER` / `LEFT JOIN` across `<catalog>.<schema>.<table>` names — every referenced catalog (the instant database's own or an attached one) must be in the current database's scope; attach catalogs first (`hotdata databases attach`)
 - **Filtering:** `WHERE` on partition-friendly columns (consider **sorted** indexes below)
 - **Ordering:** `ORDER BY` on metrics or dimensions
 - **Bounded exploration:** always `LIMIT` while iterating; widen once validated
@@ -45,11 +47,11 @@ Column names from CSV uploads may be case-sensitive — use double quotes when n
 
 ## Query run history
 
-Uses the **active workspace only** (no `--workspace-id`; set with `hotdata workspaces use`).
+Scoped to the **current database** (set with `hotdata databases use`); pass `-d/--database <id>` to target another, `-w/--workspace-id` for another workspace.
 
 ```bash
-hotdata databases queries list [--limit <int>] [--cursor <token>] [--status <csv>] [--output table|json|yaml]
-hotdata databases queries <query_run_id> [--output table|json|yaml]
+hotdata databases queries list [-d <db-id>] [--workspace-id <workspace_id>] [--limit <int>] [--cursor <token>] [--status <csv>] [--output table|json|yaml]
+hotdata databases queries <query_run_id> [-d <db-id>] [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 
 - `list` — status, duration, row count, SQL preview (default limit 20). Filter: `--status running,failed`.
@@ -61,11 +63,11 @@ hotdata databases queries <query_run_id> [--output table|json|yaml]
 ## Stored results
 
 ```bash
-hotdata databases results list [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--output table|json|yaml]
-hotdata databases results get <result_id> [--workspace-id <workspace_id>] [--output table|json|csv]
+hotdata databases results list [-d <db-id>] [--workspace-id <workspace_id>] [--limit <int>] [--offset <int>] [--output table|json|yaml]
+hotdata databases results get <result_id> [-d <db-id>] [--workspace-id <workspace_id>] [--output table|json|csv]
 ```
 
-- Prefer **`databases results get <id>`** over re-running identical heavy queries.
+- Prefer **`databases results get <id>`** over re-running identical heavy queries. It renders like `query`: `csv`/`json` stream the whole result, `table` is capped at 10,000 rows and exits `3` when the result is larger. Results and query runs scope to the current database; pass `-d/--database <id>` to target another.
 - Query footers may include `[result-id: rslt...]`; also available from `databases queries <query_run_id>`.
 - `databases results list --limit` defaults to **100** (max **1000**) — unlike `databases queries list`, which defaults to **20**.
 
@@ -85,7 +87,8 @@ hotdata databases results get <result_id> [--workspace-id <workspace_id>] [--out
 2. **Materialize** into an instant database (parquet)
 
    ```bash
-   hotdata databases create --catalog analytics
+   hotdata databases create --catalog analytics   # prints the new id
+   hotdata databases use <id>                     # create does not switch
    hotdata databases load --catalog analytics --table slice --file ./slice.parquet
    ```
 

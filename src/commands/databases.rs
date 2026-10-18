@@ -45,7 +45,8 @@ pub enum DatabasesCommands {
         name: Option<String>,
 
         /// SQL catalog alias used in queries: SELECT … FROM <catalog>.schema.table.
-        /// Must be [a-z_][a-z0-9_]*, globally unique.
+        /// Must be [a-z_][a-z0-9_]*. Not required to be unique — a fork answers
+        /// to its source's alias — so select databases by id when it matters.
         #[arg(long)]
         catalog: Option<String>,
 
@@ -66,11 +67,18 @@ pub enum DatabasesCommands {
         #[arg(long)]
         expires_at: Option<String>,
 
-        /// Attach a catalog to the new database so its tables are queryable (repeatable).
-        /// Accepts a catalog name or id, optionally `catalog=alias` to set the
-        /// SQL alias it answers to: `--attach github --attach salesdb=sales`.
+        /// Attach another database to the new one so its tables are queryable
+        /// (repeatable). Accepts a database name, catalog alias, or id,
+        /// optionally `database=alias` to set the SQL alias it answers to:
+        /// `--attach reference --attach salesdb=sales`.
         #[arg(long = "attach")]
         attach: Vec<String>,
+
+        /// Get-or-create: when a database with this `--name` already exists,
+        /// return it instead of creating another. Lets a script bind to its
+        /// database on every run without looking it up first. Requires `--name`.
+        #[arg(long, requires = "name")]
+        if_not_exists: bool,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
@@ -85,7 +93,7 @@ pub enum DatabasesCommands {
     /// other). Catalogs attached to the source are re-attached to
     /// the fork; indexes are not carried over.
     Fork {
-        /// Source database id, catalog, or name (defaults to the current database)
+        /// Source database id, catalog, or name (this command only; defaults to the current database)
         database: Option<String>,
 
         /// Display name for the fork. Defaults to "<source-name>-fork" so the
@@ -98,6 +106,12 @@ pub enum DatabasesCommands {
         /// source is carried over; otherwise the fork never expires.
         #[arg(long)]
         expires_at: Option<String>,
+
+        /// Why the fork is being taken, e.g. "what-if on Q3 pricing". Kept on
+        /// the fork's lineage record and shown by `databases <id>` and
+        /// `databases lineage`. Set at fork time only; it cannot be edited later.
+        #[arg(long)]
+        description: Option<String>,
 
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
@@ -112,7 +126,7 @@ pub enum DatabasesCommands {
     /// deleted generation stays in the chain, though what it forked cannot be
     /// listed. Forks made before the server recorded lineage carry none.
     Lineage {
-        /// Database id, catalog, or name (defaults to the current database)
+        /// Database id, catalog, or name (this command only; defaults to the current database)
         database: Option<String>,
 
         /// How many direct forks to list per database (server clamps to
@@ -125,40 +139,53 @@ pub enum DatabasesCommands {
         output: String,
     },
 
-    /// Attach a catalog to an instant database so its tables are queryable.
+    /// Attach another instant database so its tables are queryable here.
     ///
-    /// A `query` runs inside one instant database; attaching a catalog makes
-    /// its live tables visible in that database's scope, so you can join across
-    /// catalogs in a single query without exporting data. Reachable in SQL as
-    /// `<alias>.<schema>.<table>`, or `<catalog-name>.<schema>.<table>` when
+    /// A `query` runs inside one instant database; attaching another makes its
+    /// live tables visible in this database's scope, so you can join across the
+    /// two in a single query without exporting data. Reachable in SQL as
+    /// `<alias>.<schema>.<table>`, or `<catalog-alias>.<schema>.<table>` when
     /// `--alias` is omitted.
+    ///
+    /// Read-only: loads still target this database's own catalog. Not
+    /// transitive: you see what you attached, not what it attached.
     Attach {
-        /// Catalog name or id to attach (e.g. `github`)
+        /// The database to attach: its name, catalog alias, or id (e.g. `reference`)
+        #[arg(value_name = "DATABASE")]
         catalog: String,
 
-        /// Database id, catalog, or name to attach into (defaults to the current database)
+        /// Database id, catalog, or name to attach into (this command only; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
-        /// Alias the catalog answers to in SQL. Defaults to the catalog's name.
+        /// Alias the attached database answers to in SQL. Defaults to its own
+        /// catalog alias; required when that alias is `default`, which cannot
+        /// be attached under its own name.
         #[arg(long)]
         alias: Option<String>,
     },
 
-    /// Detach a previously attached catalog from an instant database.
+    /// Detach a previously attached database, withdrawing visibility without
+    /// deleting anything.
     Detach {
-        /// Catalog name or id to detach
+        /// The attached database: its name, catalog alias, or id, or the alias
+        /// it was attached under
+        #[arg(value_name = "DATABASE")]
         catalog: String,
 
-        /// Database id, catalog, or name to detach from (defaults to the current database)
+        /// Database id, catalog, or name to detach from (this command only; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
     },
 
-    /// Set the current database (used by default when no database is specified)
+    /// Switch the current database for this workspace
+    ///
+    /// This is the only command that changes the current database.
+    /// `databases create`, `databases fork` and `-d/--database` do not.
+    /// The choice is saved on this machine and kept across logout and login.
     #[command(name = "use")]
     Set {
-        /// Database id
+        /// Database id, catalog, or name
         id: String,
     },
 
@@ -172,11 +199,19 @@ pub enum DatabasesCommands {
         name_or_id: String,
     },
 
-    /// Load a parquet file or a saved query result into an instant database table
+    /// Load a csv, json, or parquet file — or a saved query result — into an
+    /// instant database table
     Load {
-        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`)
-        #[arg(long)]
-        catalog: String,
+        /// SQL catalog alias of the target database (e.g. `--catalog airbnb`).
+        /// A fork answers to the same alias as its source, so once a database
+        /// has been forked the alias is ambiguous: pass `--database <id>` instead.
+        #[arg(long, required_unless_present = "database")]
+        catalog: Option<String>,
+
+        /// Database id (or name) to load into. Takes precedence over `--catalog`
+        /// and is the unambiguous form when forks share a catalog alias.
+        #[arg(long, conflicts_with = "catalog")]
+        database: Option<String>,
 
         /// Schema to load into (default: public)
         #[arg(long, default_value = "public")]
@@ -186,11 +221,11 @@ pub enum DatabasesCommands {
         #[arg(long)]
         table: String,
 
-        /// Path to a local parquet file to upload and load
+        /// Path to a local file to upload and load (csv, json, or parquet)
         #[arg(long, conflicts_with_all = ["upload_id", "url", "result_id"])]
         file: Option<String>,
 
-        /// URL of a remote parquet file to download and load
+        /// URL of a remote file to download and load (csv, json, or parquet)
         #[arg(long, conflicts_with_all = ["file", "upload_id", "result_id"])]
         url: Option<String>,
 
@@ -205,9 +240,38 @@ pub enum DatabasesCommands {
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
         result_id: Option<String>,
 
-        /// Append rows to the table instead of replacing it (default: replace)
-        #[arg(long)]
+        /// Append rows to the table instead of replacing it (default: replace).
+        /// Shorthand for `--mode append`.
+        #[arg(long, conflicts_with = "mode")]
         append: bool,
+
+        /// How the upload is applied to the table (default: replace).
+        /// `delete`, `update`, and `upsert` match existing rows by the table's
+        /// key — declare one with `databases tables add --key`, or name it here
+        /// with `--key`.
+        #[arg(long, value_parser = ["replace", "append", "delete", "update", "upsert"])]
+        mode: Option<String>,
+
+        /// Format of the uploaded file: csv, json, or parquet. Detected from
+        /// the file's extension when omitted; pass it when the extension is
+        /// absent or misleading. json reads an array of objects, a
+        /// pretty-printed document, or one object per line. Not valid with
+        /// `--result-id`, which is always parquet.
+        #[arg(long, value_parser = ["csv", "json", "parquet"], conflicts_with = "result_id")]
+        format: Option<String>,
+
+        /// Key column for a `delete`/`update`/`upsert` load, repeatable for a
+        /// composite key (`--key tenant --key id`). Defaults to the key the
+        /// table was declared with.
+        #[arg(long = "key")]
+        key: Vec<String>,
+
+        /// Seconds to keep retrying while another load holds the table
+        /// (default 60; 0 fails immediately). Concurrent loads into one table
+        /// are serialised server-side, and a busy table answers 409
+        /// `RESOURCE_LOCKED` with a `Retry-After` the CLI honours.
+        #[arg(long = "retry-timeout", default_value = "60")]
+        retry_timeout: u64,
     },
 
     /// Manage tables inside an instant database
@@ -221,7 +285,7 @@ pub enum DatabasesCommands {
 
     /// Sync database context with local Markdown
     Context {
-        /// Instant database to scope to (defaults to the current database)
+        /// Instant database to scope to (this command only; defaults to the current database)
         #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
@@ -234,17 +298,19 @@ pub enum DatabasesCommands {
         /// SQL query string (omit when using a subcommand)
         sql: Option<String>,
 
-        /// Instant database to run against (defaults to the current database)
-        #[arg(long, short = 'd')]
+        /// Instant database to run against (this command only; defaults to the current database)
+        #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
         /// SQL dialect the query is written in — a non-`hotsql` dialect is
-        /// transpiled to HotSQL server-side before it runs (read-only only)
+        /// transpiled to HotSQL server-side before it runs (writes follow the same
+        /// rules as hotsql)
         #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake"])]
         dialect: String,
 
-        /// Output format
-        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv"])]
+        /// Output format. `id` prints only the stored result's id, without
+        /// downloading rows (for commands that read a result by id)
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "csv", "id"], global = true)]
         output: String,
 
         #[command(subcommand)]
@@ -256,7 +322,7 @@ pub enum DatabasesCommands {
         /// Query run ID to show details
         id: Option<String>,
 
-        /// Instant database to scope to (defaults to the current database)
+        /// Instant database to scope to (this command only; defaults to the current database)
         #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
@@ -273,7 +339,7 @@ pub enum DatabasesCommands {
         /// Result ID (omit to use a subcommand)
         result_id: Option<String>,
 
-        /// Instant database to scope to (defaults to the current database)
+        /// Instant database to scope to (this command only; defaults to the current database)
         #[arg(long, short = 'd', global = true)]
         database: Option<String>,
 
@@ -291,7 +357,7 @@ pub enum DatabasesCommands {
 pub enum DatabaseTablesCommands {
     /// List tables in an instant database
     List {
-        /// Database id or name (defaults to current database)
+        /// Database id or name (this command only; defaults to the current database)
         #[arg(long)]
         database: Option<String>,
 
@@ -316,6 +382,57 @@ pub enum DatabaseTablesCommands {
         output: String,
     },
 
+    /// Declare a new table in an instant database, with its key and layout
+    ///
+    /// Declaring a key is what enables the `delete`, `update`, and `upsert`
+    /// load modes on the table: those loads match existing rows by the key's
+    /// values. `--sorted-by` and `--partition-by` set the table's on-disk
+    /// layout and are fixed once the table exists.
+    Add {
+        /// Table name, or `schema.table` to target a schema other than --schema
+        table: String,
+
+        /// Database id or name (this command only; defaults to the current database)
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Schema for a bare table name (default: public)
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Column that uniquely identifies a row, repeatable for a composite
+        /// key (`--key tenant --key id`). Omit to declare no key — the table
+        /// still loads with replace and append.
+        #[arg(long = "key")]
+        key: Vec<String>,
+
+        /// Column whose value is fixed by the key, repeatable. An optimisation
+        /// for keyed loads, and correctness-affecting: if the claim is false, a
+        /// keyed load can leave a duplicate of the key behind. Declare it only
+        /// where the invariant really holds.
+        #[arg(long = "key-determines")]
+        key_determines: Vec<String>,
+
+        /// Sort the table on this column, repeatable to sort on several in
+        /// order: `--sorted-by ts` or `--sorted-by ts=desc` (default asc).
+        /// Fixed once the table is created.
+        #[arg(long = "sorted-by")]
+        sorted_by: Vec<String>,
+
+        /// Partition the table by this column, repeatable to nest partitions in
+        /// order. `--partition-by region` partitions on the value itself;
+        /// `--partition-by created_at=month` on a calendar part (year, month,
+        /// day, hour). One partition per month needs both `created_at=year` and
+        /// `created_at=month`, or every March shares a partition. Fixed once
+        /// the table is created.
+        #[arg(long = "partition-by")]
+        partition_by: Vec<String>,
+
+        /// Output format
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
+    },
+
     /// Show column definitions for a table
     Show {
         /// Table as catalog.schema.table (or schema.table with an active database)
@@ -326,9 +443,10 @@ pub enum DatabaseTablesCommands {
         output: String,
     },
 
-    /// Load a parquet file or a saved query result into a table (replaces or appends)
+    /// Load a csv, json, or parquet file — or a saved query result — into a
+    /// table, replacing it, appending, or matching rows by key
     Load {
-        /// Database id or name (defaults to current database)
+        /// Database id or name (this command only; defaults to the current database)
         #[arg(long)]
         database: Option<String>,
 
@@ -339,11 +457,11 @@ pub enum DatabaseTablesCommands {
         #[arg(long, default_value = "public")]
         schema: String,
 
-        /// Path to a local parquet file to upload and load
+        /// Path to a local file to upload and load (csv, json, or parquet)
         #[arg(long, conflicts_with_all = ["upload_id", "url", "result_id"])]
         file: Option<String>,
 
-        /// URL of a remote parquet file to download and load
+        /// URL of a remote file to download and load (csv, json, or parquet)
         #[arg(long, conflicts_with_all = ["file", "upload_id", "result_id"])]
         url: Option<String>,
 
@@ -358,22 +476,52 @@ pub enum DatabaseTablesCommands {
         #[arg(long, conflicts_with_all = ["file", "url", "upload_id"])]
         result_id: Option<String>,
 
-        /// Append rows to the table instead of replacing it (default: replace)
-        #[arg(long)]
+        /// Append rows to the table instead of replacing it (default: replace).
+        /// Shorthand for `--mode append`.
+        #[arg(long, conflicts_with = "mode")]
         append: bool,
+
+        /// How the upload is applied to the table (default: replace).
+        /// `delete`, `update`, and `upsert` match existing rows by the table's
+        /// key — declare one with `databases tables add --key`, or name it here
+        /// with `--key`.
+        #[arg(long, value_parser = ["replace", "append", "delete", "update", "upsert"])]
+        mode: Option<String>,
+
+        /// Format of the uploaded file: csv, json, or parquet. Detected from
+        /// the file's extension when omitted; pass it when the extension is
+        /// absent or misleading. json reads an array of objects, a
+        /// pretty-printed document, or one object per line. Not valid with
+        /// `--result-id`, which is always parquet.
+        #[arg(long, value_parser = ["csv", "json", "parquet"], conflicts_with = "result_id")]
+        format: Option<String>,
+
+        /// Key column for a `delete`/`update`/`upsert` load, repeatable for a
+        /// composite key (`--key tenant --key id`). Defaults to the key the
+        /// table was declared with.
+        #[arg(long = "key")]
+        key: Vec<String>,
+
+        /// Seconds to keep retrying while another load holds the table
+        /// (default 60; 0 fails immediately). Concurrent loads into one table
+        /// are serialised server-side, and a busy table answers 409
+        /// `RESOURCE_LOCKED` with a `Retry-After` the CLI honours.
+        #[arg(long = "retry-timeout", default_value = "60")]
+        retry_timeout: u64,
     },
 
     /// Delete a table from an instant database
     #[command(name = "remove")]
     Delete {
-        /// Database id or name (defaults to current database)
+        /// Database id or name (this command only; defaults to the current database)
         #[arg(long)]
         database: Option<String>,
 
-        /// Table name
+        /// Table name, `schema.table`, or `catalog.schema.table` (the catalog
+        /// names the database, in place of --database)
         table: String,
 
-        /// Schema name (default: public)
+        /// Schema for a bare table name (default: public)
         #[arg(long, default_value = "public")]
         schema: String,
     },
@@ -407,11 +555,6 @@ pub struct Database {
     pub name: Option<String>,
     #[serde(default)]
     pub default_catalog: Option<String>,
-    /// Id of the database's own catalog. runtimedb removed connections as a
-    /// concept (the engine is push-only; every connection row IS a catalog),
-    /// but the wire field is still named `default_connection_id` — the CLI's
-    /// own output already speaks catalog.
-    #[serde(rename = "default_catalog_id")]
     pub default_connection_id: String,
     #[serde(default)]
     pub expires_at: Option<String>,
@@ -444,6 +587,9 @@ pub struct ForkedFrom {
     pub snapshot_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forked_at: Option<String>,
+    /// Why the fork was taken, as given at fork time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 impl From<hotdata::models::ForkedFromInfo> for ForkedFrom {
@@ -453,15 +599,13 @@ impl From<hotdata::models::ForkedFromInfo> for ForkedFrom {
             name: f.name.flatten(),
             snapshot_id: f.snapshot_id.flatten(),
             forked_at: f.forked_at.flatten(),
+            description: f.description.flatten(),
         }
     }
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct DatabaseAttachment {
-    /// Catalog id under its post-connections-removal name (see
-    /// [`Database::default_connection_id`]); also the `detach` handle.
-    #[serde(rename = "catalog_id")]
     connection_id: String,
     alias: Option<String>,
 }
@@ -490,9 +634,6 @@ struct CreateDatabaseResponse {
     name: Option<String>,
     #[serde(default)]
     default_catalog: Option<String>,
-    /// Parses the server's `default_connection_id`, but `-o json`/`-o yaml`
-    /// emit it as `default_catalog_id` (see [`Database::default_connection_id`]).
-    #[serde(rename(serialize = "default_catalog_id"))]
     default_connection_id: String,
     #[serde(default)]
     expires_at: Option<String>,
@@ -500,6 +641,10 @@ struct CreateDatabaseResponse {
     /// responses never carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     forked_from: Option<ForkedFrom>,
+    /// Only with `--if-not-exists`: `true` when this call created the database,
+    /// `false` when an existing one was returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -751,11 +896,18 @@ pub fn create_database_request(
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
+    if_not_exists: bool,
 ) -> serde_json::Value {
     let mut req = serde_json::Map::new();
 
     if let Some(n) = name {
         req.insert("name".to_string(), serde_json::Value::String(n.to_string()));
+    }
+
+    // Omitted rather than `false`: the field is new on the server, and an older
+    // deployment rejects unknown keys it would otherwise never see.
+    if if_not_exists {
+        req.insert("if_not_exists".to_string(), serde_json::Value::Bool(true));
     }
 
     if let Some(c) = catalog {
@@ -832,34 +984,43 @@ pub fn fork_database_request(
     name: Option<&str>,
     source_label: Option<&str>,
     expires_at: Option<&str>,
+    description: Option<&str>,
 ) -> hotdata::models::ForkDatabaseRequest {
     let name = name
         .map(str::to_string)
         .or_else(|| source_label.map(|l| format!("{l}-fork")));
 
-    // The SDK models both fields as double-option: `None` omits the field
+    // The SDK models these fields as double-option: `None` omits the field
     // (server applies its default — inherit the source's name/expiry), while
-    // `Some(Some(v))` sends the value. We never send an explicit null.
+    // `Some(Some(v))` sends the value. We never send an explicit null. The
+    // description is sent as given: the server trims it, treats blank as
+    // absent, and owns the length and control-character checks.
     hotdata::models::ForkDatabaseRequest {
         name: name.map(Some),
         expires_at: expires_at.map(|e| Some(e.to_string())),
+        description: description.map(|d| Some(d.to_string())),
     }
 }
 
 /// Build the typed `CreateDatabaseRequest` for the SDK's `databases().create`
-/// handle, reusing [`create_database_request`] as the single source of truth for
-/// the body shape. The delete+recreate path still consumes the raw JSON form
-/// (it inspects raw error bodies), so the JSON builder stays; this just adapts
-/// it for the typed call sites.
+/// handle by adapting [`create_database_request`], which stays the single
+/// source of truth for the body shape — the schema-seeding rules it encodes are
+/// specified against the JSON form in this module's tests.
 fn create_database_typed_request(
     name: Option<&str>,
     catalog: Option<&str>,
     schema: &str,
     tables: &[String],
     expires_at: Option<&str>,
+    if_not_exists: bool,
 ) -> hotdata::models::CreateDatabaseRequest {
     serde_json::from_value(create_database_request(
-        name, catalog, schema, tables, expires_at,
+        name,
+        catalog,
+        schema,
+        tables,
+        expires_at,
+        if_not_exists,
     ))
     .expect("create_database_request always emits a valid CreateDatabaseRequest body")
 }
@@ -872,24 +1033,375 @@ pub fn managed_table_delete_path(connection_id: &str, schema: &str, table: &str)
     format!("/connections/{connection_id}/schemas/{schema}/tables/{table}")
 }
 
-pub fn load_table_request(upload_id: &str, mode: &str) -> serde_json::Value {
-    serde_json::json!({
+/// Build the `sorted_by` entries for a table declaration from `--sorted-by`
+/// values, each `column` or `column=direction`.
+fn sort_keys(values: &[String]) -> Result<Vec<serde_json::Value>, String> {
+    values
+        .iter()
+        .map(|v| match v.split_once('=') {
+            None => Ok(serde_json::json!({ "column": v })),
+            Some((column, dir)) => {
+                let dir = dir.to_ascii_lowercase();
+                if !matches!(dir.as_str(), "asc" | "desc") {
+                    return Err(format!(
+                        "--sorted-by '{v}': direction must be asc or desc, got '{dir}'"
+                    ));
+                }
+                Ok(serde_json::json!({ "column": column, "direction": dir }))
+            }
+        })
+        .collect()
+}
+
+/// Build the `partition_by` entries from `--partition-by` values, each
+/// `column` (identity) or `column=transform`.
+fn partition_keys(values: &[String]) -> Result<Vec<serde_json::Value>, String> {
+    values
+        .iter()
+        .map(|v| {
+            let (column, transform) = match v.split_once('=') {
+                None => (v.as_str(), "identity".to_string()),
+                Some((column, t)) => (column, t.to_ascii_lowercase()),
+            };
+            if !matches!(
+                transform.as_str(),
+                "identity" | "year" | "month" | "day" | "hour"
+            ) {
+                return Err(format!(
+                    "--partition-by '{v}': transform must be identity, year, month, day, or \
+                     hour, got '{transform}'"
+                ));
+            }
+            Ok(serde_json::json!({ "column": column, "transform": transform }))
+        })
+        .collect()
+}
+
+/// Build the request body for `POST /v1/databases/{id}/schemas/{schema}/tables`,
+/// leaving out every empty list so the server applies its defaults.
+fn table_declaration_body(
+    table: &str,
+    key: &[String],
+    key_determines: &[String],
+    sorted_by: &[serde_json::Value],
+    partition_by: &[serde_json::Value],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({ "name": table });
+    if !key.is_empty() {
+        body["key"] = serde_json::json!(key);
+    }
+    if !key_determines.is_empty() {
+        // The API calls this `constant_per_key`; the flag keeps its original
+        // name. The server rejects unknown fields, so the old wire name fails.
+        body["constant_per_key"] = serde_json::json!(key_determines);
+    }
+    if !sorted_by.is_empty() {
+        body["sorted_by"] = serde_json::json!(sorted_by);
+    }
+    if !partition_by.is_empty() {
+        body["partition_by"] = serde_json::json!(partition_by);
+    }
+    body
+}
+
+/// `databases tables add` — declare a table on an existing instant database.
+#[allow(clippy::too_many_arguments)]
+pub fn add_table(
+    workspace_id: &str,
+    database: Option<&str>,
+    table: &str,
+    schema: &str,
+    key: &[String],
+    key_determines: &[String],
+    sorted_by: &[String],
+    partition_by: &[String],
+    output: &str,
+) {
+    use crossterm::style::Stylize;
+
+    // `schema.table` overrides --schema, matching `databases create --table`.
+    let (schema, table) = match table.split_once('.') {
+        Some((s, t)) => (s, t),
+        None => (schema, table),
+    };
+
+    // key_determines names columns the key fixes, so a key must exist for it to
+    // mean anything; the server would take it and quietly ignore it.
+    if !key_determines.is_empty() && key.is_empty() {
+        eprintln!(
+            "{}",
+            "error: --key-determines describes columns fixed by the key, so it needs --key.".red()
+        );
+        std::process::exit(1);
+    }
+
+    let sorted_by = sort_keys(sorted_by).unwrap_or_else(|e| {
+        eprintln!("{}", format!("error: {e}").red());
+        std::process::exit(1);
+    });
+    let partition_by = partition_keys(partition_by).unwrap_or_else(|e| {
+        eprintln!("{}", format!("error: {e}").red());
+        std::process::exit(1);
+    });
+
+    let database = resolve_current_database(database, workspace_id);
+    let api = Api::new(Some(workspace_id));
+    let db = resolve_database(&api, &database);
+
+    let body = table_declaration_body(table, key, key_determines, &sorted_by, &partition_by);
+
+    let (status, resp) = declare_table(&api, &db.id, schema, &body);
+
+    if !status.is_success() {
+        eprintln!("{}", crate::util::api_error(resp).red());
+        std::process::exit(1);
+    }
+
+    let catalog = db
+        .default_catalog
+        .as_deref()
+        .or(db.name.as_deref())
+        .unwrap_or(&db.id);
+    let declared = serde_json::json!({
+        "table": format!("{catalog}.{schema}.{table}"),
+        "schema": schema,
+        "name": table,
+        "key": key,
+        "key_determines": key_determines,
+        "sorted_by": sorted_by,
+        "partition_by": partition_by,
+    });
+    match output {
+        "json" => println!("{}", serde_json::to_string_pretty(&declared).unwrap()),
+        "yaml" => print!("{}", serde_yaml::to_string(&declared).unwrap()),
+        _ => {
+            println!("{}", format!("Declared {catalog}.{schema}.{table}").green());
+            if key.is_empty() {
+                println!(
+                    "{}",
+                    "no key — loads with replace and append only. A key is fixed at \
+                     declaration and cannot be added later, so declare the next \
+                     table with --key if you need delete/update/upsert on it."
+                        .dark_grey()
+                );
+            } else {
+                println!("key:     {}", key.join(", "));
+            }
+            if !key_determines.is_empty() {
+                println!("determined by key: {}", key_determines.join(", "));
+            }
+            // Sort and partition are fixed once the table exists, so echo what
+            // the server accepted — there is no second chance to check.
+            if !sorted_by.is_empty() {
+                println!("sorted:  {}", describe_sort_keys(&sorted_by));
+            }
+            if !partition_by.is_empty() {
+                println!("parts:   {}", describe_partition_keys(&partition_by));
+            }
+        }
+    }
+}
+
+/// Render sort keys for the table output, e.g. `created_at desc, id`.
+/// A key with no explicit direction prints bare, matching what was sent.
+fn describe_sort_keys(keys: &[serde_json::Value]) -> String {
+    keys.iter()
+        .map(|k| {
+            let column = k["column"].as_str().unwrap_or_default();
+            match k["direction"].as_str() {
+                Some(dir) => format!("{column} {dir}"),
+                None => column.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Render partition keys for the table output, e.g. `created_at:year,
+/// created_at:month, region`. `identity` prints as the bare column, since the
+/// partition is the value itself.
+fn describe_partition_keys(keys: &[serde_json::Value]) -> String {
+    keys.iter()
+        .map(|k| {
+            let column = k["column"].as_str().unwrap_or_default();
+            match k["transform"].as_str() {
+                Some("identity") | None => column.to_string(),
+                Some(t) => format!("{column}:{t}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Declare `table` in `schema` on an existing instant database, via
+/// `POST /databases/{id}/schemas/{schema}/tables`, with `body` carrying the
+/// name and whatever key/layout the caller declared.
+///
+/// Declares the schema first when the server says it is missing: the table
+/// route 404s with "Schema '<name>' is not declared" for a schema the database
+/// was never created with. An already-declared table comes back 409, which is
+/// left to the caller — re-declaring is a real conflict here, since the
+/// existing table's key and layout are fixed and this call would not change
+/// them. `tables remove` does not clear the declaration either: the table
+/// leaves the listing but the name stays declared and still 409s, so a key
+/// cannot be retrofitted onto a table that was declared without one.
+fn declare_table(
+    api: &Api,
+    database_id: &str,
+    schema: &str,
+    body: &serde_json::Value,
+) -> (reqwest::StatusCode, String) {
+    let tables_path = format!("/databases/{database_id}/schemas/{schema}/tables");
+    let (status, resp) = api
+        .post_raw(&tables_path, body)
+        .unwrap_or_else(|e| e.exit());
+
+    if status.as_u16() == 404 && crate::util::api_error(resp.clone()).contains("not declared") {
+        let (s_status, s_resp) = api
+            .post_raw(
+                &format!("/databases/{database_id}/schemas"),
+                &serde_json::json!({ "name": schema }),
+            )
+            .unwrap_or_else(|e| e.exit());
+        // A concurrent declaration of the same schema (409) is not a failure —
+        // the schema exists either way, which is all the retry needs.
+        if !s_status.is_success() && s_status.as_u16() != 409 {
+            return (s_status, s_resp);
+        }
+        return api
+            .post_raw(&tables_path, body)
+            .unwrap_or_else(|e| e.exit());
+    }
+
+    (status, resp)
+}
+
+/// Body for a load from a staged upload.
+///
+/// `format` is omitted when `None` so the server resolves the format itself,
+/// from the upload's recorded content type and then from the bytes. `key` is
+/// omitted when empty, which tells the server to use the key the table was
+/// declared with; it is ignored outside the keyed modes.
+pub fn load_table_request(
+    upload_id: &str,
+    mode: &str,
+    format: Option<&str>,
+    key: &[String],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
         "mode": mode,
         "upload_id": upload_id,
-    })
+    });
+    if let Some(f) = format {
+        body["format"] = serde_json::json!(f);
+    }
+    if !key.is_empty() {
+        body["key"] = serde_json::json!(key);
+    }
+    body
 }
 
-pub fn load_table_request_from_result(result_id: &str, mode: &str) -> serde_json::Value {
-    serde_json::json!({
+/// Body for a load from a persisted query result.
+///
+/// No `format`: a stored result is always parquet, and the server rejects the
+/// field alongside `result_id`.
+pub fn load_table_request_from_result(
+    result_id: &str,
+    mode: &str,
+    key: &[String],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
         "mode": mode,
         "result_id": result_id,
-    })
+    });
+    if !key.is_empty() {
+        body["key"] = serde_json::json!(key);
+    }
+    body
 }
 
-/// Returns true when `path` looks like a parquet file by extension.
-pub fn is_parquet_path(path: &str) -> bool {
-    path.to_ascii_lowercase().ends_with(".parquet")
-        || Path::new(path).extension().and_then(|e| e.to_str()) == Some("parquet")
+/// The wait a load 409 asks for, or `None` when the 409 is not the table lock.
+///
+/// Loads into one table are serialised server-side; a second writer gets a 409
+/// whose code is `RESOURCE_LOCKED` and whose `Retry-After` says how long to
+/// hold off. Matched on the code, never the message: a permanent `CONFLICT`
+/// (idempotency-key reuse, a catalog scoped elsewhere) is also a 409 and must
+/// not be retried. A missing or unparsable `Retry-After` falls back to
+/// [`LOCK_RETRY_FALLBACK`] — the lock is still transient without it.
+pub fn lock_retry_after(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+) -> Option<std::time::Duration> {
+    if status != reqwest::StatusCode::CONFLICT {
+        return None;
+    }
+    let code = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    if code["error"]["code"].as_str() != Some("RESOURCE_LOCKED") {
+        return None;
+    }
+    let secs = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(LOCK_RETRY_FALLBACK);
+    Some(secs)
+}
+
+/// Wait between load attempts when the lock 409 carries no usable
+/// `Retry-After`. Matches what the server advertises today.
+pub const LOCK_RETRY_FALLBACK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `POST` a load, retrying while the table is held by another load.
+///
+/// Every attempt is the same request — a load is idempotent per upload, and
+/// the server either ran it or rejected it outright — so repeating it is safe.
+/// Retries stop at `retry_timeout_secs` after the first attempt; the final 409
+/// is then returned as-is so the caller renders the server's own message. A
+/// timeout of `0` sends exactly once. `on_wait` is told each pause before it
+/// happens, so a long wait is never silent.
+pub fn post_load_with_retry(
+    api: &Api,
+    path: &str,
+    body: &serde_json::Value,
+    retry_timeout_secs: u64,
+    mut on_wait: impl FnMut(std::time::Duration),
+) -> Result<(reqwest::StatusCode, String), ApiError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(retry_timeout_secs);
+    loop {
+        let (status, headers, resp_body) = api.post_raw_with_headers(path, body)?;
+        let Some(wait) = lock_retry_after(status, &headers, &resp_body) else {
+            return Ok((status, resp_body));
+        };
+        // The deadline bounds the whole wait, so a pause that would overrun it
+        // is not taken: better to report "still busy" on time than late.
+        if std::time::Instant::now() + wait > deadline {
+            return Ok((status, resp_body));
+        }
+        on_wait(wait);
+        std::thread::sleep(wait);
+    }
+}
+
+/// The load-request `format` implied by `name`'s extension, or `None` when the
+/// extension names nothing we recognise.
+///
+/// `None` is not an error: an upload announcing an unrecognised content type is
+/// sniffed server-side, so the load simply omits `format` and lets the server
+/// decide. `--format` overrides this either way.
+pub fn format_for_path(name: &str) -> Option<&'static str> {
+    // Shares `extension_of` with the content type the upload announces, so the
+    // two can never disagree about what a name means.
+    match crate::client::sdk::extension_of(name)
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "parquet" => Some("parquet"),
+        "csv" => Some("csv"),
+        "json" | "jsonl" | "ndjson" => Some("json"),
+        _ => None,
+    }
 }
 
 fn table_rows(catalog: &str, tables: Vec<InfoTable>) -> Vec<TableRow> {
@@ -915,13 +1427,18 @@ fn upload_progress_style() -> ProgressStyle {
     .progress_chars("=>-")
 }
 
-/// Upload an already-on-disk parquet file via the SDK's presigned direct-to-
+/// Upload an already-on-disk data file via the SDK's presigned direct-to-
 /// storage flow, driving a single aggregate progress bar from the SDK's
 /// byte-granular progress callback. Returns the finalized upload id, or the
 /// seam's error (a `501 PRESIGN_UNSUPPORTED` surfaces an actionable message,
 /// not a fallback). The caller decides how to surface failure — `--url` must
 /// clean up its temp file before exiting, so this returns rather than exits.
-fn upload_parquet_path(api: &Api, path: &Path, size: u64) -> Result<String, ApiError> {
+fn upload_data_path(
+    api: &Api,
+    path: &Path,
+    content_type: &str,
+    size: u64,
+) -> Result<String, ApiError> {
     let pb = ProgressBar::new(size);
     pb.set_style(upload_progress_style());
 
@@ -934,40 +1451,161 @@ fn upload_parquet_path(api: &Api, path: &Path, size: u64) -> Result<String, ApiE
         cb_pb.set_position(done);
     });
 
-    let result = api.upload(path, progress);
+    let result = api.upload(path, content_type, progress);
     pb.finish_and_clear();
     result
 }
 
-fn upload_parquet_file(api: &Api, path: &str) -> String {
-    if !is_parquet_path(path) {
-        eprintln!(
-            "error: managed table loads require a parquet file (got '{}'). \
-             Convert your data to parquet first.",
-            path
-        );
-        std::process::exit(1);
-    }
+/// Upload `path`, announcing the content type its extension implies, and
+/// return the upload id with the `format` the load should carry. No extension
+/// is rejected: an unrecognised one announces `application/octet-stream`,
+/// which the load sniffs.
+///
+/// `format` is the one already resolved from `--format` and the source's own
+/// extension. It comes back unchanged unless the file was a JSON shape the
+/// load cannot read and was rewritten — see [`json_source_rewrite`] — in which
+/// case the upload is newline-delimited json and says so.
+fn upload_data_file<'a>(
+    api: &Api,
+    path: &str,
+    format: Option<&'a str>,
+) -> (String, Option<&'a str>) {
+    let source = Path::new(path);
+    match json_source_rewrite(source, format).unwrap_or_else(|e| e.exit()) {
+        Some(rewritten) => (
+            upload_rewritten_json(api, rewritten).unwrap_or_else(|e| e.exit()),
+            Some("json"),
+        ),
+        None => {
+            let file_size = match std::fs::metadata(path) {
+                Ok(m) => m.len(),
+                Err(e) => {
+                    eprintln!("error opening file '{path}': {e}");
+                    std::process::exit(1);
+                }
+            };
 
-    let file_size = match std::fs::metadata(path) {
-        Ok(m) => m.len(),
-        Err(e) => {
-            eprintln!("error opening file '{path}': {e}");
-            std::process::exit(1);
+            let id = upload_data_path(
+                api,
+                source,
+                crate::client::sdk::content_type_for_path(path),
+                file_size,
+            )
+            .unwrap_or_else(|e| e.exit());
+            (id, format)
         }
-    };
-
-    upload_parquet_path(api, Path::new(path), file_size).unwrap_or_else(|e| e.exit())
+    }
 }
 
-fn upload_parquet_url(api: &Api, url: &str) -> String {
-    if !is_parquet_path(url) {
-        eprintln!(
-            "error: managed table loads require a parquet URL ending in .parquet (got '{url}')."
-        );
-        std::process::exit(1);
+/// The newline-delimited rewrite of `path` a load needs, or `None` when the
+/// file can be uploaded as it stands.
+///
+/// A `json` load reads one JSON value per line, and a `.json` file on disk is
+/// as often an array of objects or a single pretty-printed document. Both are
+/// rewritten here, so the shape inside the file is not something the caller has
+/// to know or convert first. Everything else is untouched: parquet and csv are
+/// not JSON, and already-newline-delimited json is what the load wants.
+///
+/// Errors are [`ApiError::Transport`] so the caller can clean up a staged
+/// download before surfacing them.
+fn json_source_rewrite(
+    path: &Path,
+    format: Option<&str>,
+) -> Result<Option<tempfile::NamedTempFile>, ApiError> {
+    use crate::commands::json_rows;
+    use std::io::{BufReader, BufWriter, Read, Seek};
+
+    let fail = |msg: String| ApiError::Transport(msg);
+    // Only a json load reads rows off lines, so a source that names another
+    // format is left alone without being opened at all.
+    if matches!(format, Some(f) if f != "json") {
+        return Ok(None);
     }
 
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| fail(format!("error opening file '{}': {e}", path.display())))?;
+
+    // The shape is read off the first record, never the whole file, so a large
+    // newline-delimited source costs one short read to leave alone.
+    let mut head = Vec::new();
+    Read::by_ref(&mut file)
+        .take(json_rows::SNIFF_BYTES as u64)
+        .read_to_end(&mut head)
+        .map_err(|e| fail(format!("error reading '{}': {e}", path.display())))?;
+
+    if !load_reads_json(format, &head) {
+        return Ok(None);
+    }
+    let shape = json_rows::shape_of(&head);
+    if !shape.needs_rewrite() {
+        return Ok(None);
+    }
+
+    file.rewind()
+        .map_err(|e| fail(format!("error reading '{}': {e}", path.display())))?;
+    let temp = tempfile::Builder::new()
+        .prefix("hotdata-upload-")
+        // Names the rewrite for what it holds: the upload announces the ndjson
+        // content type this extension implies.
+        .suffix(".jsonl")
+        .tempfile()
+        .map_err(|e| fail(format!("error creating a temp file: {e}")))?;
+
+    let spinner = crate::util::spinner("Reading json...");
+    let rows = json_rows::to_ndjson(shape, BufReader::new(file), BufWriter::new(temp.as_file()));
+    spinner.finish_and_clear();
+
+    match rows {
+        Ok(0) => Err(fail(format!(
+            "error: '{}' carries no json rows",
+            path.display()
+        ))),
+        Ok(_) => Ok(Some(temp)),
+        Err(msg) => Err(fail(format!(
+            "error reading json from '{}': {msg}",
+            path.display()
+        ))),
+    }
+}
+
+/// Whether the load will read this source as JSON, given the `format` already
+/// resolved from `--format` and the source's extension.
+///
+/// An unresolved format sends no `format` at all and leaves the server to read
+/// the bytes, which it reads as csv — a leading `[` then fails as a one-column
+/// csv rather than as json. So a source that plainly opens a JSON array is
+/// claimed as json here even with no extension to say so, which is the
+/// `--url`-without-a-file-name case.
+fn load_reads_json(format: Option<&str>, head: &[u8]) -> bool {
+    match format {
+        Some(f) => f == "json",
+        None => {
+            crate::commands::json_rows::shape_of(head) == crate::commands::json_rows::Shape::Array
+        }
+    }
+}
+
+/// Upload a newline-delimited rewrite, announcing the ndjson content type its
+/// `.jsonl` name implies, and delete it before returning — on both arms, for
+/// the reason [`upload_temp_file`] documents.
+fn upload_rewritten_json(api: &Api, temp: tempfile::NamedTempFile) -> Result<String, ApiError> {
+    upload_temp_file(temp, |path| {
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let name = path.to_string_lossy();
+        upload_data_path(
+            api,
+            path,
+            crate::client::sdk::content_type_for_path(&name),
+            size,
+        )
+    })
+}
+
+/// Download `url` and upload it, announcing the content type the URL's own
+/// extension implies — the staged temp file's name is generated and says
+/// nothing about the bytes. Returns the upload id and the `format` the load
+/// should carry, which [`upload_data_file`] documents.
+fn upload_data_url<'a>(api: &Api, url: &str, format: Option<&'a str>) -> (String, Option<&'a str>) {
     // The presigned upload needs a seekable, size-known source (the SDK opens
     // the path, declares its byte count, and PUTs it directly to storage), so
     // download the URL to a temp file first, then upload that file on the same
@@ -1007,7 +1645,15 @@ fn upload_parquet_url(api: &Api, url: &str) -> String {
         }
     };
 
-    let temp = match download_to_temp(resp, &dl_pb) {
+    // The staged name carries the source URL's own extension, or none when the
+    // URL has none. It is advisory — the load resolves the format from the
+    // recorded content type and then the bytes, never the file name — but a
+    // staged name should not claim a format it cannot know.
+    let suffix = match crate::client::sdk::extension_of(url) {
+        "" => String::new(),
+        ext => format!(".{ext}"),
+    };
+    let temp = match download_to_temp(resp, &suffix, &dl_pb) {
         Ok(t) => t,
         Err(e) => {
             dl_pb.finish_and_clear();
@@ -1017,8 +1663,61 @@ fn upload_parquet_url(api: &Api, url: &str) -> String {
     };
     dl_pb.finish_and_clear();
 
-    let size = std::fs::metadata(temp.path()).map(|m| m.len()).unwrap_or(0);
-    upload_temp_file(temp, |path| upload_parquet_path(api, path, size)).unwrap_or_else(|e| e.exit())
+    let url_content_type = crate::client::sdk::content_type_for_path(url);
+    // The download is reshaped on the same terms as a local `--file`: a json
+    // array or a pretty-printed document becomes newline-delimited json before
+    // it goes up, and the rewrite is what gets uploaded — with the download
+    // deleted the moment the rewrite exists, so only one copy is on disk for
+    // the length of the upload.
+    let (source, rewritten) = download_to_upload(temp, |path| json_source_rewrite(path, format))
+        .unwrap_or_else(|e| e.exit());
+
+    let id = upload_temp_file(source, |path| {
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        // The rewrite's own `.jsonl` name announces ndjson; an untouched
+        // download is announced by the URL, whose extension is authoritative
+        // where the staged name is only advisory.
+        let staged = path.to_string_lossy();
+        let content_type = if rewritten {
+            crate::client::sdk::content_type_for_path(&staged)
+        } else {
+            url_content_type
+        };
+        upload_data_path(api, path, content_type, size)
+    })
+    .unwrap_or_else(|e| e.exit());
+
+    (id, if rewritten { Some("json") } else { format })
+}
+
+/// The file a staged download should upload — itself, or the rewrite that
+/// replaced it — and whether it was rewritten.
+///
+/// A rewrite makes the download dead weight, so it is deleted here rather than
+/// held until the upload returns: a 5 GB json array would otherwise need 10 GB
+/// of temp space for the length of the upload, and fail with ENOSPC on a small
+/// runner. A download that needed no rewrite is still the thing to upload, so
+/// it survives. Either way nothing outlives an error, for the reason
+/// [`upload_temp_file`] documents: the caller exits without unwinding.
+fn download_to_upload<R>(
+    download: tempfile::NamedTempFile,
+    rewrite: R,
+) -> Result<(tempfile::NamedTempFile, bool), ApiError>
+where
+    R: FnOnce(&Path) -> Result<Option<tempfile::NamedTempFile>, ApiError>,
+{
+    match rewrite(download.path()) {
+        Ok(Some(rewritten)) => {
+            // Deleted before the upload starts, not after it ends.
+            drop(download);
+            Ok((rewritten, true))
+        }
+        Ok(None) => Ok((download, false)),
+        Err(e) => {
+            drop(download);
+            Err(e)
+        }
+    }
 }
 
 /// Upload an already-downloaded temp file, guaranteeing the file is deleted
@@ -1029,9 +1728,9 @@ fn upload_parquet_url(api: &Api, url: &str) -> String {
 /// [`ApiError::exit`] (`std::process::exit`) on the `Err` arm, and
 /// `process::exit` runs no destructors. Owning `temp` in this function means it
 /// drops (deleting a potentially multi-GB download) before the caller can exit.
-fn upload_temp_file<F>(temp: tempfile::NamedTempFile, upload: F) -> Result<String, ApiError>
+fn upload_temp_file<T, F>(temp: tempfile::NamedTempFile, upload: F) -> Result<T, ApiError>
 where
-    F: FnOnce(&Path) -> Result<String, ApiError>,
+    F: FnOnce(&Path) -> Result<T, ApiError>,
 {
     let result = upload(temp.path());
     // Delete now, while still inside this function, so cleanup precedes any
@@ -1040,19 +1739,20 @@ where
     result
 }
 
-/// Stream a blocking HTTP response body to a freshly created temp file,
-/// advancing `pb` as bytes land. Returns the open [`NamedTempFile`], which
+/// Stream a blocking HTTP response body to a freshly created temp file named
+/// with `suffix`, advancing `pb` as bytes land. Returns the open [`NamedTempFile`], which
 /// deletes the file on drop. Created atomically with `O_EXCL` + 0600 perms via
 /// `tempfile`, so it can't be redirected by a pre-planted symlink.
 fn download_to_temp(
     resp: reqwest::blocking::Response,
+    suffix: &str,
     pb: &ProgressBar,
 ) -> std::io::Result<tempfile::NamedTempFile> {
     use std::io::Write;
 
     let mut temp = tempfile::Builder::new()
         .prefix("hotdata-upload-")
-        .suffix(".parquet")
+        .suffix(suffix)
         .tempfile()?;
 
     let mut reader = pb.wrap_read(resp);
@@ -1181,7 +1881,7 @@ pub fn list(workspace_id: &str, format: &str, limit: Option<u32>, cursor: Option
                         ]
                     })
                     .collect();
-                crate::output::table::print(&["DEFAULT", "ID", "NAME", "CREATED"], &rows);
+                crate::output::table::print(&["CURRENT", "ID", "NAME", "CREATED"], &rows);
             }
         }
         _ => unreachable!(),
@@ -1278,11 +1978,14 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                 db.default_connection_id.clone().dark_cyan()
             );
             if let Some(f) = &db.forked_from {
-                println!(
-                    "{}{}",
-                    label("forked_from:"),
-                    lineage_row(&LineageEntry::from(f.clone()), false)
-                );
+                println!("{}{}", label("forked_from:"), forked_from_row(f));
+                if let Some(d) = &f.description {
+                    println!(
+                        "{}{}",
+                        label("fork description:"),
+                        indent_continuation(d, 24)
+                    );
+                }
             }
             let catalog = db
                 .default_catalog
@@ -1295,7 +1998,7 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
                 format!("{catalog}.{{schema}}.{{table}}").green()
             );
             if !db.attachments.is_empty() {
-                println!("{}({})", label("attached catalogs:"), db.attachments.len());
+                println!("{}({})", label("attached databases:"), db.attachments.len());
                 for a in &db.attachments {
                     let alias = a
                         .alias
@@ -1314,9 +2017,9 @@ pub fn get(workspace_id: &str, id_or_name: &str, format: &str) {
     }
 }
 
-/// Attach a connection as a queryable catalog on an instant database, so its
-/// live tables are visible inside that database's query scope (cross-source
-/// joins without exporting data). Defaults to the current database.
+/// Attach another instant database's catalog to this one, so its live tables
+/// are visible inside this database's query scope (cross-database joins
+/// without exporting data). Defaults to the current database.
 pub fn attach(workspace_id: &str, catalog: &str, database: Option<&str>, alias: Option<&str>) {
     use crossterm::style::Stylize;
 
@@ -1340,7 +2043,7 @@ pub fn attach(workspace_id: &str, catalog: &str, database: Option<&str>, alias: 
         Some(a) => println!(
             "{}",
             format!(
-                "Attached '{catalog}' to database '{where_}' as catalog '{a}'.\n\
+                "Attached '{catalog}' to database '{where_}' as '{a}'.\n\
                  Query: hotdata query \"SELECT * FROM {a}.<schema>.<table> LIMIT 10\" -d {where_}"
             )
             .green()
@@ -1348,16 +2051,16 @@ pub fn attach(workspace_id: &str, catalog: &str, database: Option<&str>, alias: 
         None => println!(
             "{}",
             format!(
-                "Attached '{catalog}' to database '{where_}'. It is reachable by the \
-                 catalog's name; run `hotdata databases {where_}` to see attached catalogs."
+                "Attached '{catalog}' to database '{where_}'. It answers to its own \
+                 catalog alias; run `hotdata databases {where_}` to see what is attached."
             )
             .green()
         ),
     }
 }
 
-/// Detach a previously attached catalog from an instant database.
-/// Defaults to the current database.
+/// Detach a previously attached database, withdrawing visibility without
+/// deleting anything. Defaults to the current database.
 pub fn detach(workspace_id: &str, catalog: &str, database: Option<&str>) {
     use crossterm::style::Stylize;
 
@@ -1454,11 +2157,13 @@ pub fn create(
     tables: &[String],
     expires_at: Option<&str>,
     attach: &[String],
+    if_not_exists: bool,
     format: &str,
 ) {
     use crossterm::style::Stylize;
 
-    let request = create_database_typed_request(name, catalog, schema, tables, expires_at);
+    let request =
+        create_database_typed_request(name, catalog, schema, tables, expires_at, if_not_exists);
 
     let api = Api::new(Some(workspace_id));
     let resp = if format == "table" {
@@ -1471,6 +2176,11 @@ pub fn create(
         block(api.client().databases().create(request))
     }
     .unwrap_or_else(|e| e.exit());
+
+    // With `--if-not-exists` the server says whether it created or found the
+    // database; `created` is absent on older servers, which never return an
+    // existing one here, so absent reads as created.
+    let created = resp.created.flatten().unwrap_or(true);
 
     // Attach requested connection catalogs onto the fresh database so a single
     // `databases create --attach …` lands a cross-source-ready context. A failed
@@ -1504,21 +2214,19 @@ pub fn create(
         // Never set on a plain create; mapped anyway so the shape can't drift
         // from fork's if the server ever returns an existing fork here.
         forked_from: resp.forked_from.flatten().map(|f| ForkedFrom::from(*f)),
+        // Only meaningful with `--if-not-exists`, where a script branches on it.
+        created: if if_not_exists { Some(created) } else { None },
     };
-
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
-        use crossterm::style::Stylize;
-        eprintln!(
-            "{}",
-            format!("warning: database created but could not set as current: {e}").yellow()
-        );
-    }
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
         "yaml" => print!("{}", serde_yaml::to_string(&result).unwrap()),
         "table" => {
-            println!("{}", "Database created".green());
+            if created {
+                println!("{}", "Database created".green());
+            } else {
+                println!("{}", "Database already exists".green());
+            }
             if let Some(n) = &result.name {
                 println!("name:        {}", n.clone().cyan());
             }
@@ -1542,14 +2250,17 @@ pub fn create(
                 "{}",
                 format!(
                     concat!(
-                        "Load a table:\n",
-                        "  hotdata databases load --catalog {0} --table <table> --file <path.parquet>\n",
+                        "Make it the current database (create does not switch):\n",
+                        "  hotdata databases use {1}\n",
+                        "\nLoad a table (csv, json, or parquet):\n",
+                        "  hotdata databases load --catalog {0} --table <table> --file <path>\n",
                         "  hotdata databases load --catalog {0} --table <table> --url <url>\n",
                         "\nQuery with:\n",
-                        "  hotdata query \"SELECT * FROM {0}.public.<table> LIMIT 10\"\n",
+                        "  hotdata query -d {1} \"SELECT * FROM {0}.public.<table> LIMIT 10\"\n",
                         "\n  Tip: column names are case-sensitive — wrap uppercase names in double quotes",
                     ),
-                    catalog
+                    catalog,
+                    result.id
                 )
                 .dark_grey()
             );
@@ -1586,6 +2297,7 @@ pub fn fork(
     database: Option<&str>,
     name: Option<&str>,
     expires_at: Option<&str>,
+    description: Option<&str>,
     format: &str,
 ) {
     use crossterm::style::Stylize;
@@ -1598,6 +2310,7 @@ pub fn fork(
         name,
         db.name.as_deref().or(db.default_catalog.as_deref()),
         expires_at,
+        description,
     );
 
     // The copy is synchronous but bucket-internal (server-side object copy, no
@@ -1621,14 +2334,8 @@ pub fn fork(
         default_connection_id: resp.default_connection_id,
         expires_at: resp.expires_at.flatten(),
         forked_from: resp.forked_from.flatten().map(|f| ForkedFrom::from(*f)),
+        created: None,
     };
-
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, &result.id) {
-        eprintln!(
-            "{}",
-            format!("warning: database forked but could not set as current: {e}").yellow()
-        );
-    }
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap()),
@@ -1646,11 +2353,15 @@ pub fn fork(
             // snapshot); the resolved source id is the fallback for servers
             // that predate lineage.
             match &result.forked_from {
-                Some(f) => println!(
-                    "forked_from: {}",
-                    lineage_row(&LineageEntry::from(f.clone()), false)
-                ),
+                Some(f) => println!("forked_from: {}", forked_from_row(f)),
                 None => println!("forked_from: {}", db.id),
+            }
+            if let Some(d) = result
+                .forked_from
+                .as_ref()
+                .and_then(|f| f.description.as_deref())
+            {
+                println!("description: {}", indent_continuation(d, 13));
             }
             // Always printed, "never" included: with --expires-at omitted a
             // still-future expiry on the source is silently inherited.
@@ -1668,13 +2379,16 @@ pub fn fork(
                 "{}",
                 format!(
                     concat!(
-                        "The fork is now the current database; the source is unchanged.\n",
+                        "The source is unchanged, and your current database did not change.\n",
                         "It answers to the same catalog alias as its source inside its own scope.\n",
                         "Indexes are not carried over — recreate them on the fork if needed.\n",
-                        "\nQuery it now:\n",
-                        "  hotdata query \"SELECT * FROM {0}.public.<table> LIMIT 10\"",
+                        "\nSwitch to the fork:\n",
+                        "  hotdata databases use {1}\n",
+                        "\nOr query it once without switching:\n",
+                        "  hotdata query -d {1} \"SELECT * FROM {0}.public.<table> LIMIT 10\"",
                     ),
-                    catalog
+                    catalog,
+                    result.id
                 )
                 .dark_grey()
             );
@@ -1697,6 +2411,9 @@ struct LineageEntry {
     snapshot_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     forked_at: Option<String>,
+    /// Why the fork was taken, as given at fork time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
     /// False once that database has been deleted; its place in the record is
     /// kept either way.
     exists: bool,
@@ -1709,6 +2426,7 @@ impl From<hotdata::models::LineageAncestorInfo> for LineageEntry {
             name: a.name.flatten(),
             snapshot_id: a.snapshot_id.flatten(),
             forked_at: a.forked_at.flatten(),
+            description: a.description.flatten(),
             exists: a.exists,
         }
     }
@@ -1721,6 +2439,7 @@ impl From<hotdata::models::LineageForkInfo> for LineageEntry {
             name: f.name.flatten(),
             snapshot_id: f.snapshot_id.flatten(),
             forked_at: f.forked_at.flatten(),
+            description: f.description.flatten(),
             exists: f.exists,
         }
     }
@@ -1736,6 +2455,7 @@ impl From<ForkedFrom> for LineageEntry {
             name: f.name,
             snapshot_id: f.snapshot_id,
             forked_at: f.forked_at,
+            description: f.description,
             exists: true,
         }
     }
@@ -1784,6 +2504,38 @@ fn fetch_lineage(
     .map(LineageResponse::from)
 }
 
+/// Longest description shown on a one-line lineage row; the full text is in
+/// `-o json`/`yaml` and on `databases <id>`.
+const DESCRIPTION_SUMMARY_CHARS: usize = 60;
+
+/// A fork description squeezed onto one row: its first line, cut at
+/// [`DESCRIPTION_SUMMARY_CHARS`], with `…` marking anything left out.
+fn description_summary(d: &str) -> String {
+    let mut lines = d.lines();
+    let first = lines.next().unwrap_or("");
+    let mut out: String = first.chars().take(DESCRIPTION_SUMMARY_CHARS).collect();
+    if out.len() < first.len() || lines.next().is_some() {
+        out.push('…');
+    }
+    out
+}
+
+/// Indent every line after the first by `width` spaces, so a multi-line value
+/// stays aligned under its label.
+fn indent_continuation(s: &str, width: usize) -> String {
+    s.lines()
+        .collect::<Vec<_>>()
+        .join(&format!("\n{}", " ".repeat(width)))
+}
+
+/// A `forked_from:` row. The description is left off because both views that
+/// print this row give it a line of its own.
+fn forked_from_row(f: &ForkedFrom) -> String {
+    let mut entry = LineageEntry::from(f.clone());
+    entry.description = None;
+    lineage_row(&entry, false)
+}
+
 /// One `id (name) — root, forked <date>, snapshot <n>, deleted` line of the
 /// lineage tree and the `forked_from:` rows. The id leads: it's the only field
 /// guaranteed present, and the handle every other databases command accepts.
@@ -1806,6 +2558,9 @@ fn lineage_row(e: &LineageEntry, root: bool) -> String {
     }
     if !e.exists {
         notes.push("deleted".to_string());
+    }
+    if let Some(d) = &e.description {
+        notes.push(format!("\"{}\"", description_summary(d)));
     }
     if !notes.is_empty() {
         s.push(' ');
@@ -1891,6 +2646,7 @@ fn build_lineage_tree(
         name: db_name.map(str::to_string),
         snapshot_id: None,
         forked_at: None,
+        description: None,
         exists: true,
     };
     // Known descent, root-first: reversed ancestors (the segment the response
@@ -1898,7 +2654,7 @@ fn build_lineage_tree(
     let mut chain: Vec<LineageEntry> = lin.ancestors.iter().rev().cloned().collect();
     chain.push(self_entry);
     // The server annotates each ancestor entry with the fork edge BELOW it —
-    // the snapshot of that ancestor the next generation copied, and when.
+    // the snapshot of that ancestor the next generation copied, when, and why.
     // Tree rows carry their own creation edge (the forks-list convention), so
     // shift the metadata one generation down. The top of the chain keeps
     // none: a root has no fork event, and below a truncation the edge above
@@ -1906,10 +2662,12 @@ fn build_lineage_tree(
     for i in (1..chain.len()).rev() {
         chain[i].snapshot_id = chain[i - 1].snapshot_id;
         chain[i].forked_at = chain[i - 1].forked_at.clone();
+        chain[i].description = chain[i - 1].description.clone();
     }
     if let Some(first) = chain.first_mut() {
         first.snapshot_id = None;
         first.forked_at = None;
+        first.description = None;
     }
     // parent id → next generation toward the queried database, for grafting
     // past a node whose own lineage cannot be fetched.
@@ -1926,6 +2684,7 @@ fn build_lineage_tree(
             name: None,
             snapshot_id: None,
             forked_at: None,
+            description: None,
             exists: true,
         },
     };
@@ -2152,28 +2911,17 @@ fn database_exists_or_unverifiable(result: Result<Database, ApiError>) -> Result
 pub fn set(workspace_id: &str, id_or_name: &str) {
     use crossterm::style::Stylize;
     // `set` only writes local config; the GET is just a friendly existence-check.
+    // Not an id → fall back to a catalog alias or name match, like `-d`.
     let api = Api::new(Some(workspace_id));
-    let id = if is_database_id(id_or_name) {
-        // Ids keep the 403-tolerant existence check: a database API token is
-        // denied `GET /v1/databases/{id}` (and the list fallback), so resolving
-        // would lock it out of `databases use` entirely.
-        if !database_exists_or_unverifiable(get_database(&api, id_or_name))
-            .unwrap_or_else(|e| e.exit())
-        {
-            eprintln!(
-                "{}",
-                format!("error: no database with id '{id_or_name}'").red()
-            );
-            std::process::exit(1);
-        }
+    let id = if database_exists_or_unverifiable(get_database(&api, id_or_name))
+        .unwrap_or_else(|e| e.exit())
+    {
         id_or_name.to_string()
     } else {
-        // A catalog or name: resolve it so `databases use <name>` works like
-        // every other database lookup. Config must hold the id — everything
-        // downstream (X-Database-Id, context paths) sends it raw.
         resolve_database(&api, id_or_name).id
     };
-    if let Err(e) = crate::config::save_current_database("default", workspace_id, &id) {
+    let id = id.as_str();
+    if let Err(e) = crate::config::save_current_database("default", workspace_id, id) {
         eprintln!("{}", format!("error saving current database: {e}").red());
         std::process::exit(1);
     }
@@ -2296,10 +3044,28 @@ pub fn tables_load(
     upload_id: Option<&str>,
     result_id: Option<&str>,
     append: bool,
+    mode: Option<&str>,
+    format: Option<&str>,
+    key: &[String],
+    retry_timeout_secs: u64,
 ) {
     use crossterm::style::Stylize;
 
-    let mode = if append { "append" } else { "replace" };
+    // `--append` predates `--mode` and stays supported; clap keeps them mutually
+    // exclusive, so at most one is set.
+    let mode = match (mode, append) {
+        (Some(m), _) => m,
+        (None, true) => "append",
+        (None, false) => "replace",
+    };
+    if matches!(mode, "delete" | "update" | "upsert") && result_id.is_some() {
+        eprintln!(
+            "error: --result-id loads a stored result, which carries every column — \
+             mode '{mode}' matches rows by key and needs a key-shaped upload. \
+             Use --file/--url/--upload-id, or mode replace/append."
+        );
+        std::process::exit(1);
+    }
 
     // NOTE: this used to detect a database API token and route it through the
     // database-scoped endpoints (the connection-scoped managed paths and the
@@ -2327,13 +3093,26 @@ pub fn tables_load(
     // clap enforces mutual exclusion; only one source is ever Some. A file/URL is
     // uploaded first and loaded by upload id; a result is loaded by reference with
     // no upload step.
+    // An explicit --format always wins; otherwise the source's own extension
+    // names the format, and an unrecognised one sends nothing so the server
+    // sniffs. A staged --upload-id carries the content type it was created
+    // with, so it too sends only what --format asked for.
+    //
+    // A file or URL can come back with a format the upload settled rather than
+    // the one resolved here: a json source that was not newline-delimited is
+    // uploaded as a rewrite that is.
     let body = match (result_id, upload_id, file, url) {
-        (Some(rid), None, None, None) => load_table_request_from_result(rid, mode),
-        (None, Some(id), None, None) => load_table_request(id, mode),
+        (Some(rid), None, None, None) => load_table_request_from_result(rid, mode, key),
+        (None, Some(id), None, None) => load_table_request(id, mode, format, key),
         (None, None, Some(path), None) => {
-            load_table_request(&upload_parquet_file(&api, path), mode)
+            let (upload, format) =
+                upload_data_file(&api, path, format.or_else(|| format_for_path(path)));
+            load_table_request(&upload, mode, format, key)
         }
-        (None, None, None, Some(u)) => load_table_request(&upload_parquet_url(&api, u), mode),
+        (None, None, None, Some(u)) => {
+            let (upload, format) = upload_data_url(&api, u, format.or_else(|| format_for_path(u)));
+            load_table_request(&upload, mode, format, key)
+        }
         (None, None, None, None) => {
             eprintln!(
                 "error: one of --file <path>, --url <url>, --upload-id <id>, or --result-id <id> is required"
@@ -2346,142 +3125,23 @@ pub fn tables_load(
     let path = managed_table_load_path(&db.default_connection_id, schema, table);
 
     let spinner = crate::util::spinner("Loading table...");
-    let (status, resp_body) = api.post_raw(&path, &body).unwrap_or_else(|e| {
-        spinner.finish_and_clear();
-        e.exit()
-    });
-    spinner.finish_and_clear();
-
-    let (status, resp_body) = if !status.is_success()
-        // Upload-only recovery: the delete + recreate below mints a new database
-        // id, which would orphan a result (the server scopes it to the original
-        // database). A result load into an undeclared table is auto-declared
-        // server-side, so this path isn't needed for it — surface the error.
-        && result_id.is_none()
-        && crate::util::api_error(resp_body.clone()).contains("not declared")
-    {
-        // The table wasn't declared at create time. Collect existing tables so
-        // they are re-declared in the replacement database, then delete and
-        // recreate with all tables (including the new one) declared.
-        let (existing, _, _) =
-            collect_tables(&api, &db.default_connection_id, None, None, None, None);
-        let mut all_tables: Vec<String> = existing
-            .iter()
-            .map(|t| format!("{}.{}", t.schema, t.table))
-            .collect();
-        let new_table_key = format!("{schema}.{table}");
-        if !all_tables.contains(&new_table_key) {
-            all_tables.push(new_table_key);
-        }
-
-        // Warn if any existing table has synced data — delete+recreate will lose it.
-        let synced: Vec<String> = existing
-            .iter()
-            .filter(|t| t.synced)
-            .map(|t| format!("{}.{}", t.schema, t.table))
-            .collect();
-        if !synced.is_empty() {
-            use crossterm::style::Stylize;
-            let catalog = db
-                .default_catalog
-                .as_deref()
-                .or(db.name.as_deref())
-                .unwrap_or(&db.id);
-            eprintln!(
-                "{}",
-                format!(
-                    "warning: declaring '{}' requires recreating the database '{catalog}'. \
-                     The following tables have loaded data that will be lost:\n  {}",
-                    table,
-                    synced.join(", ")
-                )
-                .yellow()
-            );
-            if crate::util::is_interactive() {
-                use std::io::Write;
-                eprint!("Proceed and lose this data? [y/N] ");
-                std::io::stderr().flush().unwrap();
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                if !input.trim().eq_ignore_ascii_case("y") {
-                    eprintln!("{}", "Aborted.".red());
-                    std::process::exit(1);
-                }
-            } else {
-                eprintln!(
-                    "{}",
-                    "error: cannot auto-declare table in non-interactive mode — existing data would be lost. \
-                     Declare all tables up front with 'databases create --table <name>'."
-                        .red()
-                );
-                std::process::exit(1);
-            }
-        }
-
-        let (del_status, del_body) = api
-            .delete_raw(&format!("/databases/{}", db.id))
-            .unwrap_or_else(|e| e.exit());
-        if !del_status.is_success() {
-            eprintln!("{}", crate::util::api_error(del_body).red());
-            std::process::exit(1);
-        }
-        let create_body = create_database_request(
-            db.name.as_deref(),
-            db.default_catalog.as_deref(),
-            schema,
-            &all_tables,
-            db.expires_at.as_deref(),
-        );
-        let (create_status, create_body_resp) = api
-            .post_raw("/databases", &create_body)
-            .unwrap_or_else(|e| e.exit());
-        if !create_status.is_success() {
-            eprintln!("{}", crate::util::api_error(create_body_resp).red());
-            std::process::exit(1);
-        }
-        let new_db: CreateDatabaseResponse = match serde_json::from_str(&create_body_resp) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("error parsing create response: {e}");
-                std::process::exit(1);
-            }
-        };
-        let _ = crate::config::save_current_database("default", workspace_id, &new_db.id);
-        // Instant databases have no add-table endpoint, so declaring a new table
-        // is a delete + recreate — which mints a NEW database id. Surface that
-        // explicitly: the id printed by `databases create` is now stale, and
-        // id-based automation (e.g. `databases delete <create-time-id>`) would
-        // otherwise fail with "no database with id". Reference by catalog instead.
-        {
-            use crossterm::style::Stylize;
-            let catalog = db
-                .default_catalog
-                .as_deref()
-                .or(db.name.as_deref())
-                .unwrap_or(&db.id);
-            eprintln!(
-                "{}",
-                format!(
-                    "note: table '{table}' was not declared — recreated database '{catalog}' to add it \
-                     (id {} → {}). Instant databases are recreated when a new table is loaded; \
-                     reference them by catalog ('{catalog}'), not the create-time id.",
-                    db.id, new_db.id
-                )
-                .yellow()
-            );
-        }
-        let new_path = managed_table_load_path(&new_db.default_connection_id, schema, table);
-        let spinner = crate::util::spinner("Loading table...");
-        let result = api.post_raw(&new_path, &body).unwrap_or_else(|e| {
+    let (status, resp_body) =
+        post_load_with_retry(&api, &path, &body, retry_timeout_secs, |wait| {
+            spinner.set_message(format!(
+                "Loading table... another load holds the table, retrying in {}s",
+                wait.as_secs()
+            ));
+        })
+        .unwrap_or_else(|e| {
             spinner.finish_and_clear();
             e.exit()
         });
-        spinner.finish_and_clear();
-        result
-    } else {
-        (status, resp_body)
-    };
+    spinner.finish_and_clear();
 
+    // No undeclared-table recovery here: the load endpoint declares a missing
+    // table (and a missing schema) itself, so a load never fails for want of a
+    // declaration. `databases tables add` is for declaring a table *with* a
+    // key or a layout, which a load cannot infer.
     if !status.is_success() {
         eprintln!("{}", crate::util::api_error(resp_body).red());
         std::process::exit(1);
@@ -2520,6 +3180,38 @@ pub fn tables_load(
     );
 }
 
+/// Split a table argument into (catalog, schema, table).
+///
+/// Accepts a bare `table` (in `schema`, the --schema flag), `schema.table`, or
+/// `catalog.schema.table`, whose catalog names the database. A catalog together
+/// with `database` is refused: they would name the database twice, possibly
+/// differently.
+fn split_table_ref<'a>(
+    table: &'a str,
+    schema: &'a str,
+    database: Option<&str>,
+) -> Result<(Option<&'a str>, &'a str, &'a str), &'static str> {
+    let parts: Vec<&str> = table.split('.').collect();
+    let split = match parts.as_slice() {
+        [t] => (None, schema, *t),
+        [s, t] => (None, *s, *t),
+        [_, _, _] if database.is_some() => {
+            return Err(
+                "error: --database takes a table or 'schema.table'; drop the catalog from the \
+                 table, or drop --database",
+            );
+        }
+        [c, s, t] => (Some(*c), *s, *t),
+        _ => {
+            return Err("error: table must be 'table', 'schema.table', or 'catalog.schema.table'");
+        }
+    };
+    if [split.1, split.2].iter().any(|p| p.is_empty()) || split.0.is_some_and(str::is_empty) {
+        return Err("error: table must be 'table', 'schema.table', or 'catalog.schema.table'");
+    }
+    Ok(split)
+}
+
 pub fn tables_delete(
     workspace_id: &str,
     database: Option<&str>,
@@ -2528,10 +3220,19 @@ pub fn tables_delete(
 ) {
     use crossterm::style::Stylize;
 
-    let database = resolve_current_database(database, workspace_id);
+    let (catalog, schema, table) = split_table_ref(table, schema_name(schema), database)
+        .unwrap_or_else(|e| {
+            eprintln!("{}", e.red());
+            std::process::exit(1);
+        });
+    // A `catalog.schema.table` names its database by catalog; otherwise it is
+    // --database or the active one.
+    let database = match catalog {
+        Some(catalog) => catalog.to_string(),
+        None => resolve_current_database(database, workspace_id),
+    };
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
-    let schema = schema_name(schema);
 
     let path = managed_table_delete_path(&db.default_connection_id, schema, table);
     let (status, resp_body) = api.delete_raw(&path).unwrap_or_else(|e| e.exit());
@@ -2555,6 +3256,36 @@ pub fn tables_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_table_ref_reads_each_qualification() {
+        assert_eq!(
+            split_table_ref("orders", "public", None).unwrap(),
+            (None, "public", "orders")
+        );
+        assert_eq!(
+            split_table_ref("orders", "sales", Some("db1")).unwrap(),
+            (None, "sales", "orders")
+        );
+        // A schema in the name wins over --schema.
+        assert_eq!(
+            split_table_ref("sales.orders", "public", None).unwrap(),
+            (None, "sales", "orders")
+        );
+        // The catalog names the database; it is not folded into the table.
+        assert_eq!(
+            split_table_ref("shop.sales.orders", "public", None).unwrap(),
+            (Some("shop"), "sales", "orders")
+        );
+    }
+
+    #[test]
+    fn split_table_ref_refuses_a_catalog_with_database_and_bad_shapes() {
+        assert!(split_table_ref("shop.sales.orders", "public", Some("db1")).is_err());
+        assert!(split_table_ref("a.b.c.d", "public", None).is_err());
+        assert!(split_table_ref("sales.", "public", None).is_err());
+        assert!(split_table_ref(".sales.orders", "public", None).is_err());
+    }
 
     #[test]
     fn schema_name_defaults_to_public() {
@@ -2581,8 +3312,22 @@ mod tests {
     }
 
     #[test]
+    fn create_database_request_sends_if_not_exists_only_when_set() {
+        let req = create_database_request(Some("app"), None, "public", &[], None, true);
+        assert_eq!(req["if_not_exists"], serde_json::json!(true));
+        let req = create_database_request(Some("app"), None, "public", &[], None, false);
+        assert!(
+            req.get("if_not_exists").is_none(),
+            "an older server rejects unknown keys, so false is omitted, not sent"
+        );
+        // The typed request carries it through to the SDK model.
+        let typed = create_database_typed_request(Some("app"), None, "public", &[], None, true);
+        assert_eq!(typed.if_not_exists, Some(true));
+    }
+
+    #[test]
     fn create_database_request_declares_schema_without_name_or_tables() {
-        let req = create_database_request(None, None, "public", &[], None);
+        let req = create_database_request(None, None, "public", &[], None, false);
         assert_eq!(
             req,
             serde_json::json!({"schemas": [{"name": "public"}]}),
@@ -2592,7 +3337,7 @@ mod tests {
 
     #[test]
     fn create_database_request_declares_custom_schema_without_tables() {
-        let req = create_database_request(None, None, "analytics", &[], None);
+        let req = create_database_request(None, None, "analytics", &[], None, false);
         assert_eq!(req["schemas"][0]["name"], "analytics");
         // An empty schema declaration omits `tables` entirely — the server
         // treats that as "declare the schema, add tables later".
@@ -2603,7 +3348,7 @@ mod tests {
     fn create_database_request_typed_round_trip_without_tables() {
         // The typed builder deserializes the JSON body and panics on a shape the
         // SDK model rejects, so the tables-less schema declaration must survive it.
-        let req = create_database_typed_request(None, None, "public", &[], None);
+        let req = create_database_typed_request(None, None, "public", &[], None, false);
         let schemas = req.schemas.expect("schemas is always sent");
         assert_eq!(schemas.len(), 1);
         assert_eq!(schemas[0].name, "public");
@@ -2612,7 +3357,7 @@ mod tests {
 
     #[test]
     fn create_database_request_includes_name() {
-        let req = create_database_request(Some("jaffle_shop"), None, "public", &[], None);
+        let req = create_database_request(Some("jaffle_shop"), None, "public", &[], None, false);
         assert_eq!(req["name"], "jaffle_shop");
         assert_eq!(req["schemas"][0]["name"], "public");
     }
@@ -2625,6 +3370,7 @@ mod tests {
             "public",
             &["orders".to_string(), "customers".to_string()],
             None,
+            false,
         );
         assert_eq!(req["schemas"][0]["name"], "public");
         assert_eq!(req["schemas"][0]["tables"][0]["name"], "orders");
@@ -2633,7 +3379,14 @@ mod tests {
 
     #[test]
     fn create_database_request_schemas_without_name() {
-        let req = create_database_request(None, None, "analytics", &["events".to_string()], None);
+        let req = create_database_request(
+            None,
+            None,
+            "analytics",
+            &["events".to_string()],
+            None,
+            false,
+        );
         assert!(req.get("name").is_none());
         assert_eq!(req["schemas"][0]["name"], "analytics");
     }
@@ -2643,7 +3396,14 @@ mod tests {
         // Every --table dot-qualified elsewhere: --schema still has to be
         // declared, or a later bare-name declaration into it fails the same way
         // an empty --table list used to.
-        let req = create_database_request(None, None, "public", &["raw.orders".to_string()], None);
+        let req = create_database_request(
+            None,
+            None,
+            "public",
+            &["raw.orders".to_string()],
+            None,
+            false,
+        );
         assert_eq!(req["schemas"][0]["name"], "public");
         assert!(
             req["schemas"][0].get("tables").is_none(),
@@ -2663,6 +3423,7 @@ mod tests {
             "public",
             &["orders".to_string(), "public.customers".to_string()],
             None,
+            false,
         );
         assert_eq!(req["schemas"].as_array().unwrap().len(), 1);
         assert_eq!(req["schemas"][0]["name"], "public");
@@ -2672,13 +3433,13 @@ mod tests {
 
     #[test]
     fn create_database_request_includes_expires_at_when_provided() {
-        let req = create_database_request(None, None, "public", &[], Some("24h"));
+        let req = create_database_request(None, None, "public", &[], Some("24h"), false);
         assert_eq!(req["expires_at"], "24h");
     }
 
     #[test]
     fn create_database_request_omits_expires_at_when_none() {
-        let req = create_database_request(None, None, "public", &[], None);
+        let req = create_database_request(None, None, "public", &[], None, false);
         assert!(req.get("expires_at").is_none());
     }
 
@@ -2694,6 +3455,7 @@ mod tests {
                 "raw.raw_customers".to_string(),
             ],
             None,
+            false,
         );
         // bare "orders" → default schema "public"
         assert_eq!(req["schemas"][0]["name"], "public");
@@ -2708,49 +3470,6 @@ mod tests {
         format!(
             r#"{{"id":"{id}","name":"{name}","default_catalog":"default","default_schema":"main","default_connection_id":"{conn_id}","attachments":[]}}"#
         )
-    }
-
-    #[test]
-    fn database_json_names_catalog_ids_as_catalog() {
-        // runtimedb removed connections as a concept (push-only engine: every
-        // connection row IS a catalog), so the CLI exposes the ids — they're
-        // real handles, e.g. for detach — under the catalog name they'll keep.
-        // Only the wire still says `default_connection_id`.
-        let db = Database {
-            id: "db_1".to_string(),
-            name: Some("sales".to_string()),
-            default_catalog: Some("sales".to_string()),
-            default_connection_id: "conn_own".to_string(),
-            expires_at: None,
-            created_at: None,
-            forked_from: None,
-            attachments: vec![DatabaseAttachment {
-                connection_id: "conn_a".to_string(),
-                alias: Some("gh".to_string()),
-            }],
-        };
-        let json = serde_json::to_value(&db).unwrap();
-        assert_eq!(json["default_catalog_id"], serde_json::json!("conn_own"));
-        assert!(json.get("default_connection_id").is_none(), "json: {json}");
-        assert_eq!(
-            json["attachments"][0]["catalog_id"],
-            serde_json::json!("conn_a")
-        );
-        assert!(
-            json["attachments"][0].get("connection_id").is_none(),
-            "json: {json}"
-        );
-    }
-
-    #[test]
-    fn create_response_parses_wire_name_but_emits_catalog_id() {
-        // The server's create/fork responses still say `default_connection_id`;
-        // the CLI's own -o json/yaml renames it on the way out.
-        let resp: CreateDatabaseResponse =
-            serde_json::from_str(r#"{"id":"db_new","default_connection_id":"conn_abc"}"#).unwrap();
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["default_catalog_id"], serde_json::json!("conn_abc"));
-        assert!(json.get("default_connection_id").is_none(), "json: {json}");
     }
 
     /// Like [`full_detail`] but with an explicit catalog, for ambiguity tests.
@@ -3002,6 +3721,7 @@ mod tests {
                 name: Some("staging".to_string()),
                 snapshot_id: Some(42),
                 forked_at: Some("2026-09-01T14:00:00Z".to_string()),
+                description: Some("q3 what-if\nsecond line".to_string()),
                 exists: false,
             },
             true,
@@ -3012,6 +3732,9 @@ mod tests {
         assert!(row.contains("root, forked"), "row: {row}");
         assert!(row.contains("snapshot 42"), "row: {row}");
         assert!(row.contains("deleted"), "row: {row}");
+        // Only the first line of a description fits on a row.
+        assert!(row.contains("\"q3 what-if…\""), "row: {row}");
+        assert!(!row.contains("second line"), "row: {row}");
 
         // A bare entry (pre-lineage fork) is just the id — no dangling "—".
         let bare = lineage_row(
@@ -3020,6 +3743,7 @@ mod tests {
                 name: None,
                 snapshot_id: None,
                 forked_at: None,
+                description: None,
                 exists: true,
             },
             false,
@@ -3129,7 +3853,9 @@ mod tests {
             .with_body(lineage_body(
                 "db_c",
                 "db_a",
-                r#"{"database_id":"db_b","exists":false},{"database_id":"db_a","name":"prod","exists":true}"#,
+                // Each ancestor's description is why the generation BELOW it
+                // was forked: db_b's is C's reason, db_a's is B's.
+                r#"{"database_id":"db_b","exists":false,"description":"c from b"},{"database_id":"db_a","name":"prod","exists":true,"description":"b from a"}"#,
                 "",
                 0,
             ))
@@ -3143,7 +3869,7 @@ mod tests {
                 "db_a",
                 "db_a",
                 "",
-                r#"{"database_id":"db_b","exists":false}"#,
+                r#"{"database_id":"db_b","exists":false,"description":"b from a"}"#,
                 1,
             ))
             .create();
@@ -3163,6 +3889,11 @@ mod tests {
         assert_eq!(b.entry.database_id, "db_b");
         assert!(b.forks_unknown);
         assert_eq!(b.forks[0].entry.database_id, "db_c");
+        // The grafted node takes its reason from the shifted ancestor chain,
+        // so each description lands on the fork it explains.
+        assert_eq!(t.tree.entry.description, None);
+        assert_eq!(b.entry.description.as_deref(), Some("b from a"));
+        assert_eq!(b.forks[0].entry.description.as_deref(), Some("c from b"));
 
         let json = serde_json::to_value(&t).unwrap();
         assert_eq!(json["tree"]["forks"][0]["forks_unknown"], true);
@@ -3246,6 +3977,7 @@ mod tests {
             name: name.map(str::to_string),
             snapshot_id: None,
             forked_at: None,
+            description: None,
             exists: true,
         };
         let node = |id: &str, name: Option<&str>, unlisted: i64, forks: Vec<LineageTreeNode>| {
@@ -3403,36 +4135,233 @@ mod tests {
 
     #[test]
     fn load_table_request_carries_mode() {
-        let body = load_table_request("upl_abc", "replace");
+        let body = load_table_request("upl_abc", "replace", None, &[]);
         assert_eq!(body["mode"], "replace");
         assert_eq!(body["upload_id"], "upl_abc");
 
-        let body = load_table_request("upl_abc", "append");
+        let body = load_table_request("upl_abc", "append", None, &[]);
         assert_eq!(body["mode"], "append");
         assert_eq!(body["upload_id"], "upl_abc");
     }
 
     #[test]
+    fn load_table_request_omits_format_and_key_unless_given() {
+        // Omitted, not null: the server resolves the format itself from the
+        // upload's content type, and an absent key means "the table's own".
+        let body = load_table_request("upl_abc", "replace", None, &[]);
+        assert!(body.get("format").is_none());
+        assert!(body.get("key").is_none());
+
+        let key = vec!["tenant".to_string(), "id".to_string()];
+        let body = load_table_request("upl_abc", "upsert", Some("csv"), &key);
+        assert_eq!(body["format"], "csv");
+        assert_eq!(body["key"], serde_json::json!(["tenant", "id"]));
+    }
+
+    #[test]
     fn load_table_request_from_result_carries_mode() {
-        let body = load_table_request_from_result("rslt_abc", "replace");
+        let body = load_table_request_from_result("rslt_abc", "replace", &[]);
         assert_eq!(body["mode"], "replace");
         assert_eq!(body["result_id"], "rslt_abc");
         // A result load must not send an upload_id (the server rejects both).
         assert!(body.get("upload_id").is_none());
 
-        let body = load_table_request_from_result("rslt_abc", "append");
+        let body = load_table_request_from_result("rslt_abc", "append", &[]);
         assert_eq!(body["mode"], "append");
         assert_eq!(body["result_id"], "rslt_abc");
         assert!(body.get("upload_id").is_none());
     }
 
     #[test]
-    fn is_parquet_path_by_extension() {
-        assert!(is_parquet_path("/data/orders.parquet"));
-        assert!(is_parquet_path("/data/ORDERS.PARQUET"));
-        assert!(is_parquet_path("file.parquet"));
-        assert!(!is_parquet_path("/data/orders.csv"));
-        assert!(!is_parquet_path("/data/orders"));
+    fn result_load_never_sends_a_format() {
+        // A stored result is always parquet and the server rejects `format`
+        // alongside `result_id`, so the builder has no way to send one.
+        let body = load_table_request_from_result("rslt_abc", "replace", &["id".to_string()]);
+        assert!(body.get("format").is_none());
+        assert_eq!(body["key"], serde_json::json!(["id"]));
+    }
+
+    #[test]
+    fn format_for_path_reads_the_extension() {
+        assert_eq!(format_for_path("/data/orders.parquet"), Some("parquet"));
+        assert_eq!(format_for_path("/data/ORDERS.PARQUET"), Some("parquet"));
+        assert_eq!(format_for_path("/data/orders.csv"), Some("csv"));
+        // Newline-delimited JSON answers to three spellings, all `json`.
+        assert_eq!(format_for_path("a.json"), Some("json"));
+        assert_eq!(format_for_path("a.jsonl"), Some("json"));
+        assert_eq!(format_for_path("a.ndjson"), Some("json"));
+        // Unknown and absent extensions send no format at all, leaving the
+        // server to sniff the bytes — never a client-side rejection.
+        assert_eq!(format_for_path("/data/orders.txt"), None);
+        assert_eq!(format_for_path("/data/orders"), None);
+    }
+
+    #[test]
+    fn sort_and_partition_keys_render_for_the_table_output() {
+        // The layout is fixed at declaration, so the echo is the user's only
+        // confirmation of what the server took.
+        let sorted = sort_keys(&["created_at=desc".to_string(), "id".to_string()]).unwrap();
+        assert_eq!(describe_sort_keys(&sorted), "created_at desc, id");
+
+        let parts = partition_keys(&[
+            "created_at=year".to_string(),
+            "created_at=month".to_string(),
+            "region".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            describe_partition_keys(&parts),
+            "created_at:year, created_at:month, region",
+            "identity prints bare — the partition is the value itself"
+        );
+    }
+
+    /// Write `body` to a temp file named with `suffix`, for the rewrite tests.
+    fn source_file(suffix: &str, body: &str) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn a_json_array_file_is_rewritten_to_newline_delimited_json() {
+        // The shape a `.json` file most often carries: what an HTTP API returns
+        // and what `jq` writes. A `json` load reads one value per line, so the
+        // array is rewritten before it goes up.
+        let src = source_file(".json", "[{\"id\":1},{\"id\":2}]");
+        let rewritten = json_source_rewrite(src.path(), Some("json"))
+            .unwrap()
+            .expect("an array is not newline-delimited, so it is rewritten");
+        assert_eq!(
+            std::fs::read_to_string(rewritten.path()).unwrap(),
+            "{\"id\":1}\n{\"id\":2}\n"
+        );
+        assert_eq!(
+            crate::client::sdk::content_type_for_path(&rewritten.path().to_string_lossy()),
+            "application/x-ndjson",
+            "the rewrite's own name has to announce what it holds"
+        );
+    }
+
+    #[test]
+    fn a_pretty_printed_json_file_is_rewritten() {
+        let src = source_file(".json", "{\n  \"id\": 1\n}\n");
+        let rewritten = json_source_rewrite(src.path(), Some("json"))
+            .unwrap()
+            .expect("a value spanning lines is not newline-delimited");
+        assert_eq!(
+            std::fs::read_to_string(rewritten.path()).unwrap(),
+            "{\"id\":1}\n"
+        );
+    }
+
+    #[test]
+    fn newline_delimited_json_is_uploaded_untouched() {
+        // The fast path that keeps a large `.jsonl` from being rewritten to say
+        // exactly the same thing.
+        let src = source_file(".jsonl", "{\"id\":1}\n{\"id\":2}\n");
+        assert!(
+            json_source_rewrite(src.path(), Some("json"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_csv_or_parquet_source_is_never_reshaped() {
+        // Only a json load reads rows off lines; nothing else is even sniffed
+        // for shape, whatever its first byte looks like.
+        let csv = source_file(".csv", "id,name\n1,a\n");
+        assert!(
+            json_source_rewrite(csv.path(), Some("csv"))
+                .unwrap()
+                .is_none()
+        );
+        let looks_like_json = source_file(".csv", "[{\"id\":1}]");
+        assert!(
+            json_source_rewrite(looks_like_json.path(), Some("csv"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_extensionless_json_array_is_claimed_as_json() {
+        // With no extension the load sends no format and the server reads the
+        // bytes — as csv, which a leading `[` fails on. A plain array is taken
+        // as json here instead, and comes back rewritten.
+        let src = source_file("", "[{\"id\":1}]");
+        assert!(load_reads_json(None, b"  [{\"id\":1}]"));
+        assert!(json_source_rewrite(src.path(), None).unwrap().is_some());
+        // Newline-delimited bytes with no extension still go to the server to
+        // sniff, which reads them correctly.
+        assert!(!load_reads_json(None, b"{\"id\":1}\n{\"id\":2}\n"));
+    }
+
+    #[test]
+    fn a_json_source_with_no_rows_is_refused() {
+        let src = source_file(".json", "  \n");
+        let err = json_source_rewrite(src.path(), Some("json")).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("no json rows"),
+            "an empty json file should say so here, not fail schema inference server-side: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_json_row_that_is_not_an_object_is_refused_before_upload() {
+        let src = source_file(".json", "[{\"id\":1}, 7]");
+        let err = json_source_rewrite(src.path(), Some("json")).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("one object per row"),
+            "the error should name the shape a load needs: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_for_path_ignores_a_url_query_string() {
+        // A presigned storage URL carries its signature in the query, so the
+        // extension has to be read from the path alone.
+        assert_eq!(
+            format_for_path("https://s3.example.com/b/listings.parquet?X-Amz-Signature=abc123"),
+            Some("parquet")
+        );
+        assert_eq!(
+            format_for_path("https://example.com/export.csv?v=2#top"),
+            Some("csv")
+        );
+        // A dot in an earlier path segment is not the file's extension.
+        assert_eq!(format_for_path("https://example.com/v1.2/export"), None);
+    }
+
+    #[test]
+    fn sort_keys_default_to_ascending_and_reject_a_bad_direction() {
+        assert_eq!(
+            sort_keys(&["ts".to_string()]).unwrap(),
+            vec![serde_json::json!({"column": "ts"})],
+            "no direction is omitted, so the server applies its own default"
+        );
+        assert_eq!(
+            sort_keys(&["ts=DESC".to_string()]).unwrap(),
+            vec![serde_json::json!({"column": "ts", "direction": "desc"})]
+        );
+        assert!(sort_keys(&["ts=sideways".to_string()]).is_err());
+    }
+
+    #[test]
+    fn partition_keys_default_to_identity_and_reject_a_bad_transform() {
+        assert_eq!(
+            partition_keys(&["region".to_string()]).unwrap(),
+            vec![serde_json::json!({"column": "region", "transform": "identity"})]
+        );
+        assert_eq!(
+            partition_keys(&["created_at=Month".to_string()]).unwrap(),
+            vec![serde_json::json!({"column": "created_at", "transform": "month"})]
+        );
+        assert!(partition_keys(&["created_at=week".to_string()]).is_err());
     }
 
     #[test]
@@ -3463,7 +4392,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
         let page0 = server
@@ -3475,7 +4404,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
             )
             .create();
 
@@ -3589,7 +4518,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
+                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
             )
             .expect(1)
             .create();
@@ -3615,7 +4544,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"partition_by":[],"sorted_by":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
 
@@ -3641,14 +4570,21 @@ mod tests {
                     "public",
                     &["gdp".to_string()],
                     None,
-                ))
+        false,
+    ))
                 .unwrap(),
             ))
             .create();
 
         let api = Api::test_new(&server.url(), "k", Some("ws-test"));
-        let body =
-            create_database_request(Some("mydb"), None, "public", &["gdp".to_string()], None);
+        let body = create_database_request(
+            Some("mydb"),
+            None,
+            "public",
+            &["gdp".to_string()],
+            None,
+            false,
+        );
         let (status, resp_body) = api.post_raw("/databases", &body).unwrap();
         assert_eq!(status.as_u16(), 201);
         let parsed: CreateDatabaseResponse = serde_json::from_str(&resp_body).unwrap();
@@ -3658,22 +4594,93 @@ mod tests {
     }
 
     #[test]
+    fn table_declaration_body_sends_key_determines_as_constant_per_key() {
+        let cols = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            table_declaration_body(
+                "orders",
+                &cols(&["order_id"]),
+                &cols(&["event_date"]),
+                &[],
+                &[]
+            ),
+            serde_json::json!({
+                "name": "orders",
+                "key": ["order_id"],
+                "constant_per_key": ["event_date"],
+            })
+        );
+        assert_eq!(
+            table_declaration_body("orders", &[], &[], &[], &[]),
+            serde_json::json!({"name": "orders"})
+        );
+    }
+
+    #[test]
     fn fork_database_request_defaults_name_to_source_label_fork() {
         let to_json = |r| serde_json::to_value(&r).unwrap();
         // Explicit --name wins over the derived default.
         assert_eq!(
-            to_json(fork_database_request(Some("my-fork"), Some("sales"), None)),
+            to_json(fork_database_request(
+                Some("my-fork"),
+                Some("sales"),
+                None,
+                None
+            )),
             serde_json::json!({"name": "my-fork"})
         );
         // Omitted --name derives "<source-label>-fork".
         assert_eq!(
-            to_json(fork_database_request(None, Some("sales"), Some("24h"))),
+            to_json(fork_database_request(
+                None,
+                Some("sales"),
+                Some("24h"),
+                None
+            )),
             serde_json::json!({"name": "sales-fork", "expires_at": "24h"})
         );
         // No name anywhere: send nothing and let the server default.
         assert_eq!(
-            to_json(fork_database_request(None, None, None)),
+            to_json(fork_database_request(None, None, None, None)),
             serde_json::json!({})
+        );
+        // --description is sent as given, line breaks intact.
+        assert_eq!(
+            to_json(fork_database_request(
+                None,
+                None,
+                None,
+                Some("what-if on Q3 pricing\nbefore the migration")
+            )),
+            serde_json::json!({"description": "what-if on Q3 pricing\nbefore the migration"})
+        );
+    }
+
+    #[test]
+    fn forked_from_row_leaves_the_description_to_its_own_line() {
+        let row = forked_from_row(&ForkedFrom {
+            database_id: "db_src".to_string(),
+            name: Some("sales".to_string()),
+            snapshot_id: Some(42),
+            forked_at: None,
+            description: Some("q3 what-if".to_string()),
+        });
+        assert!(row.contains("db_src"), "row: {row}");
+        assert!(!row.contains("q3 what-if"), "row: {row}");
+    }
+
+    #[test]
+    fn description_summary_keeps_one_short_line() {
+        assert_eq!(description_summary("q3 what-if"), "q3 what-if");
+        assert_eq!(description_summary("first line\nsecond"), "first line…");
+        let long = "x".repeat(DESCRIPTION_SUMMARY_CHARS + 5);
+        let summary = description_summary(&long);
+        assert_eq!(summary.chars().count(), DESCRIPTION_SUMMARY_CHARS + 1);
+        assert!(summary.ends_with('…'));
+        // Multi-byte text is cut on a character boundary, not a byte.
+        assert_eq!(
+            description_summary(&"é".repeat(70)).chars().count(),
+            DESCRIPTION_SUMMARY_CHARS + 1
         );
     }
 
@@ -3691,7 +4698,7 @@ mod tests {
             .mock("POST", "/v1/databases/db_src/fork")
             .match_header("X-Workspace-Id", "ws1")
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&fork_database_request(None, Some("sales"), Some("1h")))
+                serde_json::to_string(&fork_database_request(None, Some("sales"), Some("1h"), None))
                     .unwrap(),
             ))
             .with_status(201)
@@ -3703,7 +4710,7 @@ mod tests {
 
         let api = Api::test_new(&server.url(), "k", Some("ws1"));
         let db = resolve_database(&api, "db_src");
-        let request = fork_database_request(None, db.name.as_deref(), Some("1h"));
+        let request = fork_database_request(None, db.name.as_deref(), Some("1h"), None);
         let resp = block(api.client().databases().fork(&db.id, request)).unwrap();
         assert_eq!(resp.id, "db_fork");
         assert_eq!(resp.name.flatten().as_deref(), Some("sales-fork"));
@@ -3731,7 +4738,7 @@ mod tests {
         let err = block(
             api.client()
                 .databases()
-                .fork("db_old", fork_database_request(None, None, None)),
+                .fork("db_old", fork_database_request(None, None, None, None)),
         )
         .expect_err("unforkable source should return an error");
         match err {
@@ -3745,6 +4752,93 @@ mod tests {
             other => panic!("expected Status error, got {other:?}"),
         }
         fork.assert();
+    }
+
+    #[test]
+    fn lock_retry_after_matches_resource_locked_only() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+        let locked = r#"{"error":{"code":"RESOURCE_LOCKED","message":"another operation is already running for conn:c:public:t; retry shortly"}}"#;
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("5"));
+        assert_eq!(
+            lock_retry_after(reqwest::StatusCode::CONFLICT, &headers, locked),
+            Some(std::time::Duration::from_secs(5))
+        );
+        // No header: still transient, fall back rather than give up.
+        assert_eq!(
+            lock_retry_after(reqwest::StatusCode::CONFLICT, &HeaderMap::new(), locked),
+            Some(LOCK_RETRY_FALLBACK)
+        );
+        // A permanent 409 is never retried, however it is worded.
+        let conflict = r#"{"error":{"code":"CONFLICT","message":"another operation is already running; retry shortly"}}"#;
+        assert_eq!(
+            lock_retry_after(reqwest::StatusCode::CONFLICT, &headers, conflict),
+            None
+        );
+        // Same code on a different status is not a lock.
+        assert_eq!(
+            lock_retry_after(reqwest::StatusCode::BAD_REQUEST, &headers, locked),
+            None
+        );
+    }
+
+    #[test]
+    fn load_retries_resource_locked_until_it_succeeds() {
+        let mut server = mockito::Server::new();
+        let locked = server
+            .mock("POST", "/v1/connections/c1/schemas/public/tables/t/loads")
+            .with_status(409)
+            .with_header("retry-after", "0")
+            .with_body(r#"{"error":{"code":"RESOURCE_LOCKED","message":"another operation is already running for conn:c1:public:t; retry shortly"}}"#)
+            .expect(2)
+            .create();
+        let ok = server
+            .mock("POST", "/v1/connections/c1/schemas/public/tables/t/loads")
+            .with_status(200)
+            .with_body(r#"{"connection_id":"c1","schema_name":"public","table_name":"t","row_count":1,"arrow_schema_json":"{}"}"#)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws1"));
+        let body = load_table_request("upl_1", "append", None, &[]);
+        let mut waits = 0;
+        let (status, _) = post_load_with_retry(
+            &api,
+            "/connections/c1/schemas/public/tables/t/loads",
+            &body,
+            30,
+            |_| waits += 1,
+        )
+        .unwrap();
+        assert!(status.is_success());
+        assert_eq!(waits, 2, "caller is told about every pause");
+        locked.assert();
+        ok.assert();
+    }
+
+    #[test]
+    fn load_retry_timeout_zero_sends_once_and_returns_the_409() {
+        let mut server = mockito::Server::new();
+        let locked = server
+            .mock("POST", "/v1/connections/c1/schemas/public/tables/t/loads")
+            .with_status(409)
+            .with_header("retry-after", "5")
+            .with_body(r#"{"error":{"code":"RESOURCE_LOCKED","message":"busy"}}"#)
+            .expect(1)
+            .create();
+
+        let api = Api::test_new(&server.url(), "k", Some("ws1"));
+        let body = load_table_request("upl_1", "append", None, &[]);
+        let (status, resp) = post_load_with_retry(
+            &api,
+            "/connections/c1/schemas/public/tables/t/loads",
+            &body,
+            0,
+            |_| panic!("must not wait with a zero budget"),
+        )
+        .unwrap();
+        assert_eq!(status.as_u16(), 409);
+        assert_eq!(crate::util::api_error(resp), "busy");
+        locked.assert();
     }
 
     #[test]
@@ -3763,7 +4857,8 @@ mod tests {
                 "/v1/connections/conn_default/schemas/public/tables/orders/loads",
             )
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&load_table_request("upl_123", "replace")).unwrap(),
+                serde_json::to_string(&load_table_request("upl_123", "replace", None, &[]))
+                    .unwrap(),
             ))
             .with_status(200)
             .with_body(
@@ -3780,7 +4875,7 @@ mod tests {
         let api = Api::test_new(&server.url(), "k", Some("ws1"));
         let db = resolve_database(&api, "db_1");
         let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
-        let body = load_table_request("upl_123", "replace");
+        let body = load_table_request("upl_123", "replace", None, &[]);
         let (status, resp_body) = api.post_raw(&path, &body).unwrap();
         assert!(status.is_success());
         let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();
@@ -3810,7 +4905,7 @@ mod tests {
             )
             .match_header("X-Database-Id", "db_1")
             .match_body(mockito::Matcher::JsonString(
-                serde_json::to_string(&load_table_request_from_result("rslt_123", "replace"))
+                serde_json::to_string(&load_table_request_from_result("rslt_123", "replace", &[]))
                     .unwrap(),
             ))
             .with_status(200)
@@ -3831,7 +4926,7 @@ mod tests {
         // carries X-Database-Id.
         let api = api.scoped_to_database_opt(Some(db.id.as_str()));
         let path = managed_table_load_path(&db.default_connection_id, "public", "orders");
-        let body = load_table_request_from_result("rslt_123", "replace");
+        let body = load_table_request_from_result("rslt_123", "replace", &[]);
         let (status, resp_body) = api.post_raw(&path, &body).unwrap();
         assert!(status.is_success());
         let parsed: LoadManagedTableResponse = serde_json::from_str(&resp_body).unwrap();
@@ -3897,7 +4992,7 @@ mod tests {
         let path = temp.path().to_path_buf();
         assert!(path.exists());
 
-        let result = upload_temp_file(temp, |p| {
+        let result: Result<String, ApiError> = upload_temp_file(temp, |p| {
             assert!(p.exists(), "file present while the upload runs");
             Err(ApiError::Transport("upload boom".into()))
         });
@@ -3921,6 +5016,72 @@ mod tests {
 
         assert_eq!(result.unwrap(), "upid_123");
         assert!(!path.exists(), "temp file must be removed on success");
+    }
+
+    /// A staged download plus the rewrite that may replace it, for the
+    /// lifetime tests below.
+    fn staged_pair() -> (tempfile::NamedTempFile, tempfile::NamedTempFile) {
+        (
+            tempfile::Builder::new().suffix(".json").tempfile().unwrap(),
+            tempfile::Builder::new()
+                .suffix(".jsonl")
+                .tempfile()
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_rewritten_download_is_deleted_before_the_upload() {
+        // Once the rewrite holds the rows the download is dead weight, and the
+        // upload is the long part: keeping both would put two copies of a
+        // multi-gigabyte source on disk for its whole duration (a 5 GB array
+        // needing 10 GB of temp, then ENOSPC on a small runner).
+        let (download, rewrite) = staged_pair();
+        let download_path = download.path().to_path_buf();
+        let rewrite_path = rewrite.path().to_path_buf();
+
+        let (source, rewritten) = download_to_upload(download, |_| Ok(Some(rewrite))).unwrap();
+
+        assert!(rewritten);
+        assert_eq!(source.path(), rewrite_path);
+        assert!(
+            !download_path.exists(),
+            "the download must be gone before the upload starts"
+        );
+        assert!(rewrite_path.exists(), "the rewrite is what gets uploaded");
+    }
+
+    #[test]
+    fn a_download_that_needs_no_rewrite_is_the_upload() {
+        // Nothing replaced it, so it has to survive to be uploaded — the case
+        // that stops this from being a plain "delete the download first".
+        let (download, _) = staged_pair();
+        let download_path = download.path().to_path_buf();
+
+        let (source, rewritten) = download_to_upload(download, |_| Ok(None)).unwrap();
+
+        assert!(!rewritten);
+        assert_eq!(source.path(), download_path);
+        assert!(download_path.exists());
+    }
+
+    #[test]
+    fn a_failed_reshape_deletes_the_download() {
+        // The caller exits on this error without unwinding, so cleanup has to
+        // happen here — the rule `upload_temp_file` documents.
+        let (download, _) = staged_pair();
+        let download_path = download.path().to_path_buf();
+
+        let err = download_to_upload(download, |_| {
+            Err(ApiError::Transport("reshape boom".into()))
+        })
+        .unwrap_err();
+
+        assert!(matches!(err, ApiError::Transport(_)));
+        assert!(
+            !download_path.exists(),
+            "temp file must be removed before the failure is returned"
+        );
     }
 
     // --- `set`'s advisory existence check -----------------------------------

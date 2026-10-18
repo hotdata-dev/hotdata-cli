@@ -19,19 +19,42 @@ commands.
 ## Install
 
 ```sh
-brew install hotdata-dev/tap/cli        # Homebrew
-cargo install --path .                  # from source (requires Rust)
+curl -fsSL https://hotdata.dev/install | sh
 ```
 
+The script uses Homebrew (`brew install hotdata-dev/tap/cli`) when `brew` is
+present and otherwise drops a prebuilt binary into `~/.hotdata/cli`. It then
+installs the agent skill for Claude Code and friends. Set `HOTDATA_NO_BREW=1`
+to skip Homebrew, `HOTDATA_NO_SKILLS=1` to skip the skill. To build from
+source instead: `cargo install --path .` (requires Rust).
+
 Or grab a binary from [Releases](https://github.com/hotdata-dev/hotdata-cli/releases).
-Stay current with `hotdata manage upgrade`; enable tab completion with
+Stay current with `hotdata manage upgrade`: in an interactive terminal the CLI
+checks for a new release before API commands and offers to upgrade (set
+`HOTDATA_NO_UPDATE_CHECK=1` to skip). Enable tab completion with
 `hotdata manage completions bash|zsh|fish`.
+
+### Claude Code plugin
+
+To get the agent skill through Claude Code's plugin manager instead, which
+updates it with each release:
+
+```
+/plugin marketplace add hotdata-dev/claude-plugins
+/plugin install hotdata-cli@hotdata
+```
+
+The plugin checks for the CLI when a session starts and offers to install it if
+it's missing. Use either the plugin or the installer's skill, not both: if you
+installed the CLI with the script above, install it with `HOTDATA_NO_SKILLS=1`
+or Claude Code will list the skill twice.
 
 ## Quickstart
 
 ```sh
 hotdata auth login                            # or: hotdata auth register
 hotdata databases create --catalog demo
+hotdata databases use demo                    # make it current (create does not switch)
 hotdata databases load --catalog demo --table trips \
   --url https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
 hotdata query "SELECT count(*) FROM demo.public.trips"
@@ -42,17 +65,21 @@ PostgreSQL-dialect SQL. Everything else builds on that.
 
 ## Getting your data in
 
-**Upload a parquet file** directly (convert CSV/JSON first):
+**Upload a file** directly — csv, json, or parquet:
 
 ```sh
-hotdata databases load --catalog demo --table listings --file ./listings.parquet
+hotdata databases load --catalog demo --table listings --file ./listings.csv
 ```
 
-A load **replaces** the table by default. Add `--append` to add rows to an
+The format comes from the extension; pass `--format csv|json|parquet` when the
+extension is missing or misleading. json is read whatever shape it arrives in —
+an array of objects, a pretty-printed document, or one object per line.
+
+A load **replaces** the table by default. `--mode append` adds rows to an
 existing table instead:
 
 ```sh
-hotdata databases load --catalog demo --table listings --file ./more-listings.parquet --append
+hotdata databases load --catalog demo --table listings --file ./more-listings.parquet --mode append
 ```
 
 **Import from an external source** — Postgres/MySQL, S3/GCS buckets, Iceberg,
@@ -82,27 +109,41 @@ hotdata query "<sql>" [-o table|json|csv]      # HotSQL (PostgreSQL dialect)
 
 Write SQL in another dialect and the server transpiles it to HotSQL —
 `--dialect` accepts `hotsql` (default), `duckdb`, `postgres`, `snowflake`
-(read-only for a non-default dialect):
+(writes follow the same rules as `hotsql`):
 
 ```sh
 hotdata query "SELECT IFF(n > 0, 'pos', 'neg') FROM t" --dialect snowflake
 ```
 
+`query` also writes: `INSERT`, `CREATE TABLE`, `CREATE TABLE AS` and
+`DROP TABLE` run against the current database's own tables (API key with the
+`write` permission) and print one row, `rows_affected`. `UPDATE`/`DELETE` are
+not supported in SQL yet — use `hotdata databases load --mode update|delete|upsert`.
+
+```sh
+hotdata query "CREATE TABLE events (id BIGINT, kind TEXT)"
+hotdata query "INSERT INTO events VALUES (1, 'signup'), (2, 'login')"
+```
+
 Long queries go async and print a `query_run_id` — poll with
-`hotdata query status <id>` (exit `0` done / `1` failed / `2` running). Re-fetch
+`hotdata query status <id>` (exit `0` done / `1` failed / `2` running / `3` done
+but the printed result is a truncated preview). Re-fetch
 past results with `hotdata databases results get <result-id>`; browse history
 with `hotdata databases queries list`.
 
-## Join across sources
+## Join across databases
 
-Attach another catalog to an instant database and join its live tables directly,
-no copying:
+Attach another instant database and join its live tables directly, no copying:
 
 ```sh
 hotdata databases attach prod-replica --alias prod
 hotdata query "SELECT t.id, o.total FROM demo.public.tickets t
                JOIN prod.public.orders o ON o.ticket_id = t.id"
 ```
+
+The attached database is read-only here: loads still go to your own database,
+and `detach` withdraws visibility without deleting anything. `--alias` is
+required when the other database kept the stock `default` catalog name.
 
 ## Search
 
@@ -114,7 +155,9 @@ hotdata search create trips_notes --type text --from demo.public.trips --column 
 hotdata search "airport surcharge dispute" --index trips_notes
 ```
 
-Use `--type vector` for semantic search. Indexes resolve in the active database
+Use `--type vector` for semantic search; add `--algorithm ivf` for a table
+too large for the default in-memory `hnsw` index. `--type sorted` builds a
+sorted index that speeds up `WHERE` filters and range scans on a column. Indexes resolve in the current database
 (`hotdata databases use <id>`); pass `-d/--database <id>` to target another.
 Bring your own model with `hotdata search embeddings add`.
 
@@ -129,9 +172,20 @@ Bring your own model with `hotdata search embeddings add`.
 - `hotdata databases context push|show DATAMODEL` stores your data model as
   shared, server-side Markdown so humans and agents query with the same map.
 
+## Getting help
+
+File a support ticket without leaving the terminal:
+
+```sh
+hotdata support report -m "Queries against work_abc have been timing out for an hour" --subject "Queries timing out"
+hotdata support report --logs ./stderr.txt --context env=staging
+```
+
+Omit `-m` in an interactive terminal to compose the report in `$EDITOR` instead. Replies go to the email on your HotData account.
+
 ## Commands
 
-The full command surface. The top level has eight groups — `auth`, `workspaces`, `databases`, `query`, `jobs`, `ingest`, `search`, and `manage`. Run `hotdata <command> --help` for full flags on any command.
+The full command surface. The top level has nine groups — `auth`, `workspaces`, `databases`, `query`, `jobs`, `ingest`, `search`, `manage`, and `support`. Run `hotdata <command> --help` for full flags on any command.
 
 | Command | What it does |
 | :-- | :-- |
@@ -140,22 +194,23 @@ The full command surface. The top level has eight groups — `auth`, `workspaces
 | `auth logout` | Remove authentication for a profile |
 | `auth status` | Show authentication status |
 | `workspaces list` | List all workspaces |
-| `workspaces use` | Set the default workspace |
+| `workspaces use` | Switch the current workspace (remembered across logins) |
 | `databases list` | List instant databases in the workspace |
 | `databases count` | Count instant databases in the workspace |
 | `databases show` | Show details for an instant database |
 | `databases create` | Create a new instant database |
 | `databases fork` | Fork a database into a new, independent database |
 | `databases lineage` | Show a database's whole fork family tree |
-| `databases attach` | Attach a catalog so its tables are queryable |
-| `databases detach` | Detach a previously attached catalog |
-| `databases use` | Set the current (default) database |
+| `databases attach` | Attach another database so its tables are queryable |
+| `databases detach` | Detach a previously attached database |
+| `databases use` | Switch the current database (remembered across logins) |
 | `databases unset` | Clear the current database |
 | `databases remove` | Delete a database and all its tables |
-| `databases load` | Load a parquet file or saved result into a table (replace, or `--append`) |
+| `databases load` | Load a csv/json/parquet file or saved result into a table (`--mode replace\|append\|delete\|update\|upsert`) |
+| `databases tables add` | Declare a table with its key and storage layout |
 | `databases tables list` | List tables in a database |
 | `databases tables show` | Show column definitions for a table |
-| `databases tables load` | Load parquet/result into a table (replace, or `--append`) |
+| `databases tables load` | Same as `databases load`, addressed by database instead of catalog |
 | `databases tables remove` | Delete a table from a database |
 | `databases context list` | List named contexts in a database |
 | `databases context show` | Print context content to stdout |
@@ -203,6 +258,19 @@ The full command surface. The top level has eight groups — `auth`, `workspaces
 | `manage skills install` | Install/update the agent skill into agent directories |
 | `manage skills status` | Show the agent skill's installation status |
 | `manage skills list` | List installed skills (alias for `status`) |
+| `support report` | File a support ticket with the HotData team |
+
+## Current workspace and database
+
+The CLI saves a current workspace and, per workspace, a current database on
+this machine. Commands use them when you don't name one. They survive
+`auth logout` / `auth login`, so a new session resumes where you left off.
+
+- `hotdata workspaces use` and `hotdata databases use` are the only commands
+  that switch. `databases create` and `databases fork` do not.
+- `--workspace-id` / `-w` and `--database` / `-d` apply to one command only
+  and do not change the current selection.
+- `workspaces list` and `databases list` mark the current one with `*`.
 
 ## Configuration
 
@@ -211,7 +279,11 @@ Config lives at `~/.hotdata/config.yml` (profile-keyed). Environment variables:
 | Variable | Description | Default |
 | :-- | :-- | :-- |
 | `HOTDATA_API_KEY` | API key (overrides config file; also read from `.env`) | |
-| `HOTDATA_WORKSPACE` | Lock every command to one workspace | |
+| `HOTDATA_WORKSPACE` | Lock every command to one workspace (`workspaces use` refuses while set) | |
+| `HOTDATA_DATABASE` | Database to use when `-d/--database` is not given; overrides the saved current database | |
+| `HOTDATA_NO_UPDATE_CHECK` | Skip the interactive new-release check | |
+| `HOTDATA_CONFIG_DIR` | Where config and credentials live | `~/.hotdata` |
+| `HOTDATA_UPLOAD_CONCURRENCY` | Parallel parts for multipart uploads in `databases load` | `12` |
 | `HOTDATA_API_URL` | API base URL | `https://api.hotdata.dev/v1` |
 | `HOTDATA_APP_URL` | App URL for browser login | `https://app.hotdata.dev` |
 

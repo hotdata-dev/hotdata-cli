@@ -2,8 +2,8 @@
 # release.sh — two-phase release wrapper around cargo-release
 #
 # Usage:
-#   scripts/release.sh prepare <version>   # branch, bump, changelog PR
-#   scripts/release.sh finish              # tag only (main is branch-protected)
+#   scripts/release.sh prepare <version>   # skill check, branch, bump, changelog PR
+#   scripts/release.sh finish              # skill check, tag only (main is branch-protected)
 
 set -euo pipefail
 
@@ -45,6 +45,9 @@ case "$COMMAND" in
 
         require_clean_tree
 
+        echo "→ Checking agent skills against the code..."
+        scripts/check-skills.sh
+
         echo "→ Creating branch $BRANCH"
         git checkout -b "$BRANCH"
 
@@ -59,6 +62,12 @@ case "$COMMAND" in
             git fetch origin main 2>/dev/null || true
             python3 scripts/validate-changelog.py origin/main
         fi
+
+        # A release needs notes: git-cliff writes an empty section when nothing
+        # landed since the last tag, and that ships as an empty GitHub Release.
+        echo ""
+        echo "→ Checking release notes for $VERSION..."
+        python3 scripts/check-release-notes.py "$VERSION"
 
         echo ""
         echo "→ Opening pull request..."
@@ -78,7 +87,7 @@ case "$COMMAND" in
         echo ""
         echo "Next steps:"
         echo "  1. Review and merge the PR (use 'Squash and merge')"
-        echo "  2. Run: scripts/release.sh finish"
+        echo "  2. On merge, CI (cut-release.yml) runs 'scripts/release.sh finish' to tag"
         ;;
 
     finish)
@@ -98,6 +107,17 @@ case "$COMMAND" in
 
         echo ""
         echo "→ Release version from Cargo.toml: $VERSION (tag $TAG)"
+
+        echo "→ Checking agent skills against the code and version..."
+        scripts/check-skills.sh --require-version
+
+        # The notes were generated when the release PR opened. Anything merged
+        # while it waited lands in this tag but in no changelog section (the
+        # next git-cliff run starts at this tag), so refuse to tag until the
+        # release is cut again from current main.
+        PREV_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+        echo "→ Checking release notes for $VERSION cover everything since ${PREV_TAG:-the start}..."
+        python3 scripts/check-release-notes.py "$VERSION" ${PREV_TAG:+--since "$PREV_TAG"}
 
         if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "error: tag $TAG already exists locally. Delete it or pick a new version." >&2

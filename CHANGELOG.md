@@ -1,3 +1,153 @@
+## [0.43.0] - 2026-10-18
+
+### 🚀 Features
+
+- *(install)* Unified install.sh that prefers Homebrew (#347)
+
+### 📚 Documentation
+
+- *(skill)* How to install the CLI when it is missing (#349)
+## [0.42.1] - 2026-10-15
+
+### 🐛 Bug Fixes
+
+- *(release)* Refuse a release without notes (#343)
+## [0.42.0] - 2026-10-15
+
+No changes since 0.41.0.
+## [0.41.0] - 2026-10-15
+
+### 🚀 Features
+
+- *(databases)* Add `--if-not-exists` to `create`: get-or-create by name, matching the SDK (#340)
+- *(databases)* Add `--database <id>` to `load`, for loading by id when a fork shares the catalog alias (#341)
+
+### 🐛 Bug Fixes
+
+- *(databases)* `tables show` on a catalog alias shared by a fork now reports the ambiguity instead of "no catalog" (#341)
+- *(query)* `-d`/`-o` accepted after `status`, so `hotdata query status <run> -d <id>` works (#341)
+- *(jobs)* `jobs <id>` on a `database_fork` job no longer fails to parse; `--job-type database_fork` accepted (#338)
+
+### 💼 Other
+
+- *(deps)* Bump hotdata SDK to 0.20.0 (#338)
+## [0.40.0] - 2026-10-15
+
+### 🚀 Features
+
+- *(load)* Retry a load while another load holds the table (#335)
+
+### 💼 Other
+
+- Cut releases from a workflow that runs release.sh (#336)
+
+### 📚 Documentation
+
+- *(query)* Dialect writes follow the same rules as hotsql (#334)
+## [0.39.0] - 2026-10-12
+
+### 🚀 Features
+
+- *(search)* Add IVF vector index options (#325)
+- *(search)* Search IVF indexes over generated embeddings by text (#331)
+## [0.38.0] - 2026-10-10
+
+### 🚀 Features
+
+- *(workspaces)* [**breaking**] Remember current workspace and database across logins (#326)
+
+### 🐛 Bug Fixes
+
+- *(skill)* Validate archive entry paths on extract (#319)
+- *(deps)* Bump vulnerable transitive crates (#324)
+- *(workspaces)* Refuse `use` under HOTDATA_WORKSPACE and mark current in JSON (#328)
+## [0.37.0] - 2026-09-23
+
+### 🚀 Features
+
+- *(databases)* Record why a fork was taken (#315)
+
+### 🐛 Bug Fixes
+
+- *(tables)* Send --key-determines as constant_per_key (#316)
+
+### 💼 Other
+
+- *(deps)* Bump hotdata SDK to 0.19.0 (#317)
+## [0.36.1] - 2026-09-22
+
+### 📚 Documentation
+
+- *(skills)* Sync with streamed results; gate releases on skill freshness (#311)
+- *(streaming)* One --topic vocabulary for kafka and iggy (#312)
+- *(ingest)* Name iggy wherever the family lists are spelled (#313)
+## [0.36.0] - 2026-09-19
+
+### 🐛 Bug Fixes
+
+- *(client)* Render the error envelope's sentence in inline warnings (#308)
+
+### 📚 Documentation
+
+- Describe attach as joining across instant databases (#309)
+## [0.35.0] - 2026-09-18
+
+### ⚡ Performance
+
+- *(query)* Results and listings now transfer gzip-compressed (#305)
+## [0.34.1] - 2026-09-15
+
+### 🐛 Bug Fixes
+
+- *(query)* Drain the result socket while rendering (#302)
+## [0.34.0] - 2026-09-15
+
+### 🐛 Bug Fixes
+
+- *(query)* Print wide decimals at full precision (#299)
+- *(query)* [**breaking**] Stream results instead of buffering them (#300)
+
+### 📚 Documentation
+
+- README's query status exit codes omitted 3 (truncated preview)
+## [0.33.0] - 2026-09-08
+
+### 🚀 Features
+
+- *(databases)* Load csv and json files, not just parquet — json in any shape: an array, a pretty-printed document, or one object per line (#293, #294)
+- *(databases)* Keyed load modes — `--mode delete|update|upsert` match existing rows by key (#293)
+- *(databases)* `databases tables add --key` declares a table's key and layout before its first load (#293)
+
+### 🔄 Changed
+
+- *(search)* Vector search no longer returns the index's embedding column; `--select '*'` asks for it back (#293)
+- *(query)* `--output csv` no longer abbreviates long list values (#293)
+
+### 📚 Documentation
+
+- *(skills)* Improve the agent guidance around data loading (#296)
+## [0.32.0] - 2026-09-06
+
+### 🚀 Features
+
+- *(support)* File support tickets from the CLI (#290)
+## [0.31.0] - 2026-09-04
+
+### 🚀 Features
+
+- *(databases)* [**breaking**] Lineage walks the whole fork family (#288)
+
+### 🐛 Bug Fixes
+
+- *(query)* Render fetched results with arrow-json (#285)
+
+### 💼 Other
+
+- *(deps)* Arrow 55 -> 59, hotdata 0.16.0 (#286)
+
+### 📚 Documentation
+
+- *(skills)* Document databases lineage, forked_from, and retired job types (#287)
 ## [0.30.0] - 2026-09-03
 
 ### 🐛 Bug Fixes

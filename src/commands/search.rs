@@ -23,9 +23,15 @@ pub enum SearchCommands {
         #[arg(long, value_parser = ["vector", "text", "sorted"])]
         r#type: String,
 
-        /// Table to index (`catalog.schema.table`, or `schema.table` with an active database)
+        /// Table to index (`catalog.schema.table`, or `schema.table` in --database
+        /// or the active database)
         #[arg(long = "from")]
         from: String,
+
+        /// Database to create the index in (id; defaults to the active database).
+        /// Use with a `schema.table` --from.
+        #[arg(long, short = 'd')]
+        database: Option<String>,
 
         /// Column to index
         #[arg(long)]
@@ -34,6 +40,32 @@ pub enum SearchCommands {
         /// Distance metric for vector indexes
         #[arg(long, value_parser = ["l2", "cosine", "dot"])]
         metric: Option<String>,
+
+        /// Vector index algorithm (default: hnsw). `hnsw` searches an in-memory
+        /// graph whose memory grows with the table. `ivf` clusters the vectors
+        /// and reads only the nearest clusters, so its memory follows how much
+        /// a search reads rather than the table's size. `ivf` works on a column
+        /// that already holds vectors, or on a text column with `--provider`,
+        /// and needs the `l2` or `cosine` metric.
+        #[arg(long, value_parser = ["hnsw", "ivf"])]
+        algorithm: Option<String>,
+
+        /// Number of clusters for an `ivf` index, 1–65536 (default: chosen from
+        /// the table's size). Requires `--algorithm ivf`.
+        #[arg(long)]
+        nlist: Option<u32>,
+
+        /// Fraction of an `ivf` index a search reads, greater than 0 and at most
+        /// 1 (default: server's choice). Higher finds more true neighbours and
+        /// takes longer. Requires `--algorithm ivf`.
+        #[arg(long = "probe-fraction")]
+        probe_fraction: Option<f64>,
+
+        /// How precisely the vector index stores each vector value (default:
+        /// the column's precision for hnsw, `int8` for ivf). `ivf` accepts
+        /// `int8` and `float32`; `hnsw` accepts all but `int8`.
+        #[arg(long = "vector-precision", value_parser = ["float64", "float32", "float16", "float8", "int8"])]
+        vector_precision: Option<String>,
 
         /// Embedding provider ID (vector over a text column → auto-embeddings)
         #[arg(long = "provider")]
@@ -58,6 +90,10 @@ pub enum SearchCommands {
 
     /// List search indexes
     List {
+        /// Database to list indexes in (id, catalog, or name; defaults to the current database)
+        #[arg(long, short = 'd')]
+        database: Option<String>,
+
         /// Filter by schema name
         #[arg(long)]
         schema: Option<String>,
@@ -76,7 +112,7 @@ pub enum SearchCommands {
         /// Index name
         name: String,
 
-        /// Database the index lives in (id, catalog, or name; defaults to the active database)
+        /// Database the index lives in (id, catalog, or name; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
 
@@ -90,7 +126,7 @@ pub enum SearchCommands {
         /// Index name
         name: String,
 
-        /// Database the index lives in (id, catalog, or name; defaults to the active database)
+        /// Database the index lives in (id, catalog, or name; defaults to the current database)
         #[arg(long, short = 'd')]
         database: Option<String>,
     },
@@ -108,8 +144,13 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             name,
             r#type,
             from,
+            database,
             column,
             metric,
+            algorithm,
+            nlist,
+            probe_fraction,
+            vector_precision,
             provider,
             dimensions,
             output_column,
@@ -120,8 +161,15 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             name.as_deref(),
             &r#type,
             &from,
+            database.as_deref(),
             &column,
             metric.as_deref(),
+            &indexes::VectorIndexOptions {
+                algorithm: algorithm.as_deref(),
+                nlist,
+                probe_fraction,
+                vector_precision: vector_precision.as_deref(),
+            },
             provider.as_deref(),
             dimensions,
             output_column.as_deref(),
@@ -129,10 +177,17 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             r#async,
         ),
         SearchCommands::List {
+            database,
             schema,
             table,
             output,
-        } => list(workspace_id, schema.as_deref(), table.as_deref(), &output),
+        } => list(
+            workspace_id,
+            database.as_deref(),
+            schema.as_deref(),
+            table.as_deref(),
+            &output,
+        ),
         SearchCommands::Show {
             name,
             database,
@@ -149,7 +204,8 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
 
 /// The instant database an index create targets, as named by `--from`.
 enum FromTarget {
-    /// A `schema.table` `--from`: the active database, already resolved by id.
+    /// A `schema.table` `--from`: `--database` or the active database, already
+    /// resolved by id.
     /// Carry the resolved database so `create` does **not** re-resolve it by
     /// catalog — a fork shares its source's catalog alias, so a catalog lookup
     /// is ambiguous even though the active-database id is unambiguous.
@@ -159,44 +215,85 @@ enum FromTarget {
     Catalog(String),
 }
 
-/// Parse `catalog.schema.table` or `schema.table` (needs an active database) into
-/// (target database, schema, table). Exits with a message on a bad shape.
-fn parse_table(workspace_id: &str, table: &str) -> (FromTarget, String, String) {
-    use crossterm::style::Stylize;
-    let parts: Vec<&str> = table.splitn(3, '.').collect();
+/// Split a `--from` into (catalog, schema, table). The catalog is `None` for a
+/// `schema.table`, which names a table in `--database` or the current database.
+/// A catalog together with `--database` is refused: they would name the
+/// database twice, possibly differently.
+fn split_from(
+    from: &str,
+    database: Option<&str>,
+) -> Result<(Option<String>, String, String), &'static str> {
+    let parts: Vec<&str> = from.splitn(3, '.').collect();
     match parts.as_slice() {
-        [catalog, schema, tbl] => (
-            FromTarget::Catalog(catalog.to_string()),
+        [_, _, _] if database.is_some() => Err(
+            "error: --database takes a 'schema.table' --from; drop the catalog from --from, \
+             or drop --database",
+        ),
+        [catalog, schema, tbl] => Ok((
+            Some(catalog.to_string()),
             schema.to_string(),
             tbl.to_string(),
-        ),
-        [schema, tbl] => {
-            let db_id = crate::config::load_current_database("default", workspace_id)
-                .unwrap_or_else(|| {
-                    eprintln!(
-                        "{}",
-                        "error: use catalog.schema.table, or set an active database \
-                         with `hotdata databases use <id>`."
-                            .red()
-                    );
-                    std::process::exit(1);
-                });
-            let api = Api::new(Some(workspace_id));
-            let db = databases::get_database(&api, &db_id).unwrap_or_else(|e| e.exit());
-            (
-                FromTarget::Database(Box::new(db)),
-                schema.to_string(),
-                tbl.to_string(),
-            )
-        }
-        _ => {
+        )),
+        [schema, tbl] => Ok((None, schema.to_string(), tbl.to_string())),
+        _ => Err("error: --from must be 'schema.table' or 'catalog.schema.table'"),
+    }
+}
+
+/// Parse `catalog.schema.table`, or `schema.table` in `database` (else the
+/// current database), into (target database, schema, table). Exits with a
+/// message on a bad shape or when no database is known.
+fn parse_table(
+    workspace_id: &str,
+    table: &str,
+    database: Option<&str>,
+) -> (FromTarget, String, String) {
+    use crossterm::style::Stylize;
+    let (catalog, schema, tbl) = split_from(table, database).unwrap_or_else(|e| {
+        eprintln!("{}", e.red());
+        std::process::exit(1);
+    });
+    if let Some(catalog) = catalog {
+        return (FromTarget::Catalog(catalog), schema, tbl);
+    }
+    let db_id = database
+        .map(str::to_string)
+        .or_else(|| crate::config::load_current_database("default", workspace_id))
+        .unwrap_or_else(|| {
             eprintln!(
                 "{}",
-                "error: --from must be 'schema.table' or 'catalog.schema.table'".red()
+                "error: use catalog.schema.table, pass --database <id>, or set a current \
+                 database with `hotdata databases use <id>`."
+                    .red()
             );
             std::process::exit(1);
-        }
+        });
+    let api = Api::new(Some(workspace_id));
+    let db = databases::get_database(&api, &db_id).unwrap_or_else(|e| e.exit());
+    (FromTarget::Database(Box::new(db)), schema, tbl)
+}
+
+/// Quote a column for use inside a wildcard `EXCLUDE` list. Index columns are
+/// user-named (`search create --output-column`), so they can need quoting and
+/// can contain a quote character.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// The default projection for a search: everything the table has, minus the
+/// columns the index generated.
+///
+/// An auto-embed vector index materialises a `{column}_embedding` column on the
+/// table, so a bare `*` returns a 1536-float list in every row — tens of
+/// kilobytes per search the caller did not ask for, and a column claiming
+/// terminal width the real ones need. Excluding it by default keeps the wire
+/// small and the row readable; `--select '*'` asks for it back, and naming it
+/// in `--select` still works.
+fn default_projection(generated_columns: &[String]) -> String {
+    if generated_columns.is_empty() {
+        return "*".to_string();
     }
+    let excluded: Vec<String> = generated_columns.iter().map(|c| quote_ident(c)).collect();
+    format!("* EXCLUDE ({})", excluded.join(", "))
 }
 
 /// Build the SQL a search runs: `bm25_search(...)` for text, server-side
@@ -207,6 +304,7 @@ fn build_search_sql(
     column: &str,
     query: &str,
     select: Option<&str>,
+    generated_columns: &[String],
     limit: u32,
 ) -> String {
     match index_type {
@@ -214,7 +312,7 @@ fn build_search_sql(
             let bm25_columns = match select {
                 Some(cols) if cols.split(',').any(|c| c.trim() == "score") => cols.to_string(),
                 Some(cols) => format!("{}, score", cols),
-                None => "*".to_string(),
+                None => default_projection(generated_columns),
             };
             format!(
                 "SELECT {} FROM bm25_search('{}', '{}', '{}') ORDER BY score DESC LIMIT {}",
@@ -229,7 +327,9 @@ fn build_search_sql(
         // metric from the index metadata; the caller names the source column.
         _ => format!(
             "SELECT {}, vector_distance({}, '{}') AS dist FROM {} ORDER BY dist LIMIT {}",
-            select.unwrap_or("*"),
+            select
+                .map(str::to_string)
+                .unwrap_or_else(|| default_projection(generated_columns)),
             column,
             query.replace('\'', "''"),
             table_fqn,
@@ -244,8 +344,10 @@ fn create(
     name: Option<&str>,
     type_: &str,
     from: &str,
+    database: Option<&str>,
     column: &str,
     metric: Option<&str>,
+    vector: &indexes::VectorIndexOptions<'_>,
     provider: Option<&str>,
     dimensions: Option<u32>,
     output_column: Option<&str>,
@@ -257,7 +359,7 @@ fn create(
         "sorted" => "sorted",
         _ => "vector",
     };
-    let (target, schema, table) = parse_table(workspace_id, from);
+    let (target, schema, table) = parse_table(workspace_id, from, database);
     let api = Api::new(Some(workspace_id));
     // Indexes are an instant-database concept (a plain connection is a legacy
     // concept being removed), so create must land on an instant database — the
@@ -305,24 +407,37 @@ fn create(
         dimensions,
         output_column,
         description,
+        vector,
     );
 }
 
-fn list(workspace_id: &str, schema: Option<&str>, table: Option<&str>, output: &str) {
+fn list(
+    workspace_id: &str,
+    database: Option<&str>,
+    schema: Option<&str>,
+    table: Option<&str>,
+    output: &str,
+) {
     let api = Api::new(Some(workspace_id));
-    let connection_id =
-        crate::config::load_current_database("default", workspace_id).and_then(|db_id| {
-            databases::get_database(&api, &db_id)
-                .ok()
-                .map(|db| db.default_connection_id)
-        });
-    indexes::list(
-        workspace_id,
-        connection_id.as_deref(),
-        schema,
-        table,
-        output,
-    );
+    // An explicit --database must resolve; the active database is a default
+    // that falls back to the whole-workspace scan when it no longer exists.
+    let db = match database {
+        Some(flag) => {
+            let db_id = databases::resolve_database_flag(&api, flag);
+            Some(databases::get_database(&api, &db_id).unwrap_or_else(|e| e.exit()))
+        }
+        None => crate::config::load_current_database("default", workspace_id)
+            .and_then(|db_id| databases::get_database(&api, &db_id).ok()),
+    };
+    let catalog = db.as_ref().map(indexes::database_catalog);
+    let scope =
+        db.as_ref()
+            .zip(catalog.as_deref())
+            .map(|(db, catalog)| indexes::DatabaseConnection {
+                connection_id: &db.default_connection_id,
+                catalog,
+            });
+    indexes::list(workspace_id, scope.as_ref(), schema, table, output);
 }
 
 fn locate_or_exit(workspace_id: &str, database: Option<&str>, name: &str) -> indexes::LocatedIndex {
@@ -340,35 +455,283 @@ fn locate_or_exit(workspace_id: &str, database: Option<&str>, name: &str) -> ind
 
 fn show(workspace_id: &str, database: Option<&str>, name: &str, output: &str) {
     let loc = locate_or_exit(workspace_id, database, name);
-    let kind = match loc.index_type.as_str() {
+    match output {
+        "json" => println!(
+            "{}",
+            serde_json::to_string_pretty(&show_value(name, &loc)).unwrap()
+        ),
+        "yaml" => print!(
+            "{}",
+            serde_yaml::to_string(&show_value(name, &loc)).unwrap()
+        ),
+        _ => {
+            for line in show_lines(name, &loc) {
+                println!("{line}");
+            }
+        }
+    }
+}
+
+/// The `search` kind (`text` / `sorted` / `vector`) for an API index type.
+fn search_kind(index_type: &str) -> &'static str {
+    match index_type {
         "bm25" => "text",
         "sorted" => "sorted",
         _ => "vector",
+    }
+}
+
+/// What `search show` puts in parentheses after the kind: the algorithm of a
+/// vector index (`hnsw` / `ivf`), or the API index type of a text or sorted
+/// one. `None` when it would only repeat the kind — a vector index from a
+/// server that does not report its algorithm, or a sorted index.
+fn kind_detail(loc: &indexes::LocatedIndex) -> Option<&str> {
+    let detail = match search_kind(&loc.index_type) {
+        "vector" => loc.algorithm.as_deref()?,
+        _ => loc.index_type.as_str(),
+    };
+    (detail != search_kind(&loc.index_type)).then_some(detail)
+}
+
+/// The column an embedding-backed vector index generated and indexes, which
+/// holds the vectors made from its source text column (`column`). `None` for
+/// every other index.
+fn embedding_column(loc: &indexes::LocatedIndex) -> Option<String> {
+    loc.source_column
+        .as_ref()
+        .map(|_| loc.generated_columns.join(", "))
+        .filter(|c| !c.is_empty())
+}
+
+/// `search show -o json|yaml`. The vector fields are `null` when the API
+/// leaves them out (non-vector indexes, or a server default applies).
+fn show_value(name: &str, loc: &indexes::LocatedIndex) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "kind": search_kind(&loc.index_type),
+        "index_type": loc.index_type,
+        "table": format!("{}.{}.{}", loc.catalog, loc.schema, loc.table),
+        "column": loc.search_column,
+        "embedding_column": embedding_column(loc),
+        "metric": loc.metric,
+        "algorithm": loc.algorithm,
+        "probe_fraction": loc.probe_fraction,
+        "vector_precision": loc.vector_precision,
+        "nlist": loc.nlist,
+        "status": loc.status,
+    })
+}
+
+/// `search show` table output: one `key: value` line per field the index has.
+fn show_lines(name: &str, loc: &indexes::LocatedIndex) -> Vec<String> {
+    let kind = match kind_detail(loc) {
+        Some(detail) => format!("{} ({detail})", search_kind(&loc.index_type)),
+        None => search_kind(&loc.index_type).to_string(),
+    };
+    let mut lines = vec![
+        format!("name:             {name}"),
+        format!("kind:             {kind}"),
+        format!(
+            "table:            {}.{}.{}",
+            loc.catalog, loc.schema, loc.table
+        ),
+        format!("column:           {}", loc.search_column),
+    ];
+    if let Some(e) = embedding_column(loc) {
+        lines.push(format!("embedding_column: {e}"));
+    }
+    if let Some(m) = &loc.metric {
+        lines.push(format!("metric:           {m}"));
+    }
+    if let Some(a) = &loc.algorithm {
+        lines.push(format!("algorithm:        {a}"));
+    }
+    if let Some(n) = loc.nlist {
+        lines.push(format!("nlist:            {n}"));
+    }
+    if let Some(f) = loc.probe_fraction {
+        lines.push(format!("probe_fraction:   {f}"));
+    }
+    if let Some(p) = &loc.vector_precision {
+        lines.push(format!("vector_precision: {p}"));
+    }
+    lines.push(format!("status:           {}", loc.status));
+    lines
+}
+
+/// The SQL distance function for a vector index's metric. The API defaults a
+/// vector index with no recorded metric to `l2`.
+fn distance_function(metric: Option<&str>) -> &'static str {
+    match metric {
+        Some("cosine") => "cosine_distance",
+        Some("dot") => "negative_dot_product",
+        _ => "l2_distance",
+    }
+}
+
+/// Spell a column for the SQL in a hint: bare when it is a plain lowercase
+/// identifier, double-quoted otherwise.
+fn sql_ident(name: &str) -> String {
+    let plain = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if plain {
+        name.to_string()
+    } else {
+        quote_ident(name)
+    }
+}
+
+/// How many of the table's other columns the ivf hint's example query names.
+const IVF_HINT_COLUMNS: usize = 3;
+
+/// The columns the ivf hint's example query selects: the first few of the
+/// table's columns other than the indexed vector column. Returning the vector
+/// column stops the index from serving the query, so it is never one of them.
+fn ivf_hint_columns(table_columns: &[String], vector_column: &str) -> Vec<String> {
+    table_columns
+        .iter()
+        .filter(|c| c.as_str() != vector_column)
+        .take(IVF_HINT_COLUMNS)
+        .map(|c| sql_ident(c))
+        .collect()
+}
+
+/// Why `search "<text>"` cannot run against an `ivf` index over a column that
+/// already holds vectors, and the SQL that queries it instead. Such an index
+/// has no embedding model to turn the search text into a query vector, so the
+/// caller supplies one.
+///
+/// The example selects named columns plus the distance, never `*`: a query
+/// that returns the indexed vector column is answered by an exact scan rather
+/// than the index. `hint_columns` are the columns to name; when empty (the
+/// table's columns could not be read) a placeholder stands in.
+fn ivf_search_error(
+    name: &str,
+    loc: &indexes::LocatedIndex,
+    hint_columns: &[String],
+    limit: u32,
+) -> String {
+    let columns = if hint_columns.is_empty() {
+        "<columns>".to_string()
+    } else {
+        hint_columns.join(", ")
+    };
+    let vector_column = sql_ident(&loc.search_column);
+    format!(
+        "error: index '{name}' is an ivf index, which 'hotdata search' cannot query: it \
+         indexes a column that already holds vectors, so there is no model to embed the \
+         search text (an ivf index created over a text column with --provider can be \
+         searched by text). Query it with SQL and your own query vector, ordering by the \
+         index's distance function. Select the columns you need and the distance, but \
+         not {vector_column} itself: a query that returns the vector column (including \
+         SELECT *) scans the whole table instead of using the index.\n  hotdata query \
+         'SELECT {columns}, {func}({vector_column}, ARRAY[<query vector>]) AS dist FROM \
+         {}.{}.{} ORDER BY dist LIMIT {limit}'",
+        loc.catalog,
+        loc.schema,
+        loc.table,
+        func = distance_function(loc.metric.as_deref()),
+    )
+}
+
+/// The columns an `ivf` text search selects when no `--select` is given: every
+/// column of the table except those the index generated. The index cannot
+/// serve a query that returns its vector column — `*` included — so the
+/// projection names columns rather than excluding from a wildcard.
+fn ivf_projection(table_columns: &[String], generated_columns: &[String]) -> Vec<String> {
+    table_columns
+        .iter()
+        .filter(|c| !generated_columns.contains(c))
+        .map(|c| sql_ident(c))
+        .collect()
+}
+
+/// The SQL for `search "<text>"` on an `ivf` index with an embedding provider:
+/// `vector_distance` over the source text column embeds the search text with
+/// the index's provider, and `ORDER BY dist LIMIT k` is the shape the index
+/// serves.
+fn build_ivf_text_search_sql(
+    table_fqn: &str,
+    source_column: &str,
+    query: &str,
+    projection: &str,
+    limit: u32,
+) -> String {
+    format!(
+        "SELECT {projection}, vector_distance({}, '{}') AS dist FROM {table_fqn} \
+         ORDER BY dist LIMIT {limit}",
+        sql_ident(source_column),
+        query.replace('\'', "''"),
+    )
+}
+
+/// The SQL `search "<text>"` runs against an `ivf` index, or the message to
+/// exit with. An index with an embedding provider is searched by text; one
+/// over a column that already holds vectors is refused with a hint.
+/// `table_columns` are the table's columns in order (empty when they could
+/// not be read); an explicit `select` is used verbatim.
+fn ivf_search_sql(
+    name: &str,
+    loc: &indexes::LocatedIndex,
+    table_columns: &[String],
+    text: &str,
+    select: Option<&str>,
+    limit: u32,
+) -> Result<String, String> {
+    let Some(source_column) = loc.source_column.as_deref() else {
+        let hint_columns = ivf_hint_columns(table_columns, &loc.search_column);
+        return Err(ivf_search_error(name, loc, &hint_columns, limit));
+    };
+    let projection = match select {
+        Some(cols) => cols.to_string(),
+        None => {
+            let cols = ivf_projection(table_columns, &loc.generated_columns);
+            if cols.is_empty() {
+                return Err(format!(
+                    "error: could not read the columns of {}.{}.{} to search ivf index \
+                     '{name}'. Pass --select with the columns to return; leave out {}, \
+                     which the index cannot return.",
+                    loc.catalog,
+                    loc.schema,
+                    loc.table,
+                    loc.generated_columns.join(", "),
+                ));
+            }
+            cols.join(", ")
+        }
     };
     let table_fqn = format!("{}.{}.{}", loc.catalog, loc.schema, loc.table);
-    let v = serde_json::json!({
-        "name": name,
-        "kind": kind,
-        "index_type": loc.index_type,
-        "table": table_fqn,
-        "column": loc.search_column,
-        "metric": loc.metric,
-        "status": loc.status,
-    });
-    match output {
-        "json" => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
-        "yaml" => print!("{}", serde_yaml::to_string(&v).unwrap()),
-        _ => {
-            println!("name:    {name}");
-            println!("kind:    {kind} ({})", loc.index_type);
-            println!("table:   {table_fqn}");
-            println!("column:  {}", loc.search_column);
-            if let Some(m) = &loc.metric {
-                println!("metric:  {m}");
-            }
-            println!("status:  {}", loc.status);
-        }
-    }
+    Ok(build_ivf_text_search_sql(
+        &table_fqn,
+        source_column,
+        text,
+        &projection,
+        limit,
+    ))
+}
+
+/// The table's column names, in order, for an ivf search's projection or hint.
+/// Best-effort: an empty list when they cannot be read, and the hint falls
+/// back to a placeholder.
+fn table_columns(api: &Api, loc: &indexes::LocatedIndex) -> Vec<String> {
+    crate::client::sdk::block(api.client().information_schema().get(
+        Some(&loc.connection_id),
+        Some(&loc.schema),
+        Some(&loc.table),
+        Some(true),
+        None,
+        None,
+    ))
+    .ok()
+    .and_then(|body| body.tables.into_iter().find(|t| t.table == loc.table))
+    .and_then(|t| t.columns.flatten())
+    .map(|cols| cols.into_iter().map(|c| c.name).collect())
+    .unwrap_or_default()
 }
 
 /// Run a search against the named index (`search "text" --index <name>`).
@@ -394,6 +757,22 @@ pub fn run(
         );
         std::process::exit(1);
     }
+    if loc.algorithm.as_deref() == Some("ivf") {
+        // The table's columns are needed for the projection when no --select is
+        // given, and for the refusal's hint when the index has no provider.
+        let columns = if select.is_some() && loc.source_column.is_some() {
+            Vec::new()
+        } else {
+            table_columns(&Api::new(Some(workspace_id)), &loc)
+        };
+        let sql = ivf_search_sql(name, &loc, &columns, text, select, limit).unwrap_or_else(|e| {
+            use crossterm::style::Stylize;
+            eprintln!("{}", e.red());
+            std::process::exit(1);
+        });
+        query::execute(&sql, workspace_id, Some(&loc.database_id), output, "hotsql");
+        return;
+    }
     let table_fqn = format!("{}.{}.{}", loc.catalog, loc.schema, loc.table);
     let sql = build_search_sql(
         &loc.index_type,
@@ -401,6 +780,7 @@ pub fn run(
         &loc.search_column,
         text,
         select,
+        &loc.generated_columns,
         limit,
     );
     // Search generates HotSQL directly — never a foreign dialect.
@@ -418,4 +798,542 @@ fn remove(workspace_id: &str, database: Option<&str>, name: &str) {
         },
         name,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(subcommand)]
+        cmd: SearchCommands,
+    }
+
+    fn parse(args: &[&str]) -> Result<SearchCommands, clap::Error> {
+        Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).map(|w| w.cmd)
+    }
+
+    const CREATE_VECTOR: &[&str] = &[
+        "create",
+        "--type",
+        "vector",
+        "--from",
+        "db.public.docs",
+        "--column",
+        "embedding",
+    ];
+
+    fn ivf_located() -> indexes::LocatedIndex {
+        indexes::LocatedIndex {
+            database_id: "db1".into(),
+            connection_id: "conn1".into(),
+            catalog: "shop".into(),
+            schema: "public".into(),
+            table: "docs".into(),
+            index_type: "vector".into(),
+            search_column: "embedding".into(),
+            source_column: None,
+            generated_columns: Vec::new(),
+            status: "ready".into(),
+            metric: Some("cosine".into()),
+            algorithm: Some("ivf".into()),
+            probe_fraction: Some(0.05),
+            vector_precision: Some("int8".into()),
+            nlist: Some(256),
+        }
+    }
+
+    #[test]
+    fn show_reports_vector_index_settings() {
+        let loc = ivf_located();
+        let lines = show_lines("docs_ivf", &loc);
+        assert!(
+            lines.contains(&"algorithm:        ivf".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"probe_fraction:   0.05".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"vector_precision: int8".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"nlist:            256".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"kind:             vector (ivf)".to_string()),
+            "{lines:?}"
+        );
+
+        let v = show_value("docs_ivf", &loc);
+        assert_eq!(v["nlist"], 256);
+        assert_eq!(v["algorithm"], "ivf");
+        assert_eq!(v["probe_fraction"], 0.05);
+        assert_eq!(v["vector_precision"], "int8");
+        assert_eq!(v["table"], "shop.public.docs");
+    }
+
+    #[test]
+    fn show_omits_vector_settings_the_index_does_not_have() {
+        let loc = indexes::LocatedIndex {
+            index_type: "bm25".into(),
+            search_column: "body".into(),
+            metric: None,
+            algorithm: None,
+            probe_fraction: None,
+            vector_precision: None,
+            nlist: None,
+            ..ivf_located()
+        };
+        let lines = show_lines("docs_body", &loc).join("\n");
+        for key in [
+            "metric:",
+            "algorithm:",
+            "nlist:",
+            "probe_fraction:",
+            "vector_precision:",
+        ] {
+            assert!(!lines.contains(key), "{key} in {lines}");
+        }
+        assert!(show_value("docs_body", &loc)["algorithm"].is_null());
+        assert!(show_value("docs_body", &loc)["nlist"].is_null());
+        assert!(lines.contains("kind:             text (bm25)"), "{lines}");
+    }
+
+    #[test]
+    fn show_kind_names_the_vector_algorithm_and_never_repeats_the_kind() {
+        let hnsw = indexes::LocatedIndex {
+            algorithm: Some("hnsw".into()),
+            nlist: None,
+            ..ivf_located()
+        };
+        assert_eq!(kind_detail(&hnsw), Some("hnsw"));
+        assert_eq!(kind_detail(&ivf_located()), Some("ivf"));
+
+        // A server that does not report the algorithm: no "vector (vector)".
+        let unreported = indexes::LocatedIndex {
+            algorithm: None,
+            ..ivf_located()
+        };
+        assert_eq!(kind_detail(&unreported), None);
+        assert!(show_lines("v", &unreported).contains(&"kind:             vector".to_string()));
+
+        let sorted = indexes::LocatedIndex {
+            index_type: "sorted".into(),
+            algorithm: None,
+            ..ivf_located()
+        };
+        assert_eq!(kind_detail(&sorted), None);
+    }
+
+    #[test]
+    fn ivf_search_error_suggests_sql_the_index_can_serve() {
+        let cols = vec!["id".to_string(), "title".to_string()];
+        let msg = ivf_search_error("docs_ivf", &ivf_located(), &cols, 10);
+        assert!(msg.contains("ivf index"), "{msg}");
+        assert!(
+            msg.contains(
+                "SELECT id, title, cosine_distance(embedding, ARRAY[<query vector>]) AS dist \
+                 FROM shop.public.docs ORDER BY dist LIMIT 10"
+            ),
+            "{msg}"
+        );
+        // `SELECT *` returns the vector column, which the index cannot serve:
+        // the prose may warn about it, but the suggested query never uses it.
+        assert!(!msg.contains("'SELECT *"), "{msg}");
+
+        let l2 = indexes::LocatedIndex {
+            metric: Some("l2".into()),
+            ..ivf_located()
+        };
+        let msg = ivf_search_error("docs_ivf", &l2, &[], 5);
+        assert!(
+            msg.contains(
+                "SELECT <columns>, l2_distance(embedding, ARRAY[<query vector>]) AS dist \
+                 FROM shop.public.docs ORDER BY dist LIMIT 5"
+            ),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn ivf_hint_columns_leave_out_the_vector_column_and_quote_odd_names() {
+        let cols: Vec<String> = ["id", "embedding", "Title", "body", "extra"]
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+        assert_eq!(
+            ivf_hint_columns(&cols, "embedding"),
+            vec!["id", "\"Title\"", "body"]
+        );
+        assert!(ivf_hint_columns(&["embedding".to_string()], "embedding").is_empty());
+    }
+
+    /// An ivf index over the text column `body`, whose provider-generated
+    /// vectors live in `body_embedding`.
+    fn ivf_embedding_located() -> indexes::LocatedIndex {
+        indexes::LocatedIndex {
+            search_column: "body".into(),
+            source_column: Some("body".into()),
+            generated_columns: vec!["body_embedding".into()],
+            ..ivf_located()
+        }
+    }
+
+    fn strings(names: &[&str]) -> Vec<String> {
+        names.iter().map(|c| c.to_string()).collect()
+    }
+
+    #[test]
+    fn ivf_text_search_names_the_columns_and_searches_the_source_column() {
+        let cols = strings(&["id", "Title", "body", "body_embedding"]);
+        let sql = ivf_search_sql(
+            "docs_ivf",
+            &ivf_embedding_located(),
+            &cols,
+            "puppy",
+            None,
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "SELECT id, \"Title\", body, vector_distance(body, 'puppy') AS dist \
+             FROM shop.public.docs ORDER BY dist LIMIT 10"
+        );
+        // The index cannot serve a query that returns its vector column.
+        assert!(!sql.contains('*'), "{sql}");
+        assert!(!sql.contains("EXCLUDE"), "{sql}");
+        assert!(!sql.contains("body_embedding"), "{sql}");
+    }
+
+    #[test]
+    fn ivf_text_search_escapes_the_text_and_quotes_an_odd_source_column() {
+        let loc = indexes::LocatedIndex {
+            search_column: "Body Text".into(),
+            source_column: Some("Body Text".into()),
+            generated_columns: vec!["Body Text_embedding".into()],
+            ..ivf_located()
+        };
+        let cols = strings(&["id", "Body Text", "Body Text_embedding"]);
+        let sql = ivf_search_sql("docs_ivf", &loc, &cols, "it's a \"dog\"", None, 5).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT id, \"Body Text\", vector_distance(\"Body Text\", 'it''s a \"dog\"') \
+             AS dist FROM shop.public.docs ORDER BY dist LIMIT 5"
+        );
+    }
+
+    #[test]
+    fn ivf_text_search_honours_an_explicit_select() {
+        let sql = ivf_search_sql(
+            "docs_ivf",
+            &ivf_embedding_located(),
+            &[],
+            "puppy",
+            Some("id, body"),
+            3,
+        )
+        .unwrap();
+        assert!(
+            sql.starts_with("SELECT id, body, vector_distance(body, 'puppy') AS dist"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn ivf_text_search_without_readable_columns_asks_for_select() {
+        let err = ivf_search_sql("docs_ivf", &ivf_embedding_located(), &[], "puppy", None, 10)
+            .unwrap_err();
+        assert!(err.contains("--select"), "{err}");
+        assert!(err.contains("body_embedding"), "{err}");
+    }
+
+    #[test]
+    fn ivf_over_a_vector_column_is_still_refused_with_a_hint() {
+        let cols = strings(&["id", "embedding", "title"]);
+        let err = ivf_search_sql("docs_ivf", &ivf_located(), &cols, "puppy", None, 10).unwrap_err();
+        assert_eq!(
+            err,
+            ivf_search_error("docs_ivf", &ivf_located(), &strings(&["id", "title"]), 10)
+        );
+        assert!(err.contains("no model to embed"), "{err}");
+        assert!(err.contains("--provider"), "{err}");
+        // Even an explicit --select does not make it searchable by text.
+        assert!(ivf_search_sql("docs_ivf", &ivf_located(), &cols, "p", Some("id"), 10).is_err());
+    }
+
+    #[test]
+    fn show_reports_the_embedding_column_of_an_embedding_backed_index() {
+        let loc = ivf_embedding_located();
+        let lines = show_lines("docs_ivf", &loc);
+        assert!(
+            lines.contains(&"column:           body".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"embedding_column: body_embedding".to_string()),
+            "{lines:?}"
+        );
+        assert_eq!(
+            show_value("docs_ivf", &loc)["embedding_column"],
+            "body_embedding"
+        );
+
+        // A vector index over a column that already holds vectors generated none.
+        let direct = ivf_located();
+        assert!(
+            !show_lines("docs_ivf", &direct)
+                .join("\n")
+                .contains("embedding_column:")
+        );
+        assert!(show_value("docs_ivf", &direct)["embedding_column"].is_null());
+    }
+
+    #[test]
+    fn create_help_says_ivf_takes_a_text_column_with_a_provider() {
+        use clap::CommandFactory;
+        let mut cmd = Wrapper::command();
+        let create = cmd.find_subcommand_mut("create").unwrap();
+        let help = create
+            .get_arguments()
+            .find(|a| a.get_id() == "algorithm")
+            .and_then(|a| a.get_help())
+            .unwrap()
+            .to_string();
+        assert!(help.contains("text column with `--provider`"), "{help}");
+        assert!(help.contains("`l2` or `cosine`"), "{help}");
+        assert!(
+            !help.contains("needs a column that already holds"),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn list_accepts_database_flag() {
+        for flag in ["-d", "--database"] {
+            let cmd = parse(&["list", flag, "db1"]).unwrap();
+            assert!(
+                matches!(cmd, SearchCommands::List { database: Some(ref d), .. } if d == "db1")
+            );
+        }
+        assert!(matches!(
+            parse(&["list"]).unwrap(),
+            SearchCommands::List { database: None, .. }
+        ));
+    }
+
+    #[test]
+    fn distance_function_follows_the_metric() {
+        assert_eq!(distance_function(Some("l2")), "l2_distance");
+        assert_eq!(distance_function(Some("cosine")), "cosine_distance");
+        assert_eq!(distance_function(Some("dot")), "negative_dot_product");
+        // The API's default metric for a vector index is l2.
+        assert_eq!(distance_function(None), "l2_distance");
+    }
+
+    #[test]
+    fn split_from_accepts_both_shapes() {
+        assert_eq!(
+            split_from("shop.public.docs", None).unwrap(),
+            (Some("shop".into()), "public".into(), "docs".into())
+        );
+        assert_eq!(
+            split_from("public.docs", Some("db1")).unwrap(),
+            (None, "public".into(), "docs".into())
+        );
+        assert_eq!(
+            split_from("public.docs", None).unwrap(),
+            (None, "public".into(), "docs".into())
+        );
+    }
+
+    #[test]
+    fn split_from_refuses_a_catalog_with_database_and_bad_shapes() {
+        assert!(split_from("shop.public.docs", Some("db1")).is_err());
+        assert!(split_from("docs", None).is_err());
+    }
+
+    #[test]
+    fn create_accepts_database_flag() {
+        let cmd = parse(&[
+            "create",
+            "--type",
+            "vector",
+            "--from",
+            "public.docs",
+            "--column",
+            "embedding",
+            "-d",
+            "db1",
+        ])
+        .unwrap();
+        assert!(matches!(cmd, SearchCommands::Create { database: Some(ref d), .. } if d == "db1"));
+    }
+
+    #[test]
+    fn create_leaves_vector_options_unset_by_default() {
+        match parse(CREATE_VECTOR).unwrap() {
+            SearchCommands::Create {
+                algorithm,
+                nlist,
+                probe_fraction,
+                vector_precision,
+                ..
+            } => {
+                assert_eq!(algorithm, None);
+                assert_eq!(nlist, None);
+                assert_eq!(probe_fraction, None);
+                assert_eq!(vector_precision, None);
+            }
+            _ => panic!("expected Create"),
+        }
+    }
+
+    #[test]
+    fn create_parses_ivf_options() {
+        let mut args = CREATE_VECTOR.to_vec();
+        args.extend([
+            "--algorithm",
+            "ivf",
+            "--nlist",
+            "1024",
+            "--probe-fraction",
+            "0.05",
+            "--vector-precision",
+            "int8",
+        ]);
+        match parse(&args).unwrap() {
+            SearchCommands::Create {
+                algorithm,
+                nlist,
+                probe_fraction,
+                vector_precision,
+                ..
+            } => {
+                assert_eq!(algorithm.as_deref(), Some("ivf"));
+                assert_eq!(nlist, Some(1024));
+                assert_eq!(probe_fraction, Some(0.05));
+                assert_eq!(vector_precision.as_deref(), Some("int8"));
+            }
+            _ => panic!("expected Create"),
+        }
+    }
+
+    #[test]
+    fn create_rejects_unknown_algorithm_and_precision() {
+        let mut args = CREATE_VECTOR.to_vec();
+        args.extend(["--algorithm", "flat"]);
+        assert!(parse(&args).is_err());
+
+        let mut args = CREATE_VECTOR.to_vec();
+        args.extend(["--vector-precision", "int4"]);
+        assert!(parse(&args).is_err());
+    }
+
+    const EMB: &str = "txt_embedding";
+
+    fn vector_sql(select: Option<&str>, generated: &[String]) -> String {
+        build_search_sql(
+            "vector",
+            "cat.public.d",
+            "txt",
+            "puppy",
+            select,
+            generated,
+            10,
+        )
+    }
+
+    #[test]
+    fn vector_search_excludes_the_generated_embedding_column() {
+        let sql = vector_sql(None, &[EMB.to_string()]);
+        assert!(
+            sql.starts_with(r#"SELECT * EXCLUDE ("txt_embedding"), vector_distance("#),
+            "sql: {sql}"
+        );
+    }
+
+    #[test]
+    fn a_direct_vector_index_generates_nothing_so_the_star_stays_bare() {
+        // No embedding column was materialised, so there is nothing to exclude
+        // and the projection must not grow an empty EXCLUDE list.
+        let sql = vector_sql(None, &[]);
+        assert!(sql.starts_with("SELECT *, vector_distance("), "sql: {sql}");
+        assert!(!sql.contains("EXCLUDE"), "sql: {sql}");
+    }
+
+    #[test]
+    fn an_explicit_select_is_honoured_verbatim() {
+        // `--select '*'` is the documented way to ask for the embedding back,
+        // so it must survive untouched even when a generated column exists.
+        let sql = vector_sql(Some("*"), &[EMB.to_string()]);
+        assert!(sql.starts_with("SELECT *, vector_distance("), "sql: {sql}");
+        assert!(!sql.contains("EXCLUDE"), "sql: {sql}");
+
+        // And naming the embedding column explicitly still reaches it.
+        let sql = vector_sql(Some("id, txt_embedding"), &[EMB.to_string()]);
+        assert!(
+            sql.starts_with("SELECT id, txt_embedding, vector_distance("),
+            "sql: {sql}"
+        );
+    }
+
+    #[test]
+    fn bm25_search_keeps_a_bare_star_and_the_score() {
+        // A BM25 index generates no columns, so its projection never grows an
+        // EXCLUDE list. Nor can another index supply one: `locate_by_name`
+        // reports only the named index's own generated columns, and the server
+        // refuses to put an embedding-backed vector index on a table that
+        // carries any other index ("Embedding-backed vector indexes cannot
+        // coexist with other indexes on the same table"). Both arms of that
+        // are why this stays `*`.
+        let sql = build_search_sql("bm25", "cat.public.d", "body", "puppy", None, &[], 10);
+        assert!(sql.starts_with("SELECT * FROM bm25_search("), "sql: {sql}");
+        assert!(!sql.contains("EXCLUDE"), "sql: {sql}");
+
+        // An explicit --select still gets `score` appended, unchanged.
+        let sql = build_search_sql("bm25", "cat.public.d", "body", "puppy", Some("id"), &[], 10);
+        assert!(
+            sql.starts_with("SELECT id, score FROM bm25_search("),
+            "sql: {sql}"
+        );
+    }
+
+    #[test]
+    fn the_projection_helper_is_shared_and_general() {
+        // `default_projection` serves both index kinds, so it is specified on
+        // its own rather than only through the branch that can reach it today.
+        assert_eq!(default_projection(&[]), "*");
+        assert_eq!(
+            default_projection(&["txt_embedding".to_string()]),
+            r#"* EXCLUDE ("txt_embedding")"#
+        );
+    }
+
+    #[test]
+    fn a_generated_column_name_is_quoted_for_the_exclude_list() {
+        // Index columns are user-named via `search create --output-column`, so
+        // a name needing quotes (or containing one) must not break the SQL.
+        assert_eq!(quote_ident("plain"), r#""plain""#);
+        assert_eq!(quote_ident("has space"), r#""has space""#);
+        assert_eq!(quote_ident(r#"we"ird"#), r#""we""ird""#);
+    }
+
+    #[test]
+    fn several_generated_columns_are_all_excluded() {
+        let sql = vector_sql(
+            None,
+            &["a_embedding".to_string(), "b_embedding".to_string()],
+        );
+        assert!(
+            sql.contains(r#"* EXCLUDE ("a_embedding", "b_embedding")"#),
+            "sql: {sql}"
+        );
+    }
 }

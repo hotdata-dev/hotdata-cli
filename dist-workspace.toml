@@ -29,3 +29,7 @@ build = ["tar", "-czf", "skills.tar.gz", "skills/"]
 [[dist.extra-artifacts]]
 artifacts = ["SKILL.md"]
 build = ["cp", "skills/hotdata/SKILL.md", "SKILL.md"]
+
+[[dist.extra-artifacts]]
+artifacts = ["install.sh"]
+build = ["cp", "scripts/install.sh", "install.sh"]

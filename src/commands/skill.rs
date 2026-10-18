@@ -2,7 +2,7 @@ use crossterm::style::Stylize;
 use directories::UserDirs;
 use semver::Version;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 /// Subcommands for `hotdata manage skills`.
 #[derive(clap::Subcommand)]
@@ -230,35 +230,87 @@ fn download_and_extract_from_url(url: &str) -> Result<(), String> {
 
     // Extract into ~/.hotdata/skills/
     let store_dir = home_dir().join(".hotdata").join("skills");
-    fs::create_dir_all(&store_dir).map_err(|e| format!("error creating directory: {e}"))?;
+    extract_skills_archive(&bytes, &store_dir)
+}
 
-    let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
-    let mut archive = tar::Archive::new(gz);
+/// Unpack the `skills/` tree of a gzipped tarball into `store_dir`.
+///
+/// The whole archive is validated before anything is written, so an archive
+/// with an invalid entry path leaves the store untouched.
+fn extract_skills_archive(bytes: &[u8], store_dir: &Path) -> Result<(), String> {
+    for_each_skill_entry(bytes, |_, _| Ok(()))?;
 
-    for entry in archive
-        .entries()
-        .map_err(|e| format!("error reading archive: {e}"))?
-    {
-        let mut entry = entry.map_err(|e| format!("error reading archive entry: {e}"))?;
-        let path = entry
-            .path()
-            .map_err(|e| format!("error reading entry path: {e}"))?
-            .into_owned();
-
-        let rel = match path.strip_prefix("skills/") {
-            Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
-            _ => continue,
-        };
-
+    fs::create_dir_all(store_dir).map_err(|e| format!("error creating directory: {e}"))?;
+    for_each_skill_entry(bytes, |mut entry, rel| {
         let dest = store_dir.join(&rel);
+        ensure_no_symlinks(store_dir, &rel)?;
+        if entry.header().entry_type().is_dir() {
+            return fs::create_dir_all(&dest).map_err(|e| format!("error creating directory: {e}"));
+        }
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("error creating directory: {e}"))?;
         }
         entry
             .unpack(&dest)
-            .map_err(|e| format!("error extracting {}: {e}", rel.display()))?;
-    }
+            .map(|_| ())
+            .map_err(|e| format!("error extracting {}: {e}", rel.display()))
+    })
+}
 
+/// Call `f` with each regular file or directory under `skills/`, along with its
+/// path relative to `skills/`. Other entry types and paths are skipped.
+fn for_each_skill_entry<'b>(
+    bytes: &'b [u8],
+    mut f: impl FnMut(tar::Entry<'_, flate2::read::GzDecoder<&'b [u8]>>, PathBuf) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+    for entry in archive
+        .entries()
+        .map_err(|e| format!("error reading archive: {e}"))?
+    {
+        let entry = entry.map_err(|e| format!("error reading archive entry: {e}"))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("error reading entry path: {e}"))?
+            .into_owned();
+
+        // Archive paths are untrusted; keep writes inside store_dir.
+        if path
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(format!("invalid path in skill archive: {}", path.display()));
+        }
+        let mut components = path.components();
+        if components.next() != Some(Component::Normal("skills".as_ref())) {
+            continue;
+        }
+        let rel: PathBuf = components.collect();
+        let kind = entry.header().entry_type();
+        if rel.as_os_str().is_empty() || !(kind.is_file() || kind.is_dir()) {
+            continue;
+        }
+        f(entry, rel)?;
+    }
+    Ok(())
+}
+
+/// Refuse to write through a symlink already present under `store_dir`.
+fn ensure_no_symlinks(store_dir: &Path, rel: &Path) -> Result<(), String> {
+    let mut path = store_dir.to_path_buf();
+    for component in rel.components() {
+        path.push(component);
+        if path
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(format!(
+                "error extracting {}: {} is a symlink",
+                rel.display(),
+                path.display()
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -753,5 +805,178 @@ mod tests {
             agents_hotdata.exists(),
             "the surviving hotdata skill must be left in place"
         );
+    }
+
+    enum TestEntry<'a> {
+        Dir(&'a str),
+        File(&'a str, &'a [u8]),
+        Symlink(&'a str, &'a Path),
+        HardLink(&'a str, &'a Path),
+    }
+
+    /// Build a gzipped tarball, writing header paths verbatim so entries the
+    /// `tar` builder would normalise can still be exercised.
+    fn build_archive(entries: &[TestEntry]) -> Vec<u8> {
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(gz);
+        for entry in entries {
+            let (path, data, kind, link): (&str, &[u8], _, Option<&Path>) = match entry {
+                TestEntry::Dir(p) => (p, &[], tar::EntryType::Directory, None),
+                TestEntry::File(p, d) => (p, d, tar::EntryType::Regular, None),
+                TestEntry::Symlink(p, t) => (p, &[], tar::EntryType::Symlink, Some(t)),
+                TestEntry::HardLink(p, t) => (p, &[], tar::EntryType::Link, Some(t)),
+            };
+            let mut header = tar::Header::new_gnu();
+            let gnu = header.as_gnu_mut().unwrap();
+            gnu.name[..path.len()].copy_from_slice(path.as_bytes());
+            if let Some(target) = link {
+                let target = target.to_str().unwrap().as_bytes();
+                gnu.linkname[..target.len()].copy_from_slice(target);
+            }
+            header.set_entry_type(kind);
+            header.set_mode(if kind.is_dir() { 0o755 } else { 0o644 });
+            header.set_size(data.len() as u64);
+            header.set_cksum();
+            builder.append(&header, data).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    fn store_in(tmp: &tempfile::TempDir) -> PathBuf {
+        tmp.path().join("store")
+    }
+
+    #[test]
+    fn extracts_skills_archive_into_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_in(&tmp);
+        let archive = build_archive(&[
+            TestEntry::Dir("skills/"),
+            TestEntry::Dir("skills/hotdata/"),
+            TestEntry::File("skills/hotdata/SKILL.md", b"---\nversion: 1.2.3\n---\n"),
+            TestEntry::File("skills/hotdata/subskills/search/SKILL.md", b"search"),
+        ]);
+
+        extract_skills_archive(&archive, &store).unwrap();
+
+        assert_eq!(
+            fs::read(store.join("hotdata/SKILL.md")).unwrap(),
+            b"---\nversion: 1.2.3\n---\n"
+        );
+        assert_eq!(
+            fs::read(store.join("hotdata/subskills/search/SKILL.md")).unwrap(),
+            b"search"
+        );
+    }
+
+    #[test]
+    fn ignores_entries_outside_skills_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_in(&tmp);
+        let archive = build_archive(&[
+            TestEntry::File("README.md", b"readme"),
+            TestEntry::File("other/hotdata/SKILL.md", b"other"),
+            TestEntry::File("skills/hotdata/SKILL.md", b"skill"),
+        ]);
+
+        extract_skills_archive(&archive, &store).unwrap();
+
+        assert_eq!(fs::read(store.join("hotdata/SKILL.md")).unwrap(), b"skill");
+        assert!(!store.join("README.md").exists());
+        assert!(!store.join("other").exists());
+        assert!(!tmp.path().join("README.md").exists());
+        assert!(!tmp.path().join("other").exists());
+    }
+
+    #[test]
+    fn rejects_parent_dir_entries() {
+        for path in ["skills/../escaped", "skills/hotdata/../../escaped"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = store_in(&tmp);
+            let archive = build_archive(&[
+                TestEntry::File("skills/hotdata/SKILL.md", b"skill"),
+                TestEntry::File(path, b"escaped"),
+            ]);
+
+            let err = extract_skills_archive(&archive, &store).unwrap_err();
+
+            assert!(
+                err.contains("invalid path in skill archive"),
+                "{path}: {err}"
+            );
+            assert!(!tmp.path().join("escaped").exists(), "{path}");
+            assert!(
+                !store.join("hotdata/SKILL.md").exists(),
+                "{path}: nothing should be extracted from a rejected archive"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_absolute_path_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_in(&tmp);
+        let outside = tmp.path().join("outside.md");
+        let archive = build_archive(&[TestEntry::File(outside.to_str().unwrap(), b"outside")]);
+
+        let err = extract_skills_archive(&archive, &store).unwrap_err();
+
+        assert!(err.contains("invalid path in skill archive"), "{err}");
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn skips_symlink_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_in(&tmp);
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let archive = build_archive(&[
+            TestEntry::Symlink("skills/hotdata/linked", &outside),
+            TestEntry::File("skills/hotdata/linked/SKILL.md", b"through link"),
+        ]);
+
+        extract_skills_archive(&archive, &store).unwrap();
+
+        assert!(!outside.join("SKILL.md").exists());
+        let linked = store.join("hotdata/linked");
+        assert!(!linked.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(linked.join("SKILL.md")).unwrap(), b"through link");
+    }
+
+    #[test]
+    fn skips_hard_link_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_in(&tmp);
+        let outside = tmp.path().join("outside.md");
+        fs::write(&outside, b"original").unwrap();
+        let archive = build_archive(&[
+            TestEntry::HardLink("skills/hotdata/SKILL.md", &outside),
+            TestEntry::File("skills/hotdata/README.md", b"readme"),
+        ]);
+
+        extract_skills_archive(&archive, &store).unwrap();
+
+        assert!(!store.join("hotdata/SKILL.md").exists());
+        assert_eq!(
+            fs::read(store.join("hotdata/README.md")).unwrap(),
+            b"readme"
+        );
+        assert_eq!(fs::read(&outside).unwrap(), b"original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_existing_symlink_in_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_in(&tmp);
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&store).unwrap();
+        std::os::unix::fs::symlink(&outside, store.join("hotdata")).unwrap();
+        let archive = build_archive(&[TestEntry::File("skills/hotdata/SKILL.md", b"skill")]);
+
+        assert!(extract_skills_archive(&archive, &store).is_err());
+        assert!(!outside.join("SKILL.md").exists());
     }
 }

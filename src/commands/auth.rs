@@ -91,14 +91,14 @@ pub fn status(profile: &str) {
             // where work lands. Resolve a display name from the credential's
             // own authorized workspaces (api key) or the cached list (session),
             // falling back to the bare id if the name isn't known.
-            let default_id = crate::client::credentials::default_workspace_id(&profile_config);
+            let current_id = crate::client::credentials::current_workspace_id(&profile_config);
             let known = match profile_config.api_key_source {
                 ApiKeySource::Flag | ApiKeySource::Env => {
                     api_key_authorized_workspaces(&profile_config)
                 }
                 ApiKeySource::Config => profile_config.workspaces.clone(),
             };
-            match default_id {
+            match current_id {
                 Some(id) => {
                     let name = known
                         .iter()
@@ -304,9 +304,9 @@ fn run_browser_auth(
                 .execute(ResetColor)
                 .unwrap();
 
-            let workspaces = cache_workspaces(profile_config, &session.access_token)
-                .unwrap_or_else(|_| profile_config.workspaces.clone());
-            match workspaces.first() {
+            let current = cache_workspaces(profile_config, &session.access_token)
+                .unwrap_or_else(|_| profile_config.current_workspace.clone());
+            match current {
                 Some(w) => {
                     print_row(
                         "Workspace",
@@ -423,16 +423,15 @@ pub fn register(use_email: bool) {
 }
 
 /// Fetch workspaces with a freshly minted JWT and cache them in config.
-/// Returns the freshly fetched list so callers can display it without
-/// having to reload config from disk.
+/// Returns the current workspace: the one saved on this machine if the
+/// account can still access it, otherwise the first one.
 fn cache_workspaces(
     profile: &config::ProfileConfig,
     access_token: &str,
-) -> Result<Vec<config::WorkspaceEntry>, String> {
+) -> Result<Option<config::WorkspaceEntry>, String> {
     let entries =
         crate::client::credentials::fetch_workspaces(&profile.api_url.to_string(), access_token)?;
-    config::save_workspaces("default", entries.clone())?;
-    Ok(entries)
+    config::save_workspaces("default", entries)
 }
 
 /// Workspaces the active api-key credential (`--api-key` / `HOTDATA_API_KEY`) is
@@ -670,11 +669,10 @@ mod tests {
             .create();
 
         let profile = mock_profile(&server.url(), None);
-        let entries = cache_workspaces(&profile, "jwt-xyz").unwrap();
+        let current = cache_workspaces(&profile, "jwt-xyz").unwrap().unwrap();
         m.assert();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].public_id, "ws-1");
-        assert_eq!(entries[0].name, "My WS");
+        assert_eq!(current.public_id, "ws-1");
+        assert_eq!(current.name, "My WS");
 
         // Reload from disk and confirm the cache survived.
         let loaded = config::load("default").unwrap();
@@ -693,9 +691,9 @@ mod tests {
             .create();
 
         let profile = mock_profile(&server.url(), None);
-        let entries = cache_workspaces(&profile, "jwt").unwrap();
+        let current = cache_workspaces(&profile, "jwt").unwrap();
         m.assert();
-        assert!(entries.is_empty());
+        assert!(current.is_none());
     }
 
     #[test]
