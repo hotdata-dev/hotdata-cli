@@ -58,8 +58,8 @@ What the plugin runs, sends, and fetches:
 - **SessionStart hook** (`hooks/check-cli.sh`, Claude Code and Cowork only):
   checks whether `hotdata` is on `PATH` or in `~/.hotdata/cli`. If it's only in
   `~/.hotdata/cli`, it adds that folder to `PATH` for the session. If it's
-  missing, it asks Claude to offer the installer. The hook makes no network
-  requests, installs nothing, and sends no data.
+  missing, it asks Claude to offer to install the CLI. The hook makes no
+  network requests, installs nothing, and sends no data.
 - **Installer**, only after you agree: `curl -fsSL https://hotdata.dev/install |
   HOTDATA_NO_SKILLS=1 sh` downloads the CLI from this repository's GitHub
   releases, or installs it with Homebrew if `brew` is present.

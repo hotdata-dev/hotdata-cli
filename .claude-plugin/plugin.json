@@ -10,5 +10,7 @@
   "homepage": "https://www.hotdata.dev",
   "repository": "https://github.com/hotdata-dev/hotdata-cli",
   "license": "MIT",
+  "privacyPolicyUrl": "https://www.hotdata.dev/privacy-policy",
+  "termsOfServiceUrl": "https://www.hotdata.dev/terms-of-service",
   "icon": "./.claude-plugin/icon.png"
 }
