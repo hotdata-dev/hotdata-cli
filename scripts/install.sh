@@ -9,8 +9,13 @@
 # Usage:
 #   curl --proto '=https' --tlsv1.2 -LsSf https://github.com/hotdata-dev/hotdata-cli/releases/latest/download/install.sh | sh
 #
+# After the binary lands, the agent skill is installed too (`hotdata manage
+# skills install`): it goes to ~/.agents/skills and is linked into ~/.claude
+# when that directory exists, so Claude Code picks it up with no extra step.
+#
 # Environment:
-#   HOTDATA_NO_BREW=1   skip Homebrew even when it is installed
+#   HOTDATA_NO_BREW=1     skip Homebrew even when it is installed
+#   HOTDATA_NO_SKILLS=1   install the binary only, skip the agent skill
 
 set -eu
 
@@ -32,6 +37,19 @@ find_brew() {
     return 1
 }
 
+# Best-effort: a skill failure must not fail the install.
+install_skills() {
+    bin="$1"
+    [ "${HOTDATA_NO_SKILLS:-}" = "1" ] && return 0
+    if [ ! -x "$bin" ]; then
+        echo "warning: $bin not found; run 'hotdata manage skills install' to add the agent skill" >&2
+        return 0
+    fi
+    echo "Installing the hotdata agent skill" >&2
+    "$bin" manage skills install --no-input \
+        || echo "warning: skill install failed; run 'hotdata manage skills install' later" >&2
+}
+
 BREW=""
 if [ "${HOTDATA_NO_BREW:-}" != "1" ]; then
     BREW="$(find_brew || true)"
@@ -44,7 +62,9 @@ if [ -n "$BREW" ]; then
     else
         "$BREW" install "$FORMULA"
     fi
-    echo "Installed $("$BREW" --prefix)/bin/hotdata" >&2
+    HOTDATA_BIN="$("$BREW" --prefix)/bin/hotdata"
+    echo "Installed $HOTDATA_BIN" >&2
+    install_skills "$HOTDATA_BIN"
     exit 0
 fi
 
@@ -57,3 +77,4 @@ else
     echo "error: need curl or wget to download the installer" >&2
     exit 1
 fi
+install_skills "$HOME/.hotdata/cli/hotdata"
