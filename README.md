@@ -19,7 +19,7 @@ commands.
 ## Install
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/hotdata-dev/hotdata-cli/releases/latest/download/install.sh | sh
+curl -fsSL https://hotdata.dev/install | sh
 ```
 
 The script uses Homebrew (`brew install hotdata-dev/tap/cli`) when `brew` is
@@ -29,7 +29,9 @@ to skip Homebrew, `HOTDATA_NO_SKILLS=1` to skip the skill. To build from
 source instead: `cargo install --path .` (requires Rust).
 
 Or grab a binary from [Releases](https://github.com/hotdata-dev/hotdata-cli/releases).
-Stay current with `hotdata manage upgrade`; enable tab completion with
+Stay current with `hotdata manage upgrade`: in an interactive terminal the CLI
+checks for a new release before API commands and offers to upgrade (set
+`HOTDATA_NO_UPDATE_CHECK=1` to skip). Enable tab completion with
 `hotdata manage completions bash|zsh|fish`.
 
 ## Quickstart
@@ -129,7 +131,8 @@ hotdata search "airport surcharge dispute" --index trips_notes
 ```
 
 Use `--type vector` for semantic search; add `--algorithm ivf` for a table
-too large for the default in-memory `hnsw` index. Indexes resolve in the current database
+too large for the default in-memory `hnsw` index. `--type sorted` builds a
+sorted index that speeds up `WHERE` filters and range scans on a column. Indexes resolve in the current database
 (`hotdata databases use <id>`); pass `-d/--database <id>` to target another.
 Bring your own model with `hotdata search embeddings add`.
 
@@ -251,7 +254,11 @@ Config lives at `~/.hotdata/config.yml` (profile-keyed). Environment variables:
 | Variable | Description | Default |
 | :-- | :-- | :-- |
 | `HOTDATA_API_KEY` | API key (overrides config file; also read from `.env`) | |
-| `HOTDATA_WORKSPACE` | Lock every command to one workspace | |
+| `HOTDATA_WORKSPACE` | Lock every command to one workspace (`workspaces use` refuses while set) | |
+| `HOTDATA_DATABASE` | Database to use when `-d/--database` is not given; overrides the saved current database | |
+| `HOTDATA_NO_UPDATE_CHECK` | Skip the interactive new-release check | |
+| `HOTDATA_CONFIG_DIR` | Where config and credentials live | `~/.hotdata` |
+| `HOTDATA_UPLOAD_CONCURRENCY` | Parallel parts for multipart uploads in `databases load` | `12` |
 | `HOTDATA_API_URL` | API base URL | `https://api.hotdata.dev/v1` |
 | `HOTDATA_APP_URL` | App URL for browser login | `https://app.hotdata.dev` |
 
