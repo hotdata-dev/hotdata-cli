@@ -1,3 +1,12 @@
+## [0.43.0] - 2026-10-18
+
+### 🚀 Features
+
+- *(install)* Unified install.sh that prefers Homebrew (#347)
+
+### 📚 Documentation
+
+- *(skill)* How to install the CLI when it is missing (#349)
 ## [0.42.1] - 2026-10-15
 
 ### 🐛 Bug Fixes
