@@ -1,7 +1,7 @@
 {
   "name": "hotdata-cli",
   "description": "Teach Claude the Hotdata CLI: workspaces, databases, SQL, ingest, search, analytics, and geospatial",
-  "version": "0.43.0",
+  "version": "0.44.0",
   "author": {
     "name": "Hotdata",
     "url": "https://www.hotdata.dev"

@@ -1,3 +1,18 @@
+## [0.44.0] - 2026-10-18
+
+### 🚀 Features
+
+- *(plugin)* Ship the hotdata skill as the hotdata-cli Claude Code plugin (#353)
+
+### 🐛 Bug Fixes
+
+- *(cli)* Accept database names and catalogs in every -d flag (#280)
+
+### 📚 Documentation
+
+- *(readme)* Hotdata.dev/install, update check, sorted indexes, env vars (#351)
+- *(skill)* Document HOTDATA_DATABASE (#352)
+- *(skill)* Document SQL writes through hotdata query (#354)
 ## [0.43.0] - 2026-10-18
 
 ### 🚀 Features
