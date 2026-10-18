@@ -44,10 +44,32 @@ updates it with each release:
 /plugin install hotdata-cli@hotdata
 ```
 
-The plugin checks for the CLI when a session starts and offers to install it if
-it's missing. Use either the plugin or the installer's skill, not both: if you
-installed the CLI with the script above, install it with `HOTDATA_NO_SKILLS=1`
-or Claude Code will list the skill twice.
+Self-hosted marketplaces don't auto-update by default. To get each release
+automatically, open `/plugin`, go to **Marketplaces**, select `hotdata`, and
+choose **Enable auto-update**. Otherwise run `/plugin marketplace update hotdata`
+when a new version ships.
+
+Use either the plugin or the installer's skill, not both: if you installed the
+CLI with the script above, install it with `HOTDATA_NO_SKILLS=1` or Claude Code
+will list the skill twice.
+
+What the plugin runs, sends, and fetches:
+
+- **SessionStart hook** (`hooks/check-cli.sh`, Claude Code and Cowork only):
+  checks whether `hotdata` is on `PATH` or in `~/.hotdata/cli`. If it's only in
+  `~/.hotdata/cli`, it adds that folder to `PATH` for the session. If it's
+  missing, it asks Claude to offer the installer. The hook makes no network
+  requests, installs nothing, and sends no data.
+- **Installer**, only after you agree: `curl -fsSL https://hotdata.dev/install |
+  HOTDATA_NO_SKILLS=1 sh` downloads the CLI from this repository's GitHub
+  releases, or installs it with Homebrew if `brew` is present.
+- **The skill** teaches Claude to run `hotdata` commands. Those commands talk to
+  the Hotdata API (`https://api.hotdata.dev/v1`, or `HOTDATA_API_URL`) with your
+  Hotdata credentials, and send the queries, files, and data source settings
+  you ask Claude to work with. `hotdata auth login` opens
+  `https://app.hotdata.dev` in your browser, and the CLI checks this
+  repository's GitHub releases for new versions (`HOTDATA_NO_UPDATE_CHECK=1`
+  turns that off). Neither the plugin nor the CLI collects telemetry.
 
 ## Quickstart
 
