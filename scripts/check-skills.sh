@@ -125,6 +125,13 @@ if [ "$REQUIRE_VERSION" = 1 ]; then
             fail=1
         fi
     done
+    if [ -f .claude-plugin/plugin.json ]; then
+        pv="$(jq -r .version .claude-plugin/plugin.json 2>/dev/null || true)"
+        if [ "$pv" != "$crate" ]; then
+            echo "error: .claude-plugin/plugin.json declares version $pv, Cargo.toml is $crate" >&2
+            fail=1
+        fi
+    fi
     [ "$fail" = 0 ] && echo "→ skills: version ok ($crate)"
 fi
 

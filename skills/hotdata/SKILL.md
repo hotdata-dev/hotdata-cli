@@ -14,6 +14,16 @@ hotdata <command> [args]
 
 Or if installed on PATH: `hotdata <command> [args]`
 
+## Prerequisites: CLI installation
+
+If the `hotdata` executable is not found on PATH or under `~/.hotdata/cli/`, prompt the user to install it:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/hotdata-dev/hotdata-cli/releases/latest/download/install.sh | HOTDATA_NO_SKILLS=1 sh
+```
+
+(The `HOTDATA_NO_SKILLS=1` flag prevents duplicate skill installations when running inside the Claude Code plugin.) The installer uses Homebrew (`brew install hotdata-dev/tap/cli`) when `brew` is present; otherwise it places a prebuilt binary at `~/.hotdata/cli/hotdata`. `HOTDATA_NO_BREW=1` forces the prebuilt path.
+
 ## Sub-skills (loaded on demand)
 
 This is the only top-level hotdata skill. Three specialized guides ship **bundled inside it** under `subskills/` and are not separate skills — **`Read` the matching file only when the task needs it** (progressive disclosure), then follow it:
