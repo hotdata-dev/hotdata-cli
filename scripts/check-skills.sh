@@ -12,8 +12,9 @@
 #      flag in its --help, must be named in skills/**/*.md, so a new command
 #      or flag cannot ship undocumented. Hidden flags are not in --help and
 #      are not checked.
-#   3. Version: every SKILL.md frontmatter `version:` must equal Cargo.toml
-#      (finish phase only — prepare runs before cargo-release bumps them).
+#   3. Version: every SKILL.md frontmatter `version:`, and the Claude Code
+#      plugin manifest's `version`, must equal Cargo.toml (finish phase only —
+#      prepare runs before cargo-release bumps them).
 #
 # Usage:
 #   scripts/check-skills.sh [--require-version]
@@ -125,6 +126,11 @@ if [ "$REQUIRE_VERSION" = 1 ]; then
             fail=1
         fi
     done
+    pv="$(sed -nE 's/^ *"version": "([^"]+)".*/\1/p' .claude-plugin/plugin.json | head -1)"
+    if [ "$pv" != "$crate" ]; then
+        echo "error: .claude-plugin/plugin.json declares version $pv, Cargo.toml is $crate" >&2
+        fail=1
+    fi
     [ "$fail" = 0 ] && echo "→ skills: version ok ($crate)"
 fi
 

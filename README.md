@@ -34,6 +34,21 @@ checks for a new release before API commands and offers to upgrade (set
 `HOTDATA_NO_UPDATE_CHECK=1` to skip). Enable tab completion with
 `hotdata manage completions bash|zsh|fish`.
 
+### Claude Code plugin
+
+To get the agent skill through Claude Code's plugin manager instead, which
+updates it with each release:
+
+```
+/plugin marketplace add hotdata-dev/claude-plugins
+/plugin install hotdata-cli@hotdata
+```
+
+The plugin checks for the CLI when a session starts and offers to install it if
+it's missing. Use either the plugin or the installer's skill, not both: if you
+installed the CLI with the script above, install it with `HOTDATA_NO_SKILLS=1`
+or Claude Code will list the skill twice.
+
 ## Quickstart
 
 ```sh
