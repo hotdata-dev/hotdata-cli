@@ -57,7 +57,7 @@ fi
 
 if [ -n "$BREW" ]; then
     echo "Homebrew found at $BREW; installing $FORMULA" >&2
-    if "$BREW" list --formula cli >/dev/null 2>&1; then
+    if "$BREW" list --formula "$FORMULA" >/dev/null 2>&1; then
         "$BREW" upgrade "$FORMULA"
     else
         "$BREW" install "$FORMULA"
@@ -69,12 +69,17 @@ if [ -n "$BREW" ]; then
 fi
 
 echo "Homebrew not found; installing a prebuilt binary to ~/.hotdata/cli" >&2
+# Download fully before running: plain sh has no pipefail, so a failed
+# download piped into sh would otherwise "succeed" with nothing installed.
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
 if command -v curl >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -LsSf "$DIST_INSTALLER" | sh
+    curl --proto '=https' --tlsv1.2 -LsSf "$DIST_INSTALLER" -o "$TMP"
 elif command -v wget >/dev/null 2>&1; then
-    wget -qO- "$DIST_INSTALLER" | sh
+    wget -qO "$TMP" "$DIST_INSTALLER"
 else
     echo "error: need curl or wget to download the installer" >&2
     exit 1
 fi
+sh "$TMP"
 install_skills "$HOME/.hotdata/cli/hotdata"
