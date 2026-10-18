@@ -100,6 +100,16 @@ Write SQL in another dialect and the server transpiles it to HotSQL —
 hotdata query "SELECT IFF(n > 0, 'pos', 'neg') FROM t" --dialect snowflake
 ```
 
+`query` also writes: `INSERT`, `CREATE TABLE`, `CREATE TABLE AS` and
+`DROP TABLE` run against the current database's own tables (API key with the
+`write` permission) and print one row, `rows_affected`. `UPDATE`/`DELETE` are
+not supported in SQL yet — use `hotdata load --mode update|delete|upsert`.
+
+```sh
+hotdata query "CREATE TABLE events (id BIGINT, kind TEXT)"
+hotdata query "INSERT INTO events VALUES (1, 'signup'), (2, 'login')"
+```
+
 Long queries go async and print a `query_run_id` — poll with
 `hotdata query status <id>` (exit `0` done / `1` failed / `2` running / `3` done
 but the printed result is a truncated preview). Re-fetch
