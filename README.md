@@ -155,27 +155,31 @@ Your choice is saved on this machine and survives logging out and back in.
   `HOTDATA_API_KEY` in your environment or a `.env` file.
 - `hotdata query status` and `hotdata ingest run` return exit codes scripts can
   check: `0` done, `1` failed, `2` still running.
+- `hotdata manage skills install` installs bundled agent skills — Markdown
+  playbooks that teach AI coding agents (Claude Code and friends) the full CLI.
 - `hotdata databases context push DATAMODEL` stores a Markdown description of
   your data model in Hotdata, so teammates and agents work from the same map.
 
 ### Claude Code plugin
 
-The installer already sets up the Hotdata skill. If you'd rather get it through
-Claude Code's plugin manager, which updates it with each release:
+To get the agent skill through Claude Code's plugin manager instead, which
+updates it with each release:
 
 ```
 /plugin marketplace add hotdata-dev/claude-plugins
 /plugin install hotdata-cli@hotdata
 ```
 
-Use the plugin *or* the installer's skill, not both. If you use the plugin,
-install the CLI with `curl -fsSL https://hotdata.dev/install | HOTDATA_NO_SKILLS=1 sh`
-so Claude Code doesn't list the skill twice. To get plugin updates
-automatically, open `/plugin` → **Marketplaces** → `hotdata` →
-**Enable auto-update**.
+Self-hosted marketplaces don't auto-update by default. To get each release
+automatically, open `/plugin`, go to **Marketplaces**, select `hotdata`, and
+choose **Enable auto-update**. Otherwise run `/plugin marketplace update hotdata`
+when a new version ships.
 
-<details>
-<summary>What the plugin runs, sends, and fetches</summary>
+Use either the plugin or the installer's skill, not both: if you installed the
+CLI with the script above, install it with `HOTDATA_NO_SKILLS=1` or Claude Code
+will list the skill twice.
+
+What the plugin runs, sends, and fetches:
 
 - **SessionStart hook** (`hooks/check-cli.sh`, Claude Code and Cowork only):
   checks whether `hotdata` is on `PATH` or in `~/.hotdata/cli`. If it's only in
@@ -192,8 +196,6 @@ automatically, open `/plugin` → **Marketplaces** → `hotdata` →
   `https://app.hotdata.dev` in your browser, and the CLI checks this
   repository's GitHub releases for new versions (`HOTDATA_NO_UPDATE_CHECK=1`
   turns that off). Neither the plugin nor the CLI collects telemetry.
-
-</details>
 
 ## Getting help
 
