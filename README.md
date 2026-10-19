@@ -12,9 +12,11 @@
 
 ---
 
-Query, search, and join your data from one place — external databases, APIs,
-cloud storage, Iceberg catalogs, and files you upload — with plain SQL and a few
-commands.
+Load your data into a Hotdata database, then query, join, and search it with
+plain SQL. Data can come from files on your machine, a URL, or an external
+source such as Postgres, S3, Iceberg, Kafka, or one of ~150 API services.
+
+📖 Full documentation: [hotdata.dev/docs](https://www.hotdata.dev/docs)
 
 ## Install
 
@@ -22,17 +24,163 @@ commands.
 curl -fsSL https://hotdata.dev/install | sh
 ```
 
-The script uses Homebrew (`brew install hotdata-dev/tap/cli`) when `brew` is
-present and otherwise drops a prebuilt binary into `~/.hotdata/cli`. It then
-installs the agent skill for Claude Code and friends. Set `HOTDATA_NO_BREW=1`
-to skip Homebrew, `HOTDATA_NO_SKILLS=1` to skip the skill. To build from
-source instead: `cargo install --path .` (requires Rust).
+That's it. The installer uses Homebrew if you have it
+(`brew install hotdata-dev/tap/cli`) and also installs the Hotdata skill for AI
+coding agents such as Claude Code. You can also download a binary from
+[Releases](https://github.com/hotdata-dev/hotdata-cli/releases).
 
-Or grab a binary from [Releases](https://github.com/hotdata-dev/hotdata-cli/releases).
-Stay current with `hotdata manage upgrade`: in an interactive terminal the CLI
-checks for a new release before API commands and offers to upgrade (set
-`HOTDATA_NO_UPDATE_CHECK=1` to skip). Enable tab completion with
-`hotdata manage completions bash|zsh|fish`.
+The CLI tells you when a new version is out; upgrade with
+`hotdata manage upgrade`.
+
+## Quickstart
+
+```sh
+# 1. Log in (or create an account with: hotdata auth register)
+hotdata auth login
+
+# 2. Create a database and make it your current one
+hotdata databases create --catalog demo
+hotdata databases use demo
+
+# 3. Load some data
+hotdata databases load --catalog demo --table trips \
+  --url https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
+
+# 4. Query it
+hotdata query "SELECT count(*) FROM demo.public.trips"
+```
+
+Tables are addressed as `catalog.schema.table`. Here the catalog is `demo` and
+the default schema is `public`. The examples below build on this `demo`
+database. For a longer walkthrough, see the
+[quick start guide](https://www.hotdata.dev/docs/quick-start).
+
+## Load your data
+
+**From a file or URL** (CSV, JSON, or Parquet). Point `--file` at your own
+file, or `--url` at one online:
+
+```sh
+hotdata databases load --catalog demo --table my_table --file ./my-data.csv
+```
+
+A load replaces the table. To add rows instead, use `--mode append`:
+
+```sh
+hotdata databases load --catalog demo --table my_table --file ./more-data.csv --mode append
+```
+
+To change existing rows by key, use `--mode update`, `--mode delete`, or
+`--mode upsert` with `--key <column>`.
+
+**From an external source** such as Postgres, MySQL, S3, GCS, Iceberg, Kafka,
+or an API service: first save the connection details as a *datasource*, then
+create an *ingest* that copies data into your database once or on a
+schedule.
+
+```sh
+hotdata ingest sources types        # see what you can connect to
+hotdata ingest sources add          # save a datasource (you'll be prompted)
+hotdata ingest create --source "prod postgres" --table orders --database-id <database-id>
+hotdata ingest list                 # check on your ingests
+```
+
+More in the docs: [loading data](https://www.hotdata.dev/docs/push-data) and
+[importing from external sources](https://www.hotdata.dev/docs/pull-data).
+
+## Query
+
+```sh
+hotdata databases tables list                       # what can I query?
+hotdata databases tables show demo.public.trips     # columns and types
+hotdata query "SELECT * FROM demo.public.trips LIMIT 10"
+```
+
+SQL is PostgreSQL-style. Add `-o json` or `-o csv` to change the output format.
+If you prefer another dialect, pass `--dialect duckdb`, `postgres`, or
+`snowflake` and the query is translated for you.
+
+You can also write with SQL. `INSERT`, `CREATE TABLE`, `CREATE TABLE AS`, and
+`DROP TABLE` work on your current database's tables (your API key needs the
+`write` permission):
+
+```sh
+hotdata query "CREATE TABLE events (id BIGINT, kind TEXT)"
+hotdata query "INSERT INTO events VALUES (1, 'signup'), (2, 'login')"
+```
+
+`UPDATE` and `DELETE` aren't supported in SQL yet; use `databases load` with
+`--mode update`, `--mode delete`, or `--mode upsert` instead.
+
+Long-running queries finish in the background. The CLI prints an id you can
+check with `hotdata query status <id>`.
+
+Column names are case-sensitive: wrap names with capital letters in double
+quotes, like `"PULocationID"`. See the [SQL reference](https://www.hotdata.dev/docs/sql)
+for the supported syntax and functions.
+
+## Join across databases
+
+Keep reference data in its own database and attach it wherever you need it. No
+data is copied. For example, load NYC's taxi zone names into a `zones`
+database, attach it to `demo`, and find the busiest pickup zones:
+
+```sh
+hotdata databases create --catalog zones
+hotdata databases load --catalog zones --table zones \
+  --url https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv
+hotdata databases attach zones
+
+hotdata query 'SELECT z."Zone", count(*) AS trips
+               FROM demo.public.trips t
+               JOIN zones.public.zones z ON z."LocationID" = t."PULocationID"
+               GROUP BY z."Zone" ORDER BY trips DESC LIMIT 5'
+```
+
+Attached tables are read-only. `hotdata databases detach zones` removes the
+link without deleting anything.
+
+## Search
+
+Build a search index on a column, then search it. Using the `zones` table from
+above:
+
+```sh
+hotdata search create zone_names --type text --from zones.public.zones --column Zone
+hotdata search "airport" --index zone_names -d zones
+```
+
+That returns JFK, LaGuardia, and Newark airports. An index lives in the same
+database as its table, so pass `-d` when that isn't your current database.
+
+- `--type text` is full-text (keyword) search.
+- `--type vector` is semantic search. Hotdata creates the embeddings for you,
+  so you don't need an embeddings API key.
+- `--type sorted` speeds up `WHERE` filters and range queries on a column.
+
+## Your current workspace and database
+
+Most commands run against your *current* workspace and database, so you don't
+have to name them every time.
+
+- Switch with `hotdata workspaces use` and `hotdata databases use`.
+- Target a different one for a single command with `-w <workspace-id>` or
+  `-d <database>`. `-d` accepts a database's name, catalog, or id.
+- `workspaces list` and `databases list` mark the current one with `*`.
+
+Your choice is saved on this machine and survives logging out and back in.
+
+## Scripts, CI, and AI agents
+
+- Add `-o json` or `-o yaml` to any listing for machine-readable output.
+- Authenticate without a browser using an API key: `--api-key <key>`, or
+  `HOTDATA_API_KEY` in your environment or a `.env` file.
+- `hotdata query status` and `hotdata ingest run` return exit codes scripts can
+  check: `0` done, `1` failed, `2` still running.
+- `hotdata manage skills install` installs bundled agent skills — Markdown
+  playbooks that teach AI coding agents (Claude Code and friends) the full CLI.
+- `hotdata databases context push DATAMODEL` stores a Markdown description of
+  your data model in Hotdata, so teammates and agents work from the same map.
 
 ### Claude Code plugin
 
@@ -71,143 +219,22 @@ What the plugin runs, sends, and fetches:
   repository's GitHub releases for new versions (`HOTDATA_NO_UPDATE_CHECK=1`
   turns that off). Neither the plugin nor the CLI collects telemetry.
 
-## Quickstart
-
-```sh
-hotdata auth login                            # or: hotdata auth register
-hotdata databases create --catalog demo
-hotdata databases use demo                    # make it current (create does not switch)
-hotdata databases load --catalog demo --table trips \
-  --url https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
-hotdata query "SELECT count(*) FROM demo.public.trips"
-```
-
-The core loop: create an **instant database**, put data in it, query it with
-PostgreSQL-dialect SQL. Everything else builds on that.
-
-## Getting your data in
-
-**Upload a file** directly — csv, json, or parquet:
-
-```sh
-hotdata databases load --catalog demo --table listings --file ./listings.csv
-```
-
-The format comes from the extension; pass `--format csv|json|parquet` when the
-extension is missing or misleading. json is read whatever shape it arrives in —
-an array of objects, a pretty-printed document, or one object per line.
-
-A load **replaces** the table by default. `--mode append` adds rows to an
-existing table instead:
-
-```sh
-hotdata databases load --catalog demo --table listings --file ./more-listings.parquet --mode append
-```
-
-**Import from an external source** — Postgres/MySQL, S3/GCS buckets, Iceberg,
-Kafka, ~150 API services — via a datasource (`ds_…`) and a saved ingest (`ing_…`):
-
-```sh
-hotdata ingest sources types                  # browse source types and families
-hotdata ingest sources fields sql             # config/credentials/selector a family takes
-hotdata ingest sources add                     # create a datasource (prompts, or --config @src.json)
-
-hotdata ingest create --source "prod postgres" --table orders --database-id db_123
-hotdata ingest logs <ing_…>                    # attempts for an ingest, newest first
-hotdata ingest run <run_…> --wait              # show one attempt; exits 0 done / 1 failed / 2 in flight
-```
-
-`ingest sources update-config` rotates credentials; `ingest pause|resume|schedule`
-control a scheduled ingest. Data lands in an instant database — query it like any
-other.
-
-## Query and explore
-
-```sh
-hotdata databases tables list                  # every queryable table
-hotdata databases tables show <table>          # columns and types
-hotdata query "<sql>" [-o table|json|csv]      # HotSQL (PostgreSQL dialect)
-```
-
-Write SQL in another dialect and the server transpiles it to HotSQL —
-`--dialect` accepts `hotsql` (default), `duckdb`, `postgres`, `snowflake`
-(writes follow the same rules as `hotsql`):
-
-```sh
-hotdata query "SELECT IFF(n > 0, 'pos', 'neg') FROM t" --dialect snowflake
-```
-
-`query` also writes: `INSERT`, `CREATE TABLE`, `CREATE TABLE AS` and
-`DROP TABLE` run against the current database's own tables (API key with the
-`write` permission) and print one row, `rows_affected`. `UPDATE`/`DELETE` are
-not supported in SQL yet — use `hotdata databases load --mode update|delete|upsert`.
-
-```sh
-hotdata query "CREATE TABLE events (id BIGINT, kind TEXT)"
-hotdata query "INSERT INTO events VALUES (1, 'signup'), (2, 'login')"
-```
-
-Long queries go async and print a `query_run_id` — poll with
-`hotdata query status <id>` (exit `0` done / `1` failed / `2` running / `3` done
-but the printed result is a truncated preview). Re-fetch
-past results with `hotdata databases results get <result-id>`; browse history
-with `hotdata databases queries list`.
-
-## Join across databases
-
-Attach another instant database and join its live tables directly, no copying:
-
-```sh
-hotdata databases attach prod-replica --alias prod
-hotdata query "SELECT t.id, o.total FROM demo.public.tickets t
-               JOIN prod.public.orders o ON o.ticket_id = t.id"
-```
-
-The attached database is read-only here: loads still go to your own database,
-and `detach` withdraws visibility without deleting anything. `--alias` is
-required when the other database kept the stock `default` catalog name.
-
-## Search
-
-Create an index once, then search server-side. Vector search auto-embeds the
-column and the query — no embedding keys or client setup:
-
-```sh
-hotdata search create trips_notes --type text --from demo.public.trips --column notes
-hotdata search "airport surcharge dispute" --index trips_notes
-```
-
-Use `--type vector` for semantic search; add `--algorithm ivf` for a table
-too large for the default in-memory `hnsw` index. `--type sorted` builds a
-sorted index that speeds up `WHERE` filters and range scans on a column. Indexes resolve in the current database
-(`hotdata databases use <id>`); pass `-d/--database <id>` to target another.
-Bring your own model with `hotdata search embeddings add`.
-
-## Use it from scripts and agents
-
-- Every listing command takes `-o json|yaml`; `query status` and `ingest run`
-  expose script-friendly exit codes.
-- Authenticate non-interactively with `--api-key`, or `HOTDATA_API_KEY` in the
-  environment or a `.env` file.
-- `hotdata manage skills install` installs bundled agent skills — Markdown
-  playbooks that teach AI coding agents (Claude Code and friends) the full CLI.
-- `hotdata databases context push|show DATAMODEL` stores your data model as
-  shared, server-side Markdown so humans and agents query with the same map.
-
 ## Getting help
 
-File a support ticket without leaving the terminal:
+- [Documentation](https://www.hotdata.dev/docs), including the
+  [CLI reference](https://www.hotdata.dev/docs/cli-reference) and the
+  [agent skills guide](https://www.hotdata.dev/docs/agent-skills).
+- `hotdata <command> --help` shows every option for a command.
+- File a support ticket from the terminal; replies go to your account email:
 
-```sh
-hotdata support report -m "Queries against work_abc have been timing out for an hour" --subject "Queries timing out"
-hotdata support report --logs ./stderr.txt --context env=staging
-```
+  ```sh
+  hotdata support report -m "Queries have been timing out since 2pm" --subject "Query timeouts"
+  ```
 
-Omit `-m` in an interactive terminal to compose the report in `$EDITOR` instead. Replies go to the email on your HotData account.
+## Reference
 
-## Commands
-
-The full command surface. The top level has nine groups — `auth`, `workspaces`, `databases`, `query`, `jobs`, `ingest`, `search`, `manage`, and `support`. Run `hotdata <command> --help` for full flags on any command.
+<details>
+<summary>All commands</summary>
 
 | Command | What it does |
 | :-- | :-- |
@@ -280,23 +307,14 @@ The full command surface. The top level has nine groups — `auth`, `workspaces`
 | `manage skills install` | Install/update the agent skill into agent directories |
 | `manage skills status` | Show the agent skill's installation status |
 | `manage skills list` | List installed skills (alias for `status`) |
-| `support report` | File a support ticket with the HotData team |
+| `support report` | File a support ticket with the Hotdata team |
 
-## Current workspace and database
+</details>
 
-The CLI saves a current workspace and, per workspace, a current database on
-this machine. Commands use them when you don't name one. They survive
-`auth logout` / `auth login`, so a new session resumes where you left off.
+<details>
+<summary>Configuration and environment variables</summary>
 
-- `hotdata workspaces use` and `hotdata databases use` are the only commands
-  that switch. `databases create` and `databases fork` do not.
-- `--workspace-id` / `-w` and `--database` / `-d` apply to one command only
-  and do not change the current selection.
-- `workspaces list` and `databases list` mark the current one with `*`.
-
-## Configuration
-
-Config lives at `~/.hotdata/config.yml` (profile-keyed). Environment variables:
+Config lives at `~/.hotdata/config.yml`.
 
 | Variable | Description | Default |
 | :-- | :-- | :-- |
@@ -309,7 +327,13 @@ Config lives at `~/.hotdata/config.yml` (profile-keyed). Environment variables:
 | `HOTDATA_API_URL` | API base URL | `https://api.hotdata.dev/v1` |
 | `HOTDATA_APP_URL` | App URL for browser login | `https://app.hotdata.dev` |
 
-API-key precedence, lowest to highest: config file → `HOTDATA_API_KEY` → `--api-key`.
+An API key is taken from, in order of priority: `--api-key`, then
+`HOTDATA_API_KEY`, then the config file.
+
+Installer options: `HOTDATA_NO_BREW=1` skips Homebrew, `HOTDATA_NO_SKILLS=1`
+skips the agent skill. Tab completion: `hotdata manage completions bash|zsh|fish`.
+
+</details>
 
 ## Development
 
@@ -317,4 +341,5 @@ API-key precedence, lowest to highest: config file → `HOTDATA_API_KEY` → `--
 cargo build && cargo test
 ```
 
-Release process: see [docs/RELEASING.md](docs/RELEASING.md).
+Build from source with `cargo install --path .` (requires Rust). Release
+process: [docs/RELEASING.md](docs/RELEASING.md).
