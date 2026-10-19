@@ -99,7 +99,7 @@ Returns workspaces with `current`, `public_id`, `name`, `active`, `favorite`, `p
 - **"json in any shape" is the CLI's doing, not the API's.** `--file`/`--url` reshape an array or a pretty-printed document into newline-delimited json locally. The load API and the SDKs accept **newline-delimited json only** (`format: "json"`), so code that moves off the CLI must convert the file itself.
 - **Two json sources are refused before anything uploads — do not retry them unchanged.** `one object per row` means a row is a scalar or a list: reshape the file so every row is an object. `carries no json rows` means the source is `[]` or empty: there is nothing to load.
 
-**Current database:** `hotdata databases use <id>` saves the current database to config (see [Current workspace and database](#current-workspace-and-database)). `databases tables list`/`load`/`remove`, `databases queries`/`results`, and all `databases context` commands default to the current database; pass **`--database <id>`** to target another database for that command only. (`databases tables show` instead takes a fully-qualified `catalog.schema.table`.)
+**Current database:** `hotdata databases use <id>` saves the current database to config (see [Current workspace and database](#current-workspace-and-database)). `databases tables list`/`load`/`remove`, `databases queries`/`results`, and all `databases context` commands default to the current database; pass **`--database <id>`** to target another database for that command only (on `queries`, `results`, and `context`, a database name or catalog alias works too). (`databases tables show` instead takes a fully-qualified `catalog.schema.table`.)
 
 **Always select databases by id** (`dbid...`, from `databases list`). Display names and catalog aliases are not unique — several databases can share a name, and a fork answers to the same catalog as its source — so name-based selection is ambiguous.
 
@@ -238,13 +238,13 @@ hotdata databases tables show <catalog.schema.table|schema.table> [--output tabl
 
 ### Database context (named Markdown)
 
-Reads and writes **database-scoped context API** documents. Context is tied to the **current database** (set via `hotdata databases use`); pass **`--database <id>`** (short: **`-d`**) to target a specific database. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Database context (API)](#database-context-api).
+Reads and writes **database-scoped context API** documents. Context is tied to the **current database** (set via `hotdata databases use`); pass **`--database <database>`** (short: **`-d`**; a name, catalog alias, or id) to target a specific database. **`show`** needs no local file; **`push`** / **`pull`** use **`./<NAME>.md`** in the current directory only as the CLI transport format. See [Database context (API)](#database-context-api).
 
 ```
-hotdata databases context list [--database <id>] [--prefix <stem>] [--output table|json|yaml]
-hotdata databases context show <name> [--database <id>]
-hotdata databases context pull <name> [--database <id>] [--force] [--dry-run]
-hotdata databases context push <name> [--database <id>] [--dry-run]
+hotdata databases context list [--database <database>] [--prefix <stem>] [--output table|json|yaml]
+hotdata databases context show <name> [--database <database>]
+hotdata databases context pull <name> [--database <database>] [--force] [--dry-run]
+hotdata databases context push <name> [--database <database>] [--dry-run]
 ```
 
 - `list` — names, `updated_at`, and character counts for each stored context in the current database. Use `--prefix` to narrow names (case-sensitive). **Agents:** call **`list` before `show`** for `DATAMODEL` (or any stem) so you do not rely on `show` failing when the document does not exist yet.

@@ -42,17 +42,17 @@ hotdata search "<query>" --in <name>
 - **`ivf` indexes:** an `ivf` index created over a text column with `--provider` is searched by text like any vector index: `search` embeds the text with the index's provider and runs `SELECT <the table's columns>, vector_distance(<text col>, '<text>') AS dist FROM <table> ORDER BY dist LIMIT <k>`. It names the columns rather than using `*`, because an `ivf` index cannot serve a query that returns its vector column (`SELECT *` and `* EXCLUDE (...)` included); a `--select` you pass is used verbatim, so leave the generated `{column}_embedding` out of it. An `ivf` index over a column that already holds vectors has no model to embed the text, so `search` refuses it and prints the query to run instead: `hotdata query 'SELECT <columns>, <l2_distance|cosine_distance>(<col>, ARRAY[<query vector>]) AS dist FROM <catalog.schema.table> ORDER BY dist LIMIT <k>'` (the function matches the index's metric). In hand-written SQL against an `ivf` index, name the columns to return the same way; `vector_search(...)` reads `hnsw` indexes only and is refused on `ivf`.
 - **Before search:** create the right index (`search create <name> --type text` or `--type vector`). See [references/INDEXES.md](references/INDEXES.md).
 - Default `--limit` is 10.
-- **Database:** the search commands resolve the index in the **current** database (`hotdata databases use <id>`). Pass `-d/--database <id>` to target a different database explicitly — it is required when no current database is set. The same `-d/--database` works on `search show` and `search remove`.
+- **Database:** the search commands resolve the index in the **current** database (`hotdata databases use <id>`). Pass `-d/--database <database>` (name, catalog alias, or id) to target a different database explicitly — it is required when no current database is set. The same `-d/--database` works on `search show` and `search remove`.
 - **Current database:** with `hotdata databases use <db>`, an index created with a `schema.table` `--from` resolves the current database's catalog automatically. Or create it with the full `catalog.schema.table` form. Do **not** use the internal `__db_<id>` label or raw catalog ID prefix — `bm25_search`/`vector_distance` resolve a catalog attached to the current database, so an `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
 
 ---
 
 ## Indexes (text and vector)
 
-Indexes are an **instant-database** concept, and belong to the database's own tables — an attached database is read-only, so index its tables there rather than here. Create names the index (positional) and attaches to a table via `--from` — `catalog.schema.table` (the database's own catalog), or `schema.table` with a current database set. `list` narrows to `-d/--database <id>`, else the **current database** when one is set; without either it scans the whole workspace. `show`/`remove` resolve the index by name in the current database (or `--database <id>`).
+Indexes are an **instant-database** concept, and belong to the database's own tables — an attached database is read-only, so index its tables there rather than here. Create names the index (positional) and attaches to a table via `--from` — `catalog.schema.table` (the database's own catalog), or `schema.table` with a current database set. `list` narrows to `-d/--database <database>`, else the **current database** when one is set; without either it scans the whole workspace. `show`/`remove` resolve the index by name in the current database (or `--database <database>`).
 
 ```bash
-# List — -d/--database <id>, else the current database, else whole-workspace scan
+# List — -d/--database <database>, else the current database, else whole-workspace scan
 hotdata search list [-d <db-id>] [--schema <schema>] [--table <table>] \
   [--workspace-id <ws>] [--output table|json|yaml]
 
@@ -65,10 +65,10 @@ hotdata search create <name> --type text|vector --from <catalog.schema.table> \
   [--vector-precision float64|float32|float16|float8|int8] \
   [--provider <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
 
-# Show — by index name, in the current database (or -d/--database <id>)
+# Show — by index name, in the current database (or -d/--database <database>)
 hotdata search show <name> [-d <db-id>] [--output table|json|yaml]
 
-# Remove — by index name, in the current database (or -d/--database <id>)
+# Remove — by index name, in the current database (or -d/--database <database>)
 hotdata search remove <name> [-d <db-id>]
 ```
 
