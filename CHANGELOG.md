@@ -1,3 +1,13 @@
+## [0.44.1] - 2026-10-19
+
+### 🐛 Bug Fixes
+
+- *(plugin)* Privacy policy links, and keep the install command out of the hook (#358)
+
+### 📚 Documentation
+
+- *(plugin)* Auto-update note and disclosure for the plugin directory (#357)
+- *(readme)* Reorganize for end users (#359)
 ## [0.44.0] - 2026-10-18
 
 ### 🚀 Features
