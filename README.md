@@ -16,6 +16,8 @@ Load your data into a Hotdata database, then query, join, and search it with
 plain SQL. Data can come from files on your machine, a URL, or an external
 source such as Postgres, S3, Iceberg, Kafka, or one of ~150 API services.
 
+📖 Full documentation: [hotdata.dev/docs](https://www.hotdata.dev/docs)
+
 ## Install
 
 ```sh
@@ -49,20 +51,23 @@ hotdata query "SELECT count(*) FROM demo.public.trips"
 ```
 
 Tables are addressed as `catalog.schema.table`. Here the catalog is `demo` and
-the default schema is `public`.
+the default schema is `public`. The examples below build on this `demo`
+database. For a longer walkthrough, see the
+[quick start guide](https://www.hotdata.dev/docs/quick-start).
 
 ## Load your data
 
-**From a file or URL** (CSV, JSON, or Parquet):
+**From a file or URL** (CSV, JSON, or Parquet). Point `--file` at your own
+file, or `--url` at one online:
 
 ```sh
-hotdata databases load --catalog demo --table listings --file ./listings.csv
+hotdata databases load --catalog demo --table my_table --file ./my-data.csv
 ```
 
 A load replaces the table. To add rows instead, use `--mode append`:
 
 ```sh
-hotdata databases load --catalog demo --table listings --file ./more.csv --mode append
+hotdata databases load --catalog demo --table my_table --file ./more-data.csv --mode append
 ```
 
 To change existing rows by key, use `--mode update`, `--mode delete`, or
@@ -79,6 +84,9 @@ hotdata ingest sources add          # save a datasource (you'll be prompted)
 hotdata ingest create --source "prod postgres" --table orders --database-id <database-id>
 hotdata ingest list                 # check on your ingests
 ```
+
+More in the docs: [loading data](https://www.hotdata.dev/docs/push-data) and
+[importing from external sources](https://www.hotdata.dev/docs/pull-data).
 
 ## Query
 
@@ -107,29 +115,43 @@ hotdata query "INSERT INTO events VALUES (1, 'signup'), (2, 'login')"
 Long-running queries finish in the background. The CLI prints an id you can
 check with `hotdata query status <id>`.
 
+Column names are case-sensitive: wrap names with capital letters in double
+quotes, like `"PULocationID"`. See the [SQL reference](https://www.hotdata.dev/docs/sql)
+for the supported syntax and functions.
+
 ## Join across databases
 
-Attach another of your databases to query its tables alongside your own. No
-data is copied:
+Keep reference data in its own database and attach it wherever you need it. No
+data is copied. For example, load NYC's taxi zone names into a `zones`
+database, attach it to `demo`, and find the busiest pickup zones:
 
 ```sh
-hotdata databases attach sales --alias sales
-hotdata query "SELECT t.id, o.total
-               FROM demo.public.tickets t
-               JOIN sales.public.orders o ON o.ticket_id = t.id"
+hotdata databases create --catalog zones
+hotdata databases load --catalog zones --table zones \
+  --url https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv
+hotdata databases attach zones
+
+hotdata query 'SELECT z."Zone", count(*) AS trips
+               FROM demo.public.trips t
+               JOIN zones.public.zones z ON z."LocationID" = t."PULocationID"
+               GROUP BY z."Zone" ORDER BY trips DESC LIMIT 5'
 ```
 
-Attached tables are read-only. `hotdata databases detach sales` removes the
+Attached tables are read-only. `hotdata databases detach zones` removes the
 link without deleting anything.
 
 ## Search
 
-Build a search index on a column, then search it:
+Build a search index on a column, then search it. Using the `zones` table from
+above:
 
 ```sh
-hotdata search create trip_notes --type text --from demo.public.trips --column notes
-hotdata search "airport surcharge dispute" --index trip_notes
+hotdata search create zone_names --type text --from zones.public.zones --column Zone
+hotdata search "airport" --index zone_names -d zones
 ```
+
+That returns JFK, LaGuardia, and Newark airports. An index lives in the same
+database as its table, so pass `-d` when that isn't your current database.
 
 - `--type text` is full-text (keyword) search.
 - `--type vector` is semantic search. Hotdata creates the embeddings for you,
@@ -199,6 +221,9 @@ What the plugin runs, sends, and fetches:
 
 ## Getting help
 
+- [Documentation](https://www.hotdata.dev/docs), including the
+  [CLI reference](https://www.hotdata.dev/docs/cli-reference) and the
+  [agent skills guide](https://www.hotdata.dev/docs/agent-skills).
 - `hotdata <command> --help` shows every option for a command.
 - File a support ticket from the terminal; replies go to your account email:
 
