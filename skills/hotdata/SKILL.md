@@ -1,6 +1,6 @@
 ---
 name: hotdata
-description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, instant databases, tables, basic SQL query, database context (context:DATAMODEL), jobs, datasources/ingests/runs (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "instant database", "load parquet", "list tables", "show table columns", "execute a query", "database context", "context:DATAMODEL", "ingest", "datasource", "ingest run", "show a run", "schedule an ingest", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. This skill bundles three specialized guides under subskills/, loaded on demand: read subskills/search/SKILL.md for full-text/vector search and retrieval indexes, subskills/analytics/SKILL.md for OLAP analytics, query history, stored results, and Chain materializations, and subskills/geospatial/SKILL.md for geospatial/GIS.
+description: Use this skill when the user wants to run core hotdata CLI commands — auth, workspaces, instant databases, tables, SQL queries and writes, database context (context:DATAMODEL), jobs, datasources/ingests/runs (pull external data), and skill install. Activate for "run hotdata", "list workspaces", "list databases", "instant database", "load parquet", "list tables", "show table columns", "execute a query", "insert rows", "database context", "context:DATAMODEL", "ingest", "datasource", "ingest run", "show a run", "schedule an ingest", "import data from", "connect a data source", "connector", "pull data from postgres/mysql/an API/S3 buckets/Iceberg", or general Hotdata CLI usage. This skill bundles three specialized guides under subskills/, loaded on demand: read subskills/search/SKILL.md for full-text/vector search and retrieval indexes, subskills/analytics/SKILL.md for OLAP analytics, query history, stored results, and Chain materializations, and subskills/geospatial/SKILL.md for geospatial/GIS.
 version: 0.44.1
 ---
 
@@ -209,7 +209,7 @@ hotdata databases detach ref   # when finished (optional)
 Without `--alias`, the attached database answers to its own catalog alias
 (`reference.public.regions`). Notes worth knowing:
 
-- **Read-only.** Loads always target your own database's catalog, never an attached one.
+- **Read-only.** Loads and SQL writes always target your own database's catalog, never an attached one.
 - **Not transitive.** You see the database you attached, not the ones *it* has attached.
 - **The source cannot be deleted while you hold it** — that delete is refused until you detach. An *expiring* source is still removed on its `expires_at`, so check that date before relying on one.
 
