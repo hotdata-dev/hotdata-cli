@@ -84,7 +84,7 @@ A `hotdata query` runs inside **one** instant database; its scope sees that data
 4. [ ] Query across databases: `hotdata query "SELECT … FROM <my_catalog>.public.<t> JOIN <attached_or_alias>.<schema>.<table> ON …"`
 5. [ ] (Optional) `hotdata databases detach <database|alias>` when finished; record required attachments in **context:DATAMODEL → Cross-database joins**
 
-Attaching is read-only (loads still target your own database) and not transitive (you see what you attached, not what it attached). The source cannot be deleted while you hold it, but an *expiring* source still goes on its `expires_at` — check that date before depending on one.
+Attaching is read-only (loads and SQL writes still target your own database) and not transitive (you see what you attached, not what it attached). The source cannot be deleted while you hold it, but an *expiring* source still goes on its `expires_at` — check that date before depending on one.
 
 **Do not** export a database to parquet just to query it — attach is the live path.
 
