@@ -1,3 +1,9 @@
+## [0.44.2] - 2026-10-27
+
+### 💼 Other
+
+- Surface SQL writes in the hotdata skill (#361)
+- *(plugin)* Move the Claude Code plugin into plugin/ (#362)
 ## [0.44.1] - 2026-10-19
 
 ### 🐛 Bug Fixes
