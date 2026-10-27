@@ -203,14 +203,15 @@ will list the skill twice.
 
 What the plugin runs, sends, and fetches:
 
-- **SessionStart hook** (`hooks/check-cli.sh`, Claude Code and Cowork only):
+- **SessionStart hook** (`plugin/hooks/check-cli.sh`, Claude Code and Cowork only):
   checks whether `hotdata` is on `PATH` or in `~/.hotdata/cli`. If it's only in
   `~/.hotdata/cli`, it adds that folder to `PATH` for the session. If it's
   missing, it asks Claude to offer to install the CLI. The hook makes no
   network requests, installs nothing, and sends no data.
-- **Installer**, only after you agree: `curl -fsSL https://hotdata.dev/install |
-  HOTDATA_NO_SKILLS=1 sh` downloads the CLI from this repository's GitHub
-  releases, or installs it with Homebrew if `brew` is present.
+- **Installer**, only after you agree: `brew install hotdata-dev/tap/cli` when
+  `brew` is present. Otherwise Claude downloads `https://hotdata.dev/install` to
+  a file, shows it to you, and runs it with `HOTDATA_NO_SKILLS=1`. It installs
+  the CLI from this repository's GitHub releases.
 - **The skill** teaches Claude to run `hotdata` commands. Those commands talk to
   the Hotdata API (`https://api.hotdata.dev/v1`, or `HOTDATA_API_URL`) with your
   Hotdata credentials, and send the queries, files, and data source settings

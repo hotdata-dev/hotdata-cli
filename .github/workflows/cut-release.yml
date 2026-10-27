@@ -24,7 +24,7 @@
 # tag.
 #
 # The skill-drift check inside `prepare` is not bypassed here (no
-# SKIP_SKILL_DRIFT). If the job fails on it, update skills/ on main first and
+# SKIP_SKILL_DRIFT). If the job fails on it, update plugin/skills/ on main first and
 # dispatch again.
 
 name: Cut Release

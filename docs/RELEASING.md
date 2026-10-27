@@ -14,7 +14,7 @@ gh workflow run cut-release.yml -f version=0.40.0
 
 The workflow acts as the `hotdata-automation` GitHub App. A PR opened or a tag pushed with the default `GITHUB_TOKEN` would trigger no other workflows.
 
-If the `prepare` job fails on the skill check, the skills lag the code: update `skills/` on `main` first (see below), then dispatch again. CI does not set `SKIP_SKILL_DRIFT=1`.
+If the `prepare` job fails on the skill check, the skills lag the code: update `plugin/skills/` on `main` first (see below), then dispatch again. CI does not set `SKIP_SKILL_DRIFT=1`.
 
 ## Manual path
 
@@ -29,10 +29,10 @@ If you run `prepare` locally, the merge of its `release/<version>` PR still trig
 
 ## Skill check
 
-Both phases run `scripts/check-skills.sh`. The agent skills under `skills/` ship in every release (`skills.tar.gz`, `SKILL.md`), so the script refuses to release when they lag the code:
+Both phases run `scripts/check-skills.sh`. The agent skills under `plugin/skills/` ship in every release (`skills.tar.gz`, `SKILL.md`), so the script refuses to release when they lag the code:
 
-- **Drift** — if `src/` or `README.md` changed since the last `v*` tag and `skills/` did not, the run fails and lists the commits to review. Update the skills and commit, or set `SKIP_SKILL_DRIFT=1` (local runs only) when the release is verified to be skill-neutral.
-- **Coverage** — every subcommand the built binary exposes must appear as `hotdata <group> <sub>` somewhere in `skills/**/*.md`, and every long flag in its `--help` must be mentioned too. CI runs this check on every pull request (with the drift check skipped), so a new command or flag cannot merge undocumented.
+- **Drift** — if `src/` or `README.md` changed since the last `v*` tag and `plugin/skills/` did not, the run fails and lists the commits to review. Update the skills and commit, or set `SKIP_SKILL_DRIFT=1` (local runs only) when the release is verified to be skill-neutral.
+- **Coverage** — every subcommand the built binary exposes must appear as `hotdata <group> <sub>` somewhere in `plugin/skills/**/*.md`, and every long flag in its `--help` must be mentioned too. CI runs this check on every pull request (with the drift check skipped), so a new command or flag cannot merge undocumented.
 - **Version** (`finish` only) — every `SKILL.md` frontmatter `version:` must equal the crate version.
 
-The drift check is a reminder, not a judge of prose. Before cutting a release, read the commits since the last tag and update `skills/hotdata/SKILL.md` and the subskills to match the current `--help` output and behavior.
+The drift check is a reminder, not a judge of prose. Before cutting a release, read the commits since the last tag and update `plugin/skills/hotdata/SKILL.md` and the subskills to match the current `--help` output and behavior.

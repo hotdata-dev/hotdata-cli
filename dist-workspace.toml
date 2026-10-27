@@ -24,11 +24,11 @@ install-updater = false
 
 [[dist.extra-artifacts]]
 artifacts = ["skills.tar.gz"]
-build = ["tar", "-czf", "skills.tar.gz", "skills/"]
+build = ["tar", "-czf", "skills.tar.gz", "-C", "plugin", "skills/"]
 
 [[dist.extra-artifacts]]
 artifacts = ["SKILL.md"]
-build = ["cp", "skills/hotdata/SKILL.md", "SKILL.md"]
+build = ["cp", "plugin/skills/hotdata/SKILL.md", "SKILL.md"]
 
 [[dist.extra-artifacts]]
 artifacts = ["install.sh"]
