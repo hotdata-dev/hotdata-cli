@@ -26,10 +26,8 @@ if [ -x "$DIST_BIN_DIR/hotdata" ]; then
     exit 0
 fi
 
-cat <<'EOF'
-The hotdata CLI is not installed. Before running any hotdata command, tell the
-user and ask whether to install it. If they agree, follow the install steps in
-the hotdata skill (the "Upgrade" section of skills/hotdata/SKILL.md), and set
-HOTDATA_NO_SKILLS=1 because this plugin already provides the skill.
-EOF
+echo 'The hotdata CLI is not installed. Before running any hotdata command, tell the'
+echo 'user and ask whether to install it. If they agree, follow the install steps in'
+echo 'the hotdata skill (the "Upgrade" section of skills/hotdata/SKILL.md), and set'
+echo 'HOTDATA_NO_SKILLS=1 because this plugin already provides the skill.'
 exit 0
