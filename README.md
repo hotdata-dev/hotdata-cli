@@ -201,24 +201,8 @@ Use either the plugin or the installer's skill, not both: if you installed the
 CLI with the script above, install it with `HOTDATA_NO_SKILLS=1` or Claude Code
 will list the skill twice.
 
-What the plugin runs, sends, and fetches:
-
-- **SessionStart hook** (`plugin/hooks/check-cli.sh`, Claude Code and Cowork only):
-  checks whether `hotdata` is on `PATH` or in `~/.hotdata/cli`. If it's only in
-  `~/.hotdata/cli`, it adds that folder to `PATH` for the session. If it's
-  missing, it asks Claude to offer to install the CLI. The hook makes no
-  network requests, installs nothing, and sends no data.
-- **Installer**, only after you agree: `brew install hotdata-dev/tap/cli` when
-  `brew` is present. Otherwise Claude downloads `https://hotdata.dev/install` to
-  a file, shows it to you, and runs it with `HOTDATA_NO_SKILLS=1`. It installs
-  the CLI from this repository's GitHub releases.
-- **The skill** teaches Claude to run `hotdata` commands. Those commands talk to
-  the Hotdata API (`https://api.hotdata.dev/v1`, or `HOTDATA_API_URL`) with your
-  Hotdata credentials, and send the queries, files, and data source settings
-  you ask Claude to work with. `hotdata auth login` opens
-  `https://app.hotdata.dev` in your browser, and the CLI checks this
-  repository's GitHub releases for new versions (`HOTDATA_NO_UPDATE_CHECK=1`
-  turns that off). Neither the plugin nor the CLI collects telemetry.
+For what the plugin runs, sends, and fetches, see
+[`plugin/README.md`](plugin/README.md#what-the-plugin-runs-sends-and-fetches).
 
 ## Getting help
 
