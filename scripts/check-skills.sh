@@ -4,12 +4,12 @@
 # Runs before a release branch is cut and again before the tag is pushed.
 # Three checks, all mechanical:
 #
-#   1. Drift: if src/ changed since the last release tag, skills/ must have
+#   1. Drift: if src/ changed since the last release tag, plugin/skills/ must have
 #      changed too. The script cannot judge prose, so this is the reminder
 #      that a code change needs its SKILL.md follow-up. Override with
 #      SKIP_SKILL_DRIFT=1 when a release is verified to be skill-neutral.
 #   2. Coverage: every subcommand the built binary exposes, and every long
-#      flag in its --help, must be named in skills/**/*.md, so a new command
+#      flag in its --help, must be named in plugin/skills/**/*.md, so a new command
 #      or flag cannot ship undocumented. Hidden flags are not in --help and
 #      are not checked.
 #   3. Version: every SKILL.md frontmatter `version:`, and the Claude Code
@@ -27,7 +27,7 @@ REQUIRE_VERSION=0
 [ "${1:-}" = "--require-version" ] && REQUIRE_VERSION=1
 
 BIN="${HOTDATA_BIN:-target/debug/hotdata}"
-SKILL_FILES=(skills/hotdata/SKILL.md skills/hotdata/subskills/*/SKILL.md)
+SKILL_FILES=(plugin/skills/hotdata/SKILL.md plugin/skills/hotdata/subskills/*/SKILL.md)
 fail=0
 
 # --- 1. drift ---------------------------------------------------------------
@@ -36,16 +36,16 @@ if [ -z "$LAST_TAG" ]; then
     echo "→ skills: no previous v* tag; skipping drift check"
 else
     src_changes="$(git log --oneline "$LAST_TAG"..HEAD -- src/ README.md | grep -v -E 'chore\(deps\)|chore: Release' || true)"
-    skill_changes="$(git log --oneline "$LAST_TAG"..HEAD -- skills/ || true)"
+    skill_changes="$(git log --oneline "$LAST_TAG"..HEAD -- plugin/skills/ || true)"
     if [ -n "$src_changes" ] && [ -z "$skill_changes" ]; then
         if [ "${SKIP_SKILL_DRIFT:-}" = "1" ]; then
             echo "→ skills: code changed since $LAST_TAG without a skills change (SKIP_SKILL_DRIFT=1, continuing)"
         else
-            echo "error: code changed since $LAST_TAG but skills/ did not." >&2
+            echo "error: code changed since $LAST_TAG but plugin/skills/ did not." >&2
             echo "" >&2
             echo "$src_changes" | sed 's/^/    /' >&2
             echo "" >&2
-            echo "Review each commit against skills/hotdata/SKILL.md and the subskills, update them," >&2
+            echo "Review each commit against plugin/skills/hotdata/SKILL.md and the subskills, update them," >&2
             echo "and commit. If none of these change agent-visible behavior, rerun with SKIP_SKILL_DRIFT=1." >&2
             fail=1
         fi
@@ -79,7 +79,7 @@ walk() {
 }
 walk
 
-skill_text="$(cat "${SKILL_FILES[@]}" skills/hotdata/references/*.md skills/hotdata/subskills/*/references/*.md)"
+skill_text="$(cat "${SKILL_FILES[@]}" plugin/skills/hotdata/references/*.md plugin/skills/hotdata/subskills/*/references/*.md)"
 missing=()
 for leaf in "${leaves[@]}"; do
     if ! grep -qF "hotdata $leaf" <<<"$skill_text"; then
@@ -126,9 +126,9 @@ if [ "$REQUIRE_VERSION" = 1 ]; then
             fail=1
         fi
     done
-    pv="$(sed -nE 's/^ *"version": "([^"]+)".*/\1/p' .claude-plugin/plugin.json | head -1)"
+    pv="$(sed -nE 's/^ *"version": "([^"]+)".*/\1/p' plugin/.claude-plugin/plugin.json | head -1)"
     if [ "$pv" != "$crate" ]; then
-        echo "error: .claude-plugin/plugin.json declares version $pv, Cargo.toml is $crate" >&2
+        echo "error: plugin/.claude-plugin/plugin.json declares version $pv, Cargo.toml is $crate" >&2
         fail=1
     fi
     [ "$fail" = 0 ] && echo "→ skills: version ok ($crate)"

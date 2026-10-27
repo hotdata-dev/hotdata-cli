@@ -203,7 +203,7 @@ will list the skill twice.
 
 What the plugin runs, sends, and fetches:
 
-- **SessionStart hook** (`hooks/check-cli.sh`, Claude Code and Cowork only):
+- **SessionStart hook** (`plugin/hooks/check-cli.sh`, Claude Code and Cowork only):
   checks whether `hotdata` is on `PATH` or in `~/.hotdata/cli`. If it's only in
   `~/.hotdata/cli`, it adds that folder to `PATH` for the session. If it's
   missing, it asks Claude to offer to install the CLI. The hook makes no
