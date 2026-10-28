@@ -973,7 +973,8 @@ Second paragraph.
         // Assembled at runtime: a literal curl auth header in the source trips
         // secret scanners' curl-auth-header rule however fake the token is.
         let token = ["hd_", "notarealtoken_0001"].concat();
-        let input = format!(r#"curl -H "Authorization: Bearer {token}" https://example.com/v1/query"#);
+        let input =
+            format!(r#"curl -H "Authorization: Bearer {token}" https://example.com/v1/query"#);
         let out = redact_logs(&input);
         assert!(
             out.contains(r#"Authorization: Bearer hd_n...0001""#),
