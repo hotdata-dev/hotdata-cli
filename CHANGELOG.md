@@ -1,3 +1,16 @@
+## [0.45.0] - 2026-11-06
+
+### 🚀 Features
+
+- *(tables)* --layout on tables add, ivf_rebalance_sweep job type, SQL UPDATE/DELETE in the skill (#366)
+
+### 📚 Documentation
+
+- *(plugin)* Add a README inside the plugin folder (#364)
+
+### 🧪 Testing
+
+- *(support)* Stop the curl auth-header fixture tripping secret scanners (#365)
 ## [0.44.2] - 2026-10-27
 
 ### 💼 Other
