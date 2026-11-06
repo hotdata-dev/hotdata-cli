@@ -387,6 +387,7 @@ fn main() {
                                 key_determines,
                                 sorted_by,
                                 partition_by,
+                                layout,
                                 output,
                             }) => databases::add_table(
                                 &workspace_id,
@@ -397,6 +398,7 @@ fn main() {
                                 &key_determines,
                                 &sorted_by,
                                 &partition_by,
+                                layout.as_deref(),
                                 &output,
                             ),
                             Some(DatabaseTablesCommands::Show { table, output }) => {
