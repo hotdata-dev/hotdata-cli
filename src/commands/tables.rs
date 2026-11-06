@@ -23,6 +23,7 @@ struct TableRow {
 #[derive(Serialize)]
 struct TableWithColumns {
     table: String,
+    layout: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     columns: Vec<Column>,
 }
@@ -181,6 +182,7 @@ pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
 
     let out = TableWithColumns {
         table: format!("{display_catalog}.{}.{}", t.schema, t.table),
+        layout: t.layout.to_string(),
         columns: t
             .columns
             .flatten()
@@ -215,6 +217,8 @@ pub fn show(workspace_id: &str, table_ref: &str, format: &str) {
                     })
                     .collect();
                 crate::output::table::print(&["TABLE", "COLUMN", "DATA_TYPE", "NULLABLE"], &rows);
+                use crossterm::style::Stylize;
+                eprintln!("{}", format!("layout: {}", out.layout).dark_grey());
             }
         }
         _ => unreachable!(),

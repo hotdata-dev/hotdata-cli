@@ -428,6 +428,12 @@ pub enum DatabaseTablesCommands {
         #[arg(long = "partition-by")]
         partition_by: Vec<String>,
 
+        /// Storage layout. `point_lookup` writes small data pages so rows are
+        /// cheap to fetch by id (what vector-index answers do), at the cost of
+        /// slower scans. Default: `analytical`. Fixed once the table is created.
+        #[arg(long, value_parser = ["analytical", "point_lookup"])]
+        layout: Option<String>,
+
         /// Output format
         #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
         output: String,
@@ -1085,6 +1091,7 @@ fn table_declaration_body(
     key_determines: &[String],
     sorted_by: &[serde_json::Value],
     partition_by: &[serde_json::Value],
+    layout: Option<&str>,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({ "name": table });
     if !key.is_empty() {
@@ -1101,6 +1108,9 @@ fn table_declaration_body(
     if !partition_by.is_empty() {
         body["partition_by"] = serde_json::json!(partition_by);
     }
+    if let Some(layout) = layout {
+        body["layout"] = serde_json::json!(layout);
+    }
     body
 }
 
@@ -1115,6 +1125,7 @@ pub fn add_table(
     key_determines: &[String],
     sorted_by: &[String],
     partition_by: &[String],
+    layout: Option<&str>,
     output: &str,
 ) {
     use crossterm::style::Stylize;
@@ -1148,7 +1159,14 @@ pub fn add_table(
     let api = Api::new(Some(workspace_id));
     let db = resolve_database(&api, &database);
 
-    let body = table_declaration_body(table, key, key_determines, &sorted_by, &partition_by);
+    let body = table_declaration_body(
+        table,
+        key,
+        key_determines,
+        &sorted_by,
+        &partition_by,
+        layout,
+    );
 
     let (status, resp) = declare_table(&api, &db.id, schema, &body);
 
@@ -1170,6 +1188,7 @@ pub fn add_table(
         "key_determines": key_determines,
         "sorted_by": sorted_by,
         "partition_by": partition_by,
+        "layout": layout.unwrap_or("analytical"),
     });
     match output {
         "json" => println!("{}", serde_json::to_string_pretty(&declared).unwrap()),
@@ -1197,6 +1216,9 @@ pub fn add_table(
             }
             if !partition_by.is_empty() {
                 println!("parts:   {}", describe_partition_keys(&partition_by));
+            }
+            if let Some(layout) = layout {
+                println!("layout:  {layout}");
             }
         }
     }
@@ -4392,7 +4414,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"b","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical","last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
         let page0 = server
@@ -4404,7 +4426,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"a","synced":false,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical","last_sync":null}],"has_more":true,"next_cursor":"cur2"}"#,
             )
             .create();
 
@@ -4518,7 +4540,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
+                r#"{"count":1,"limit":5,"tables":[{"connection":"default","schema":"public","table":"a","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical","last_sync":null}],"has_more":true,"next_cursor":"page2"}"#,
             )
             .expect(1)
             .create();
@@ -4544,7 +4566,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"last_sync":null}],"has_more":false,"next_cursor":null}"#,
+                r#"{"count":1,"limit":1000,"tables":[{"connection":"default","schema":"public","table":"orders","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical","last_sync":null}],"has_more":false,"next_cursor":null}"#,
             )
             .create();
 
@@ -4602,7 +4624,8 @@ mod tests {
                 &cols(&["order_id"]),
                 &cols(&["event_date"]),
                 &[],
-                &[]
+                &[],
+                None
             ),
             serde_json::json!({
                 "name": "orders",
@@ -4611,8 +4634,12 @@ mod tests {
             })
         );
         assert_eq!(
-            table_declaration_body("orders", &[], &[], &[], &[]),
+            table_declaration_body("orders", &[], &[], &[], &[], None),
             serde_json::json!({"name": "orders"})
+        );
+        assert_eq!(
+            table_declaration_body("orders", &[], &[], &[], &[], Some("point_lookup")),
+            serde_json::json!({"name": "orders", "layout": "point_lookup"})
         );
     }
 

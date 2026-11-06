@@ -934,7 +934,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(
                 r#"{"count":1,"limit":100,"tables":[
-                {"connection":"__db_abc","schema":"public","table":"vec_mid","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[]}
+                {"connection":"__db_abc","schema":"public","table":"vec_mid","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical"}
             ],"has_more":false,"next_cursor":null}"#,
             )
             .create();
@@ -1020,7 +1020,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(
                 r#"{"count":1,"limit":100,"tables":[
-                {"connection":"__db_abc","schema":"public","table":"listings","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[]}
+                {"connection":"__db_abc","schema":"public","table":"listings","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical"}
             ],"has_more":false,"next_cursor":null}"#,
             )
             .create();
@@ -1075,7 +1075,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(
                 r#"{"count":1,"limit":100,"tables":[
-                {"connection":"Warehouse","schema":"public","table":"events","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[]}
+                {"connection":"Warehouse","schema":"public","table":"events","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical"}
             ],"has_more":false,"next_cursor":null}"#,
             )
             .create();
@@ -1119,7 +1119,7 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(
                 r#"{"count":1,"limit":100,"tables":[
-                {"connection":"__db_abc","schema":"public","table":"listings","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[]}
+                {"connection":"__db_abc","schema":"public","table":"listings","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical"}
             ],"has_more":false,"next_cursor":null}"#,
             )
             .create();
@@ -1165,8 +1165,8 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(
                 r#"{"count":2,"limit":100,"tables":[
-                {"connection":"c1","schema":"public","table":"z","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[]},
-                {"connection":"c1","schema":"public","table":"a","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[]}
+                {"connection":"c1","schema":"public","table":"z","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical"},
+                {"connection":"c1","schema":"public","table":"a","synced":true,"partition_by":[],"sorted_by":[],"constant_per_key":[],"layout":"analytical"}
             ],"has_more":false,"next_cursor":null}"#,
             )
             .create();
