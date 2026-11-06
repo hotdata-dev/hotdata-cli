@@ -1,3 +1,8 @@
+## [0.45.1] - 2026-11-06
+
+### 💼 Other
+
+- *(release)* Build aarch64-apple-darwin on macos-15; GitHub retired macos-14 (#368)
 ## [0.45.0] - 2026-11-06
 
 ### 🚀 Features
