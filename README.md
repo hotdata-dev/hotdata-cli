@@ -97,8 +97,8 @@ hotdata query "SELECT * FROM demo.public.trips LIMIT 10"
 ```
 
 SQL is PostgreSQL-style. Add `-o json` or `-o csv` to change the output format.
-If you prefer another dialect, pass `--dialect duckdb`, `postgres`, or
-`snowflake` and the query is translated for you.
+If you prefer another dialect, pass `--dialect duckdb`, `postgres`,
+`snowflake`, or `clickhouse` and the query is translated for you.
 
 You can also write with SQL. `INSERT`, `CREATE TABLE`, `CREATE TABLE AS`, and
 `DROP TABLE` work on your current database's tables (your API key needs the
