@@ -59,7 +59,7 @@ pub enum Commands {
         /// SQL dialect the query is written in — a non-`hotsql` dialect is
         /// transpiled to HotSQL server-side before it runs (writes follow the same
         /// rules as hotsql)
-        #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake"])]
+        #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake", "clickhouse"])]
         dialect: String,
 
         /// Output format. `id` prints only the stored result's id, without
@@ -205,5 +205,36 @@ impl From<ShellChoice> for clap_complete::Shell {
             ShellChoice::Zsh => clap_complete::Shell::Zsh,
             ShellChoice::Fish => clap_complete::Shell::Fish,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Commands;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Wrapper {
+        #[command(subcommand)]
+        cmd: Commands,
+    }
+
+    fn parses(args: &[&str]) -> bool {
+        Wrapper::try_parse_from(std::iter::once("t").chain(args.iter().copied())).is_ok()
+    }
+
+    #[test]
+    fn query_accepts_each_server_dialect() {
+        for dialect in ["hotsql", "duckdb", "postgres", "snowflake", "clickhouse"] {
+            assert!(
+                parses(&["query", "SELECT 1", "--dialect", dialect]),
+                "query --dialect {dialect}"
+            );
+            assert!(
+                parses(&["databases", "query", "SELECT 1", "--dialect", dialect]),
+                "databases query --dialect {dialect}"
+            );
+        }
+        assert!(!parses(&["query", "SELECT 1", "--dialect", "mysql"]));
     }
 }

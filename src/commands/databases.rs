@@ -305,7 +305,7 @@ pub enum DatabasesCommands {
         /// SQL dialect the query is written in — a non-`hotsql` dialect is
         /// transpiled to HotSQL server-side before it runs (writes follow the same
         /// rules as hotsql)
-        #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake"])]
+        #[arg(long, default_value = "hotsql", value_parser = ["hotsql", "duckdb", "postgres", "snowflake", "clickhouse"])]
         dialect: String,
 
         /// Output format. `id` prints only the stored result's id, without

@@ -17,12 +17,12 @@ version: 0.45.1
 ## Execute SQL
 
 ```bash
-hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--dialect hotsql|duckdb|postgres|snowflake] [--output table|json|csv]
+hotdata query "<sql>" [--workspace-id <workspace_id>] [--database <database>] [--dialect hotsql|duckdb|postgres|snowflake|clickhouse] [--output table|json|csv]
 hotdata query status <query_run_id>
 ```
 
 - **PostgreSQL dialect.** Quote mixed-case identifiers: `"CustomerName"`.
-- **`--dialect`** (default `hotsql`): write SQL in `duckdb`/`postgres`/`snowflake` and the server transpiles it to HotSQL before running (e.g. Snowflake `IFF(...)`, DuckDB `len(...)`). Writes follow the same rules as `hotsql`.
+- **`--dialect`** (default `hotsql`): write SQL in `duckdb`/`postgres`/`snowflake`/`clickhouse` and the server transpiles it to HotSQL before running (e.g. Snowflake `IFF(...)`, DuckDB `len(...)`, ClickHouse `countIf(...)`). Writes follow the same rules as `hotsql`.
 - **Writes:** `INSERT` (append only), `CREATE TABLE`, `CREATE TABLE AS SELECT`, and `DROP TABLE` run through `query` against the current database's own tables and return one row, `rows_affected`; `UPDATE`/`DELETE` are not supported in SQL yet (use keyed `hotdata databases load --mode update|delete|upsert`). Rules and refusals in the **`hotdata`** skill → Execute SQL Query.
 - Use **`hotdata databases tables list`** for schema discovery — not `information_schema` via `query`.
 - Fully qualified names: `<catalog>.<schema>.<table>`, `<database>.<schema>.<table>`.
