@@ -1,3 +1,8 @@
+## [0.46.0] - 2026-11-12
+
+### 🚀 Features
+
+- *(query)* Accept --dialect clickhouse (#370)
 ## [0.45.1] - 2026-11-06
 
 ### 💼 Other
