@@ -8,7 +8,7 @@ pub enum JobsCommands {
     /// List background jobs (shows active jobs by default)
     List {
         /// Filter by job type
-        #[arg(long, value_parser = ["create_index", "managed_load", "database_fork", "ivf_rebalance_sweep"])]
+        #[arg(long, value_parser = ["create_index", "managed_load", "database_fork", "ivf_rebalance_sweep", "rollup_build", "rollup_refresh_sweep"])]
         job_type: Option<String>,
 
         /// Filter by status
@@ -75,6 +75,8 @@ fn parse_job_type(s: &str) -> Option<JobType> {
         "managed_load" => Some(JobType::ManagedLoad),
         "database_fork" => Some(JobType::DatabaseFork),
         "ivf_rebalance_sweep" => Some(JobType::IvfRebalanceSweep),
+        "rollup_build" => Some(JobType::RollupBuild),
+        "rollup_refresh_sweep" => Some(JobType::RollupRefreshSweep),
         _ => None,
     }
 }
@@ -256,5 +258,14 @@ mod tests {
     #[test]
     fn parse_job_type_accepts_managed_load() {
         assert_eq!(parse_job_type("managed_load"), Some(JobType::ManagedLoad));
+    }
+
+    #[test]
+    fn parse_job_type_accepts_rollup_jobs() {
+        assert_eq!(parse_job_type("rollup_build"), Some(JobType::RollupBuild));
+        assert_eq!(
+            parse_job_type("rollup_refresh_sweep"),
+            Some(JobType::RollupRefreshSweep)
+        );
     }
 }

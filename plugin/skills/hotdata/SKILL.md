@@ -284,7 +284,7 @@ hotdata jobs list [--workspace-id <workspace_id>] [--job-type <type>] [--status 
 hotdata jobs <job_id> [--workspace-id <workspace_id>] [--output table|json|yaml]
 ```
 - `list` shows only active jobs (`pending`, `running`) by default. Use `--all` to see all jobs.
-- `--job-type`: `create_index`, `managed_load`, `database_fork`, `ivf_rebalance_sweep` (background IVF index rebalancing). (`database_fork` is accepted for forward compatibility; today a fork completes synchronously and records no job.) (`data_refresh_table` / `data_refresh_connection` were retired server-side — the engine is push-only; nothing refreshes.)
+- `--job-type`: `create_index`, `managed_load`, `database_fork`, `ivf_rebalance_sweep` (background IVF index rebalancing), `rollup_build` (building a rollup), `rollup_refresh_sweep` (background rollup refresh). (`database_fork` is accepted for forward compatibility; today a fork completes synchronously and records no job.) (`data_refresh_table` / `data_refresh_connection` were retired server-side — the engine is push-only; nothing refreshes.)
 - `--status`: `pending`, `running`, `succeeded`, `partially_succeeded`, `failed`.
 - Use `hotdata jobs <job_id>` to inspect a specific job's status, error, and result.
 

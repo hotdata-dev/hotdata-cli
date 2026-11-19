@@ -150,6 +150,9 @@ struct QueryRun {
     /// Rows read from storage before filtering/aggregation, distinct from
     /// `row_count` (rows returned). `None` when no table data was read.
     rows_scanned: Option<u64>,
+    /// Whether a rollup answered the query: `used`, `not_ready`, `not_matched`
+    /// or `unavailable`. `None` when no table the query read has a rollup.
+    rollup: Option<String>,
     saved_query_id: Option<String>,
     saved_query_version: Option<u64>,
     snapshot_id: String,
@@ -175,6 +178,7 @@ impl From<QueryRunInfo> for QueryRun {
             row_count: r.row_count.flatten().map(|v| v.max(0) as u64),
             bytes_scanned: r.bytes_scanned.flatten().map(|v| v.max(0) as u64),
             rows_scanned: r.rows_scanned.flatten().map(|v| v.max(0) as u64),
+            rollup: r.rollup.flatten().map(|u| u.to_string()),
             saved_query_id: r.saved_query_id.flatten(),
             saved_query_version: r.saved_query_version.flatten().map(|v| v.max(0) as u64),
             snapshot_id: r.snapshot_id,
@@ -320,6 +324,9 @@ fn print_detail(r: &QueryRun, format: &str) {
             if let Some(n) = r.bytes_scanned {
                 println!("{}{}", label("bytes scanned:"), crate::util::human_bytes(n));
             }
+            if let Some(ref usage) = r.rollup {
+                println!("{}{}", label("rollup:"), usage);
+            }
             if let Some(ref id) = r.result_id {
                 println!("{}{}", label("result id:"), id);
             }
@@ -390,6 +397,29 @@ mod tests {
         let json = serde_json::to_value(&run).unwrap();
         assert_eq!(json["bytes_scanned"], 98_209_424);
         assert_eq!(json["rows_scanned"], 1000);
+    }
+
+    /// The run record says whether a rollup answered the query; it must reach
+    /// the serialized output as the same string the API sends, and be null when
+    /// the API sends none.
+    #[test]
+    fn maps_rollup_outcome_from_wire_body() {
+        let body = |rollup: &str| {
+            format!(
+                r#"{{"id":"qrun_1","status":"succeeded",
+                "created_at":"2026-07-20T00:00:00Z",
+                "snapshot_id":"snap_1","sql_hash":"h","sql_text":"SELECT 1"{rollup}}}"#
+            )
+        };
+        let with: QueryRunInfo = serde_json::from_str(&body(r#","rollup":"not_matched""#)).unwrap();
+        let run: QueryRun = with.into();
+        assert_eq!(run.rollup.as_deref(), Some("not_matched"));
+        assert_eq!(serde_json::to_value(&run).unwrap()["rollup"], "not_matched");
+
+        let without: QueryRunInfo = serde_json::from_str(&body("")).unwrap();
+        let run: QueryRun = without.into();
+        assert_eq!(run.rollup, None);
+        assert!(serde_json::to_value(&run).unwrap()["rollup"].is_null());
     }
 
     /// A constant-expression query (e.g. `SELECT 1`) reads no table, so the API
