@@ -369,7 +369,7 @@ fn create(
     let db = match target {
         FromTarget::Database(db) => *db,
         // Prefer the active database when the catalog is ambiguous — the same
-        // rule `databases load --catalog` applies — so a `--from` naming the
+        // rule `databases tables load -d` applies — so a `--from` naming the
         // active database's own catalog (e.g. `default` shared across forks)
         // resolves to it instead of erroring.
         FromTarget::Catalog(catalog) => {
