@@ -49,20 +49,20 @@ hotdata search "<query>" --in <name>
 
 ## Search in SQL
 
-`hotdata search` only runs one fixed query shape. For filters, joins, hybrid ranking or server-side use, write the SQL yourself and run it with `hotdata query` (or the HTTP API, below). The examples use `db.s.chunks(id, doc_id, court, text)` with a text index and an embedding-backed vector index on `text`, and `db.s.docs(id, title)`.
+`hotdata search` only runs one fixed query shape. For filters, joins, hybrid ranking or server-side use, write the SQL yourself and run it with `hotdata query` (or the HTTP API, below). The examples use `db.s.chunks(id, doc_id, court, text)` with an embedding-backed vector index on `text`, `db.s.chunks_text`, a copy of the same rows with a text index on `text` (see **Hybrid search** for why it is a separate table), and `db.s.docs(id, title)`.
 
 ### `bm25_search` output
 
 ```sql
 SELECT id, doc_id, text, score
-FROM bm25_search('db.s.chunks', 'text', 'breach of fiduciary duty')
+FROM bm25_search('db.s.chunks_text', 'text', 'breach of fiduciary duty')
 ORDER BY score DESC
 LIMIT 10
 ```
 
 - **Columns:** every column of the source table, plus `score` (`Float32`, higher is better). The hits *are* the source rows, so there is nothing to join back.
 - **Order:** rows come back in table order, not by relevance. Always write `ORDER BY score DESC`.
-- **Limit:** a `LIMIT` on that `ORDER BY score DESC` reaches the search. Without one (an aggregate, a `GROUP BY`, a second sort key, a filter on `score`), the search stops at **1000** hits. An optional 4th argument caps it explicitly: `bm25_search('db.s.chunks', 'text', 'q', 200)`.
+- **Limit:** a `LIMIT` on that `ORDER BY score DESC` reaches the search. Without one (an aggregate, a `GROUP BY`, a second sort key, a filter on `score`), the search stops at **1000** hits. An optional 4th argument caps it explicitly: `bm25_search('db.s.chunks_text', 'text', 'q', 200)`.
 - **`WHERE`:** a filter on the table's own columns (`WHERE court = 'NY'`) still fills the `LIMIT` when enough rows match: the search reads deeper into the ranking and, for a very selective filter, pre-scans the filter instead.
 
 ### Filtered vector search
@@ -92,12 +92,14 @@ LIMIT 10
 
 ### Hybrid search (BM25 + vector, RRF)
 
-There is no built-in hybrid mode. Combine the two rankings in SQL with reciprocal rank fusion (RRF). A table can carry a text index and an embedding-backed vector index side by side (each needs its own index name). If creating the text index on a large table fails, that is the BM25 build-size limit, not a clash with the vector index.
+There is no built-in hybrid mode. Combine the two rankings in SQL with reciprocal rank fusion (RRF).
+
+An embedding-backed vector index cannot share a table with any other index: creating a text index on its table (or the vector index on a table that already has one) is refused with *Embedding-backed vector indexes cannot coexist with other indexes on the same table*. Keep the text index on a second table holding the same rows under the same `id` (for example `hotdata query 'CREATE TABLE s.chunks_text AS SELECT id, doc_id, court, text FROM db.s.chunks'`, then `hotdata search create chunks_text_bm25 --type text --from s.chunks_text --column text`), and fuse the two rankings on `id`. A vector index over a column that already holds vectors (no `--provider`) can sit beside a text index, but its searches take a query vector, not text.
 
 ```sql
 WITH b AS (
   SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC) AS r
-  FROM (SELECT id, score FROM bm25_search('db.s.chunks', 'text', 'breach of fiduciary duty')
+  FROM (SELECT id, score FROM bm25_search('db.s.chunks_text', 'text', 'breach of fiduciary duty')
         ORDER BY score DESC LIMIT 100) AS bq
 ),
 v AS (
@@ -112,7 +114,8 @@ ORDER BY rrf DESC
 LIMIT 10
 ```
 
-- Keep each leg as its own `ORDER BY … LIMIT` subquery on the base table, so each one is served by its index. Put a filter inside both legs, as a `WHERE` on the table's columns.
+- Keep each leg as its own `ORDER BY … LIMIT` subquery on its indexed table, so each one is served by its index. Put a filter inside both legs, as a `WHERE` on each table's columns (so the text copy needs the filter columns too).
+- Rows written to `db.s.chunks` later are not in the copy: load new rows into both tables.
 - `60` is the usual RRF constant. Weight a leg by scaling its term. Join the fused ids back to `db.s.chunks` (or `docs`) for display columns.
 
 ### Latency (`execution_time_ms`)
@@ -132,12 +135,13 @@ curl -s https://api.hotdata.dev/v1/query \
   -H "X-Workspace-Id: <workspace_id>" \
   -H "X-Database-Id: <database_id>" \
   -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT id, text, score FROM bm25_search('\''db.s.chunks'\'', '\''text'\'', '\''fiduciary duty'\'') ORDER BY score DESC LIMIT 10"}'
+  -d '{"sql": "SELECT id, text, score FROM bm25_search('\''db.s.chunks_text'\'', '\''text'\'', '\''fiduciary duty'\'') ORDER BY score DESC LIMIT 10"}'
 ```
 
 - **Headers:** `Authorization: Bearer <api key>` and `X-Workspace-Id` always. An instant database's tables also need the database: send `X-Database-Id: <database_id>`, or `"database_id"` in the body (if both are set they must match).
-- **Response:** `{"result_id", "columns", "rows", "row_count", "execution_time_ms"}`. Add `"async": true` (optionally `"async_after_ms": 1000`–`30000`) to get a query run id for a long query instead, and poll `GET /v1/query-runs/{id}`.
-- **SDKs:** the generated SDKs send `X-Workspace-Id` but not `X-Database-Id`. Pass `database_id` in the request body, or add the header as an extra request header.
+- **Response:** `{"query_run_id", "result_id", "columns", "rows", "preview_row_count", "total_row_count", "truncated", "execution_time_ms"}`. A large result comes back as a bounded preview with `truncated: true`; fetch the rest with `GET /v1/results/{result_id}`. Add `"async": true` (optionally `"async_after_ms": 1000`–`30000`) to get a query run id for a long query instead, and poll `GET /v1/query-runs/{id}`.
+- **`/v1/query-runs/{id}` and `/v1/results/{id}` need the `X-Database-Id` header**, even when the query itself was scoped with the body field, so prefer the header.
+- **SDKs:** the generated SDK operations send `X-Workspace-Id` but not `X-Database-Id`. Add the header as an extra request header (or pass `database_id` in the query body, which covers `POST /v1/query` only).
 - There is no separate search endpoint: `hotdata search` builds a `bm25_search(...) ORDER BY score DESC LIMIT k` or `vector_distance(...) AS dist … ORDER BY dist LIMIT k` query and sends it here, so send the same SQL.
 
 ---
