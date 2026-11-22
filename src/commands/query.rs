@@ -630,16 +630,12 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
     }
 }
 
-/// How long `-o id` waits for a stored result to finish writing: the same five
-/// minutes `execute` gives the query run itself.
-const RESULT_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
-
 /// `-o id`: print only the stored result's id, without downloading its rows,
 /// so a script can hand it to a command that reads a result by id. Exits: `0`
 /// with the id on stdout, `1` when the query left no stored result or it never
 /// finished writing.
 fn print_result_id(api: &Api, result_id: Option<String>) -> ! {
-    match ready_result_id(api, result_id, RESULT_READY_DEADLINE) {
+    match ready_result_id(api, result_id, RESULT_READY_TIMEOUT) {
         Ok(line) => {
             println!("{line}");
             std::process::exit(0)
