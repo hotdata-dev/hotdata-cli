@@ -55,6 +55,31 @@ fn fetch_workspaces() -> Vec<Workspace> {
     body.workspaces.iter().map(Workspace::from).collect()
 }
 
+/// Warning for switching to a workspace that can't serve requests yet, or
+/// `None` when it is provisioned. Workspace-scoped commands fail until
+/// provisioning finishes (support#26), so say so up front.
+fn provision_warning(w: &Workspace) -> Option<String> {
+    match w.provision_status.as_str() {
+        "success" => None,
+        "failed" => Some(format!(
+            "warning: workspace {} failed to provision; workspace commands will fail.",
+            w.public_id
+        )),
+        s => Some(format!(
+            "warning: workspace {} is still provisioning (provision_status: {s}); \
+             workspace commands will fail until it finishes — check 'hotdata workspaces list'.",
+            w.public_id
+        )),
+    }
+}
+
+fn warn_if_not_provisioned(w: &Workspace) {
+    if let Some(msg) = provision_warning(w) {
+        use crossterm::style::Stylize;
+        eprintln!("{}", msg.yellow());
+    }
+}
+
 pub fn set(workspace_id: Option<&str>) {
     // Env lock wins over the saved choice, so saving one would have no effect.
     if let Ok(ws) = std::env::var("HOTDATA_WORKSPACE") {
@@ -68,10 +93,13 @@ pub fn set(workspace_id: Option<&str>) {
 
     let chosen = match workspace_id {
         Some(id) => match workspaces.iter().find(|w| w.public_id == id) {
-            Some(w) => config::WorkspaceEntry {
-                public_id: w.public_id.clone(),
-                name: w.name.clone(),
-            },
+            Some(w) => {
+                warn_if_not_provisioned(w);
+                config::WorkspaceEntry {
+                    public_id: w.public_id.clone(),
+                    name: w.name.clone(),
+                }
+            }
             None => {
                 eprintln!("error: workspace '{id}' not found or you don't have access to it.");
                 std::process::exit(1);
@@ -101,6 +129,7 @@ pub fn set(workspace_id: Option<&str>) {
                 };
             let idx = options.iter().position(|o| o == &selection).unwrap();
             let w = &workspaces[idx];
+            warn_if_not_provisioned(w);
             config::WorkspaceEntry {
                 public_id: w.public_id.clone(),
                 name: w.name.clone(),
@@ -170,5 +199,30 @@ pub fn list(format: &str) {
             }
         }
         _ => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ws(provision_status: &str) -> Workspace {
+        Workspace {
+            current: false,
+            public_id: "ws_1".into(),
+            name: "w".into(),
+            active: true,
+            favorite: false,
+            provision_status: provision_status.into(),
+        }
+    }
+
+    #[test]
+    fn provision_warning_only_when_not_ready() {
+        assert!(provision_warning(&ws("success")).is_none());
+        let running = provision_warning(&ws("running")).unwrap();
+        assert!(running.contains("still provisioning"), "{running}");
+        let failed = provision_warning(&ws("failed")).unwrap();
+        assert!(failed.contains("failed to provision"), "{failed}");
     }
 }
