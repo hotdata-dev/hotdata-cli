@@ -602,6 +602,7 @@ pub fn create(
     output_column: Option<&str>,
     description: Option<&str>,
     vector: &VectorIndexOptions<'_>,
+    output: &str,
 ) {
     use crossterm::style::Stylize;
 
@@ -653,6 +654,11 @@ pub fn create(
         std::process::exit(1);
     }
 
+    if let Some(rendered) = render_create_response(&resp_body, async_mode, output) {
+        print!("{rendered}");
+        return;
+    }
+
     if async_mode {
         let parsed: serde_json::Value = serde_json::from_str(&resp_body).unwrap_or_default();
         let job_id = parsed["id"].as_str().unwrap_or("unknown");
@@ -664,6 +670,42 @@ pub fn create(
         );
     } else {
         println!("{}", "Index created.".green());
+    }
+}
+
+/// The structured form of a create-index response: the API body as-is, plus a
+/// top-level `job_id` alias of the job's `id` in async mode so scripts have a
+/// stable field to read.
+pub(crate) fn create_response_value(resp_body: &str, async_mode: bool) -> serde_json::Value {
+    let mut value: serde_json::Value =
+        serde_json::from_str(resp_body).unwrap_or(serde_json::Value::Null);
+    if async_mode {
+        let job_id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+        match value.as_object_mut() {
+            Some(obj) => {
+                obj.entry("job_id").or_insert(job_id);
+            }
+            None => value = serde_json::json!({ "job_id": job_id }),
+        }
+    }
+    value
+}
+
+/// Render a create-index response for `-o json|yaml` (newline-terminated);
+/// `None` for the human `table` output.
+pub(crate) fn render_create_response(
+    resp_body: &str,
+    async_mode: bool,
+    output: &str,
+) -> Option<String> {
+    let value = create_response_value(resp_body, async_mode);
+    match output {
+        "json" => Some(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&value).unwrap()
+        )),
+        "yaml" => Some(serde_yaml::to_string(&value).unwrap()),
+        _ => None,
     }
 }
 
@@ -805,6 +847,42 @@ pub fn delete(workspace_id: &str, scope: IndexScope<'_>, index_name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_response_async_json_exposes_job_id() {
+        let body = r#"{"id":"job_abc","status":"pending","job_type":"create_index"}"#;
+        let out = render_create_response(body, true, "json").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["job_id"], "job_abc");
+        assert_eq!(v["id"], "job_abc");
+        assert_eq!(v["status"], "pending");
+        assert!(out.ends_with('\n'));
+    }
+
+    #[test]
+    fn create_response_sync_json_is_the_index_record() {
+        let body =
+            r#"{"index_name":"t_c_bm25","index_type":"bm25","columns":["c"],"status":"ready"}"#;
+        let v: serde_json::Value =
+            serde_json::from_str(&render_create_response(body, false, "json").unwrap()).unwrap();
+        assert_eq!(v["index_name"], "t_c_bm25");
+        assert!(v.get("job_id").is_none());
+    }
+
+    #[test]
+    fn create_response_yaml_and_table() {
+        let body = r#"{"id":"job_abc","status":"pending"}"#;
+        let y = render_create_response(body, true, "yaml").unwrap();
+        assert!(y.contains("job_id: job_abc"), "{y}");
+        assert!(render_create_response(body, true, "table").is_none());
+    }
+
+    #[test]
+    fn create_response_async_non_object_body_still_has_job_id_key() {
+        let v = create_response_value("", true);
+        assert!(v.get("job_id").is_some());
+        assert!(v["job_id"].is_null());
+    }
 
     #[test]
     fn information_schema_followup_terminates_when_not_has_more() {

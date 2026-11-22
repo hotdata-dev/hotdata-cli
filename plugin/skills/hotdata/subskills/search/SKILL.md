@@ -63,7 +63,8 @@ hotdata search create <name> --type text|vector --from <catalog.schema.table> \
   [--metric l2|cosine|dot] [--async] \
   [--algorithm hnsw|ivf] [--nlist <n>] [--probe-fraction <f>] \
   [--vector-precision float64|float32|float16|float8|int8] \
-  [--provider <id>] [--dimensions <n>] [--output-column <name>] [--description <text>]
+  [--provider <id>] [--dimensions <n>] [--output-column <name>] [--description <text>] \
+  [--output table|json|yaml]
 
 # Show — by index name, in the current database (or -d/--database <database>)
 hotdata search show <name> [-d <db-id>] [--output table|json|yaml]
@@ -72,6 +73,7 @@ hotdata search show <name> [-d <db-id>] [--output table|json|yaml]
 hotdata search remove <name> [-d <db-id>]
 ```
 
+- **Scripting create:** `-o json` prints the API response instead of text. With `--async` that is the submitted job, with its id at `.job_id` (also `.id`); without it, the created index. Example: `job=$(hotdata search create <name> --type text --from <catalog.schema.table> --column <col> --async -o json | jq -r .job_id)`, then `hotdata jobs "$job"`.
 - **`--type` is required** on create: `text` (BM25; one or more text columns, comma-separated in `--column`) or `vector` (exactly one column; often embeddings or auto-embedded text). (`sorted` is also a valid `--type`, covered in **`hotdata-analytics`** — [`../analytics/SKILL.md`](../analytics/SKILL.md).)
 - **`sorted`** indexes (range/equality for OLAP filters) are documented in **`hotdata-analytics`** ([`../analytics/SKILL.md`](../analytics/SKILL.md)) — this skill focuses on retrieval types.
 - **`-d/--database <id>`** on create picks the database for a `schema.table` `--from` (instead of the active one); it cannot be combined with a `catalog.schema.table` `--from`.
