@@ -422,21 +422,6 @@ pub fn api_error(body: String) -> String {
             return m.to_string();
         }
         if let Some(code) = v["error"].as_str() {
-            // Codes a server-side provisioning gate returns (support#26);
-            // the generic humanizer would read as a bare label.
-            match code {
-                "workspace_provisioning" => {
-                    return "Workspace is still provisioning; try again in a minute \
-                            (check progress with 'hotdata workspaces list')."
-                        .to_string();
-                }
-                "workspace_provisioning_failed" => {
-                    return "Workspace failed to provision; it cannot serve requests \
-                            (check 'hotdata workspaces list' or contact support)."
-                        .to_string();
-                }
-                _ => {}
-            }
             return humanize_error_code(code);
         }
         if let Some(d) = v["detail"].as_str() {
@@ -673,15 +658,6 @@ mod tests {
         // Envelopes with no details, and bodies that are not JSON at all.
         assert!(error_fields(r#"{"error": {"code": "x", "message": "y"}}"#).is_empty());
         assert!(error_fields("not json").is_empty());
-    }
-
-    #[test]
-    fn api_error_explains_workspace_provisioning_codes() {
-        let m = api_error(json!({"error": "workspace_provisioning"}).to_string());
-        assert!(m.contains("still provisioning"), "{m}");
-        assert!(m.contains("hotdata workspaces list"), "{m}");
-        let f = api_error(json!({"error": "workspace_provisioning_failed"}).to_string());
-        assert!(f.contains("failed to provision"), "{f}");
     }
 
     #[test]
