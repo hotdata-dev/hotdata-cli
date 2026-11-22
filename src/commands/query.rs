@@ -490,7 +490,7 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
         // to the full set (resolve_inline) rather than printing the preview.
         hotdata::QueryOutcome::Inline(resp) => {
             if format == "id" {
-                print_result_id(resp.result_id.flatten());
+                print_result_id(&api, resp.result_id.flatten());
             }
             print_inline(&api, resp, format);
             return;
@@ -521,7 +521,7 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
             "succeeded" => {
                 spinner.finish_and_clear();
                 if format == "id" {
-                    print_result_id(run.result_id.flatten());
+                    print_result_id(&api, run.result_id.flatten());
                 }
                 let execution_time_ms = run.execution_time_ms;
                 match run.result_id.flatten() {
@@ -591,7 +591,7 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
     match run.status.as_str() {
         "succeeded" => {
             if format == "id" {
-                print_result_id(run.result_id.flatten());
+                print_result_id(&api, run.result_id.flatten());
             }
             let execution_time_ms = run.execution_time_ms;
             match run.result_id.flatten() {
@@ -630,11 +630,16 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
     }
 }
 
-/// `-o id`: print only the stored result's id, without downloading any rows,
+/// How long `-o id` waits for a stored result to finish writing: the same five
+/// minutes `execute` gives the query run itself.
+const RESULT_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `-o id`: print only the stored result's id, without downloading its rows,
 /// so a script can hand it to a command that reads a result by id. Exits: `0`
-/// with the id on stdout, `1` when the query left no stored result.
-fn print_result_id(result_id: Option<String>) -> ! {
-    match result_id_line(result_id) {
+/// with the id on stdout, `1` when the query left no stored result or it never
+/// finished writing.
+fn print_result_id(api: &Api, result_id: Option<String>) -> ! {
+    match ready_result_id(api, result_id, RESULT_READY_DEADLINE) {
         Ok(line) => {
             println!("{line}");
             std::process::exit(0)
@@ -645,6 +650,24 @@ fn print_result_id(result_id: Option<String>) -> ! {
             std::process::exit(1)
         }
     }
+}
+
+/// The id `-o id` prints, once the result it names is ready.
+///
+/// A query run reports `succeeded` (or answers inline) while its result is
+/// still being written to storage, so an id printed straight away could be
+/// handed to `tables load --result-id` and refused with "still being computed"
+/// (hotdata-dev/support#24). This opens the result, reading at most one row,
+/// and waits through the server's not-ready answers until it is.
+fn ready_result_id(
+    api: &Api,
+    result_id: Option<String>,
+    deadline: std::time::Duration,
+) -> Result<String, String> {
+    let id = result_id_line(result_id).map_err(str::to_string)?;
+    api.open_result_arrow_when_ready(&id, Some(1), deadline)
+        .map_err(|e| format!("error: {}", e.message()))?;
+    Ok(id)
 }
 
 /// What `-o id` prints for a finished query, split out to be testable.
@@ -1988,6 +2011,77 @@ mod tests {
             result_id_line(Some("rslt_abc".to_string())).unwrap(),
             "rslt_abc"
         );
+    }
+
+    /// `-o id` must not print an id whose result is still being written: a
+    /// script that loads it straight away would be refused.
+    #[test]
+    fn ready_result_id_waits_until_the_result_is_ready() {
+        use arrow::array::{Int64Array, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1]))])
+            .unwrap();
+        let mut ipc: Vec<u8> = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut ipc, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut server = mockito::Server::new();
+        // mockito answers with the first matching mock still short of its
+        // expected hits: the 202 once, then the ready result.
+        let pending = server
+            .mock("GET", "/v1/results/rslt_slow")
+            .match_query(mockito::Matcher::Any)
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"processing","result_id":"rslt_slow"}"#)
+            .expect(1)
+            .create();
+        let ready = server
+            .mock("GET", "/v1/results/rslt_slow")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/vnd.apache.arrow.stream")
+            .with_body(ipc)
+            .expect(1)
+            .create();
+
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
+        let id = ready_result_id(
+            &api,
+            Some("rslt_slow".to_string()),
+            std::time::Duration::from_secs(30),
+        )
+        .expect("the result became ready");
+        assert_eq!(id, "rslt_slow");
+        pending.assert();
+        ready.assert();
+    }
+
+    /// A result that never finishes writing is an error, not a printed id.
+    #[test]
+    fn ready_result_id_errors_when_the_result_is_never_ready() {
+        let mut server = mockito::Server::new();
+        let _pending = server
+            .mock("GET", "/v1/results/rslt_stuck")
+            .match_query(mockito::Matcher::Any)
+            .with_status(202)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"status":"processing","result_id":"rslt_stuck"}"#)
+            .create();
+        let api = Api::test_new_scoped(&server.url(), "test-jwt", None, Some("db-1"));
+        let err = ready_result_id(
+            &api,
+            Some("rslt_stuck".to_string()),
+            std::time::Duration::from_millis(300),
+        )
+        .expect_err("a result that is never ready has no id to print");
+        assert!(err.contains("still being written"), "{err}");
     }
 
     #[test]
