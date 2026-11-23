@@ -55,6 +55,26 @@ Indexes are created on **instant databases** only, and on the database's own tab
 
 Large builds: `--async`, then `hotdata jobs list` / `hotdata jobs <job_id>`.
 
+### Hybrid search (BM25 + vector)
+
+An auto-embedding vector index (`--type vector` on a text column, with or without an explicit `--provider`) **must be the only index on its table**. The server refuses it when the table already has a BM25 or sorted index, and refuses any other index once it exists, with `Embedding-backed vector indexes cannot coexist with other indexes on the same table`. Creating the indexes in the other order does not help. A vector index over a column that already holds vectors is not affected and can share a table with BM25.
+
+Two patterns give BM25 and vector retrieval over the same rows:
+
+1. **Companion table** (auto-embedding). Keep the BM25 index on the original table. Load a second table in the same instant database with the key and the text column, and put only the auto-embedding vector index on it:
+
+   ```bash
+   hotdata search create <table>_body_bm25 --type text \
+     --from <alias>.<schema>.<table> --column body
+   # <table>_vec holds (id, body), copied from <table>
+   hotdata search create <table>_vec_body --type vector \
+     --from <alias>.<schema>.<table>_vec --column body --provider <provider-id>
+   ```
+
+   Search each index (`hotdata search "<text>" --index <name>`) and fuse the two ranked lists on `id`, e.g. reciprocal rank fusion (`score = Σ 1 / (60 + rank)`). Reload the companion table when the source text changes.
+
+2. **Precomputed embeddings** (one table). Compute embeddings outside Hotdata and load them into a float-list column (e.g. `embedding`). Create the vector index on that column without `--provider`, and the BM25 index on the text column; both coexist. Query the vector side with SQL and a query vector embedded by the same model.
+
 ## 4. Verify
 
 Re-run `hotdata search "..." --index <name>` or representative SQL. Update **context:DATAMODEL → Search & index summary** via `hotdata databases context push DATAMODEL` (core skill).
