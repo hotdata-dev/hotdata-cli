@@ -3,6 +3,7 @@ use crate::commands::databases::DatabasesCommands;
 use crate::commands::ingest::IngestCommands;
 use crate::commands::jobs::JobsCommands;
 use crate::commands::query::QueryCommands;
+use crate::commands::rollups::RollupsCommands;
 use crate::commands::search::SearchCommands;
 use crate::commands::skill::SkillCommands;
 use crate::commands::support::SupportCommands;
@@ -143,6 +144,25 @@ pub enum Commands {
         command: Option<SearchCommands>,
     },
 
+    /// Rollups — keep a table pre-aggregated by time so aggregate queries over long ranges stay fast
+    ///
+    /// A rollup holds one row per time bucket and combination of dimension
+    /// values, with the aggregates you choose. You keep querying the table:
+    /// an aggregate query the rollup can answer reads it instead, with the
+    /// same answer (percentiles are approximate), and `hotdata query` reports
+    /// `rollup: used`.
+    ///
+    /// Creating a rollup restricts writes to its table; see `rollups create
+    /// --help`. Guide: https://www.hotdata.dev/docs/rollups
+    Rollups {
+        /// Workspace ID for this command only (defaults to the current workspace; switch with `workspaces use`)
+        #[arg(long, short = 'w', global = true)]
+        workspace_id: Option<String>,
+
+        #[command(subcommand)]
+        command: RollupsCommands,
+    },
+
     /// Account, configuration, and CLI maintenance
     Manage {
         #[command(subcommand)]
@@ -236,5 +256,47 @@ mod tests {
             );
         }
         assert!(!parses(&["query", "SELECT 1", "--dialect", "mysql"]));
+    }
+
+    #[test]
+    fn rollups_create_takes_its_table_and_repeated_measures() {
+        assert!(parses(&[
+            "rollups",
+            "create",
+            "public.requests",
+            "--time-column",
+            "ts",
+            "--bucket",
+            "1h",
+            "--by",
+            "region,status",
+            "--measure",
+            "count",
+            "--measure",
+            "numeric:bytes",
+            "--window",
+            "6h",
+            "--async",
+        ]));
+        // No measure, a kind that does not exist, and a zero-length bucket are
+        // all refused before any request is made.
+        let base = ["rollups", "create", "public.t", "--time-column", "ts"];
+        assert!(!parses(&[&base[..], &["--bucket", "1h"]].concat()));
+        assert!(!parses(
+            &[&base[..], &["--bucket", "1h", "--measure", "avg:x"]].concat()
+        ));
+        assert!(!parses(
+            &[&base[..], &["--bucket", "0", "--measure", "count"]].concat()
+        ));
+    }
+
+    #[test]
+    fn rollups_verbs_parse() {
+        assert!(parses(&["rollups", "list", "--table", "public.requests"]));
+        assert!(parses(&["rollups", "show", "rlup1", "-o", "json"]));
+        assert!(parses(&["rollups", "rebuild", "rlup1", "--async"]));
+        assert!(parses(&["rollups", "window", "public.requests", "6h"]));
+        assert!(parses(&["rollups", "remove", "rlup1", "-d", "demo"]));
+        assert!(!parses(&["rollups", "window", "public.requests"]));
     }
 }

@@ -158,6 +158,38 @@ database as its table, so pass `-d` when that isn't your current database.
   so you don't need an embeddings API key.
 - `--type sorted` speeds up `WHERE` filters and range queries on a column.
 
+## Rollups
+
+A rollup keeps a table pre-aggregated by time, so dashboards and reports that
+aggregate a large, time-stamped table over days or weeks stay fast. You keep
+querying the table; an aggregate query the rollup can answer reads it instead.
+
+```sh
+hotdata rollups create public.requests --time-column ts --bucket 1h \
+  --dimensions region,status \
+  --measure count --measure numeric:bytes --measure approx_percentile:latency_ms
+
+hotdata query "SELECT date_trunc('day', ts) AS day, region, count(*), avg(bytes)
+               FROM public.requests GROUP BY 1, 2"
+# ... [rollup: used]
+```
+
+- `--bucket` is the finest time grouping the rollup answers (`1m`, `1h`, `1d`).
+- `--dimensions` are the columns your queries group or filter by.
+- `--measure` picks the aggregates: `count`, `sum:col`, `min:col`, `max:col`,
+  `numeric:col` (count, sum, avg, min, and max in one), or
+  `approx_percentile:col`.
+
+`create` waits for the rollup to build; pass `--async` to return right away.
+`hotdata query` tells you whether a rollup answered: `used`, `not_matched` (the
+query's shape doesn't fit it), or `not_ready` (still building, or it needs
+`hotdata rollups rebuild`).
+
+Creating a rollup restricts writes to its table: rows older than the window
+(one hour by default; change it with `hotdata rollups window`) can no longer be
+changed or deleted. Appends always work. See the
+[rollups guide](https://www.hotdata.dev/docs/rollups) for the details.
+
 ## Your current workspace and database
 
 Most commands run against your *current* workspace and database, so you don't
@@ -286,6 +318,12 @@ For what the plugin runs, sends, and fetches, see
 | `search embeddings add` | Create a new embedding provider |
 | `search embeddings update` | Update an embedding provider |
 | `search embeddings remove` | Delete an embedding provider |
+| `rollups create` | Create a rollup on a table and wait for it to build |
+| `rollups list` | List the rollups in a database |
+| `rollups show` | Show one rollup: what it keeps, its status, its build progress |
+| `rollups rebuild` | Build a rollup again (after its table was replaced, or a failed build) |
+| `rollups window` | Set how long a table's rows stay editable after their time |
+| `rollups remove` | Remove a rollup; the table does not change |
 | `manage usage` | Show workspace usage: queries, bytes scanned, stored bytes |
 | `manage completions` | Generate shell completions (`bash`, `zsh`, `fish`) |
 | `manage upgrade` | Upgrade the CLI to the latest release |

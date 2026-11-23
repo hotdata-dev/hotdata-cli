@@ -918,6 +918,53 @@ impl Api {
         })
     }
 
+    /// Issue an authenticated request to `{base}/v1{path}` through the SDK
+    /// `Configuration`, returning the raw status, headers and body text.
+    ///
+    /// The seam's general form, for callers that read the body as untyped JSON
+    /// on every method (so a status or field a newer server adds is shown
+    /// rather than failing a closed SDK enum) and that act on a header as well
+    /// as the status. Non-success is returned as `Ok`, so the caller decides
+    /// what each status means. `timeout` bounds this one request below the
+    /// client's own; `None` keeps the client's.
+    pub fn send_raw(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&serde_json::Value>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<(reqwest::StatusCode, reqwest::header::HeaderMap, String), ApiError> {
+        let cfg = self.client.configuration();
+        let url = format!("{}/v1{path}", cfg.base_path);
+        let database_id = self.database_id.clone();
+        rt().block_on(async move {
+            let mut req = cfg.client.request(method, &url);
+            if !query.is_empty() {
+                req = req.query(query);
+            }
+            if let Some(body) = body {
+                req = req.json(body);
+            }
+            if let Some(timeout) = timeout {
+                req = req.timeout(timeout);
+            }
+            req = apply_seam_headers(req, cfg, database_id.as_deref()).await;
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| ApiError::Transport(format!("error connecting to API: {e}")))?;
+            Ok((status, headers, body))
+        })
+    }
+
     /// Open a persisted result once it is ready, waiting if it is still being
     /// written.
     ///

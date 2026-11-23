@@ -47,6 +47,11 @@ pub struct QueryResponse {
     /// whole result. Drives the fail-closed exit in [`print_result`].
     pub truncated: bool,
     pub execution_time_ms: Option<u64>,
+    /// Whether a rollup answered the query: `used`, `not_matched`, `not_ready`
+    /// or `unavailable`. `None`, and left out of `-o json`, when no table the
+    /// query read has a rollup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollup: Option<String>,
     /// A human-facing completeness notice (e.g. truncation). Printed to stderr by
     /// [`print_result`], never the stdout body — a JSON consumer reads the same
     /// fact from the typed `truncated` / `total_row_count` fields.
@@ -99,6 +104,7 @@ fn query_response_from_sdk(resp: hotdata::models::QueryResponse) -> QueryRespons
         truncated: resp.truncated,
         rows: resp.rows,
         execution_time_ms: Some(resp.execution_time_ms.max(0) as u64),
+        rollup: resp.rollup.flatten().map(|usage| usage.to_string()),
         warning: resp.warning.flatten(),
     }
 }
@@ -271,6 +277,8 @@ fn arrow_result_to_query_response(
         total_row_count,
         truncated: false,
         execution_time_ms: None,
+        // Like the run id, known only to the caller that asked for the result.
+        rollup: None,
         warning: None,
     })
 }
@@ -322,6 +330,7 @@ fn plan_inline(resp: hotdata::models::QueryResponse) -> InlinePlan {
                 // at the result.
                 query_run_id: (!resp.query_run_id.is_empty()).then(|| resp.query_run_id.clone()),
                 execution_time_ms: Some(resp.execution_time_ms.max(0) as u64),
+                rollup: resp.rollup.flatten().map(|usage| usage.to_string()),
                 warning: resp.warning.clone().flatten(),
             };
             InlinePlan::Stream {
@@ -524,12 +533,14 @@ pub fn execute(sql: &str, workspace_id: &str, database: Option<&str>, format: &s
                     print_result_id(run.result_id.flatten());
                 }
                 let execution_time_ms = run.execution_time_ms;
+                let rollup = run.rollup.flatten().map(|usage| usage.to_string());
                 match run.result_id.flatten() {
                     Some(result_id) => {
                         let meta = StreamMeta {
                             result_id,
                             query_run_id: Some(run_id.clone()),
                             execution_time_ms: run_execution_time_ms(execution_time_ms),
+                            rollup,
                             warning: None,
                         };
                         print_persisted_result(&api, meta, format);
@@ -594,12 +605,14 @@ pub fn poll(query_run_id: &str, workspace_id: &str, database: Option<&str>, form
                 print_result_id(run.result_id.flatten());
             }
             let execution_time_ms = run.execution_time_ms;
+            let rollup = run.rollup.flatten().map(|usage| usage.to_string());
             match run.result_id.flatten() {
                 Some(result_id) => {
                     let meta = StreamMeta {
                         result_id,
                         query_run_id: Some(run.id.clone()),
                         execution_time_ms: run_execution_time_ms(execution_time_ms),
+                        rollup,
                         warning: None,
                     };
                     print_persisted_result(&api, meta, format);
@@ -683,6 +696,12 @@ fn table_footer(result: &QueryResponse) -> String {
         .as_deref()
         .map(|id| format!(" [result-id: {id}]"))
         .unwrap_or_default();
+    // Says whether the rollup on a table the query read answered it, so a
+    // dashboard query that silently stopped fitting its rollup is visible here.
+    let id_part = match result.rollup.as_deref() {
+        Some(usage) => format!("{id_part} [rollup: {usage}]"),
+        None => id_part,
+    };
     let time_part = match result.execution_time_ms {
         Some(ms) => format!("server execution {ms} ms"),
         None => "\u{2014}".to_string(), // em dash
@@ -771,6 +790,8 @@ pub(crate) struct StreamMeta {
     pub result_id: String,
     pub query_run_id: Option<String>,
     pub execution_time_ms: Option<u64>,
+    /// Whether a rollup answered the query; see [`QueryResponse::rollup`].
+    pub rollup: Option<String>,
     pub warning: Option<String>,
 }
 
@@ -792,6 +813,7 @@ pub(crate) fn print_streamed_result(
         // a failure here is always recoverable by the caller.
         let mut result = fetch_capped(api, &meta, TABLE_ROW_CAP).map_err(StreamFailure::early)?;
         result.warning = meta.warning;
+        result.rollup = meta.rollup;
         print_result_body(&result, format);
         return Ok(result_exit_code(&result));
     }
@@ -1071,15 +1093,21 @@ fn stream_json(
     let truncated = total_row_count.is_some_and(|total| total != written);
     write!(
         out,
-        "],\n  \"row_count\": {written},\n  \"total_row_count\": {},\n  \"truncated\": {truncated},\n  \"execution_time_ms\": {}\n}}\n",
+        "],\n  \"row_count\": {written},\n  \"total_row_count\": {},\n  \"truncated\": {truncated},\n  \"execution_time_ms\": {}",
         total_row_count.unwrap_or(written),
         match meta.execution_time_ms {
             Some(ms) => ms.to_string(),
             None => "null".to_string(),
         }
     )
-    .map_err(write_failure)
-    .map(|()| written)
+    .map_err(write_failure)?;
+    // Left out when absent, as the buffered envelope leaves it out.
+    if meta.rollup.is_some() {
+        write!(out, ",\n  \"rollup\": ").map_err(write_failure)?;
+        write_compact(out, &meta.rollup)?;
+    }
+    writeln!(out, "\n}}").map_err(write_failure)?;
+    Ok(written)
 }
 
 /// `serde_json::to_string_pretty`, with the serializer's error mapped.
@@ -1617,6 +1645,7 @@ mod tests {
             total_row_count: Some(1),
             truncated: false,
             execution_time_ms: None,
+            rollup: None,
             warning: None,
         };
         let rendered = serde_json::to_string_pretty(&result).unwrap();
@@ -1651,6 +1680,7 @@ mod tests {
             total_row_count: Some(1),
             truncated: false,
             execution_time_ms: None,
+            rollup: None,
             warning: None,
         };
         let rendered = serde_json::to_string_pretty(&result).unwrap();
@@ -1871,6 +1901,7 @@ mod tests {
             total_row_count: Some(100),
             truncated: true,
             execution_time_ms: Some(5),
+            rollup: None,
             warning: Some("result truncated to a preview".to_string()),
         };
         let json = serde_json::to_value(&result).unwrap();
@@ -1894,6 +1925,7 @@ mod tests {
             total_row_count: Some(2),
             truncated: false,
             execution_time_ms: Some(5),
+            rollup: None,
             warning: None,
         };
         let json = serde_json::to_value(&result).unwrap();
@@ -1918,6 +1950,7 @@ mod tests {
             total_row_count: Some(100),
             truncated: true,
             execution_time_ms: Some(5),
+            rollup: None,
             warning: Some("result truncated to a preview".to_string()),
         };
         assert_eq!(result_exit_code(&result), EXIT_INCOMPLETE_RESULT);
@@ -1942,6 +1975,7 @@ mod tests {
             total_row_count,
             truncated,
             execution_time_ms: Some(5),
+            rollup: None,
             warning: None,
         }
     }
@@ -1980,6 +2014,57 @@ mod tests {
         let run_at = footer.find("[run:").unwrap();
         let res_at = footer.find("[result-id:").unwrap();
         assert!(run_at < res_at, "run id should precede result id: {footer}");
+    }
+
+    #[test]
+    fn table_footer_says_whether_a_rollup_answered() {
+        let mut result = display_result(2, Some(2), false);
+        assert!(!table_footer(&result).contains("rollup"));
+        result.result_id = Some("res_9f2a1c".to_string());
+        for usage in ["used", "not_matched", "not_ready", "unavailable"] {
+            result.rollup = Some(usage.to_string());
+            let footer = table_footer(&result);
+            assert!(
+                footer.ends_with(&format!("[result-id: res_9f2a1c] [rollup: {usage}]")),
+                "footer: {footer}"
+            );
+        }
+    }
+
+    /// The inline response says whether a rollup answered; that has to reach
+    /// both what is printed directly and what is streamed from the stored
+    /// result, which carries no such fact itself.
+    #[test]
+    fn the_rollup_outcome_of_an_inline_response_reaches_every_rendering() {
+        let mut resp = truncated_preview(Some("res_1"));
+        resp.rollup = Some(Some(hotdata::models::RollupUsage::NotMatched));
+        match plan_inline(resp.clone()) {
+            InlinePlan::Stream { meta, preview } => {
+                assert_eq!(meta.rollup.as_deref(), Some("not_matched"));
+                assert_eq!(preview.rollup.as_deref(), Some("not_matched"));
+            }
+            InlinePlan::Render(_) => panic!("a truncated result with an id is streamed"),
+        }
+
+        resp.truncated = false;
+        let InlinePlan::Render(result) = plan_inline(resp) else {
+            panic!("a complete inline result is rendered");
+        };
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["rollup"],
+            "not_matched"
+        );
+
+        // No rollup on any table read: the key is absent, not null, so output
+        // for every other query is unchanged.
+        let plain = query_response_from_sdk(truncated_preview(None));
+        assert_eq!(plain.rollup, None);
+        assert!(
+            serde_json::to_value(&plain)
+                .unwrap()
+                .get("rollup")
+                .is_none()
+        );
     }
 
     #[test]
@@ -2152,17 +2237,24 @@ mod tests {
             result_id: result_id.to_string(),
             query_run_id: Some("qrun_1".to_string()),
             execution_time_ms: Some(4200),
+            rollup: None,
             warning: None,
         }
     }
 
     /// Read the same result both ways and return (buffered, streamed) bytes.
     fn render_both(format: &str) -> (Vec<u8>, Vec<u8>) {
+        render_both_with(format, None)
+    }
+
+    /// [`render_both`], for a query whose run reported `rollup`.
+    fn render_both_with(format: &str, rollup: Option<&str>) -> (Vec<u8>, Vec<u8>) {
         let ipc = awkward_ipc();
         let mut server = mockito::Server::new();
         let _m = serve_ipc(&mut server, ipc.clone(), Some("6"));
         let api = Api::test_new_scoped(&server.url(), "test-jwt", Some("ws-1"), Some("db-1"));
-        let meta = meta_for("res_1");
+        let mut meta = meta_for("res_1");
+        meta.rollup = rollup.map(str::to_string);
 
         // Streamed: batch by batch, off the socket.
         let stream = api
@@ -2203,6 +2295,7 @@ mod tests {
         )
         .unwrap();
         buffered_result.query_run_id = meta.query_run_id.clone();
+        buffered_result.rollup = meta.rollup.clone();
         buffered_result.execution_time_ms = meta.execution_time_ms;
 
         let mut buffered: Vec<u8> = Vec::new();
@@ -2237,6 +2330,21 @@ mod tests {
             String::from_utf8(streamed).unwrap(),
             String::from_utf8(buffered).unwrap()
         );
+    }
+
+    /// The rollup outcome is the envelope's one optional key: both writers
+    /// carry it when the run reported one, and neither invents it otherwise.
+    #[test]
+    fn streamed_json_carries_the_rollup_outcome_like_the_buffered_envelope() {
+        let (buffered, streamed) = render_both_with("json", Some("used"));
+        let streamed = String::from_utf8(streamed).unwrap();
+        assert_eq!(streamed, String::from_utf8(buffered).unwrap());
+        let parsed: serde_json::Value = serde_json::from_str(&streamed).unwrap();
+        assert_eq!(parsed["rollup"], "used");
+
+        let (_, without) = render_both("json");
+        let parsed: serde_json::Value = serde_json::from_slice(&without).unwrap();
+        assert!(parsed.get("rollup").is_none(), "{parsed}");
     }
 
     /// An empty result still has to produce the header row (CSV) and a
@@ -2284,6 +2392,7 @@ mod tests {
             total_row_count: Some(0),
             truncated: false,
             execution_time_ms: meta.execution_time_ms,
+            rollup: None,
             warning: None,
         };
         let mut buffered: Vec<u8> = Vec::new();

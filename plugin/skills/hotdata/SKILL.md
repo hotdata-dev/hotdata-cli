@@ -21,7 +21,7 @@ This is the only top-level hotdata skill. Three specialized guides ship **bundle
 | When the task involves | Read | Covers |
 |------------------------|------|--------|
 | BM25 / vector search, `hotdata search`, bm25/vector indexes, embedding providers | [`subskills/search/SKILL.md`](subskills/search/SKILL.md) | Search & retrieval indexes |
-| OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes | [`subskills/analytics/SKILL.md`](subskills/analytics/SKILL.md) | Analytics |
+| OLAP SQL, aggregations, query/results history, Chain materializations, sorted indexes, rollups (`hotdata rollups`) | [`subskills/analytics/SKILL.md`](subskills/analytics/SKILL.md) | Analytics |
 | PostGIS-style `ST_*`, WKB geometry, spatial joins, GIS | [`subskills/geospatial/SKILL.md`](subskills/geospatial/SKILL.md) | Geospatial |
 
 Everything else — auth, workspaces, databases, tables, basic `query`, context, jobs, ingest sources/ingest/run — is in this file. The three sub-skills are referred to below by name (**`hotdata-search`**, **`hotdata-analytics`**, **`hotdata-geospatial`**); each name means the bundled file above, loaded on demand.
@@ -275,7 +275,8 @@ hotdata databases query status <query_run_id>
 - **Large results: `-o csv` / `-o json` are complete, `-o table` is capped.** The server returns inline rows only up to a bounded cap and persists the full set under a `result_id`. For `csv` and `json` the CLI **streams** that full result batch by batch, so output size is unbounded and memory stays flat — pipe a big result to a file with `-o csv`/`-o json`, never `table`. For `table` the CLI fetches at most **10,000 rows** and the footer says `N of TOTAL rows — INCOMPLETE PREVIEW` (with `?` when the server sent no total); the process exits **3** so a pipeline cannot mistake it for the whole set. Same rules for `hotdata databases results get`. A result the server is still writing is waited for (up to 5 minutes, honoring `Retry-After`) rather than returned partial. If the full result can't be retrieved, the CLI prints the inline preview, a `warning:` to stderr, and exits 3. `-o json` carries `row_count`, `total_row_count`, and `truncated` — branch on `truncated`, not on the row count.
 - **Numbers print exactly.** A `DECIMAL(38,2)` or other wide number is printed with every digit the service sent, in every output format; `-o json` emits it as an unquoted JSON number. One consequence: a list or struct cell prints on a single line in `-o json` (re-indenting would mean re-parsing and rounding it); scalars are unaffected.
 - **Backpressure is handled.** Under heavy concurrent load the server may shed a query with HTTP 429 (`OVERLOADED`); the CLI auto-retries (honoring `Retry-After`) before surfacing an error — no manual retry needed.
-- **OLAP** (aggregations, history, Chain, sorted indexes): **`hotdata-analytics`** skill.
+- **Rollups.** When a table the query read has a rollup, the table footer ends with `[rollup: used|not_matched|not_ready|unavailable]` and `-o json` carries a `rollup` field; neither appears otherwise. A table with a rollup refuses SQL `UPDATE`/`DELETE` (`409 ROLLUP_COVERAGE_EDIT`). Creating and managing rollups (`hotdata rollups`): **`hotdata-analytics`** skill.
+- **OLAP** (aggregations, history, Chain, sorted indexes, rollups): **`hotdata-analytics`** skill.
 - **Search** (BM25, vector): **`hotdata-search`** skill.
 
 ### Jobs

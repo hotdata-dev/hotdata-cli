@@ -14,6 +14,7 @@ pub mod prompt;
 pub mod queries;
 pub mod query;
 pub mod results;
+pub mod rollups;
 pub mod run;
 pub mod schema_form;
 pub mod search;
