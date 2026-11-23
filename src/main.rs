@@ -327,6 +327,7 @@ fn main() {
                         }) => databases::tables_load(
                             &workspace_id,
                             database.as_deref().or(catalog.as_deref()),
+                            database.is_none() && catalog.is_some(),
                             &table,
                             Some(schema.as_str()),
                             file.as_deref(),
@@ -420,6 +421,7 @@ fn main() {
                             }) => databases::tables_load(
                                 &workspace_id,
                                 db_flag.as_deref().or(database.as_deref()),
+                                false,
                                 &table,
                                 Some(schema.as_str()),
                                 file.as_deref(),

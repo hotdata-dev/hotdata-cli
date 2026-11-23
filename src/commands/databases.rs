@@ -204,7 +204,9 @@ pub enum DatabasesCommands {
     Load {
         /// SQL catalog alias of the target database (e.g. `--catalog airbnb`).
         /// A fork answers to the same alias as its source, so once a database
-        /// has been forked the alias is ambiguous: pass `--database <id>` instead.
+        /// has been forked the alias is ambiguous and the load fails rather than
+        /// guessing (it never falls back to the current database): pass
+        /// `--database <id>` instead.
         #[arg(long, required_unless_present = "database")]
         catalog: Option<String>,
 
@@ -859,6 +861,21 @@ pub fn resolve_database_preferring_active(api: &Api, key: &str) -> Database {
             eprintln!("{}", format!("error: {e}").red());
             std::process::exit(1);
         }
+    }
+}
+
+/// Resolve the target database of a load.
+///
+/// A key that came from `--catalog` resolves strictly: when several databases
+/// share the alias (a fork shares its source's) the load fails as ambiguous
+/// instead of silently landing in whichever database is current — state that
+/// another process can change underneath this one. Every other key (an id, or
+/// a name passed to `--database` / `-d`) keeps preferring the active database.
+fn try_resolve_load_target(api: &Api, key: &str, from_catalog: bool) -> Result<Database, String> {
+    if from_catalog {
+        try_resolve_database(api, key)
+    } else {
+        try_resolve_database_preferring_active(api, key)
     }
 }
 
@@ -2275,8 +2292,8 @@ pub fn create(
                         "Make it the current database (create does not switch):\n",
                         "  hotdata databases use {1}\n",
                         "\nLoad a table (csv, json, or parquet):\n",
-                        "  hotdata databases load --catalog {0} --table <table> --file <path>\n",
-                        "  hotdata databases load --catalog {0} --table <table> --url <url>\n",
+                        "  hotdata databases load --database {1} --table <table> --file <path>\n",
+                        "  hotdata databases load --database {1} --table <table> --url <url>\n",
                         "\nQuery with:\n",
                         "  hotdata query -d {1} \"SELECT * FROM {0}.public.<table> LIMIT 10\"\n",
                         "\n  Tip: column names are case-sensitive — wrap uppercase names in double quotes",
@@ -2954,7 +2971,12 @@ fn resolve_current_database(provided: Option<&str>, workspace_id: &str) -> Strin
     if let Some(id) = provided {
         return id.to_string();
     }
-    match crate::config::load_current_database("default", workspace_id) {
+    // Same precedence as `Api::database_id()`: a per-process HOTDATA_DATABASE
+    // wins over the current database in the shared config file.
+    match std::env::var("HOTDATA_DATABASE")
+        .ok()
+        .or_else(|| crate::config::load_current_database("default", workspace_id))
+    {
         Some(id) => id,
         None => {
             use crossterm::style::Stylize;
@@ -3059,6 +3081,9 @@ pub fn tables_list(
 pub fn tables_load(
     workspace_id: &str,
     database: Option<&str>,
+    // True when `database` is a `--catalog` alias: resolved strictly, so an
+    // alias shared by a fork errors instead of picking the current database.
+    from_catalog: bool,
     table: &str,
     schema: Option<&str>,
     file: Option<&str>,
@@ -3102,9 +3127,20 @@ pub fn tables_load(
     // kind, or an explicit opt-in flag.
     let database = resolve_current_database(database, workspace_id);
     let api = Api::new(Some(workspace_id));
-    // Prefer the active database when its catalog or name matches the lookup key,
-    // avoiding ambiguity when multiple databases share the same catalog name.
-    let db = resolve_database_preferring_active(&api, &database);
+    // A `--catalog` alias resolves strictly (a shared alias is an error); an id
+    // or name prefers the active database when its catalog or name matches.
+    let db = match try_resolve_load_target(&api, &database, from_catalog) {
+        Ok(db) => db,
+        Err(e) => {
+            let hint = if from_catalog {
+                " (pass --database <id> to pick one; `hotdata databases list` shows the ids)"
+            } else {
+                ""
+            };
+            eprintln!("{}", format!("error: {e}{hint}").red());
+            std::process::exit(1);
+        }
+    };
     // A result load hits the connection-scoped endpoint, where the server scopes
     // the result by the X-Database-Id header; that must name the resolved target
     // database, not the ambient active one (which may be unset or different). An
@@ -3185,6 +3221,10 @@ pub fn tables_load(
     let full_name = format!("{catalog}.{}.{}", result.schema_name, result.table_name);
     println!("{}", "Table loaded".green());
     println!("full_name: {}", full_name.clone().green());
+    match db.name.as_deref() {
+        Some(name) => println!("database:  {} ({name})", db.id),
+        None => println!("database:  {}", db.id),
+    }
     println!("rows:      {}", result.row_count);
     println!();
     println!(
@@ -3558,6 +3598,84 @@ mod tests {
         not_id.assert();
         list.assert();
         detail.assert();
+    }
+
+    /// Mocks for two databases sharing catalog `prod`: the source and its
+    /// fork, with the fork as the ambient (active) database.
+    fn shared_alias_server() -> mockito::ServerGuard {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/v1/databases/db_fork")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(detail_with_catalog("db_fork", "prod-fork", "prod"))
+            .create();
+        server
+            .mock("GET", "/v1/databases/prod")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[
+                    {"id":"db_src","name":"prod","default_catalog":"prod","default_schema":"main"},
+                    {"id":"db_fork","name":"prod-fork","default_catalog":"prod","default_schema":"main"}
+                ]}"#,
+            )
+            .create();
+        server
+    }
+
+    #[test]
+    fn load_by_catalog_refuses_alias_shared_with_active_fork() {
+        // hotdata-dev/support#19: another process made the fork current; a
+        // `load --catalog prod` must not silently land in it.
+        let server = shared_alias_server();
+        let api = Api::test_new_scoped(&server.url(), "k", Some("ws"), Some("db_fork"));
+        let err = try_resolve_load_target(&api, "prod", true).unwrap_err();
+        assert!(
+            err.contains("multiple databases have catalog 'prod'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn load_by_name_still_prefers_active() {
+        // A non-catalog key keeps the active-database preference.
+        let server = shared_alias_server();
+        let api = Api::test_new_scoped(&server.url(), "k", Some("ws"), Some("db_fork"));
+        let db = try_resolve_load_target(&api, "prod", false).unwrap();
+        assert_eq!(db.id, "db_fork");
+    }
+
+    #[test]
+    fn load_by_catalog_resolves_unique_alias() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/v1/databases/sales")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        server
+            .mock("GET", "/v1/databases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"databases":[{"id":"db_s","name":"s","default_catalog":"sales","default_schema":"main"}]}"#,
+            )
+            .create();
+        server
+            .mock("GET", "/v1/databases/db_s")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(detail_with_catalog("db_s", "s", "sales"))
+            .create();
+        let api = Api::test_new_scoped(&server.url(), "k", Some("ws"), Some("db_other"));
+        let db = try_resolve_load_target(&api, "sales", true).unwrap();
+        assert_eq!(db.id, "db_s");
     }
 
     #[test]
