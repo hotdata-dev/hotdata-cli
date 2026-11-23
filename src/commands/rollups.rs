@@ -747,7 +747,7 @@ const POLL_FAST_FOR: Duration = Duration::from_secs(60);
 /// One read's own time limit, well under the client's, so a stalled read
 /// costs one attempt rather than minutes.
 const POLL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Consecutive reads that may fail (no response, or a 5xx) before the wait
+/// Consecutive reads that may fail (no response, a 5xx, a 429 or a 408) before the wait
 /// gives up. The build itself is unaffected either way.
 const MAX_FAILED_POLLS: u32 = 5;
 
@@ -784,7 +784,14 @@ fn wait_until_built(
                 None
             }
             Ok((StatusCode::NOT_FOUND, _, _)) => return Ok(Built::Dropped),
-            Ok((status, _, body)) if status.is_server_error() => {
+            // A 5xx, a rate limit or a request timeout says nothing about the
+            // build: over a wait of hours one of them is likely, and none is a
+            // reason to stop.
+            Ok((status, _, body))
+                if status.is_server_error()
+                    || status == StatusCode::TOO_MANY_REQUESTS
+                    || status == StatusCode::REQUEST_TIMEOUT =>
+            {
                 Some(ApiError::Status { status, body })
             }
             // Any other status says something is wrong with the request
@@ -1762,6 +1769,28 @@ mod tests {
         unavailable.assert();
         ready.assert();
         assert!(matches!(outcome, Ok(Built::Ready(_))), "{outcome:?}");
+    }
+
+    #[test]
+    fn the_wait_rides_out_a_rate_limit_and_a_request_timeout() {
+        for status in [429, 408] {
+            let mut server = mockito::Server::new();
+            let limited = server
+                .mock("GET", format!("/v1/databases/{DB}/rollups/rlup1").as_str())
+                .with_status(status)
+                .with_body("slow down")
+                .expect(2)
+                .create();
+            let ready = mock_get(&mut server, "rlup1", "ready", 1);
+            let (outcome, pauses) = wait(&server);
+            limited.assert();
+            ready.assert();
+            assert!(
+                matches!(outcome, Ok(Built::Ready(_))),
+                "{status}: {outcome:?}"
+            );
+            assert_eq!(pauses.len(), 2);
+        }
     }
 
     #[test]
