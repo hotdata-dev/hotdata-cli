@@ -1,3 +1,13 @@
+## [0.47.0] - 2026-11-23
+
+### 🚀 Features
+
+- *(sdk)* Update hotdata SDK to 0.23.0 and surface rollups (#372)
+- *(rollups)* Add rollups commands and query feedback (#379)
+
+### 📚 Documentation
+
+- *(search)* Document embedding-index isolation and hybrid search patterns (#375)
 ## [0.46.0] - 2026-11-12
 
 ### 🚀 Features
