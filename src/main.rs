@@ -726,6 +726,13 @@ fn main() {
                     },
                 }
             }
+            Commands::Rollups {
+                workspace_id,
+                command,
+            } => {
+                let workspace_id = resolve_workspace(workspace_id);
+                commands::rollups::dispatch(&workspace_id, command);
+            }
             Commands::Manage { command } => match command {
                 cli::ManageCommands::Usage {
                     since,

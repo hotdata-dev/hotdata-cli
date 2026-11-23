@@ -1,12 +1,12 @@
 ---
 name: hotdata-analytics
-description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, or materialized follow-up tables (Chain into instant databases). Activate for "analyze", "aggregate", "rollup", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for tables and auth.
+description: Use this skill when the user wants OLAP-style SQL analytics in Hotdata — aggregations, GROUP BY, JOINs, reporting, exploratory queries, query run history, stored results, materialized follow-up tables (Chain into instant databases), or rollups (`hotdata rollups`, a table kept pre-aggregated by time). Activate for "analyze", "aggregate", "rollup", "pre-aggregate", "time buckets", "dashboard is slow", "pivot", "report", "metrics", "GROUP BY", "query history", "past queries", "query runs", "stored results", "materialize", "chain", "intermediate table", or sorted indexes for filters/range scans. Do not load for BM25/vector search or geospatial SQL — use hotdata-search or hotdata-geospatial. Requires the core hotdata skill for tables and auth.
 version: 0.46.0
 ---
 
 # Hotdata Analytics Skill
 
-**OLAP-style analytics** in Hotdata: PostgreSQL-dialect SQL, query execution, run history, stored results, **Chain** materializations, and **sorted** indexes for filters and joins.
+**OLAP-style analytics** in Hotdata: PostgreSQL-dialect SQL, query execution, run history, stored results, **Chain** materializations, **sorted** indexes for filters and joins, and **rollups** for aggregates over long time ranges.
 
 **Prerequisites:** Authenticate, workspace, and catalog discovery via the **`hotdata`** skill (`ingest sources`/`ingest`, `databases tables`, `databases`).
 
@@ -114,4 +114,54 @@ hotdata search create idx_orders_created --type sorted \
 ```
 
 List and remove use the same `hotdata search` commands as in the search skill; only **`--type sorted`** is the analytics focus here. With `--async`, track the build via **`hotdata jobs list`** (see **`hotdata`** skill → Jobs).
+
+---
+
+## Rollups (pre-aggregated time series)
+
+A rollup keeps a table pre-aggregated by time: one row per time bucket and combination of dimension values, with the aggregates you choose. Use one for dashboards and reports that aggregate a large, time-stamped table over days or weeks. Queries are **not** rewritten: keep querying the table, and an aggregate query the rollup can answer reads it instead. Answers are the same as reading the table, except percentiles, which are approximate. Guide: <https://www.hotdata.dev/docs/rollups>.
+
+```bash
+hotdata rollups create <schema.table> --time-column <col> --bucket <duration> \
+  --measure <kind[:column]> [--measure ...] [--dimensions <a,b>] [--filter "<sql>"] \
+  [--window <duration>] [--database <database>] [--async] [--output table|json|yaml]
+hotdata rollups list [--database <database>] [--schema <schema>] [--table <schema.table>] [--output table|json|yaml]
+hotdata rollups show <rollup_id> [--database <database>] [--output table|json|yaml]
+hotdata rollups rebuild <rollup_id> [--database <database>] [--async] [--output table|json|yaml]
+hotdata rollups window <schema.table> <duration> [--database <database>] [--output table|json|yaml]
+hotdata rollups remove <rollup_id> [--database <database>]
+```
+
+```bash
+hotdata rollups create public.requests --time-column ts --bucket 1h \
+  --dimensions region,status \
+  --measure count --measure numeric:bytes --measure approx_percentile:latency_ms
+```
+
+- **Table:** `schema.table` in `--database` / the current database, or `catalog.schema.table`. It must already hold data, and `--time-column` must be a UTC timestamp.
+- **Durations** (`--bucket`, `--window`, `rollups window`): `30s`, `5m`, `1h`, `1d`, or a bare number of seconds. `--bucket` is the finest time grouping the rollup answers.
+- **`--measure`** (repeat it): `count` (or `count:col` for non-null values), `sum:col`, `min:col`, `max:col`, `numeric:col` (answers `count`, `sum`, `avg`, `min`, `max` of the column — there is no `avg` kind), `approx_percentile:col[:centroids]` (answers `approx_percentile_cont` / `approx_median`).
+- **`--dimensions`** (alias `--by`): every column the queries group or filter by, besides time. A query that filters on any other column cannot use the rollup.
+- **`--filter`:** keeps only matching rows. A query uses the rollup only when its `WHERE` contains the same condition written the same way.
+- **Waiting:** `create` and `rebuild` wait until the rollup is `ready` and exit `1` if the build fails; they print the rollup id (and job id) to stderr first, so the id survives a timeout. A first build of a large table can take a long time — pass `--async` to return at once, then poll `hotdata rollups show <id>` until `status` is `ready`.
+- **`-o json|yaml`** prints the API objects unchanged (`bucket_width_secs`, `window_secs` in seconds). `create`/`rebuild` print `{rollup, job_id}`; `list` prints an array.
+- **A rollup cannot be edited.** `show` prints measures in the `--measure` grammar; to change one, `remove` it and `create` it again (which rebuilds from the start).
+
+**Did my query use it?** `hotdata query` shows it: the table footer ends with `[rollup: <outcome>]`, `-o json` carries a `rollup` field, and `hotdata databases queries <query_run_id>` shows it for past runs. No field means no table the query read has a rollup.
+
+| `rollup` | Meaning | What to do |
+| :-- | :-- | :-- |
+| `used` | A rollup answered the query. | — |
+| `not_matched` | A rollup is ready but cannot answer this query's shape. | Use only the rollup's measures; group time with `date_trunc`/`date_bin` at the bucket width or a multiple; filter and group only by its dimensions and time column; include its `--filter` condition verbatim. |
+| `not_ready` | The rollup is building, needs a rebuild, or its build failed. | `hotdata rollups show <id>`; `hotdata rollups rebuild <id>` if it says so. |
+| `unavailable` | Skipped this once; the query read the table. | Nothing — the same query later can use it. |
+
+**Creating a rollup restricts writes to its table** (tell the user before creating one on a table they edit):
+
+- Rows older than the **window** (default `1h`, shared by every rollup on the table) can no longer be changed or deleted. Change it with `hotdata rollups window <schema.table> <duration>`; a wider window applies as time passes — rows already past the old window stay closed.
+- SQL `DELETE` and `UPDATE` on the table are refused. Use a keyed `hotdata databases load --mode update|delete|upsert` whose key **includes the time column**.
+- Appends are always accepted. A `--mode replace` load is accepted too, but leaves the table's rollups `needs_rebuild`: queries read the table until `hotdata rollups rebuild <id>`.
+- A refused write is a `409` with code `ROLLUP_COVERAGE_EDIT`; retrying it does not help — its message says which rule it broke.
+
+Forking a database does not copy its rollups; dropping a table drops them.
 

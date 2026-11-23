@@ -163,6 +163,7 @@ pub fn get(result_id: &str, workspace_id: &str, database: Option<&str>, format: 
         result_id: result_id.to_owned(),
         query_run_id: None,
         execution_time_ms: None,
+        rollup: None,
         warning: None,
     };
     crate::commands::query::print_persisted_result(&api, meta, format);
