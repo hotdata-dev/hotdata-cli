@@ -1,6 +1,6 @@
 ---
 name: hotdata-search
-description: Use this skill when the user wants full-text search, BM25 keyword search, vector similarity search, semantic search, embeddings, or retrieval indexes in Hotdata. Activate for "hotdata search", "BM25", "full-text", "vector search", "semantic search", "similarity", "embedding", "embedding provider", "create an index" (bm25 or vector), "list indexes" for search, or SQL using bm25_search or vector_distance. Do not load for general SQL analytics (aggregations, GROUP BY) or geospatial work — use hotdata-analytics or hotdata-geospatial instead. Requires the core hotdata skill for auth and workspace basics.
+description: Use this skill when the user wants full-text search, BM25 keyword search, vector similarity search, semantic search, embeddings, or retrieval indexes in Hotdata. Activate for "hotdata search", "BM25", "full-text", "vector search", "semantic search", "similarity", "embedding", "embedding provider", "create an index" (bm25 or vector), "list indexes" for search, or SQL using bm25_search or vector_distance, filtered or joined vector search, hybrid BM25 + vector search (RRF), search latency, or running search SQL over the HTTP API. Do not load for general SQL analytics (aggregations, GROUP BY) or geospatial work — use hotdata-analytics or hotdata-geospatial instead. Requires the core hotdata skill for auth and workspace basics.
 version: 0.46.0
 ---
 
@@ -44,6 +44,105 @@ hotdata search "<query>" --in <name>
 - Default `--limit` is 10.
 - **Database:** the search commands resolve the index in the **current** database (`hotdata databases use <id>`). Pass `-d/--database <database>` (name, catalog alias, or id) to target a different database explicitly — it is required when no current database is set. The same `-d/--database` works on `search show` and `search remove`.
 - **Current database:** with `hotdata databases use <db>`, an index created with a `schema.table` `--from` resolves the current database's catalog automatically. Or create it with the full `catalog.schema.table` form. Do **not** use the internal `__db_<id>` label or raw catalog ID prefix — `bm25_search`/`vector_distance` resolve a catalog attached to the current database, so an `__db_…` or `conn…` prefix errors with *catalog … is not attached*.
+
+---
+
+## Search in SQL
+
+`hotdata search` only runs one fixed query shape. For filters, joins, hybrid ranking or server-side use, write the SQL yourself and run it with `hotdata query` (or the HTTP API, below). The examples use `db.s.chunks(id, doc_id, court, text)` with an embedding-backed vector index on `text`, `db.s.chunks_text`, a copy of the same rows with a text index on `text` (see **Hybrid search** for why it is a separate table), and `db.s.docs(id, title)`.
+
+### `bm25_search` output
+
+```sql
+SELECT id, doc_id, text, score
+FROM bm25_search('db.s.chunks_text', 'text', 'breach of fiduciary duty')
+ORDER BY score DESC
+LIMIT 10
+```
+
+- **Columns:** every column of the source table, plus `score` (`Float32`, higher is better). The hits *are* the source rows, so there is nothing to join back.
+- **Order:** rows come back in table order, not by relevance. Always write `ORDER BY score DESC`.
+- **Limit:** a `LIMIT` on that `ORDER BY score DESC` reaches the search. Without one (an aggregate, a `GROUP BY`, a second sort key, a filter on `score`), the search stops at **1000** hits. An optional 4th argument caps it explicitly: `bm25_search('db.s.chunks_text', 'text', 'q', 200)`.
+- **`WHERE`:** a filter on the table's own columns (`WHERE court = 'NY'`) still fills the `LIMIT` when enough rows match: the search reads deeper into the ranking and, for a very selective filter, pre-scans the filter instead.
+
+### Filtered vector search
+
+```sql
+-- ANN step on the indexed table alone; the join goes outside
+WITH hits AS (
+  SELECT id, doc_id, text, vector_distance(text, 'breach of fiduciary duty') AS dist
+  FROM db.s.chunks
+  WHERE court = 'NY'
+  ORDER BY dist
+  LIMIT 50
+)
+SELECT h.id, d.title, h.text, h.dist
+FROM hits h JOIN db.s.docs d ON d.id = h.doc_id
+ORDER BY h.dist
+LIMIT 10
+```
+
+- **A `WHERE` on the indexed table's own columns is a pre-filter, not a post-filter.** It is applied before the nearest-neighbour search, so you still get `k` rows whenever `k` rows match.
+  - `hnsw`: the engine collects the keys that pass the filter and searches only those; when the filter keeps about 5% of the table or less, it computes exact distances over the passing rows instead.
+  - `ivf`: the filter is applied while the clusters are probed, and the probe widens until enough rows pass. It falls back to an exact scan when the filter names a column the index does not hold, calls a volatile function, or fewer than `k` indexed rows pass.
+- **Keep the index-served step to one table:** `SELECT … vector_distance(...) AS dist FROM <indexed table> [WHERE <its columns>] ORDER BY dist LIMIT k`. Anything else under that `ORDER BY` (a `JOIN`, a subquery filter, a filter on another table) is not served by the index. It falls back to exact distances over every row, which is correct but slow on a large table. `vector_distance` written directly over a join may not resolve at all. Do the ANN step in a CTE or subquery, as above, and join its result.
+- **Filter on a joined table?** Copy the column onto the indexed table, or over-fetch in the CTE (`LIMIT 200`) and filter after the join, accepting that fewer than `k` rows may survive.
+- **`ivf`:** name the columns to return. An `ivf` index cannot serve a query that returns the vector column (`SELECT *` and `* EXCLUDE (...)` included).
+- **Check the plan** with `hotdata query 'EXPLAIN <the SQL>'`. An index-served `hnsw` search shows `USearchExec`. If the plan shows a full scan of the table instead, the index is not being used.
+
+### Hybrid search (BM25 + vector, RRF)
+
+There is no built-in hybrid mode. Combine the two rankings in SQL with reciprocal rank fusion (RRF).
+
+An embedding-backed vector index cannot share a table with any other index: creating a text index on its table (or the vector index on a table that already has one) is refused with *Embedding-backed vector indexes cannot coexist with other indexes on the same table*. Keep the text index on a second table holding the same rows under the same `id` (for example `hotdata query 'CREATE TABLE s.chunks_text AS SELECT id, doc_id, court, text FROM db.s.chunks'`, then `hotdata search create chunks_text_bm25 --type text --from s.chunks_text --column text`), and fuse the two rankings on `id`. A vector index over a column that already holds vectors (no `--provider`) can sit beside a text index, but its searches take a query vector, not text.
+
+```sql
+WITH b AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC) AS r
+  FROM (SELECT id, score FROM bm25_search('db.s.chunks_text', 'text', 'breach of fiduciary duty')
+        ORDER BY score DESC LIMIT 100) AS bq
+),
+v AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY dist) AS r
+  FROM (SELECT id, vector_distance(text, 'breach of fiduciary duty') AS dist FROM db.s.chunks
+        ORDER BY dist LIMIT 100) AS vq
+)
+SELECT COALESCE(b.id, v.id) AS id,
+       COALESCE(1.0 / (60 + b.r), 0) + COALESCE(1.0 / (60 + v.r), 0) AS rrf
+FROM b FULL JOIN v ON b.id = v.id
+ORDER BY rrf DESC
+LIMIT 10
+```
+
+- Keep each leg as its own `ORDER BY … LIMIT` subquery on its indexed table, so each one is served by its index. Put a filter inside both legs, as a `WHERE` on each table's columns (so the text copy needs the filter columns too).
+- Rows written to `db.s.chunks` later are not in the copy: load new rows into both tables.
+- `60` is the usual RRF constant. Weight a leg by scaling its term. Join the fused ids back to `db.s.chunks` (or `docs`) for display columns.
+
+### Latency (`execution_time_ms`)
+
+- For a vector search by text, `execution_time_ms` includes embedding the query text with the index's provider (one call to e.g. OpenAI, typically a few hundred ms). The text is embedded while the query is planned, and the timer starts before planning.
+- Embeddings are cached in the query engine process by provider, model, dimensions and text. A repeat of the **same** text usually skips the provider call. A different text, or a request served by another engine process, pays for it again.
+- The response does not split embedding time from search time. To isolate the search, run the same SQL twice and compare the second run, or run `EXPLAIN`: a warm search that is still slow usually means the plan fell back to an exact scan (see **Filtered vector search**).
+- BM25 searches make no provider call.
+
+### Programmatic access (HTTP)
+
+Anything `hotdata query` or `hotdata search` runs can be sent from a server to the query API:
+
+```bash
+curl -s https://api.hotdata.dev/v1/query \
+  -H "Authorization: Bearer $HOTDATA_API_KEY" \
+  -H "X-Workspace-Id: <workspace_id>" \
+  -H "X-Database-Id: <database_id>" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT id, text, score FROM bm25_search('\''db.s.chunks_text'\'', '\''text'\'', '\''fiduciary duty'\'') ORDER BY score DESC LIMIT 10"}'
+```
+
+- **Headers:** `Authorization: Bearer <api key>` and `X-Workspace-Id` always. An instant database's tables also need the database: send `X-Database-Id: <database_id>`, or `"database_id"` in the body (if both are set they must match).
+- **Response:** `{"query_run_id", "result_id", "columns", "rows", "preview_row_count", "total_row_count", "truncated", "execution_time_ms"}`. A large result comes back as a bounded preview with `truncated: true`; fetch the rest with `GET /v1/results/{result_id}`. Add `"async": true` (optionally `"async_after_ms": 1000`–`30000`) to get a query run id for a long query instead, and poll `GET /v1/query-runs/{id}`.
+- **`/v1/query-runs/{id}` and `/v1/results/{id}` need the `X-Database-Id` header**, even when the query itself was scoped with the body field, so prefer the header.
+- **SDKs:** the generated SDK operations send `X-Workspace-Id` but not `X-Database-Id`. Add the header as an extra request header (or pass `database_id` in the query body, which covers `POST /v1/query` only).
+- There is no separate search endpoint: `hotdata search` builds a `bm25_search(...) ORDER BY score DESC LIMIT k` or `vector_distance(...) AS dist … ORDER BY dist LIMIT k` query and sends it here, so send the same SQL.
 
 ---
 
