@@ -319,12 +319,29 @@ impl ApiError {
                 } else {
                     None
                 };
-                eprintln!(
-                    "{}",
-                    crossterm::style::Stylize::red(
-                        format_fail_message(*status, body, auth_status.as_ref()).as_str()
-                    )
-                );
+                // Generated SDK ops bypass `util::send_debug`, so without this
+                // `--debug` printed nothing at all for a failed SDK call.
+                if util::is_debug() {
+                    eprintln!(
+                        "{}",
+                        crossterm::style::Stylize::dark_grey(
+                            format!("<<< {status} (raw body: {body:?})").as_str()
+                        )
+                    );
+                }
+                let mut msg = format_fail_message(*status, body, auth_status.as_ref());
+                // A bare plain-text "Not Found" on a workspace-scoped call is the
+                // gateway's KEDA interceptor saying it has no route for the
+                // workspace yet — which is what a freshly created workspace looks
+                // like until provisioning finishes (support#26). Ask the
+                // always-warm control plane why before printing a bare 404.
+                if is_route_not_found(*status, body)
+                    && let Some(ws) = scoped_workspace()
+                {
+                    let provision = probe_provision_status(&ws);
+                    msg = route_not_found_message(&ws, provision.as_deref());
+                }
+                eprintln!("{}", crossterm::style::Stylize::red(msg.as_str()));
             }
             ApiError::Transport(msg) => {
                 eprintln!("{msg}");
@@ -551,6 +568,10 @@ impl Api {
             profile: profile_config.clone(),
             api_key_fallback,
         };
+
+        if let Some(ws) = workspace_id {
+            record_scoped_workspace(ws);
+        }
 
         let database_id = std::env::var("HOTDATA_DATABASE").ok().or_else(|| {
             workspace_id.and_then(|ws| crate::config::load_current_database("default", ws))
@@ -1109,6 +1130,69 @@ impl Api {
     }
 }
 
+/// The workspace this process's scoped [`Api`] targets, recorded by
+/// [`Api::new`] so [`ApiError::print`] — which has no `Api` in hand — can name
+/// it when explaining a gateway-level 404.
+static SCOPED_WORKSPACE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn record_scoped_workspace(ws: &str) {
+    if let Ok(mut slot) = SCOPED_WORKSPACE.lock() {
+        *slot = Some(ws.to_string());
+    }
+}
+
+fn scoped_workspace() -> Option<String> {
+    SCOPED_WORKSPACE.lock().ok().and_then(|s| s.clone())
+}
+
+/// True for the KEDA HTTP interceptor's "no route" response: a 404 whose body
+/// is exactly the plain-text `Not Found` (`http.StatusText(404)`). RuntimeDB
+/// and the control plane always answer with a JSON envelope, so this shape
+/// means the request never reached a workspace backend — typically because the
+/// workspace's route has not been created yet (still provisioning).
+pub(crate) fn is_route_not_found(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::NOT_FOUND && body.trim() == "Not Found"
+}
+
+/// Look up `workspace_id`'s `provision_status` on the control plane (which is
+/// never cold and is not routed through the interceptor). `None` on any
+/// failure — the caller falls back to a generic explanation.
+fn probe_provision_status(workspace_id: &str) -> Option<String> {
+    // `block` drives the shared runtime; never nest it inside a running one.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return None;
+    }
+    let api = Api::new(None);
+    let resp = api.list_workspaces(None).ok()?;
+    resp.workspaces
+        .iter()
+        .find(|w| w.public_id == workspace_id)
+        .map(|w| w.provision_status.clone())
+}
+
+/// The message for a gateway "no route" 404 on `workspace_id`, given its
+/// control-plane `provision_status` (`None` when it couldn't be determined).
+/// Pure so the wording is unit-testable.
+pub(crate) fn route_not_found_message(
+    workspace_id: &str,
+    provision_status: Option<&str>,
+) -> String {
+    match provision_status {
+        Some("failed") => format!(
+            "workspace {workspace_id} failed to provision (provision_status: failed); \
+             it cannot serve requests. Check 'hotdata workspaces list' or contact support."
+        ),
+        Some(s) if s != "success" => format!(
+            "workspace {workspace_id} is still provisioning (provision_status: {s}); \
+             try again in a minute — check progress with 'hotdata workspaces list'."
+        ),
+        _ => format!(
+            "Not Found (the gateway has no route for workspace {workspace_id}; if it was \
+             just created it may still be starting — check 'hotdata workspaces list')"
+        ),
+    }
+}
+
 /// What the server said, as one line a person can read.
 ///
 /// An error envelope (`{"error":{"message":…}}`, and the other shapes
@@ -1222,6 +1306,53 @@ mod tests {
     }
 
     // --- format_fail_message: ported verbatim from api.rs (9 cases) ----------
+
+    // --- support#26: gateway "no route" 404 while a workspace provisions ----
+
+    #[test]
+    fn route_not_found_detects_only_the_interceptor_plain_text_404() {
+        let nf = reqwest::StatusCode::NOT_FOUND;
+        assert!(is_route_not_found(nf, "Not Found"));
+        assert!(is_route_not_found(nf, "Not Found\n"));
+        // A JSON 404 from runtimedb/control plane is a real "not found".
+        assert!(!is_route_not_found(
+            nf,
+            r#"{"error":"workspace_not_found"}"#
+        ));
+        assert!(!is_route_not_found(nf, ""));
+        assert!(!is_route_not_found(
+            reqwest::StatusCode::BAD_GATEWAY,
+            "Not Found"
+        ));
+    }
+
+    #[test]
+    fn route_not_found_message_says_still_provisioning() {
+        let msg = route_not_found_message("ws_new", Some("running"));
+        assert!(msg.contains("ws_new"), "{msg}");
+        assert!(msg.contains("still provisioning"), "{msg}");
+        assert!(msg.contains("running"), "{msg}");
+        assert!(msg.contains("hotdata workspaces list"), "{msg}");
+        let pending = route_not_found_message("ws_new", Some("pending"));
+        assert!(pending.contains("still provisioning"), "{pending}");
+    }
+
+    #[test]
+    fn route_not_found_message_reports_failed_provisioning() {
+        let msg = route_not_found_message("ws_bad", Some("failed"));
+        assert!(msg.contains("failed to provision"), "{msg}");
+        assert!(!msg.contains("still provisioning"), "{msg}");
+    }
+
+    #[test]
+    fn route_not_found_message_never_bare_when_ready_or_unknown() {
+        for status in [Some("success"), None] {
+            let msg = route_not_found_message("ws_ok", status);
+            assert_ne!(msg.trim(), "Not Found");
+            assert!(msg.contains("no route for workspace ws_ok"), "{msg}");
+            assert!(!msg.contains("still provisioning"), "{msg}");
+        }
+    }
 
     #[test]
     fn format_fail_message_401_with_invalid_key_shows_reauth_hint() {
