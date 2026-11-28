@@ -86,6 +86,12 @@ pub enum SearchCommands {
         /// Create as a background job
         #[arg(long)]
         r#async: bool,
+
+        /// Output format. `json`/`yaml` print the API response: with `--async`
+        /// the submitted job (its id is also under `job_id`), otherwise the
+        /// created index.
+        #[arg(long = "output", short = 'o', default_value = "table", value_parser = ["table", "json", "yaml"])]
+        output: String,
     },
 
     /// List search indexes
@@ -156,6 +162,7 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             output_column,
             description,
             r#async,
+            output,
         } => create(
             workspace_id,
             name.as_deref(),
@@ -175,6 +182,7 @@ pub fn dispatch(workspace_id: &str, command: SearchCommands) {
             output_column.as_deref(),
             description.as_deref(),
             r#async,
+            &output,
         ),
         SearchCommands::List {
             database,
@@ -353,6 +361,7 @@ fn create(
     output_column: Option<&str>,
     description: Option<&str>,
     async_mode: bool,
+    output: &str,
 ) {
     let index_type = match type_ {
         "text" => "bm25",
@@ -408,6 +417,7 @@ fn create(
         output_column,
         description,
         vector,
+        output,
     );
 }
 
@@ -1174,6 +1184,53 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(cmd, SearchCommands::Create { database: Some(ref d), .. } if d == "db1"));
+    }
+
+    #[test]
+    fn create_accepts_output_json_with_async() {
+        let cmd = parse(&[
+            "create", "x", "--type", "text", "--from", "s.t", "--column", "c", "--async", "-o",
+            "json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cmd,
+            SearchCommands::Create { r#async: true, ref output, .. } if output == "json"
+        ));
+    }
+
+    #[test]
+    fn create_output_defaults_to_table_and_rejects_unknown_formats() {
+        assert!(matches!(
+            parse(CREATE_VECTOR).unwrap(),
+            SearchCommands::Create { ref output, .. } if output == "table"
+        ));
+        let mut args = CREATE_VECTOR.to_vec();
+        args.extend(["--output", "yaml"]);
+        assert!(matches!(
+            parse(&args).unwrap(),
+            SearchCommands::Create { ref output, .. } if output == "yaml"
+        ));
+        let mut args = CREATE_VECTOR.to_vec();
+        args.extend(["-o", "csv"]);
+        assert!(parse(&args).is_err());
+    }
+
+    #[test]
+    fn create_output_does_not_collide_with_output_column() {
+        let mut args = CREATE_VECTOR.to_vec();
+        args.extend(["--output-column", "foo", "-o", "json"]);
+        match parse(&args).unwrap() {
+            SearchCommands::Create {
+                output_column,
+                output,
+                ..
+            } => {
+                assert_eq!(output_column.as_deref(), Some("foo"));
+                assert_eq!(output, "json");
+            }
+            _ => panic!("expected Create"),
+        }
     }
 
     #[test]
