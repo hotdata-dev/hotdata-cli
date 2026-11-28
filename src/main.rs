@@ -134,6 +134,8 @@ fn main() {
     }
     if cli.debug {
         util::set_debug(true);
+        // Printed up front so a hang or a crash still leaves it on screen.
+        eprintln!("trace ID: {}", client::sdk::trace_id());
     }
     if cli.no_input {
         util::set_no_input(true);

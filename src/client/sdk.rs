@@ -76,11 +76,50 @@ const TCP_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_se
 /// TCP keepalive. The CLI shares the SDK's reqwest 0.13, so this is the exact
 /// type `Configuration.client` expects.
 fn sdk_http_client() -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(value) = reqwest::header::HeaderValue::from_str(&traceparent()) {
+        headers.insert("traceparent", value);
+    }
     reqwest::Client::builder()
+        .default_headers(headers)
         .timeout(HTTP_REQUEST_TIMEOUT)
         .tcp_keepalive(TCP_KEEPALIVE_INTERVAL)
         .build()
         .expect("reqwest client with timeout should build")
+}
+
+/// The W3C trace ID this invocation sends on every API request.
+///
+/// A 5xx response carries a generic message with no cause, so a user who hits
+/// one has nothing specific to report. Sending a `traceparent` we generate
+/// gives every request an ID the user can quote to support. One ID per
+/// process, so every request a command makes shares it.
+pub fn trace_id() -> &'static str {
+    static TRACE_ID: OnceLock<String> = OnceLock::new();
+    TRACE_ID.get_or_init(|| {
+        // All-zero is the one value W3C Trace Context forbids.
+        let id = rand::random::<u128>().max(1);
+        format!("{id:032x}")
+    })
+}
+
+/// The `traceparent` header value for this invocation: version `00`, our
+/// [`trace_id`], a random parent span ID, and the sampled flag.
+fn traceparent() -> String {
+    let span_id = rand::random::<u64>().max(1);
+    format!("00-{}-{span_id:016x}-01", trace_id())
+}
+
+/// The line to print after a 5xx, or `None` for any other status. A 4xx
+/// carries its own explanation; a 5xx carries none, so the trace ID is the
+/// only thing a user can hand to support.
+pub fn server_error_trace_hint(status: reqwest::StatusCode) -> Option<String> {
+    status.is_server_error().then(|| {
+        format!(
+            "trace ID: {} (include this when you report the error)",
+            trace_id()
+        )
+    })
 }
 
 /// The `reqwest::Client` backing the presigned upload's storage `PUT`s.
@@ -325,6 +364,9 @@ impl ApiError {
                         format_fail_message(*status, body, auth_status.as_ref()).as_str()
                     )
                 );
+                if let Some(hint) = server_error_trace_hint(*status) {
+                    eprintln!("{}", crossterm::style::Stylize::dark_grey(hint.as_str()));
+                }
             }
             ApiError::Transport(msg) => {
                 eprintln!("{msg}");
@@ -606,6 +648,8 @@ impl Api {
     pub(crate) fn test_new(api_url: &str, bearer: &str, workspace_id: Option<&str>) -> Self {
         let mut configuration = Configuration {
             base_path: sdk_base_path(api_url),
+            // The production client, so tests see its default headers.
+            client: sdk_http_client(),
             bearer_access_token: Some(bearer.to_string()),
             ..Configuration::default()
         };
@@ -1507,6 +1551,52 @@ mod tests {
             }
             other => panic!("expected Status, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn traceparent_is_valid_w3c_and_carries_the_trace_id() {
+        let tp = traceparent();
+        let parts: Vec<&str> = tp.split('-').collect();
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0], "00");
+        assert_eq!(parts[1], trace_id());
+        assert_eq!(parts[1].len(), 32);
+        assert_eq!(parts[2].len(), 16);
+        assert!(
+            parts[1..3]
+                .iter()
+                .all(|p| p.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')))
+        );
+        assert_eq!(parts[3], "01");
+    }
+
+    #[test]
+    fn trace_hint_is_for_5xx_only() {
+        let hint = server_error_trace_hint(reqwest::StatusCode::INTERNAL_SERVER_ERROR)
+            .expect("a 5xx gets a trace hint");
+        assert!(hint.contains(trace_id()));
+        assert!(server_error_trace_hint(reqwest::StatusCode::BAD_REQUEST).is_none());
+        assert!(server_error_trace_hint(reqwest::StatusCode::NOT_FOUND).is_none());
+    }
+
+    /// The header must be on the wire for generated SDK ops, which the seam's
+    /// own header helper never touches.
+    #[test]
+    fn sdk_ops_send_the_traceparent_header() {
+        let mut server = mockito::Server::new();
+        let m = server
+            .mock("GET", "/v1/workspaces")
+            .match_header(
+                "traceparent",
+                mockito::Matcher::Regex(format!("^00-{}-[0-9a-f]{{16}}-01$", trace_id())),
+            )
+            .with_status(500)
+            .with_body("boom")
+            .create();
+
+        let api = Api::test_new(&server.url(), "test-jwt", None);
+        let _ = api.list_workspaces(None);
+        m.assert();
     }
 
     #[test]
