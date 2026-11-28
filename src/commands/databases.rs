@@ -2296,9 +2296,13 @@ pub fn create(
 /// (transport) errors fall through to the shared [`ApiError::exit`] path.
 fn fork_error_exit(e: ApiError) -> ! {
     use crossterm::style::Stylize;
-    if let ApiError::Status { ref body, .. } = e {
+    if let ApiError::Status { ref body, status } = e {
         let msg = crate::util::api_error(body.clone());
         eprintln!("{}", msg.clone().red());
+        // A 5xx names no cause, so give the user something to report.
+        if let Some(hint) = crate::client::sdk::server_error_trace_hint(status) {
+            eprintln!("{}", hint.dark_grey());
+        }
         // Pre-DuckLake (parquet-backed) databases can't be forked; recreating
         // the database and reloading its data is the migration path.
         if msg.contains("storage backend") || msg.contains("DuckLake") {
